@@ -43,7 +43,7 @@ func TestValidBillingEventRejectsOwnerMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// [COMMENT]: Row metadata và protobuf payload phải đồng nhất trước khi event vượt trust boundary NATS.
+	// [COMMENT]: Row metadata và protobuf payload phải đồng nhất trước khi event vượt trust boundary Shared Redis.
 	event := iamEntity.BillingOutboxEvent{
 		EventID: eventID, EventType: personalWalletProvisionEventType,
 		OwnerID: uuid.New(), OwnerType: "PERSONAL", Payload: payload,

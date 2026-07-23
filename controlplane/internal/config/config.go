@@ -25,10 +25,12 @@ import (
 
 // Config là cấu trúc cấu hình gốc gom nhóm tất cả các cấu hình thành phần.
 type Config struct {
-	App       AppCfg
-	Security  SecurityCfg
-	Psql      PsqlCfg
-	Redis     RedisCfg
+	App      AppCfg
+	Security SecurityCfg
+	Psql     PsqlCfg
+	Redis    RedisCfg
+	// [COMMENT]: AuthRedis là security-state/authz projection; không dùng làm cache business chung.
+	AuthRedis RedisCfg
 	Kafka     KafkaCfg
 	NATS      NATSCfg
 	GRPC      GRPCCfg
@@ -102,6 +104,7 @@ type PsqlCfg struct {
 // RedisCfg chứa các thông số kết nối Redis cho cache và job queuing.
 type RedisCfg struct {
 	Addr          string
+	Username      string
 	Password      string
 	DB            int
 	TLSEnabled    bool
@@ -116,6 +119,10 @@ type RedisCfg struct {
 	PingTimeout   time.Duration
 	MaxRetries    int
 	RetryInterval time.Duration
+	// [COMMENT]: Chỉ Shared Redis durable Stream publisher dùng hai ngưỡng này;
+	// Auth Redis không tái sử dụng chúng làm business policy.
+	DurableReplicaAcks int
+	DurableWait        time.Duration
 }
 
 // KafkaCfg là durable platform transport; Redis chính không được dùng làm Job Queue.
@@ -222,7 +229,10 @@ func LoadConfig() *Config {
 			RetryInterval: 3 * time.Second,
 		},
 		Redis: RedisCfg{
+			// [COMMENT]: Shared Redis chứa cache/pubsub/lock và bounded internal Streams;
+			// deployment phải persistence và không được dùng allkeys eviction.
 			Addr:          getEnv("REDIS_ADDR", "localhost:6379"),
+			Username:      getEnv("REDIS_USERNAME", ""),
 			Password:      getEnv("REDIS_PASSWORD", ""),
 			DB:            getEnvAsInt("REDIS_DB", 0),
 			TLSEnabled:    getEnvAsBool("REDIS_TLS_ENABLED", false),
@@ -234,6 +244,29 @@ func LoadConfig() *Config {
 			WriteTimeout:  500 * time.Millisecond,
 			PoolSize:      100,
 			MinIdleConns:  10,
+			PingTimeout:   2 * time.Second,
+			MaxRetries:    5,
+			RetryInterval: 1 * time.Second,
+			// [COMMENT]: Production fail-close nếu chưa có ít nhất một replica fsync.
+			// Docker Compose đơn node phải override về 0 một cách minh bạch.
+			DurableReplicaAcks: getEnvAsInt("REDIS_DURABLE_REPLICA_ACKS", 1),
+			DurableWait:        getEnvAsDuration("REDIS_DURABLE_WAIT", 2*time.Second),
+		},
+		AuthRedis: RedisCfg{
+			// [COMMENT]: Redis Cluster chỉ dùng DB 0; session/authz cô lập bằng prefix + ACL, không dùng SELECT DB 1.
+			Addr:          getEnv("AUTH_REDIS_ADDR", "localhost:16380"),
+			Username:      getEnv("AUTH_REDIS_USERNAME", "controlplane"),
+			Password:      getEnv("AUTH_REDIS_PASSWORD", ""),
+			DB:            0,
+			TLSEnabled:    getEnvAsBool("AUTH_REDIS_TLS_ENABLED", false),
+			CACertPath:    getEnv("AUTH_REDIS_TLS_CA", ""),
+			CertPath:      getEnv("AUTH_REDIS_TLS_CERT", ""),
+			KeyPath:       getEnv("AUTH_REDIS_TLS_KEY", ""),
+			DialTimeout:   2 * time.Second,
+			ReadTimeout:   500 * time.Millisecond,
+			WriteTimeout:  500 * time.Millisecond,
+			PoolSize:      50,
+			MinIdleConns:  5,
 			PingTimeout:   2 * time.Second,
 			MaxRetries:    5,
 			RetryInterval: 1 * time.Second,

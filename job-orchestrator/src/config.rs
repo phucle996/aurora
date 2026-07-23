@@ -6,8 +6,9 @@ pub struct Config {
     /// Chuỗi kết nối Postgres (phải bật wal_level = logical)
     pub database_url: String,
 
-    /// [COMMENT]: Redis cache chỉ giữ mail watch/report và reconciler lock/checkpoint có TTL.
-    pub cache_redis_url: String,
+    /// [COMMENT]: Shared Redis chỉ giữ Central watch/report bridge,
+    /// bounded streams và reconciler lock/checkpoint; không phải Zone runtime database.
+    pub shared_redis_url: String,
 
     /// [COMMENT]: Kafka trung tâm là durable transport cho job/result/metadata/report.
     pub kafka_bootstrap_servers: String,
@@ -57,8 +58,8 @@ impl Config {
         let database_url =
             env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
 
-        let cache_redis_url =
-            env::var("CACHE_REDIS_URL").map_err(|_| "CACHE_REDIS_URL must be set".to_string())?;
+        let shared_redis_url =
+            env::var("SHARED_REDIS_URL").map_err(|_| "SHARED_REDIS_URL must be set".to_string())?;
         let kafka_bootstrap_servers = env::var("KAFKA_BOOTSTRAP_SERVERS")
             .map_err(|_| "KAFKA_BOOTSTRAP_SERVERS must be set".to_string())?;
         let kafka_security_protocol = env::var("KAFKA_SECURITY_PROTOCOL")
@@ -148,7 +149,7 @@ impl Config {
             .clamp(5_000, 300_000);
         Ok(Self {
             database_url,
-            cache_redis_url,
+            shared_redis_url,
             kafka_bootstrap_servers,
             kafka_security_protocol,
             kafka_username,

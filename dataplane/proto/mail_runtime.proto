@@ -146,9 +146,22 @@ message MailConsumerRuntimeReportedV1 {
   string runtime_epoch = 11;
 }
 
-// [COMMENT]: Consumer report có cardinality cao nên relay gom bounded delta vào một Redis Stream entry.
+// [COMMENT]: Central service ghi watch request vào Shared L2 Redis Stream; JO bridge request
+// best-effort sang NATS Core để Controlplane không cần credential NATS và Dataplane không cần Redis.
+message MailConsumerRuntimeWatchRequestedV1 {
+  MailEventMetadataV1 metadata = 1;
+  bytes zone_id = 2;
+  bytes consumer_id = 3;
+  uint64 config_version = 4;
+  string runtime_epoch = 5;
+  int64 expires_at_unix_ms = 6;
+}
+
+// [COMMENT]: Consumer report có cardinality cao nên Dataplane gom bounded delta vào một NATS Core message.
 message MailConsumerRuntimeReportBatchV1 {
   repeated MailConsumerRuntimeReportedV1 reports = 1;
+  // [COMMENT]: Zone nằm trong signed transport identity/subject và payload để JO fail-close khi cross-wire.
+  bytes zone_id = 2;
 }
 
 message MailTemplateVersionPublishedV1 {

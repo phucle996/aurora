@@ -172,8 +172,9 @@ CP không được tự đổi reported state sang `RUNNING` ngay sau khi ghi DB
 `GET /api/v1/{personal|tenant}/mail/consumers/:id` chỉ trả config.
 
 Consumer Detail gọi `POST /api/v1/{personal|tenant}/mail/consumers/:id/runtime/watch`. Service kiểm tra
-ownership/membership bằng PostgreSQL rồi renew lease Redis 30 giây. Dataplane chỉ đẩy pod-local state
-cho consumer đang được watch; JO aggregate logical `slot:<n>` trong Redis bằng
+ownership/membership bằng PostgreSQL rồi renew lease Redis 30 giây và enqueue watch request vào Shared
+Redis Stream. JO bridge request sang NATS Core; Dataplane chỉ đẩy pod-local state cho consumer đang
+được watch. JO aggregate logical `slot:<n>` trong Redis bằng
 `config_version + runtime_generation + report_sequence`. Response watch trả nullable `runtime`; null
 nghĩa là chưa có snapshot cùng watch epoch, không được suy diễn thành `STOPPED`.
 

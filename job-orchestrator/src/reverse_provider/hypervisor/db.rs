@@ -8,7 +8,7 @@ use tokio_postgres::NoTls;
 ///   - UPDATE nếu đã tồn tại, áp dụng race-condition guard: chỉ ghi nếu `last_active_at < sent_at`.
 ///
 /// Guard `last_active_at < sent_at` là bắt buộc theo SoT §5.4 để chống out-of-order heartbeats
-/// khi nhiều Dataplane node gửi report đồng thời lên cùng một Platform Redis L1.
+/// khi nhiều Dataplane node gửi report đồng thời qua Kafka transport.
 pub async fn upsert_hypervisor_node(
     db_url: &str,
     zone_id: &str,

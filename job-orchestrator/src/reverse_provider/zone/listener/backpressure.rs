@@ -57,15 +57,14 @@ pub async fn run_backpressure_listener(
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
                 .unwrap_or_default();
-            let valid_report = super::zone_proto::ZoneReport::decode(payload.as_ref()).is_ok_and(
-                |report| {
+            let valid_report =
+                super::zone_proto::ZoneReport::decode(payload.as_ref()).is_ok_and(|report| {
                     !zone_id.is_empty()
                         && report.zone_id == zone_id
                         && report.timestamp > 0
                         && report.timestamp <= now.saturating_add(300)
                         && report.timestamp >= now.saturating_sub(86_400)
-                },
-            );
+                });
             if !valid_report {
                 // [COMMENT]: Scope/timestamp/protobuf sai là poison data, không phải transient DB error.
                 let dlq = DeadLetterRecordV1 {
@@ -74,7 +73,8 @@ pub async fn run_backpressure_listener(
                     source_partition: record.partition,
                     source_offset: record.offset,
                     error_code: "ZONE_REPORT_PROTO_INVALID".to_string(),
-                    error_message: "ZoneReport failed key, scope or timestamp validation".to_string(),
+                    error_message: "ZoneReport failed key, scope or timestamp validation"
+                        .to_string(),
                     original_payload: payload.to_vec(),
                     failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
                     schema_version: 1,

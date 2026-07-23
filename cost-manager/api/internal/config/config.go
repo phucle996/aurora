@@ -15,11 +15,12 @@ package config
 
 // [COMMENT]: Config là cấu trúc cấu hình gốc gom nhóm tất cả phân hệ hạ tầng của Cost Manager.
 type Config struct {
-	App   AppCfg
-	Psql  PsqlCfg
-	Redis RedisCfg
-	NATS  NATSCfg
-	GRPC  GRPCCfg
+	App       AppCfg
+	Psql      PsqlCfg
+	Redis     RedisCfg
+	AuthRedis RedisCfg
+	NATS      NATSCfg
+	GRPC      GRPCCfg
 }
 
 // [COMMENT]: AppCfg lưu trữ thông tin cấu hình dịch vụ web và HTTP REST Server.
@@ -115,7 +116,8 @@ func LoadConfig() *Config {
 			MaxConnIdle: getEnv("POSTGRES_MAX_CONN_IDLE", "10m"),
 		},
 		Redis: RedisCfg{
-			// [COMMENT]: Cost chỉ dùng shared rebuildable cache; Security-State Redis của ACR không được cấp credential.
+			// [COMMENT]: Shared Redis giữ cache/pubsub/lock và bounded AOF-backed Streams;
+			// wallet command không được chạy trên deployment có allkeys eviction.
 			Addr:        getEnv("CACHE_REDIS_URL", getEnv("REDIS_URL", "redis://controlplane-cp-redis:6379")),
 			Password:    getEnv("REDIS_PASSWORD", ""),
 			DB:          getEnvAsInt("REDIS_DB", 0),
@@ -125,6 +127,18 @@ func LoadConfig() *Config {
 			KeyPath:     getEnv("REDIS_KEY_PATH", ""),
 			DialTimeout: getEnv("REDIS_DIAL_TIMEOUT", "5s"),
 			PoolSize:    getEnvAsInt("REDIS_POOL_SIZE", 20),
+		},
+		AuthRedis: RedisCfg{
+			// [COMMENT]: Cost credential chỉ đọc authz/proof prefix; không được đọc hoặc sửa session ACR.
+			Addr:        getEnv("AUTH_REDIS_URL", "redis://cost@controlplane-acr-redis:6379/0"),
+			Password:    getEnv("AUTH_REDIS_PASSWORD", ""),
+			DB:          0,
+			TLSEnabled:  getEnvAsBool("AUTH_REDIS_TLS_ENABLED", false),
+			CACertPath:  getEnv("AUTH_REDIS_CA_CERT_PATH", ""),
+			CertPath:    getEnv("AUTH_REDIS_CERT_PATH", ""),
+			KeyPath:     getEnv("AUTH_REDIS_KEY_PATH", ""),
+			DialTimeout: getEnv("AUTH_REDIS_DIAL_TIMEOUT", "5s"),
+			PoolSize:    getEnvAsInt("AUTH_REDIS_POOL_SIZE", 20),
 		},
 		NATS: NATSCfg{
 			Addr:          getEnv("NATS_URL", "nats://controlplane-nats:4222"),

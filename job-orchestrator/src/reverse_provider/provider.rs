@@ -49,8 +49,15 @@ impl ReverseProvider {
         let cache_redis_mail_consumer = self.cache_redis.clone();
         let nats_client_mail_consumer = self.nats_client.clone();
 
-        // [COMMENT]: Chạy song song các listener độc lập; mail runtime reverse path dùng blocking
-        // Redis consumer group riêng, không chia PEL với generic job result.
+        let cache_redis_runtime_report_bridge = self.cache_redis.clone();
+        let nats_runtime_report_bridge = self.nats_client.clone();
+
+        let config_runtime_watch_bridge = self.config.clone();
+        let cache_redis_runtime_watch_bridge = self.cache_redis.clone();
+        let nats_runtime_watch_bridge = self.nats_client.clone();
+
+        // [COMMENT]: JO là bridge transport: Shared Redis ở Central và NATS Core xuyên Zone
+        // không bị cấp chung credential cho CP hoặc Dataplane.
         tokio::select! {
             res = tokio::spawn(async move {
                 loop {
@@ -121,6 +128,41 @@ impl ReverseProvider {
                                 &error.to_string(),
                             );
                         }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }) => {
+                let _ = res;
+            }
+            res = tokio::spawn(async move {
+                loop {
+                    if let Err(error) = mail::reporter::nats_bridge::run_runtime_report_nats_bridge(
+                        &cache_redis_runtime_report_bridge,
+                        &nats_runtime_report_bridge,
+                    ).await {
+                        Logger::sys_error(
+                            "reverse_provider.mail_runtime_report_bridge",
+                            "Mail runtime NATS→Redis bridge failed; reconnecting after 5s",
+                            &error.to_string(),
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }) => {
+                let _ = res;
+            }
+            res = tokio::spawn(async move {
+                loop {
+                    if let Err(error) = mail::reporter::watch_bridge::run_runtime_watch_bridge(
+                        &config_runtime_watch_bridge,
+                        &cache_redis_runtime_watch_bridge,
+                        &nats_runtime_watch_bridge,
+                    ).await {
+                        Logger::sys_error(
+                            "reverse_provider.mail_runtime_watch_bridge",
+                            "Mail runtime Redis→NATS bridge failed; reconnecting after 5s",
+                            &error.to_string(),
+                        );
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }

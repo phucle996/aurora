@@ -15,6 +15,7 @@ package zoneSvcImpl
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	coreEntity "controlplane/internal/hierarchy/domain/entity"
@@ -27,7 +28,6 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
@@ -35,18 +35,15 @@ import (
 type ZoneService struct {
 	repo coreRepoInterface.ZoneRepository
 	rds  *goredis.Client
-	nc   *nats.Conn
 }
 
 func NewZoneService(
 	repo coreRepoInterface.ZoneRepository,
 	rds *goredis.Client,
-	nc *nats.Conn,
 ) coreSvcInterface.ZoneService {
 	return &ZoneService{
 		repo: repo,
 		rds:  rds,
-		nc:   nc,
 	}
 }
 
@@ -118,9 +115,9 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		return err
 	}
 
-	// [COMMENT]: Ghi dữ liệu zone mới vào Redis L2 và bắn event invalidation qua NATS
+	// [COMMENT]: Ghi dữ liệu zone mới vào Shared Redis L2 và phát invalidation nội vùng Central.
 	if s.rds != nil {
-		redisKey := fmt.Sprintf("zone:code:%s", zone.Code)
+		redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zone.Code)))
 		val := fmt.Sprintf("%s:%s", zone.ID, zone.Status)
 		_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
 	}
@@ -169,9 +166,9 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		return err
 	}
 
-	// [COMMENT]: Cập nhật trạng thái mới vào Redis L2 và bắn event invalidation qua NATS
+	// [COMMENT]: Cập nhật trạng thái mới vào Shared Redis L2 và phát invalidation nội vùng Central.
 	if s.rds != nil {
-		redisKey := fmt.Sprintf("zone:code:%s", zoneCode)
+		redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zoneCode)))
 		val := fmt.Sprintf("%s:%s", zoneID, toStatus)
 		_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
 	}
@@ -189,9 +186,9 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 		return err
 	}
 
-	// [COMMENT]: Xóa cache Redis L2 và bắn event invalidation qua NATS
+	// [COMMENT]: Xóa Shared Redis L2 và phát invalidation nội vùng Central.
 	if s.rds != nil {
-		redisKey := fmt.Sprintf("zone:code:%s", deletedCode)
+		redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(deletedCode)))
 		_ = s.rds.Del(ctx, redisKey).Err()
 	}
 	s.publishInvalidation(ctx, zoneID, true, deletedCode)
@@ -208,7 +205,7 @@ func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, s
 		return nil, err
 	}
 
-	// [COMMENT]: Bắn event invalidation vì cấu hình dịch vụ thay đổi qua NATS
+	// [COMMENT]: Phát invalidation vì cấu hình dịch vụ thay đổi.
 	s.publishInvalidation(ctx, zoneID, false)
 
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
@@ -229,9 +226,10 @@ func (s *ZoneService) AcrResolveZone(ctx context.Context, code string) (*coreEnt
 	return nil, nil
 }
 
-// publishInvalidation lấy trạng thái mới nhất của Zone từ database (SoT) và phát tán sự kiện invalidated qua NATS Core.
+// publishInvalidation lấy trạng thái mới nhất của Zone từ database (SoT) và phát
+// Shared Redis PubSub để ACR L1 không giữ topology cũ.
 func (s *ZoneService) publishInvalidation(ctx context.Context, zoneID uuid.UUID, deleted bool, deletedCode ...string) {
-	if s.nc == nil {
+	if s.rds == nil {
 		return
 	}
 
@@ -265,9 +263,7 @@ func (s *ZoneService) publishInvalidation(ctx context.Context, zoneID uuid.UUID,
 		return
 	}
 
-	if err := s.nc.Publish("hierarchy.zone.invalidated", data); err != nil {
-		logger.SysError("zone_service.publishInvalidation", fmt.Sprintf("Failed to publish to NATS: %v", err))
-	} else {
-		logger.SysInfo("zone_service.publishInvalidation", fmt.Sprintf("Successfully published NATS invalidation for zone: %s (deleted=%t)", code, deleted))
-	}
+	// [COMMENT]: PubSub là fast invalidation; Redis key phía trên vẫn là L2 source.
+	// ACR L1 có TTL bounded nên message mất không tạo stale vô hạn.
+	_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", data).Err()
 }

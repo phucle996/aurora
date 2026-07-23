@@ -19,7 +19,7 @@ import (
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,7 +28,7 @@ type DeviceSelfService struct {
 	deviceRepo       iamRepoInterface.DeviceSelfRepository
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
 	registry         *cacheengine.CacheRegistry
-	natsConn         *nats.Conn
+	sharedRedis      *goredis.Client
 }
 
 // [COMMENT]: NewDeviceSelfService khởi tạo thể hiện DeviceSelfService
@@ -36,13 +36,13 @@ func NewDeviceSelfService(
 	deviceRepo iamRepoInterface.DeviceSelfRepository,
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
-	natsConn *nats.Conn,
+	sharedRedis *goredis.Client,
 ) iamSvcInterface.DeviceSelfService {
 	return &DeviceSelfService{
 		deviceRepo:       deviceRepo,
 		refreshTokenRepo: refreshTokenRepo,
 		registry:         registry,
-		natsConn:         natsConn,
+		sharedRedis:      sharedRedis,
 	}
 }
 
@@ -51,7 +51,7 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 	var items []iamEntity.DevicePresence
 	var listErr error
 	var activeDevicesRes *iamproto.GetActiveDevicesResponse
-	var natsErr error
+	var runtimeErr error
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -62,25 +62,54 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 		items, listErr = s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
 	}()
 
-	// [COMMENT]: Nhánh 2: Truy vấn danh sách session hoạt động từ ACR qua NATS Core (I/O Bound)
+	// [COMMENT]: Nhánh 2: realtime query tới ACR qua Shared Redis PubSub; dữ liệu
+	// session vẫn nằm trong Auth Redis và không bị copy thành business record.
 	go func() {
 		defer wg.Done()
+		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
 		req := &iamproto.GetActiveDevicesRequest{
 			UserId: userID.String(),
 		}
 		reqBytes, err := proto.Marshal(req)
 		if err != nil {
-			natsErr = err
+			runtimeErr = err
 			return
 		}
-		msg, err := s.natsConn.RequestWithContext(ctx, "iam.device.get_active_sessions", reqBytes)
+		requestID := uuid.New()
+		replyChannel := "iam.device.get_active_sessions.reply." + requestID.String()
+		pubsub := s.sharedRedis.Subscribe(queryCtx, replyChannel)
+		defer pubsub.Close()
+		if _, err = pubsub.Receive(queryCtx); err != nil {
+			runtimeErr = err
+			return
+		}
+		envelope := make([]byte, 0, 16+len(reqBytes))
+		envelope = append(envelope, requestID[:]...)
+		envelope = append(envelope, reqBytes...)
+		subscribers, err := s.sharedRedis.Publish(queryCtx, "iam.device.get_active_sessions", envelope).Result()
 		if err != nil {
-			natsErr = err
+			runtimeErr = err
+			return
+		}
+		if subscribers == 0 {
+			runtimeErr = errors.New("no ACR replica subscribed to active-session query")
+			return
+		}
+		var message *goredis.Message
+		select {
+		case <-queryCtx.Done():
+			runtimeErr = queryCtx.Err()
+			return
+		case message = <-pubsub.Channel(goredis.WithChannelSize(1)):
+		}
+		if message == nil {
+			runtimeErr = errors.New("active-session reply channel closed")
 			return
 		}
 		activeDevicesRes = &iamproto.GetActiveDevicesResponse{}
-		if err = proto.Unmarshal(msg.Data, activeDevicesRes); err != nil {
-			natsErr = err
+		if err = proto.Unmarshal([]byte(message.Payload), activeDevicesRes); err != nil {
+			runtimeErr = err
 			activeDevicesRes = nil
 			return
 		}
@@ -92,9 +121,9 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
 
-	if natsErr != nil {
-		// [COMMENT]: Nếu lỗi kết nối NATS, ghi nhận lỗi và tiếp tục xử lý (IsOnline mặc định false)
-		iamMetrics.Downstream(ctx, "broker", "ListMyDevicesActiveQuery", iamMetrics.OutcomeFailureUnknown, 0, natsErr)
+	if runtimeErr != nil {
+		// [COMMENT]: Runtime visibility là soft-state; DB list vẫn trả được và IsOnline mặc định false.
+		iamMetrics.Downstream(ctx, "broker", "ListMyDevicesActiveQuery", iamMetrics.OutcomeFailureUnknown, 0, runtimeErr)
 	}
 
 	// Map active devices to O(1) map
@@ -142,22 +171,24 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 
-	// [COMMENT]: Nhánh gởi tín hiệu xóa session sang ACR chạy bất đồng bộ bằng Goroutine nền
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		req := &iamproto.RevokeUserSessionsByDevicesRequest{
-			UserId:          userID.String(),
-			ClientDeviceIds: []string{clientDeviceID.String()},
-		}
-		reqBytes, err := proto.Marshal(req)
-		if err != nil {
-			return
-		}
-		// Gửi yêu cầu qua NATS Request-Reply đến ACR trong background thread
-		_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
-	}()
+	req := &iamproto.RevokeUserSessionsByDevicesRequest{
+		UserId:          userID.String(),
+		ClientDeviceIds: []string{clientDeviceID.String()},
+	}
+	reqBytes, err := proto.Marshal(req)
+	if err != nil {
+		serviceOutcome = iamMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
+	}
+	// [COMMENT]: Revoke là security command nên ghi Redis Stream durable. Repository là
+	// idempotent, do đó client retry sau lỗi XADD sẽ enqueue lại mà không làm hỏng DB state.
+	if err := s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
+		Stream: "iam:device:revoke-requests",
+		Values: map[string]any{"payload": reqBytes},
+	}).Err(); err != nil {
+		serviceOutcome = iamMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
+	}
 
 	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 	return nil
@@ -175,27 +206,24 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 
 	if len(otherDeviceIDs) > 0 {
-		// [COMMENT]: Nhánh gởi tín hiệu xóa session sang ACR chạy bất đồng bộ bằng Goroutine nền
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			clientDeviceIDs := make([]string, len(otherDeviceIDs))
-			for i, id := range otherDeviceIDs {
-				clientDeviceIDs[i] = id.String()
-			}
-
-			req := &iamproto.RevokeUserSessionsByDevicesRequest{
-				UserId:          userID.String(),
-				ClientDeviceIds: clientDeviceIDs,
-			}
-			reqBytes, err := proto.Marshal(req)
-			if err != nil {
-				return
-			}
-			// Gửi yêu cầu qua NATS Request-Reply đến ACR trong background thread
-			_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
-		}()
+		clientDeviceIDs := make([]string, len(otherDeviceIDs))
+		for i, id := range otherDeviceIDs {
+			clientDeviceIDs[i] = id.String()
+		}
+		req := &iamproto.RevokeUserSessionsByDevicesRequest{
+			UserId:          userID.String(),
+			ClientDeviceIds: clientDeviceIDs,
+		}
+		reqBytes, err := proto.Marshal(req)
+		if err != nil {
+			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
+		}
+		if err := s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
+			Stream: "iam:device:revoke-requests",
+			Values: map[string]any{"payload": reqBytes},
+		}).Err(); err != nil {
+			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
+		}
 	}
 
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
@@ -213,7 +241,7 @@ func (s *DeviceSelfService) BulkTouchDevices(ctx context.Context, updates []iamE
 }
 
 // [COMMENT]: EvictDevices thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
-// đồng thời xóa bỏ Refresh Token tương ứng trong database. Được gọi khi nhận sự kiện Evicted từ ACR qua NATS.
+// đồng thời xóa bỏ Refresh Token tương ứng trong database. Được gọi khi nhận eviction từ ACR qua Shared Redis.
 func (s *DeviceSelfService) EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
 
 	if len(clientDeviceIDs) == 0 {

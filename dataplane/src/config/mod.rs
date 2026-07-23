@@ -2,26 +2,6 @@ use std::env;
 
 use std::str::FromStr;
 
-/// 🛡️ CHẾ ĐỘ BẢO MẬT TRUYỀN DẪN REDIS (REDIS SECURITY MODE)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RedisTlsMode {
-    Disable,
-    Tls,
-    Mtls,
-}
-
-impl FromStr for RedisTlsMode {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "disable" | "false" => Ok(RedisTlsMode::Disable),
-            "tls" | "true" => Ok(RedisTlsMode::Tls),
-            "mtls" => Ok(RedisTlsMode::Mtls),
-            _ => Ok(RedisTlsMode::Disable),
-        }
-    }
-}
-
 // [COMMENT]: Config chứa JMAP credential; không derive Debug để tránh vô tình ghi secret vào log/panic.
 #[derive(Clone)]
 pub struct Config {
@@ -29,14 +9,7 @@ pub struct Config {
     /// Ví dụ: "zone-asia-southeast". Dataplane chỉ consume Kafka topic gắn đúng Zone ID.
     pub zone_id: String,
 
-    /// [COMMENT]: Redis cache dùng riêng cho runtime watch/report ngắn hạn; không còn giữ durable Job Queue.
-    pub runtime_redis_url: String,
-    pub runtime_redis_tls_mode: RedisTlsMode,
-    pub runtime_redis_ca_cert: Option<String>,
-    pub runtime_redis_client_cert: Option<String>,
-    pub runtime_redis_client_key: Option<String>,
-
-    /// [COMMENT]: Kafka trung tâm thay Redis Job; production dùng nhiều broker và topic được provision trước.
+    /// [COMMENT]: Kafka là durable Central↔Zone transport; production dùng nhiều broker và topic provision trước.
     pub kafka_bootstrap_servers: String,
     pub kafka_security_protocol: String,
     pub kafka_username: Option<String>,
@@ -44,6 +17,13 @@ pub struct Config {
     pub kafka_ca_cert: Option<String>,
     pub kafka_topic_prefix: String,
     pub kafka_max_job_attempts: u32,
+
+    /// [COMMENT]: NATS Core là soft-state Central↔Zone transport cho watch/runtime realtime.
+    /// Đây là endpoint độc lập với Zone-local JetStream KV.
+    pub nats_core_url: String,
+    pub nats_core_ca_cert: Option<String>,
+    pub nats_core_client_cert: Option<String>,
+    pub nats_core_client_key: Option<String>,
 
     /// [COMMENT]: Endpoint JetStream riêng của Zone; tuyệt đối không trỏ sang NATS Core trung tâm.
     pub nats_zone_url: String,
@@ -184,17 +164,8 @@ impl Config {
             }),
 
             // ============================================================================
-            // 🚀 CẤU HÌNH CACHE REDIS VÀ KAFKA TRANSPORT
+            // 🚀 CẤU HÌNH KAFKA VÀ NATS CORE TRANSPORT
             // ============================================================================
-            runtime_redis_url: env::var("RUNTIME_REDIS_URL")
-                .unwrap_or_else(|_| "redis://controlplane-redis:6379/0".to_string()),
-            runtime_redis_tls_mode: env::var("RUNTIME_REDIS_TLS_ENABLED")
-                .unwrap_or_else(|_| "disable".to_string())
-                .parse::<RedisTlsMode>()
-                .unwrap_or(RedisTlsMode::Disable),
-            runtime_redis_ca_cert: env::var("RUNTIME_REDIS_CA_CERT").ok(),
-            runtime_redis_client_cert: env::var("RUNTIME_REDIS_CLIENT_CERT").ok(),
-            runtime_redis_client_key: env::var("RUNTIME_REDIS_CLIENT_KEY").ok(),
             kafka_bootstrap_servers: env::var("KAFKA_BOOTSTRAP_SERVERS")
                 .unwrap_or_else(|_| "kafka-1:9092,kafka-2:9092,kafka-3:9092".to_string()),
             kafka_security_protocol: env::var("KAFKA_SECURITY_PROTOCOL")
@@ -206,6 +177,17 @@ impl Config {
             kafka_topic_prefix: env::var("KAFKA_TOPIC_PREFIX")
                 .unwrap_or_else(|_| "aurora".to_string()),
             kafka_max_job_attempts: parse_env("KAFKA_MAX_JOB_ATTEMPTS", 5_u32),
+            nats_core_url: env::var("NATS_URL").unwrap_or_else(|err| {
+                crate::observability::logger::Logger::sys_error(
+                    "system.bootstrap",
+                    "CRITICAL: NATS_URL is required for realtime Central↔Zone transport",
+                    &err.to_string(),
+                );
+                std::process::abort();
+            }),
+            nats_core_ca_cert: env::var("NATS_CA_CERT").ok(),
+            nats_core_client_cert: env::var("NATS_CLIENT_CERT").ok(),
+            nats_core_client_key: env::var("NATS_CLIENT_KEY").ok(),
 
             nats_zone_url: {
                 // [COMMENT]: Không fallback NATS_URL vì đó là Core bus trung tâm; cross-wire sẽ phá isolation của Zone.

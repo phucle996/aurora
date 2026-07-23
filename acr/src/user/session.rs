@@ -127,12 +127,15 @@ impl SessionManager {
                 AcrError::RedisError(format!("Register session in Redis failed: {}", e))
             })?;
 
-        // [COMMENT]: Evict session cũ nếu vượt quá USER_DEVICE_CAP
+        // [COMMENT]: Evict session cũ nếu vượt quá USER_DEVICE_CAP. Không được coi lỗi
+        // đọc Auth Redis là count=0, vì như vậy outage sẽ bypass giới hạn thiết bị.
         let session_count: usize = redis::cmd("SCARD")
             .arg(&index_key)
             .query_async(&mut conn)
             .await
-            .unwrap_or(0);
+            .map_err(|error| {
+                AcrError::RedisError(format!("Read user session count failed: {error}"))
+            })?;
 
         if session_count <= USER_DEVICE_CAP {
             return Ok(vec![]);
@@ -142,10 +145,14 @@ impl SessionManager {
             .arg(&index_key)
             .query_async(&mut conn)
             .await
-            .unwrap_or_default();
+            .map_err(|error| {
+                AcrError::RedisError(format!("Read user session index failed: {error}"))
+            })?;
 
         if all_keys.is_empty() {
-            return Ok(vec![]);
+            return Err(AcrError::RedisError(
+                "User session index is empty while SCARD exceeded device cap".to_string(),
+            ));
         }
 
         // [COMMENT]: Pipeline GET toàn bộ session để so sánh lsa
@@ -153,17 +160,27 @@ impl SessionManager {
         for key in &all_keys {
             pipe.cmd("GET").arg(key);
         }
-        let datas: Vec<Option<Vec<u8>>> = pipe.query_async(&mut conn).await.unwrap_or_default();
+        let datas: Vec<Option<Vec<u8>>> = pipe.query_async(&mut conn).await.map_err(|error| {
+            AcrError::RedisError(format!("Read user sessions for eviction failed: {error}"))
+        })?;
+        if datas.len() != all_keys.len() {
+            return Err(AcrError::RedisError(
+                "Auth Redis returned an incomplete session eviction batch".to_string(),
+            ));
+        }
 
-        let mut sessions: Vec<(String, String, i64)> = all_keys
-            .into_iter()
-            .zip(datas.into_iter())
-            .filter_map(|(key, data)| {
-                let bytes = data?;
-                let s = UserAccessSession::decode(bytes.as_slice()).ok()?;
-                Some((key, s.tdid, s.lsa))
-            })
-            .collect();
+        let mut sessions: Vec<(String, String, i64)> = Vec::with_capacity(all_keys.len());
+        for (key, data) in all_keys.into_iter().zip(datas.into_iter()) {
+            let bytes = data.ok_or_else(|| {
+                AcrError::RedisError(format!("Session key disappeared during eviction: {key}"))
+            })?;
+            let session = UserAccessSession::decode(bytes.as_slice()).map_err(|error| {
+                AcrError::Internal(format!(
+                    "Invalid UserAccessSession payload in {key}: {error}"
+                ))
+            })?;
+            sessions.push((key, session.tdid, session.lsa));
+        }
 
         // [COMMENT]: Sort ascending bởi lsa — session cũ nhất evict trước
         sessions.sort_by_key(|(_, _, lsa)| *lsa);
@@ -175,16 +192,46 @@ impl SessionManager {
             return Ok(vec![]);
         }
 
+        let evicted_tdids: Vec<String> = to_evict.iter().map(|(_, tdid, _)| tdid.clone()).collect();
+        let notification = crate::infra::iam_proto::auth::EvictedDevicesNotification {
+            user_id: user_id.to_string(),
+            client_device_ids: evicted_tdids.clone(),
+        };
+        let mut notification_bytes = Vec::with_capacity(notification.encoded_len());
+        notification
+            .encode(&mut notification_bytes)
+            .map_err(|error| {
+                AcrError::Internal(format!(
+                    "Protobuf encode EvictedDevicesNotification failed: {error}"
+                ))
+            })?;
+
         let mut del_pipe = redis::pipe();
-        for (key, _, _) in &to_evict {
+        del_pipe.atomic();
+        for (key, tdid, _) in &to_evict {
             del_pipe.cmd("DEL").arg(key);
             del_pipe.cmd("SREM").arg(&index_key).arg(key);
+            del_pipe
+                .cmd("SREM")
+                .arg(format!("iam:device_access_index:{tdid}"))
+                .arg(key);
         }
-        let _ = del_pipe
+        // [COMMENT]: XADD cùng MULTI/EXEC với session deletion là Auth Redis outbox.
+        // Pod chết sau commit vẫn không thể làm mất durable eviction dành cho Controlplane.
+        del_pipe
+            .cmd("XADD")
+            .arg("iam:device:eviction-outbox")
+            .arg("*")
+            .arg("payload")
+            .arg(notification_bytes);
+        del_pipe
             .query_async::<_, Vec<redis::Value>>(&mut conn)
-            .await;
-
-        let evicted_tdids: Vec<String> = to_evict.into_iter().map(|(_, tdid, _)| tdid).collect();
+            .await
+            .map_err(|error| {
+                AcrError::RedisError(format!(
+                    "Evict sessions and append Auth Redis outbox failed: {error}"
+                ))
+            })?;
 
         Ok(evicted_tdids)
     }

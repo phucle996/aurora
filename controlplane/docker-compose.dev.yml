@@ -26,12 +26,20 @@ services:
       GRPC_PORT: "9090"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
+      # [COMMENT]: Dev Shared Redis chỉ có một node; production không được hạ ngưỡng replica này.
+      REDIS_DURABLE_REPLICA_ACKS: "0"
+      # [COMMENT]: Auth-State dùng DB 0 + ACL/prefix; không dùng logical DB để còn tương thích Redis Cluster.
+      AUTH_REDIS_ADDR: "acr-redis:6379"
+      AUTH_REDIS_USERNAME: "controlplane"
+      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
     depends_on:
       pbouncer:
         condition: service_healthy
       psql:
         condition: service_healthy
       cp-redis:
+        condition: service_healthy
+      acr-redis:
         condition: service_healthy
       nats:
         condition: service_healthy
@@ -70,12 +78,19 @@ services:
       GRPC_PORT: "9090"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
+      REDIS_DURABLE_REPLICA_ACKS: "0"
+      # [COMMENT]: Mỗi replica dùng cùng ACL nhưng cô lập dữ liệu bằng namespace AuthZ được cấp quyền.
+      AUTH_REDIS_ADDR: "acr-redis:6379"
+      AUTH_REDIS_USERNAME: "controlplane"
+      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
     depends_on:
       pbouncer:
         condition: service_healthy
       psql:
         condition: service_healthy
       cp-redis:
+        condition: service_healthy
+      acr-redis:
         condition: service_healthy
       nats:
         condition: service_healthy
@@ -114,12 +129,19 @@ services:
       GRPC_PORT: "9090"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
+      REDIS_DURABLE_REPLICA_ACKS: "0"
+      # [COMMENT]: Mỗi replica dùng cùng ACL nhưng cô lập dữ liệu bằng namespace AuthZ được cấp quyền.
+      AUTH_REDIS_ADDR: "acr-redis:6379"
+      AUTH_REDIS_USERNAME: "controlplane"
+      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
     depends_on:
       pbouncer:
         condition: service_healthy
       psql:
         condition: service_healthy
       cp-redis:
+        condition: service_healthy
+      acr-redis:
         condition: service_healthy
       nats:
         condition: service_healthy
@@ -246,8 +268,12 @@ services:
     environment:
       - DATABASE_URL=postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable
       - CLICKHOUSE_URL=http://clickhouse-server:8123
-      # [COMMENT]: Cost chỉ được đọc cache business và dùng lock; không kết nối Security-State Redis của ACR.
+      # [COMMENT]: Shared Redis chứa cache/pubsub/lock và bounded AOF-backed Central Streams.
       - CACHE_REDIS_URL=redis://controlplane-cp-redis:6379
+      # [COMMENT]: Embedded Cost Engine dùng cùng Shared Redis cho lock và pricing PubSub.
+      - REDIS_URL=redis://controlplane-cp-redis:6379/0
+      # [COMMENT]: Cost chỉ thấy authz/proof namespace qua ACL, không thể đọc Trinity session của ACR.
+      - AUTH_REDIS_URL=redis://cost:aurora-dev-cost-secret@controlplane-acr-redis:6379/0
       - NATS_URL=nats://controlplane-nats:4222
     volumes:
       - ../cost-manager/api:/app/api
@@ -255,6 +281,8 @@ services:
       billing-psql:
         condition: service_healthy
       cp-redis:
+        condition: service_healthy
+      acr-redis:
         condition: service_healthy
       nats:
         condition: service_healthy
@@ -327,22 +355,25 @@ services:
     image: oliver006/redis_exporter:v1.85.0
     container_name: controlplane-redis-exporter
     environment:
-      - REDIS_ADDR=redis://controlplane-acr-redis:6379
+      # [COMMENT]: Exporter chỉ scrape rebuildable Shared L2; không được cấp credential Auth Redis.
+      - REDIS_ADDR=redis://controlplane-cp-redis:6379
     depends_on:
-      acr-redis:
+      cp-redis:
         condition: service_healthy
     restart: unless-stopped
 
   acr-redis:
     image: redis:8.8.0
     container_name: controlplane-acr-redis
-    command: [ "redis-server", "--appendonly", "yes" ] # Bật AOF (Append Only File) để tối đa hóa tính bền vững dữ liệu session
+    # [COMMENT]: DB 0 duy nhất tương thích Redis Cluster; prefix + ACL cô lập session và authz projection.
+    command: [ "redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--aclfile", "/usr/local/etc/redis/users.acl" ]
     ports:
       - "16380:6379" # Port core Redis dùng cho Identity Sessions và Rate Limiting của ACR
     volumes:
       - controlplane_acr_redis_data:/data
+      - ./dev/redis/auth-users.acl:/usr/local/etc/redis/users.acl:ro
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: [ "CMD", "redis-cli", "--user", "health", "--pass", "aurora-dev-health-secret", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -351,7 +382,9 @@ services:
   cp-redis:
     image: redis:8.8.0
     container_name: controlplane-cp-redis
-    command: [ "redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru" ] # L2 Cache của Controlplane dùng eviction
+    # [COMMENT]: AOF phục hồi bounded Stream sau restart; volatile-lru chỉ được
+    # evict cache key có TTL, không được xóa stream entry đang chờ consumer.
+    command: [ "redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru" ]
     ports:
       - "16381:6379" # Port dùng cho L2 Cache của Controlplane
     volumes:
@@ -557,8 +590,9 @@ services:
     init: true
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      RUNTIME_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      # [COMMENT]: Core NATS chỉ chở watch/runtime soft state; không trỏ vào Zone JetStream KV.
+      NATS_URL: "nats://nats:4222"
       NATS_ZONE_URL: "nats://nats-zone-z1:4222"
       NATS_ZONE_KV_REPLICAS: "1"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
@@ -584,10 +618,10 @@ services:
     depends_on:
       controlplane1:
         condition: service_started
-      cp-redis:
-        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      nats:
+        condition: service_healthy
       nats-zone-z1:
         condition: service_healthy
       otel-collector:
@@ -614,8 +648,8 @@ services:
     init: true
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      RUNTIME_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      NATS_URL: "nats://nats:4222"
       NATS_ZONE_URL: "nats://nats-zone-z1:4222"
       NATS_ZONE_KV_REPLICAS: "1"
       APP_LOG_LEVEL: "info"
@@ -638,10 +672,10 @@ services:
     depends_on:
       controlplane2:
         condition: service_started
-      cp-redis:
-        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      nats:
+        condition: service_healthy
       nats-zone-z1:
         condition: service_healthy
       otel-collector:
@@ -660,8 +694,8 @@ services:
     init: true
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      RUNTIME_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      NATS_URL: "nats://nats:4222"
       NATS_ZONE_URL: "nats://nats-zone-z1:4222"
       NATS_ZONE_KV_REPLICAS: "1"
       APP_LOG_LEVEL: "info"
@@ -684,10 +718,10 @@ services:
     depends_on:
       controlplane3:
         condition: service_started
-      cp-redis:
-        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      nats:
+        condition: service_healthy
       nats-zone-z1:
         condition: service_healthy
       otel-collector:
@@ -829,18 +863,18 @@ services:
       - ./dev/tls:/etc/job-orchestrator/tls:ro
     environment:
       DATABASE_URL: "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
-      CACHE_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       REPLICATION_SLOT_NAME: "outbox_slot"
       PUBLICATION_NAME: "outbox_pub"
-      # [COMMENT]: Runtime report request/response tạm dùng Cache Redis; durable job/result đã chuyển sang Kafka.
+      # [COMMENT]: Shared Redis chỉ là Central watch/snapshot bridge; Dataplane không có Redis credential.
       MAIL_RUNTIME_REPORT_TTL_SECS: "180"
       MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
       APP_LOG_LEVEL: "debug"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "9102"
       CDC_SOURCES: "mail.mail_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
-      # [COMMENT]: Kết nối NATS_URL bắt buộc tới NATS Core trung tâm (có hỗ trợ JetStream cho lifecycle events)
+      # [COMMENT]: JO bridge Shared Redis ↔ NATS Core cho runtime soft state.
       NATS_URL: "nats://controlplane-nats:4222"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
@@ -890,9 +924,10 @@ services:
     environment:
       TZ: "Asia/Ho_Chi_Minh"
       ACR_GRPC_PORT: "50051"
-      # [COMMENT]: Hai Redis tách vai trò; Security-State dùng AOF/noeviction, cache catalog có thể rebuild/evict.
-      AUTH_REDIS_URL: "redis://controlplane-acr-redis:6379/0"
-      CACHE_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      # [COMMENT]: Hai Redis tách vai trò; Security-State dùng AOF/noeviction,
+      # Shared Redis dùng cho Central request/reply, bounded stream và cache.
+      AUTH_REDIS_URL: "redis://acr:aurora-dev-acr-secret@controlplane-acr-redis:6379/0"
+      SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
       VAULT_TOKEN: "hvs.Qai76d7T5TA69r9kBQ8gkgJF"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
@@ -903,7 +938,6 @@ services:
       SESSION_TTL_SECS: "1800"
       REFRESH_THRESHOLD_SECS: "900"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
-      NATS_ADDR: "nats://nats:4222"
       # [COMMENT]: ACR cookies luôn host-only; domain handoff chỉ redirect tới origin cố định này.
       BILLING_CONSOLE_ORIGIN: "https://cost-manager.aurora.local"
       APP_ALLOWED_ORIGINS: "https://adminui.aurora.local,https://adminui-dev.aurora.local,https://cloud.aurora.local,https://cost-manager.aurora.local"
@@ -932,11 +966,14 @@ services:
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       # [COMMENT]: Kết nối trực tiếp tới NATS Core phục vụ realtime pubsub
       - NATS_ADDR=nats://nats:4222
+      - SHARED_REDIS_URL=redis://controlplane-cp-redis:6379/0
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
     depends_on:
       centrifugo:
         condition: service_started
+      cp-redis:
+        condition: service_healthy
       otel-collector:
         condition: service_started
     restart: unless-stopped

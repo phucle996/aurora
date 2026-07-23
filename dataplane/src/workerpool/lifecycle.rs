@@ -86,12 +86,11 @@ impl WorkerLifecycleManager {
     }
 
     /// Cấp phát và khởi chạy một Worker (Luồng Worker xử lý Job từ channel) song song thực sự.
-    #[allow(clippy::too_many_arguments)] // [COMMENT]: Worker wiring giữ explicit để audit Kafka, runtime Redis và Zone KV.
+    #[allow(clippy::too_many_arguments)] // [COMMENT]: Worker wiring giữ explicit để audit Kafka và Zone KV.
     pub async fn spawn_worker(
         self: &Arc<Self>,
         worker_id: usize,
         config: Arc<crate::config::Config>,
-        runtime_redis: Arc<crate::infra::redis::RedisClientManager>,
         kafka: Arc<crate::infra::kafka::KafkaTransport>,
         zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
@@ -145,7 +144,6 @@ impl WorkerLifecycleManager {
                         crate::job_lifecycle::runner::JobRunner::run_job(
                             payload,
                             self_clone.clone(),
-                            runtime_redis.clone(),
                             kafka.clone(),
                             zone_kv.clone(),
                             active_lock_registry.clone(),

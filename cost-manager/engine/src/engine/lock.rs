@@ -1,5 +1,5 @@
-use std::time::Duration;
 use redis::AsyncCommands;
+use std::time::Duration;
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -18,10 +18,7 @@ pub async fn acquire_billing_lease(
     fencing_counter_key: &str,
     lock_ttl_secs: u64,
 ) -> Option<RedisBillingLease> {
-    let fencing_token: i64 = redis_conn
-        .incr(fencing_counter_key, 1)
-        .await
-        .ok()?;
+    let fencing_token: i64 = redis_conn.incr(fencing_counter_key, 1).await.ok()?;
     let token = format!("{}:{}", fencing_token, Uuid::now_v7());
     let acquired: Option<String> = redis::cmd("SET")
         .arg(key)

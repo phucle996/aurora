@@ -436,12 +436,14 @@ pub async fn apply_mail_template_version_published(
     let event_id = event_id(&payload, metadata)?;
     // [COMMENT]: Fail-close khi zstd decode lỗi, vượt giới hạn size (streaming take), hoặc HTML không phải UTF-8 hợp lệ; không fallback raw text.
     use std::io::Read;
-    let decoder = zstd::Decoder::new(event.html_template.as_slice())
-        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_TEMPLATE_ZSTD_DECODE_FAILED".to_string()))?;
+    let decoder = zstd::Decoder::new(event.html_template.as_slice()).map_err(|_| {
+        ExecutorError::ExecutionFailed("MAIL_TEMPLATE_ZSTD_DECODE_FAILED".to_string())
+    })?;
     let mut limited = decoder.take((3 << 20) + 1);
     let mut decompressed_html = Vec::new();
-    limited.read_to_end(&mut decompressed_html)
-        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_TEMPLATE_ZSTD_DECODE_FAILED".to_string()))?;
+    limited.read_to_end(&mut decompressed_html).map_err(|_| {
+        ExecutorError::ExecutionFailed("MAIL_TEMPLATE_ZSTD_DECODE_FAILED".to_string())
+    })?;
     if decompressed_html.len() > 3 << 20 {
         return Err(ExecutorError::ExecutionFailed(
             "MAIL_TEMPLATE_DECOMPRESSED_SIZE_EXCEEDED".to_string(),

@@ -11,8 +11,8 @@ use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
 use crate::config::Config;
-use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::token::TokenManager;
@@ -51,8 +51,8 @@ pub struct VerifyEdgeSessionResult {
 pub async fn verify_edge_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    nats: &Arc<Nats>,
-    cache_redis_client: &redis::Client,
+    shared_redis_client: &redis::Client,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,
@@ -103,8 +103,8 @@ pub async fn verify_edge_session(
             if let Some(recovery_res) = try_handle_recovery_session(
                 session_mgr,
                 token_mgr,
-                nats,
-                cache_redis_client,
+                shared_redis_client,
+                shared_redis,
                 config,
                 cookie_header,
                 jwt_str,
@@ -319,8 +319,8 @@ pub async fn verify_edge_session(
 pub async fn handle_user_session_check(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    nats: &Arc<Nats>,
-    cache_redis_client: &redis::Client,
+    shared_redis_client: &redis::Client,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     client_headers: &HashMap<String, String>,
     method: &str,
@@ -342,8 +342,8 @@ pub async fn handle_user_session_check(
     let verify_res = verify_edge_session(
         session_mgr,
         token_mgr,
-        nats,
-        cache_redis_client,
+        shared_redis_client,
+        shared_redis,
         config,
         &cookie_header,
         client_headers,

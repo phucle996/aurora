@@ -1,20 +1,20 @@
+use crate::observability::logger::Logger;
 use reqwest::Client;
 use serde::Serialize;
-use crate::observability::logger::Logger;
 
 // Định nghĩa cấu trúc máy khách kết nối đến Centrifugo API Gateway
 #[derive(Clone)]
 pub struct CentrifugoClient {
-    client: Client,     // HTTP Client có sẵn connection pooling và timeout
-    api_url: String,    // Địa chỉ base API URL của Centrifugo
-    api_key: String,    // Mã khóa API Key dùng để ký/xác thực request
+    client: Client,  // HTTP Client có sẵn connection pooling và timeout
+    api_url: String, // Địa chỉ base API URL của Centrifugo
+    api_key: String, // Mã khóa API Key dùng để ký/xác thực request
 }
 
 // Cấu trúc payload gửi tin đến Centrifugo theo đặc tả HTTP API
 #[derive(Serialize)]
 struct PublishRequest {
-    channel: String,          // Kênh đích nhận thông tin (ví dụ: personal:user_id)
-    data: serde_json::Value,  // Nội dung JSON thực tế hiển thị cho Client
+    channel: String,         // Kênh đích nhận thông tin (ví dụ: personal:user_id)
+    data: serde_json::Value, // Nội dung JSON thực tế hiển thị cho Client
 }
 
 impl CentrifugoClient {
@@ -26,7 +26,7 @@ impl CentrifugoClient {
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| Client::new());
-        
+
         Self {
             client,
             api_url,
@@ -35,10 +35,17 @@ impl CentrifugoClient {
     }
 
     // Đẩy thông điệp JSON tới Centrifugo API để truyền xuống Websocket client
-    pub async fn publish(&self, channel: &str, data: serde_json::Value) -> Result<(), reqwest::Error> {
+    pub async fn publish(
+        &self,
+        channel: &str,
+        data: serde_json::Value,
+    ) -> Result<(), reqwest::Error> {
         // [ignoring loop detection]
-        Logger::sys_info("centrifugo.publish", &format!("Publishing event to channel: {}", channel));
-        
+        Logger::sys_info(
+            "centrifugo.publish",
+            &format!("Publishing event to channel: {}", channel),
+        );
+
         // Chuẩn hóa endpoint URL, tự động thêm hậu tố /publish nếu chưa có
         let url = if self.api_url.ends_with("/publish") {
             self.api_url.clone()
@@ -53,7 +60,9 @@ impl CentrifugoClient {
         };
 
         // Thực hiện cuộc gọi HTTP POST gửi tin nhắn sang Centrifugo
-        let mut request = self.client.post(&url)
+        let mut request = self
+            .client
+            .post(&url)
             .header("X-API-Key", &self.api_key) // Gửi API Key qua Header chuẩn của Centrifugo
             .header("Authorization", format!("apikey {}", self.api_key)) // Dự phòng Authorization header cho các phiên bản cũ hơn
             .json(&payload);
@@ -70,8 +79,11 @@ impl CentrifugoClient {
             let status = response.status();
             Logger::sys_warn(
                 "centrifugo.publish_failed",
-                &format!("Failed to publish message to Centrifugo, status: {}", status),
-                "http_error"
+                &format!(
+                    "Failed to publish message to Centrifugo, status: {}",
+                    status
+                ),
+                "http_error",
             );
         }
 

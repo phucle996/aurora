@@ -10,11 +10,12 @@ import (
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
 	iamPubsub "controlplane/internal/iam/transport/pubsub"
+	iamPubsubHandler "controlplane/internal/iam/transport/pubsub/handler"
 	"controlplane/internal/observability"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -22,10 +23,9 @@ type IAMModule struct {
 	cfg        *config.Config
 	db         *pgxpool.Pool
 	rds        *goredis.Client
+	authRedis  *goredis.Client
 	L1Registry *cacheengine.CacheRegistry
-	natsConn   *nats.Conn
 	otel       *observability.OTel
-	natsSubs   []*nats.Subscription
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler           *iamHandler.AuthHandler
@@ -37,16 +37,19 @@ type IAMModule struct {
 	MfaHandler            *iamHandler.MfaHandler            // [COMMENT]: Handler phục vụ tra cứu thông tin MFA platform audit
 
 	// Core Services & Sync Engines
-	RbacPlatformRepository   iamRepoInterface.RbacPlatformRepository   // [COMMENT]: Repo quản lý platform role
-	RbacTenantRepository     iamRepoInterface.RbacTenantRepository     // [COMMENT]: Repo quản lý tenant role
-	DeviceSelfRepository     iamRepoInterface.DeviceSelfRepository     // [COMMENT]: Repo quản lý thiết bị cá nhân
-	DevicePlatformRepository iamRepoInterface.DevicePlatformRepository // [COMMENT]: Repo quản lý thiết bị platform
-	AuthService              iamSvcInterface.AuthService
-	UserService              iamSvcInterface.UserService
-	SessionRefreshService    iamSvcInterface.SessionRefreshService
-	deviceSelfSvcImpl        iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
-	devicePlatformSvcImpl    iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
-	billingOutboxRelay       *iamSvcImpl.BillingOutboxRelay
+	RbacPlatformRepository           iamRepoInterface.RbacPlatformRepository   // [COMMENT]: Repo quản lý platform role
+	RbacTenantRepository             iamRepoInterface.RbacTenantRepository     // [COMMENT]: Repo quản lý tenant role
+	DeviceSelfRepository             iamRepoInterface.DeviceSelfRepository     // [COMMENT]: Repo quản lý thiết bị cá nhân
+	DevicePlatformRepository         iamRepoInterface.DevicePlatformRepository // [COMMENT]: Repo quản lý thiết bị platform
+	AuthService                      iamSvcInterface.AuthService
+	UserService                      iamSvcInterface.UserService
+	SessionRefreshService            iamSvcInterface.SessionRefreshService
+	deviceSelfSvcImpl                iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
+	devicePlatformSvcImpl            iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
+	billingOutboxRelay               *iamSvcImpl.BillingOutboxRelay
+	billingAuthorizationRedisHandler *iamPubsubHandler.BillingAuthorizationRedisHandler
+	authRedisHandler                 *iamPubsubHandler.AuthRedisHandler
+	deviceRedisHandler               *iamPubsubHandler.DeviceRedisHandler
 }
 
 // NewModule khởi tạo phân hệ IAM. Thiết lập cơ chế Fail-Fast chặt chẽ ở cấp độ biên khởi chạy.
@@ -54,9 +57,9 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
+	authRedis *goredis.Client,
 	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
-	natsConn *nats.Conn,
 	otel *observability.OTel,
 ) (*IAMModule, error) {
 
@@ -75,6 +78,9 @@ func NewModule(
 	}
 	if rds == nil {
 		return nil, errors.New("iam module: redis cluster client (rds) is nil (check redis sentinel/cluster endpoint)")
+	}
+	if authRedis == nil {
+		return nil, errors.New("iam module: auth redis client is nil")
 	}
 	if kafkaProducer == nil {
 		return nil, errors.New("iam module: kafka producer is nil")
@@ -129,6 +135,14 @@ func NewModule(
 	if rbacTenantRepo == nil {
 		return nil, errors.New("iam module: failed to construct RBAC tenant repository")
 	}
+	billingAuthorizationRedisHandler, err := iamPubsubHandler.NewBillingAuthorizationRedisHandler(
+		rds,
+		authRedis,
+		rbacPlatformRepo,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	// One Time Token Service
 	oneTimeTokenSvc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheEngine)
@@ -141,10 +155,19 @@ func NewModule(
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
 
-	// [COMMENT]: Khởi tạo các Device Service riêng biệt cho Self và Platform (truyền natsConn vì chuyển sang Pub/Sub)
-	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, natsConn)
+	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, rds)
 	if deviceSelfSvc == nil {
 		return nil, errors.New("iam module: failed to construct device self service")
+	}
+
+	deviceRedisHandler, err := iamPubsubHandler.NewDeviceRedisHandler(
+		cfg,
+		rds,
+		deviceSelfSvc,
+		otel,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("iam module: failed to initialize Device Redis handler: %w", err)
 	}
 
 	devicePlatformSvc := iamSvcImpl.NewDevicePlatformService(devicePlatformRepo)
@@ -171,11 +194,13 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct session refresh service")
 	}
 
-	if natsConn == nil {
-		return nil, errors.New("iam module: nats connection is required for account domain events")
-	}
 	billingOutboxRepo := iamRepoImpl.NewBillingOutboxRepository(db, cfg)
-	billingOutboxRelay, err := iamSvcImpl.NewBillingOutboxRelay(billingOutboxRepo, natsConn)
+	billingOutboxRelay, err := iamSvcImpl.NewBillingOutboxRelay(
+		billingOutboxRepo,
+		rds,
+		cfg.Redis.DurableReplicaAcks,
+		cfg.Redis.DurableWait,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -197,12 +222,23 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
 	}
 
+	authRedisHandler, err := iamPubsubHandler.NewAuthRedisHandler(
+		cfg,
+		rds,
+		authSvc,
+		refreshSvc,
+		otel,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("iam module: failed to initialize Auth Redis handler: %w", err)
+	}
+
 	authHandler := iamHandler.NewAuthHandler(cfg, authSvc)
 	if authHandler == nil {
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
 	}
 
-	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, natsConn, rds)
+	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, authRedis, rds)
 	if userService == nil {
 		return nil, errors.New("iam module: failed to construct core user service implementation")
 	}
@@ -213,7 +249,7 @@ func NewModule(
 	}
 
 	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ platform/tenant RBAC
-	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine, natsConn, rds)
+	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine, authRedis, rds)
 	if rbacPlatformSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC platform service")
 	}
@@ -245,28 +281,31 @@ func NewModule(
 	// Trả về container chứa toàn bộ các dependency hoàn toàn hợp lệ, an toàn và sẵn sàng hoạt động.
 
 	return &IAMModule{
-		cfg:                      cfg,
-		db:                       db,
-		rds:                      rds,
-		L1Registry:               cacheEngine,
-		natsConn:                 natsConn,
-		otel:                     otel,
-		AuthService:              authSvc,
-		billingOutboxRelay:       billingOutboxRelay,
-		AuthHandler:              authHandler,
-		UserService:              userService,
-		UserHandler:              userHandler,
-		DeviceSelfHandler:        deviceSelfHandler,
-		DevicePlatformHandler:    devicePlatformHandler,
-		RbacPlatformHandler:      rbacPlatformHandler,
-		RbacTenantHandler:        rbacTenantHandler,
-		MfaHandler:               mfaHandler,
-		RbacPlatformRepository:   rbacPlatformRepo,
-		RbacTenantRepository:     rbacTenantRepo,
-		DeviceSelfRepository:     deviceSelfRepo,
-		DevicePlatformRepository: devicePlatformRepo,
-		deviceSelfSvcImpl:        deviceSelfSvc,
-		devicePlatformSvcImpl:    devicePlatformSvc,
-		SessionRefreshService:    refreshSvc,
+		cfg:                              cfg,
+		db:                               db,
+		rds:                              rds,
+		authRedis:                        authRedis,
+		L1Registry:                       cacheEngine,
+		otel:                             otel,
+		AuthService:                      authSvc,
+		billingOutboxRelay:               billingOutboxRelay,
+		AuthHandler:                      authHandler,
+		UserService:                      userService,
+		UserHandler:                      userHandler,
+		DeviceSelfHandler:                deviceSelfHandler,
+		DevicePlatformHandler:            devicePlatformHandler,
+		RbacPlatformHandler:              rbacPlatformHandler,
+		RbacTenantHandler:                rbacTenantHandler,
+		MfaHandler:                       mfaHandler,
+		RbacPlatformRepository:           rbacPlatformRepo,
+		RbacTenantRepository:             rbacTenantRepo,
+		DeviceSelfRepository:             deviceSelfRepo,
+		DevicePlatformRepository:         devicePlatformRepo,
+		deviceSelfSvcImpl:                deviceSelfSvc,
+		devicePlatformSvcImpl:            devicePlatformSvc,
+		SessionRefreshService:            refreshSvc,
+		billingAuthorizationRedisHandler: billingAuthorizationRedisHandler,
+		authRedisHandler:                 authRedisHandler,
+		deviceRedisHandler:               deviceRedisHandler,
 	}, nil
 }

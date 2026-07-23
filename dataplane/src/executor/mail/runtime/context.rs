@@ -230,7 +230,7 @@ impl StreamRuntimeContext {
         error_code: &str,
     ) {
         // [COMMENT]: Instance của runtime snapshot là logical slot, không phải hostname. Snapshot
-        // chỉ sống trong app; Central Redis aggregator sẽ fence generation giữa các pod.
+        // chỉ sống trong app; JO aggregator sẽ fence generation sau khi nhận report qua NATS Core.
         let runtime_instance_id = format!("slot:{slot}");
         let snapshot = RuntimeHealthSnapshot {
             state: state.to_string(),

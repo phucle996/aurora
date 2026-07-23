@@ -1,28 +1,28 @@
+use chrono::{DateTime, Utc};
+use redis::AsyncCommands;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 use tokio::time::sleep;
-use redis::AsyncCommands;
 
 use crate::engine::{
-    PricingRuntime, BillingPricingLease, acquire_billing_lease, release_billing_lease,
+    BillingPricingLease, PricingRuntime, acquire_billing_lease, release_billing_lease,
 };
 
 pub trait BillingTask: Send + Sync {
     // Tên task dùng để ghi log
     fn name(&self) -> &'static str;
-    
+
     // Loại dịch vụ tương ứng (NETWORK_OUT, STORAGE, VM...)
     fn service_type(&self) -> &'static str;
-    
+
     // Các cấu hình Redis Lock & Fencing
     fn lock_key(&self) -> &'static str;
     fn fencing_counter_key(&self) -> &'static str;
-    
+
     // Checkpoint key để lưu mốc thời gian đã xử lý trên Redis
     fn checkpoint_key(&self) -> &'static str;
-    
+
     // Cấu hình thời gian chạy
     fn scan_interval(&self) -> Duration;
     fn lock_ttl_secs(&self) -> u64;
@@ -54,7 +54,9 @@ pub async fn run_billing_task<T: BillingTask + 'static>(
             task.lock_key(),
             task.fencing_counter_key(),
             task.lock_ttl_secs(),
-        ).await else {
+        )
+        .await
+        else {
             wait_for_next_cycle(task.scan_interval(), &mut shutdown_rx).await;
             continue;
         };
@@ -99,8 +101,11 @@ pub async fn run_billing_task<T: BillingTask + 'static>(
         // 4. Thực thi logic nghiệp vụ của Task
         let mut run_failed = false;
         let mut max_hour = pricing_lease.window_start;
-        
-        match task.execute(&pricing_lease, redis_lease.fencing_token).await {
+
+        match task
+            .execute(&pricing_lease, redis_lease.fencing_token)
+            .await
+        {
             Ok(processed_max_hour) => {
                 max_hour = processed_max_hour;
             }
@@ -116,7 +121,7 @@ pub async fn run_billing_task<T: BillingTask + 'static>(
             let checkpoint_result: Result<(), redis::RedisError> = redis_conn
                 .set(task.checkpoint_key(), max_hour.to_rfc3339())
                 .await;
-            
+
             if let Err(error) = checkpoint_result {
                 eprintln!("{}: Ghi checkpoint thất bại: {error}", task.name());
                 run_failed = true;
@@ -130,7 +135,9 @@ pub async fn run_billing_task<T: BillingTask + 'static>(
         }
 
         if run_failed {
-            let _ = runtime.mark_billing_run_retrying(pricing_lease.billing_run_id).await;
+            let _ = runtime
+                .mark_billing_run_retrying(pricing_lease.billing_run_id)
+                .await;
         }
 
         // 6. Release Lock & Chờ chu kỳ tiếp theo

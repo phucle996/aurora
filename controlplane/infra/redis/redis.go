@@ -18,6 +18,7 @@ import (
 func NewRedis(ctx context.Context, cfg *config.RedisCfg) (*goredis.Client, error) {
 	opts := &goredis.Options{
 		Addr:         cfg.Addr,
+		Username:     cfg.Username,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		DialTimeout:  cfg.DialTimeout,
@@ -25,6 +26,9 @@ func NewRedis(ctx context.Context, cfg *config.RedisCfg) (*goredis.Client, error
 		WriteTimeout: cfg.WriteTimeout,
 		PoolSize:     cfg.PoolSize,
 		MinIdleConns: cfg.MinIdleConns,
+		// [COMMENT]: Blocking durability commands phải tôn trọng deadline của workflow,
+		// không giữ pooled connection vô hạn khi replica hoặc AOF stall.
+		ContextTimeoutEnabled: true,
 	}
 
 	if cfg.TLSEnabled {

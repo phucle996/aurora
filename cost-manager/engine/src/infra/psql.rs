@@ -1,7 +1,7 @@
+use crate::config::Config;
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 use std::path::Path;
 use std::str::FromStr;
-use sqlx::postgres::{PgPoolOptions, PgConnectOptions, PgSslMode, PgPool};
-use crate::config::Config;
 
 // [COMMENT]: Khởi tạo Postgres Connection Pool với đầy đủ cấu hình bảo mật TLS/mTLS
 pub async fn init_pg_pool(config: &Config) -> Result<PgPool, sqlx::Error> {
@@ -23,9 +23,11 @@ pub async fn init_pg_pool(config: &Config) -> Result<PgPool, sqlx::Error> {
     if let Some(ca_path) = &config.pg_ssl_root_cert {
         pg_conn_options = pg_conn_options.ssl_root_cert(Path::new(ca_path));
     }
-    
+
     // [COMMENT]: Nạp Client Certificate và Private Key dùng cho xác thực hai chiều mTLS
-    if let (Some(cert_path), Some(key_path)) = (&config.pg_ssl_client_cert, &config.pg_ssl_client_key) {
+    if let (Some(cert_path), Some(key_path)) =
+        (&config.pg_ssl_client_cert, &config.pg_ssl_client_key)
+    {
         pg_conn_options = pg_conn_options.ssl_client_cert(Path::new(cert_path));
         pg_conn_options = pg_conn_options.ssl_client_key(Path::new(key_path));
     }

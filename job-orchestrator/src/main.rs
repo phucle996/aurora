@@ -52,12 +52,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Khởi tạo và kiểm tra hạ tầng Logical Replication (Chạy một lần duy nhất lúc khởi động app, tự động reconnect)
     cdc::setup::setup_replication_infrastructure(&config).await?;
 
-    // [COMMENT]: Cache Redis không còn chở Job; chỉ giữ reconciler/runtime soft state.
-    let cache_redis = redis::Client::open(config.cache_redis_url.clone())?;
+    // [COMMENT]: Shared Redis không còn chở Zone Job; chỉ giữ Central
+    // reconciler/runtime bridge, bounded stream và lock/checkpoint.
+    let cache_redis = redis::Client::open(config.shared_redis_url.clone())?;
     let kafka = infra::kafka::KafkaTransport::connect(&config)
         .await
         .map_err(std::io::Error::other)?;
-    Logger::sys_info("main.init", "Đã khởi tạo Kafka transport và Cache Redis.");
+    Logger::sys_info("main.init", "Đã khởi tạo Kafka transport và Shared Redis.");
 
     let nats_client = async_nats::connect(&config.env_nats_url).await?;
     Logger::sys_info(

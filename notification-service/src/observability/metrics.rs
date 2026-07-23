@@ -12,9 +12,9 @@ use std::time::Duration;
 
 static HTTP_REQUESTS: OnceLock<Counter<u64>> = OnceLock::new();
 static HTTP_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
-static NATS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
-static NATS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static NATS_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
+static REDIS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
+static REDIS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static CENTRIFUGO_PUBLISHES: OnceLock<Counter<u64>> = OnceLock::new();
 static DELIVERED_EVENT_LAG: OnceLock<Histogram<f64>> = OnceLock::new();
 
@@ -25,9 +25,9 @@ impl MetricsManager {
     pub fn init() {
         let _ = Self::http_requests();
         let _ = Self::http_duration();
-        let _ = Self::nats_calls();
-        let _ = Self::nats_duration();
         let _ = Self::nats_events();
+        let _ = Self::redis_calls();
+        let _ = Self::redis_duration();
         let _ = Self::centrifugo_publishes();
         let _ = Self::delivered_event_lag();
     }
@@ -50,29 +50,29 @@ impl MetricsManager {
         })
     }
 
-    fn nats_calls() -> &'static Counter<u64> {
-        NATS_CALLS.get_or_init(|| {
-            global::meter("aurora-notification-service")
-                .u64_counter("notification_nats_calls_total")
-                .with_description("Tong so luong yeu cau request-reply qua NATS Core")
-                .init()
-        })
-    }
-
-    fn nats_duration() -> &'static Histogram<f64> {
-        NATS_DURATION.get_or_init(|| {
-            global::meter("aurora-notification-service")
-                .f64_histogram("notification_nats_call_duration_seconds")
-                .with_description("Do tre yeu cau request-reply qua NATS Core (seconds)")
-                .init()
-        })
-    }
-
     fn nats_events() -> &'static Counter<u64> {
         NATS_EVENTS.get_or_init(|| {
             global::meter("aurora-notification-service")
                 .u64_counter("notification_nats_events_total")
                 .with_description("Tong so luong su kien tieu thu tu NATS Core")
+                .init()
+        })
+    }
+
+    fn redis_calls() -> &'static Counter<u64> {
+        REDIS_CALLS.get_or_init(|| {
+            global::meter("aurora-notification-service")
+                .u64_counter("notification_shared_redis_calls_total")
+                .with_description("Central auth request-reply calls through Shared Redis")
+                .init()
+        })
+    }
+
+    fn redis_duration() -> &'static Histogram<f64> {
+        REDIS_DURATION.get_or_init(|| {
+            global::meter("aurora-notification-service")
+                .f64_histogram("notification_shared_redis_call_duration_seconds")
+                .with_description("Shared Redis auth request-reply latency")
                 .init()
         })
     }
@@ -105,16 +105,6 @@ impl MetricsManager {
         Self::http_duration().record(duration.as_secs_f64(), &attrs);
     }
 
-    /// Ghi nhận chỉ số cuộc gọi request-reply tới NATS Core
-    pub fn record_nats_call(subject: &str, status: &str, duration: Duration) {
-        let attrs = [
-            KeyValue::new("subject", subject.to_string()),
-            KeyValue::new("status", status.to_string()),
-        ];
-        Self::nats_calls().add(1, &attrs);
-        Self::nats_duration().record(duration.as_secs_f64(), &attrs);
-    }
-
     /// Ghi nhận chỉ số sự kiện NATS Core
     pub fn record_nats_event(subject: &str, status: &str) {
         let attrs = [
@@ -122,6 +112,15 @@ impl MetricsManager {
             KeyValue::new("status", status.to_string()),
         ];
         Self::nats_events().add(1, &attrs);
+    }
+
+    pub fn record_redis_call(channel: &str, status: &str, duration: Duration) {
+        let attrs = [
+            KeyValue::new("channel", channel.to_string()),
+            KeyValue::new("status", status.to_string()),
+        ];
+        Self::redis_calls().add(1, &attrs);
+        Self::redis_duration().record(duration.as_secs_f64(), &attrs);
     }
 
     /// Ghi nhận chỉ số đẩy thông báo sang Centrifugo

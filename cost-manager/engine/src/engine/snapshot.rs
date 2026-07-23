@@ -1,8 +1,8 @@
+use bigdecimal::{BigDecimal, RoundingMode, ToPrimitive};
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
-use bigdecimal::{BigDecimal, RoundingMode, ToPrimitive};
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 // [COMMENT]: ServiceType là enum kiểu định dạng tài nguyên được Rust Engine hiểu và kiểm soát kiểu dữ liệu an toàn.
@@ -102,7 +102,9 @@ impl TierPricingSnapshot {
         total_micro_units
             .with_scale_round(0, RoundingMode::Ceiling)
             .to_i64()
-            .ok_or_else(|| PricingError("calculated charge exceeds BIGINT micro-unit capacity".into()))
+            .ok_or_else(|| {
+                PricingError("calculated charge exceeds BIGINT micro-unit capacity".into())
+            })
     }
 }
 
@@ -113,7 +115,11 @@ pub struct CatalogSnapshot {
 
 impl CatalogSnapshot {
     // [COMMENT]: Chọn version đã effective tại billing-run boundary; run đã tạo luôn resume bằng pinned ID.
-    pub(crate) fn resolve(&self, service_type: ServiceType, at: DateTime<Utc>) -> Option<Arc<TierPricingSnapshot>> {
+    pub(crate) fn resolve(
+        &self,
+        service_type: ServiceType,
+        at: DateTime<Utc>,
+    ) -> Option<Arc<TierPricingSnapshot>> {
         self.versions_by_service
             .get(&service_type)?
             .iter()

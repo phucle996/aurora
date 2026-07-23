@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::engine::{PricingRuntime, BillingPricingLease, BillingTask};
+use crate::engine::{BillingPricingLease, BillingTask, PricingRuntime};
 
 // [COMMENT]: Namespace UUID cố định giữ ledger idempotent khi run crash/retry bằng pinned pricing version.
 const S3_BILLING_NAMESPACE: Uuid = Uuid::from_u128(0x5a18a5cb33a647d6be96cb57f70b13cf);
@@ -87,15 +87,23 @@ impl BillingTask for StorageEgressBillingTask {
 
         let mut max_hour = pricing_lease.window_start;
         let mut processed_records = 0_u64;
-        let mut cursor = self.ch_client.query(&query).fetch::<ClickhouseMeteringRow>()
+        let mut cursor = self
+            .ch_client
+            .query(&query)
+            .fetch::<ClickhouseMeteringRow>()
             .map_err(|e| format!("ClickHouse query failed: {e:?}"))?;
 
-        while let Some(row) = cursor.next().await.map_err(|e| format!("ClickHouse cursor failed: {e:?}"))? {
+        while let Some(row) = cursor
+            .next()
+            .await
+            .map_err(|e| format!("ClickHouse cursor failed: {e:?}"))?
+        {
             if row.hour > max_hour {
                 max_hour = row.hour;
             }
 
-            let cost = pricing_lease.snapshot
+            let cost = pricing_lease
+                .snapshot
                 .charge_micro_units_for_bytes(row.total_download_bytes)
                 .map_err(|error| error.to_string())?;
             let usage_quantity = i64::try_from(row.total_download_bytes)
@@ -127,18 +135,31 @@ impl BillingTask for StorageEgressBillingTask {
             .fetch_optional(&self.pg_pool)
             .await
             .map_err(|e| format!("Owner projection lookup failed: {e}"))?
-            .map(|(resource_id, owner_id, owner_type)| BillableOwner { resource_id, owner_id, owner_type });
+            .map(|(resource_id, owner_id, owner_type)| BillableOwner {
+                resource_id,
+                owner_id,
+                owner_type,
+            });
 
             let Some(owner) = owner else {
                 persist_unrated_usage(
-                    &self.pg_pool, transaction_id, &row, None, usage_quantity,
-                    "OWNER_PROJECTION_MISSING", None,
-                ).await?;
+                    &self.pg_pool,
+                    transaction_id,
+                    &row,
+                    None,
+                    usage_quantity,
+                    "OWNER_PROJECTION_MISSING",
+                    None,
+                )
+                .await?;
                 processed_records += 1;
                 continue;
             };
 
-            let mut tx = self.pg_pool.begin().await
+            let mut tx = self
+                .pg_pool
+                .begin()
+                .await
                 .map_err(|e| format!("PostgreSQL transaction begin failed: {e}"))?;
 
             // [COMMENT]: FOR SHARE fence ngăn replica lease cũ commit sau khi failover đã đổi fencing_token.
@@ -170,12 +191,20 @@ impl BillingTask for StorageEgressBillingTask {
             .await
             .map_err(|e| format!("Wallet lock failed: {e}"))?;
 
-            let Some((wallet_id, cash_balance, promotional_balance, overdraft_limit, status)) = wallet else {
+            let Some((wallet_id, cash_balance, promotional_balance, overdraft_limit, status)) =
+                wallet
+            else {
                 let _ = tx.rollback().await;
                 persist_unrated_usage(
-                    &self.pg_pool, transaction_id, &row, Some(owner.resource_id), usage_quantity,
-                    "WALLET_MISSING", Some(format!("{}:{}", owner.owner_type, owner.owner_id)),
-                ).await?;
+                    &self.pg_pool,
+                    transaction_id,
+                    &row,
+                    Some(owner.resource_id),
+                    usage_quantity,
+                    "WALLET_MISSING",
+                    Some(format!("{}:{}", owner.owner_type, owner.owner_id)),
+                )
+                .await?;
                 processed_records += 1;
                 continue;
             };
@@ -184,7 +213,8 @@ impl BillingTask for StorageEgressBillingTask {
             let promo_debit = promotional_balance.min(cost);
             let new_promotional_balance = promotional_balance - promo_debit;
             let cash_debit = cost - promo_debit;
-            let new_cash_balance = cash_balance.checked_sub(cash_debit)
+            let new_cash_balance = cash_balance
+                .checked_sub(cash_debit)
                 .ok_or_else(|| "Wallet cash balance exceeds BIGINT capacity".to_string())?;
             let mut new_status = status.clone();
             if new_cash_balance.saturating_add(overdraft_limit) <= 0 && status == "ACTIVE" {
@@ -241,7 +271,9 @@ impl BillingTask for StorageEgressBillingTask {
 
             match ledger_result {
                 Ok(_) => {
-                    tx.commit().await.map_err(|e| format!("Ledger commit failed: {e}"))?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| format!("Ledger commit failed: {e}"))?;
                     processed_records += 1;
                 }
                 Err(error)

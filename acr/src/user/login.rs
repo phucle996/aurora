@@ -4,28 +4,26 @@
 // 📌 LUỒNG:
 //   POST /api/v1/auth/login
 //   1. Parse JSON payload (username, password, device info, zone_code)
-//   2. Gọi NATS iam.auth.verify_credentials sang Controlplane
+//   2. Gọi Shared Redis iam.auth.verify_credentials sang Controlplane
 //   3. Cấp phát Trinity Session cho User via release_user_session
 //   4. Trả về Set-Cookie HTTP response
 // ======================================================================================================
 
 use crate::config::Config;
-use crate::infra::nats::auth::{
-    EvictedDevicesNotification, VerifyUserCredentialsRequest, VerifyUserCredentialsResponse,
-};
-use crate::infra::nats::Nats;
+use crate::infra::iam_proto::auth::{VerifyUserCredentialsRequest, VerifyUserCredentialsResponse};
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::COOKIE_REFRESH_TOKEN;
 use crate::token::TokenManager;
 use crate::user::claims::Claims;
-use async_nats::HeaderMap;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::{Response, Status};
 use uuid::Uuid;
 
@@ -130,8 +128,8 @@ fn canonicalize_login_identity(
 pub async fn release_user_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    nats: &Nats,
     redis_client: &redis::Client,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     user_id: &str,
     username: &str,
@@ -170,7 +168,7 @@ pub async fn release_user_session(
         } else if Uuid::parse_str(zone_id).is_ok() {
             Some(zone_id.to_string())
         } else {
-            crate::infra::zone::resolve_code_to_id_and_status(nats, redis_client, zone_id)
+            crate::infra::zone::resolve_code_to_id_and_status(shared_redis, redis_client, zone_id)
                 .await
                 .map(|(id, _)| id)
         },
@@ -196,7 +194,7 @@ pub async fn release_user_session(
         }
     };
 
-    let evicted_tdids = match session_mgr
+    if let Err(e) = session_mgr
         .register_session(
             claims.zone_id.as_deref().unwrap_or("global"),
             claims.tenant_id.as_deref().unwrap_or("platform"),
@@ -208,37 +206,12 @@ pub async fn release_user_session(
         )
         .await
     {
-        Ok(ev) => ev,
-        Err(e) => {
-            Logger::sys_error(
-                "user.login.release",
-                "Failed to register session state in Redis L2",
-                &e.to_string(),
-            );
-            return Err(Status::internal("Failed to save session state"));
-        }
-    };
-
-    if !evicted_tdids.is_empty() {
-        let notification = EvictedDevicesNotification {
-            user_id: user_id.to_string(),
-            client_device_ids: evicted_tdids.clone(),
-        };
-        let mut buf = Vec::new();
-        if notification.encode(&mut buf).is_ok() {
-            let _ = nats
-                .client()
-                .publish("iam.device.evicted".to_string(), buf.into())
-                .await;
-            Logger::sys_info(
-                "user.login.release",
-                &format!(
-                    "Published evicted notification for user {} on {} devices",
-                    user_id,
-                    evicted_tdids.len()
-                ),
-            );
-        }
+        Logger::sys_error(
+            "user.login.release",
+            "Failed to register session state in Auth Redis",
+            &e.to_string(),
+        );
+        return Err(Status::internal("Failed to save session state"));
     }
 
     Ok(ReleaseUserSessionResult {
@@ -254,8 +227,8 @@ pub async fn release_user_session(
 pub async fn handle_login(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    nats: &Arc<Nats>,
     redis_client: &redis::Client,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     _client_headers: &std::collections::HashMap<String, String>,
     req: &envoy_types::pb::envoy::service::auth::v3::CheckRequest,
@@ -398,28 +371,23 @@ pub async fn handle_login(
         ))));
     }
 
-    let mut headers = HeaderMap::new();
-    if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-        let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
-        let traceparent = format!("00-{}-{}-01", trace_id, span_id);
-        headers.insert("traceparent", traceparent.as_str());
-    }
-
-    let response_msg = match nats
-        .client()
-        .request_with_headers(
-            "iam.auth.verify_credentials".to_string(),
-            headers,
-            payload_bytes.into(),
+    // [COMMENT]: ACR đăng ký reply waiter trước khi publish. CP replica winner được
+    // chọn bằng SETNX request_id nên login chỉ có đúng một durable side effect.
+    let response_payload = match shared_redis
+        .request(
+            "iam.auth.verify_credentials",
+            "iam.auth.verify_credentials.reply.",
+            payload_bytes,
+            Duration::from_secs(10),
         )
         .await
     {
-        Ok(msg) => msg,
+        Ok(payload) => payload,
         Err(e) => {
             Logger::sys_error(
                 "user.login",
-                "NATS credentials verification request failed",
-                &e.to_string(),
+                "Shared Redis credentials verification request failed",
+                &e,
             );
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::InternalServerError,
@@ -428,7 +396,7 @@ pub async fn handle_login(
         }
     };
 
-    let cp_res = match VerifyUserCredentialsResponse::decode(response_msg.payload.as_ref()) {
+    let cp_res = match VerifyUserCredentialsResponse::decode(response_payload.as_slice()) {
         Ok(res) => res,
         Err(e) => {
             Logger::sys_error(
@@ -486,8 +454,8 @@ pub async fn handle_login(
     let res_val = match release_user_session(
         session_mgr,
         token_mgr,
-        nats,
         redis_client,
+        shared_redis,
         config,
         &cp_res.user_id,
         &username,

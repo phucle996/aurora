@@ -91,7 +91,7 @@ func (r *pricingOutboxRepository) GetUnpublishedOutboxBatch(ctx context.Context,
 	return batch, nil
 }
 
-// [COMMENT]: MarkOutboxPublished đánh dấu bản ghi outbox đã được phát sóng thành công sang NATS.
+// [COMMENT]: MarkOutboxPublished đánh dấu bản ghi outbox đã phát hint thành công sang Shared Redis.
 func (r *pricingOutboxRepository) MarkOutboxPublished(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `UPDATE billing.pricing_outbox SET published_at = NOW(), last_error = NULL WHERE id = $1`, id)
 	if err != nil {

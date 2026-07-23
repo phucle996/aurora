@@ -2,13 +2,14 @@
 // 📂 user/zone_resolution.rs — User Zone Context Resolution & Verification
 // ======================================================================================================
 
-use crate::infra::nats::Nats;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
 use crate::user::claims::Claims;
 use envoy_types::ext_authz::v3::CheckResponseExt;
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tonic::{Response, Status};
 
@@ -20,7 +21,7 @@ pub enum ZoneResolutionError {
 
 /// [COMMENT]: Trích xuất và phân giải zone context từ cookies hoặc headers dành cho User domain
 pub async fn resolve_zone_context(
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,
@@ -44,7 +45,7 @@ pub async fn resolve_zone_context(
                 "active".to_string(),
             ))
         } else if let Some((id, status)) =
-            resolve_code_to_id_and_status(nats, redis_client, code).await
+            resolve_code_to_id_and_status(shared_redis, redis_client, code).await
         {
             Ok((id, code.clone(), status))
         } else {
@@ -57,7 +58,7 @@ pub async fn resolve_zone_context(
 
 /// [COMMENT]: Phân giải và xác thực Zone dành riêng cho User thường.
 pub async fn resolve_and_verify_zone_user(
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     claims: Option<&mut Claims>,
     cookie_header: &str,
@@ -70,7 +71,8 @@ pub async fn resolve_and_verify_zone_user(
 
     let mut cookies_to_set_zone = Vec::new();
 
-    let zone_res = resolve_zone_context(nats, redis_client, cookie_header, client_headers).await;
+    let zone_res =
+        resolve_zone_context(shared_redis, redis_client, cookie_header, client_headers).await;
 
     let (resolved_zone_id, resolved_zone_code, resolved_zone_status) = match zone_res {
         Ok(res) => (Some(res.0), Some(res.1), Some(res.2)),

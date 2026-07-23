@@ -53,7 +53,7 @@ type DeviceListResult struct {
 }
 
 // [COMMENT]: DevicePresenceUpdate chứa thông tin cập nhật heartbeat cho một thiết bị,
-// ánh xạ từ Protobuf BulkTouchDevicesRequest.DeviceUpdate gửi qua NATS từ ACR
+// ánh xạ từ Protobuf BulkTouchDevicesRequest.DeviceUpdate gửi qua Shared Redis từ ACR
 type DevicePresenceUpdate struct {
 	DeviceID          string // client_device_id (UUID dạng string)
 	LastSeenAt        int64  // Unix timestamp (giây)

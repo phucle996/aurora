@@ -1,8 +1,8 @@
-# Dataplane Runtime — Kafka Job Transport, Zone KV và Admission
+# Dataplane Runtime — Kafka, NATS Core, Zone KV và Admission
 
-Dataplane thực thi workload của đúng một Zone. Central Kafka là durable platform transport;
-NATS JetStream KV riêng Zone giữ desired runtime projection/health/coordination; shared Cache Redis chỉ giữ
-bounded runtime-watch soft state.
+Dataplane thực thi workload của đúng một Zone. Kafka là durable Central↔Zone transport; NATS Core là
+ephemeral realtime transport; NATS JetStream KV riêng Zone giữ desired runtime projection,
+health và coordination. Dataplane không có credential Redis trung tâm.
 
 God View chính:
 
@@ -14,15 +14,16 @@ God View chính:
 
 | Thành phần | Vai trò |
 |---|---|
-| Central Kafka | Zone/platform command, result, metadata, report, storage snapshot |
-| Shared Cache Redis | Runtime watch/report có TTL; không phải job queue |
+| Kafka transport | Zone/platform command, result, metadata, report, storage snapshot |
+| NATS Core | Runtime watch và consumer snapshot best-effort |
 | Zone NATS `AURORA_ZONE_CONFIG` | Zone metadata và mail immutable projection |
 | Zone NATS `AURORA_ZONE_HEALTH` | Rebuildable current health |
 | Zone NATS `AURORA_ZONE_COORDINATION` | CAS lease và fencing |
 | Pod memory | Worker registry, admission counters, mail L1 và dynamic lag |
 
-Dataplane không kết nối CP/Billing PostgreSQL, Central NATS hoặc Vault. `NATS_ZONE_URL` không được fallback
-sang NATS trung tâm. Production Zone KV dùng file storage và replica `3/5`.
+Dataplane không kết nối CP/Billing PostgreSQL, Shared/Auth Redis hoặc Vault. `NATS_URL` là NATS Core
+transport còn `NATS_ZONE_URL` là Zone-local JetStream; hai endpoint phải khác nhau. Production Zone KV
+dùng file storage và replica `3/5`.
 
 ## 2. Job lifecycle
 
@@ -79,8 +80,9 @@ Mail configuration hydrate từ Zone KV; customer broker connection chỉ đư�
 Customer payload mặc định là `{to, parameter}` JSON. Internal verification topic dùng
 `MailDispatchEnvelopeV1` Protobuf nhưng vẫn map thành cùng logical render request.
 
-Dynamic consumer lag/state nằm trong app memory. Chỉ khi CP tạo watch lease, pod owner mới đẩy bounded snapshot
-vào Cache Redis; không lưu dynamic runtime trong Kafka, PostgreSQL hoặc Zone KV.
+Dynamic consumer lag/state nằm trong app memory. CP ghi watch request vào Shared Redis Stream, JO bridge
+sang NATS Core và mỗi pod giữ lease trong memory. Chỉ pod có watch hợp lệ mới publish bounded Protobuf
+snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL hoặc Zone KV.
 
 ## 5. Recovery
 
@@ -92,12 +94,13 @@ vào Cache Redis; không lưu dynamic runtime trong Kafka, PostgreSQL hoặc Zon
 | Pod chết in-flight | Kafka replay sau offset + lease expiry |
 | Rebalance | Epoch fence chặn stale completion |
 | Result chưa durable | Không commit command |
-| Cache Redis unavailable | Runtime watch/reconciler coordination suy giảm; Kafka job không mất |
+| NATS Core unavailable | Runtime watch/sample có thể mất; Kafka job không mất và heartbeat sau phục hồi |
 | Metadata missing | Durable query/snapshot repair qua Kafka |
 
 ## 6. Code map
 
 - `src/infra/kafka.rs`: producer, consumer, rebalance fence, contiguous settlement.
+- `src/infra/nats_core.rs`: watch registry memory và runtime report soft-state.
 - `src/infra/zone_kv.rs`: buckets, CAS metadata và fenced lease.
 - `src/job_lifecycle/consumer.rs`: command validation, DLQ, lease, dispatch.
 - `src/job_lifecycle/runner.rs`: execution, retry/result durability.

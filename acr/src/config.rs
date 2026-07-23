@@ -29,8 +29,8 @@ pub struct Config {
     pub grpc_port: u16,
     // [COMMENT]: Security-State Redis chứa session, alias, nonce, rate-limit và one-time handoff.
     pub redis_url: String,
-    // [COMMENT]: Shared cache Redis chỉ chứa zone/config catalog có thể rebuild.
-    pub cache_redis_url: String,
+    // [COMMENT]: Shared L2 Redis chứa cache/pubsub/stream/lock nội vùng Central.
+    pub shared_redis_url: String,
     // Cấu hình kết nối Vault phục vụ việc xác thực JWT
     pub vault: VaultConfig,
     // Thời gian sống tối đa của Access Session (mặc định: 1800 giây - 30 phút)
@@ -47,14 +47,6 @@ pub struct Config {
     pub billing_console_origin: String,
     // [COMMENT]: Danh sách các origin được phép gọi API (đọc từ APP_ALLOWED_ORIGINS)
     pub allowed_origins: Vec<String>,
-    // [COMMENT]: Địa chỉ kết nối NATS Core Client
-    pub nats_url: String,
-    // [COMMENT]: Đường dẫn CA cert phục vụ kết nối TLS/mTLS cho NATS
-    pub nats_ca_cert: Option<String>,
-    // [COMMENT]: Đường dẫn Client cert phục vụ kết nối TLS/mTLS cho NATS
-    pub nats_client_cert: Option<String>,
-    // [COMMENT]: Đường dẫn Client private key phục vụ kết nối TLS/mTLS cho NATS
-    pub nats_client_key: Option<String>,
 }
 
 impl Config {
@@ -74,7 +66,7 @@ impl Config {
         let redis_url = env::var("AUTH_REDIS_URL")
             .or_else(|_| env::var("REDIS_URL"))
             .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let cache_redis_url = env::var("CACHE_REDIS_URL")
+        let shared_redis_url = env::var("SHARED_REDIS_URL")
             .unwrap_or_else(|_| "redis://controlplane-cp-redis:6379".to_string());
 
         // Vault configurations
@@ -134,11 +126,6 @@ impl Config {
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
 
-        let nats_url = env::var("NATS_ADDR").unwrap_or_else(|_| "nats://nats:4222".to_string());
-        let nats_ca_cert = env::var("NATS_CA_CERT").ok();
-        let nats_client_cert = env::var("NATS_CLIENT_CERT").ok();
-        let nats_client_key = env::var("NATS_CLIENT_KEY").ok();
-
         // [COMMENT]: Nạp danh sách bypass endpoints từ biến môi trường BYPASS_ENDPOINTS (phân tách bởi dấu phẩy)
         let bypass_endpoints = env::var("BYPASS_ENDPOINTS")
             .map(|s| {
@@ -186,7 +173,7 @@ impl Config {
         Ok(Config {
             grpc_port,
             redis_url,
-            cache_redis_url,
+            shared_redis_url,
             vault,
             session_ttl_secs,
             refresh_threshold_secs,
@@ -195,10 +182,6 @@ impl Config {
             app_public_domain,
             billing_console_origin,
             allowed_origins,
-            nats_url,
-            nats_ca_cert,
-            nats_client_cert,
-            nats_client_key,
         })
     }
 }

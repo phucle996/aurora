@@ -1,6 +1,6 @@
 use clickhouse::Client as ClickhouseClient;
-use tokio::sync::watch;
 use futures_util::StreamExt;
+use tokio::sync::watch;
 
 pub mod storage_usage_proto {
     include!(concat!(env!("OUT_DIR"), "/storage_usage.rs"));
@@ -26,7 +26,10 @@ pub async fn run_size_syncer(
     let nats_client = match async_nats::connect(&nats_url).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Storage Size Syncer Service: Lỗi kết nối NATS ({}): {}", nats_url, e);
+            eprintln!(
+                "Storage Size Syncer Service: Lỗi kết nối NATS ({}): {}",
+                nats_url, e
+            );
             return;
         }
     };
@@ -45,7 +48,9 @@ pub async fn run_size_syncer(
         }
     };
 
-    println!("Storage Size Syncer Service: Đăng ký thành công queue group 'billing_storage_usage_group'.");
+    println!(
+        "Storage Size Syncer Service: Đăng ký thành công queue group 'billing_storage_usage_group'."
+    );
 
     loop {
         tokio::select! {

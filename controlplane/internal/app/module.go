@@ -47,6 +47,7 @@ type Modules struct {
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
+	authRds *goredis.Client,
 	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
@@ -89,7 +90,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rds, cacheEngine, natsConn, otel)
+	coreModule, err := core.NewModule(cfg, db, rds, cacheEngine, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
@@ -98,7 +99,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, kafkaProducer, cacheEngine, natsConn, otel)
+	iamModule, err := iam.NewModule(cfg, db, rds, authRds, kafkaProducer, cacheEngine, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}

@@ -45,7 +45,7 @@ flowchart LR
     SVC --> REPO[Tier Repository]
     REPO --> DB[(PostgreSQL Billing)]
     DB --> OUTBOX[Pricing Outbox Relay]
-    OUTBOX -->|NATS Core protobuf| ENGINE[Cost Engine]
+    OUTBOX -->|Shared Redis PubSub protobuf hint| ENGINE[Cost Engine]
     ENGINE --> CACHE[Moka + ArcSwap]
     ENGINE --> RUN[(billing_runs + ledger lineage)]
 ```
@@ -57,7 +57,7 @@ flowchart LR
 | Middleware | Parse trusted identity, exact permission, proof marker | Không authorize bằng role name |
 | Handler | Path/query/body validation, timeout, response envelope | Không sửa pricing history trực tiếp |
 | Service | Aggregate invariants, checksum, effective-time rules | Không partial-update ranges |
-| Repository | Transaction/OCC/locking/outbox atomically | Không publish NATS trước commit |
+| Repository | Transaction/OCC/locking/outbox atomically | Không publish trước PostgreSQL commit |
 | Relay | Batch drain committed outbox, retry/backoff | Không xóa immutable business rows |
 | Engine | Load/validate/cache/pin/charge | Không fallback giá hard-code |
 
@@ -242,7 +242,7 @@ sequenceDiagram
 | Hai admin publish cùng latest version | row lock + `expected_latest_version` OCC | Một commit; một `409` |
 | Metadata và pricing đồng thời | metadata OCC riêng; pricing version riêng | Không tạo false conflict nếu name độc lập |
 | Hai event relay replicas | outbox claim/locking | Một logical publish attempt per claim |
-| Duplicate NATS event | `(tier_version_id, checksum)` idempotent preload | Không duplicate catalog version |
+| Duplicate Redis PubSub event | `(tier_version_id, checksum)` idempotent preload | Không duplicate catalog version |
 | Event tới khi run đang charge | run giữ pinned `Arc`/version ID | Run dùng giá cũ tới completion |
 | Engine crash giữa run | durable `billing_runs.tier_version_id` | Resume đúng version cũ |
 
@@ -250,11 +250,11 @@ DB transaction không đủ để cho phép delete/reinsert: atomic rewrite vẫ
 
 ## 8. Outbox and activation
 
-Tier version và outbox record commit trong cùng transaction. Relay không poll mỗi 500 ms. Sau commit service gửi local wake được coalesce; relay drain theo batch. Startup và periodic reconciliation có jitter là safety net cho crash giữa commit và wake hoặc NATS outage.
+Tier version và outbox record commit trong cùng transaction. Relay không poll mỗi 500 ms. Sau commit service gửi local wake được coalesce; relay drain theo batch. Shared Redis PubSub chỉ là latency hint: relay chỉ mark published khi có listener, còn Startup và periodic reconciliation của Engine là safety net cho crash giữa commit và wake hoặc PubSub outage.
 
 Engine startup load toàn catalog từ PostgreSQL và fail closed nếu catalog rỗng/sai checksum/sai range. Runtime:
 
-1. NATS event yêu cầu preload exact version.
+1. Shared Redis PubSub event yêu cầu preload exact version.
 2. Engine load version từ DB, validate checksum/ranges.
 3. Moka cache lưu theo version UUID.
 4. `ArcSwap` publish catalog snapshot copy-on-write.
@@ -282,7 +282,7 @@ Tier base catalog là global business identity nhưng mọi request vẫn có co
 | Gap/overlap/missing infinity/negative price | `400` |
 | DB timeout/failure trước commit | `500`; không version/outbox partial |
 | Commit thành công, process chết trước wake | Startup/jitter reconciler relay record |
-| NATS unavailable | Outbox giữ unpublished record + retry metadata |
+| Shared Redis unavailable hoặc không có Engine listener | Outbox giữ unpublished record + retry metadata |
 | Engine checksum mismatch | Không activate; billing fail closed cho version đó |
 | Catalog empty at Engine startup | Engine bootstrap fails |
 
@@ -314,7 +314,7 @@ Không log handoff code, JWT, access secret, raw Ed25519 signature hay full perm
 - [ ] Outbox crash-after-commit recovery test.
 - [ ] Engine bootstrap, duplicate event, lost event reconcile và run-resume tests.
 - [ ] Cost Console mutation chỉ gọi `criticalFetcher`.
-- [ ] Không có legacy employee login route/UI/NATS/proto reference.
+- [ ] Không có legacy employee login route/UI/transport/proto reference.
 
 ## 13. Code map
 

@@ -4,8 +4,8 @@
 
 use crate::config::Config;
 use crate::error::AcrError;
-use crate::infra::nats::Nats;
 use crate::infra::redis::{RecoverySessionCache, SessionManager};
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
@@ -176,8 +176,8 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
 pub async fn try_handle_recovery_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    nats: &Arc<Nats>,
     redis_client: &redis::Client,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     cookie_header: &str,
     jwt_token: &str,
@@ -252,17 +252,23 @@ pub async fn try_handle_recovery_session(
 
     let tenant_id = tenant_id_opt.unwrap_or_else(|| "platform".to_string());
 
-    let (resolved_zone_id, resolved_zone_code, _) =
-        match resolve_zone_context(nats, redis_client, cookie_header, &HashMap::new()).await {
-            Ok(res) => res,
-            Err(_) => (
-                "global".to_string(),
-                "global".to_string(),
-                "active".to_string(),
-            ),
-        };
+    let (resolved_zone_id, resolved_zone_code, _) = match resolve_zone_context(
+        shared_redis,
+        redis_client,
+        cookie_header,
+        &HashMap::new(),
+    )
+    .await
+    {
+        Ok(res) => res,
+        Err(_) => (
+            "global".to_string(),
+            "global".to_string(),
+            "active".to_string(),
+        ),
+    };
 
-    let cp_req = crate::infra::nats::auth::VerifyOpaqueRefreshTokenRequest {
+    let cp_req = crate::infra::iam_proto::auth::VerifyOpaqueRefreshTokenRequest {
         refresh_token: refresh_token.clone(),
         tenant_id: Some(tenant_id.clone()),
         user_id: user_id.clone(),
@@ -277,20 +283,23 @@ pub async fn try_handle_recovery_session(
         ))));
     }
 
-    let response_msg = match nats
-        .client()
+    // [COMMENT]: Refresh verification là request đồng bộ Central nội bộ; Shared Redis
+    // request_id bảo đảm một CP replica xử lý và recovery lock bảo đảm một ACR rotation.
+    let response_payload = match shared_redis
         .request(
-            "iam.auth.verify_opaque_token".to_string(),
-            payload_bytes.into(),
+            "iam.auth.verify_opaque_token",
+            "iam.auth.verify_opaque_token.reply.",
+            payload_bytes,
+            std::time::Duration::from_secs(10),
         )
         .await
     {
-        Ok(msg) => msg,
+        Ok(payload) => payload,
         Err(e) => {
             Logger::sys_error(
                 "user.recovery",
-                "NATS opaque token request failed",
-                &e.to_string(),
+                "Shared Redis opaque token request failed",
+                &e,
             );
             release_recovery_lock(session_mgr, &token_hash).await;
             return Some(Ok(Response::new(build_denied_json(
@@ -300,14 +309,14 @@ pub async fn try_handle_recovery_session(
         }
     };
 
-    let cp_res = match crate::infra::nats::auth::VerifyOpaqueRefreshTokenResponse::decode(
-        response_msg.payload.as_ref(),
+    let cp_res = match crate::infra::iam_proto::auth::VerifyOpaqueRefreshTokenResponse::decode(
+        response_payload.as_slice(),
     ) {
         Ok(res) => res,
         Err(e) => {
             Logger::sys_error(
                 "user.recovery",
-                "NATS opaque token response decode failed",
+                "Shared Redis opaque token response decode failed",
                 &e.to_string(),
             );
             release_recovery_lock(session_mgr, &token_hash).await;
@@ -338,8 +347,8 @@ pub async fn try_handle_recovery_session(
     let res_val = match release_user_session(
         session_mgr,
         token_mgr,
-        nats,
         redis_client,
+        shared_redis,
         config,
         &cp_res.user_id,
         &cp_res.username,

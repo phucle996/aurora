@@ -1,6 +1,6 @@
-use std::error::Error;
-use redis::aio::MultiplexedConnection;
 use crate::config::Config;
+use redis::aio::MultiplexedConnection;
+use std::error::Error;
 
 // [COMMENT]: Khởi tạo kết nối Redis Multiplexed Connection.
 // TLS termination được xử lý ở tầng hạ tầng (service mesh / mTLS proxy) nên

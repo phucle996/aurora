@@ -13,8 +13,8 @@
 | Authentication proof | Event-scoped Redis OTT |
 | Activation SoT | PostgreSQL IAM transaction |
 | Billing event SoT | `iam.billing_outbox_records` |
-| Broker | NATS JetStream stream `BILLING_DOMAIN_EVENTS` |
-| Consumer | Cost Manager durable consumer |
+| Central transport | Shared Redis Stream `billing:wallet:personal:provision-requests` |
+| Consumer | Cost Manager group `cost-personal-wallet-provision-v1` |
 | Billing result | Wallet `(owner_id, PERSONAL, USD)` balance `0` |
 | Input/handoff owner | Registration God View |
 | Hierarchy | Không tạo/chọn Zone hoặc Workspace |
@@ -28,7 +28,7 @@
 - OTT validate, dependency taxonomy và consume-after-commit.
 - Concurrent verify, response loss và active retry.
 - Atomic `active + platform_user + Billing outbox` invariant.
-- Generic Billing outbox relay, JetStream PubAck và retry/DEAD.
+- Generic Billing outbox relay, Shared Redis `XADD + WAITAOF` và retry/DEAD.
 - Cost Manager inbox/hash validation và wallet idempotency.
 - Failure recovery, DLQ, retention và diagnostics.
 
@@ -51,7 +51,7 @@
 | Active status, platform role và Billing event cùng transaction | Không có active account mới thiếu role/event |
 | Active retry ensure lại role/event | Response loss và legacy partial state tự repair idempotently |
 | Billing event ID deterministic theo user | Concurrent/retry không sinh logical wallet command mới |
-| Outbox relay chờ JetStream PubAck | Chỉ mark `PUBLISHED` sau broker persistence |
+| Outbox relay chờ `WAITAOF` | Chỉ mark `PUBLISHED` sau local AOF và replica fsync policy |
 | Cost Manager inbox + wallet cùng transaction | ACK không xảy ra trước durable apply |
 | `owner_id/owner_type` tách khỏi actor | Wallet được gán đúng personal/tenant owner |
 | Activation không ghi Hierarchy | Zone/Workspace failure không rollback verification |
@@ -221,20 +221,21 @@ sequenceDiagram
     autonumber
     participant Relay as Billing Outbox Relay
     participant IDB as PostgreSQL IAM
-    participant NATS as JetStream
+    participant SR as Shared Redis Stream
     participant Cost as Cost Manager
     participant BDB as PostgreSQL Billing
 
     Relay->>IDB: Drain batches of 50 SKIP LOCKED + 30s lease
-    Relay->>NATS: Publish + Nats-Msg-Id=event_id
-    NATS-->>Relay: PubAck
+    Relay->>SR: XADD event_id + event_type + protobuf
+    Relay->>SR: WAITAOF local=1 + required replicas
+    SR-->>Relay: fsynced counts
     Relay->>IDB: Mark PUBLISHED
-    NATS-->>Cost: Durable delivery
-    Cost->>Cost: Validate protobuf/header/hash
+    SR-->>Cost: XREADGROUP / XAUTOCLAIM
+    Cost->>Cost: Validate stream envelope/protobuf/hash
     Cost->>BDB: BEGIN inbox + wallet
     Cost->>BDB: INSERT inbox, INSERT wallet, mark APPLIED
     Cost->>BDB: COMMIT
-    Cost->>NATS: ACK
+    Cost->>SR: MULTI XACK + XDEL
 ```
 
 
@@ -271,11 +272,11 @@ stateDiagram-v2
     PUBLISHING --> PENDING: transient publish error + backoff
     PUBLISHING --> PUBLISHING: expired lease reclaimed
     PUBLISHING --> DEAD: invalid contract or attempts >= 25
-    PUBLISHING --> PUBLISHED: JetStream PubAck
+    PUBLISHING --> PUBLISHED: XADD + WAITAOF policy met
     PUBLISHED --> [*]: Kubernetes CronJob cleanup after 30 days
 ```
 
-Publisher validates row metadata bằng payload protobuf và chỉ publish subject từ compile-time allowlist. DEAD được giữ để điều tra/replay có audit. Relay không poll mỗi 500ms: local wake được coalesce trong buffered channel, startup drain chạy ngay, và reconciliation fallback chỉ chạy sau 30 giây cộng jitter. Wake bị mất không làm mất event vì PostgreSQL outbox vẫn là SoT.
+Publisher validates row metadata bằng payload protobuf và chỉ chọn Stream từ compile-time allowlist. `XADD` và `WAITAOF` chạy trên cùng dedicated Redis connection vì durability fence chỉ áp dụng cho các write trước đó của chính connection đó. Production yêu cầu local AOF, ít nhất một replica AOF ACK và eviction policy không xóa pending Stream; Docker Compose đơn node override replica ACK về `0` rõ ràng. DEAD được giữ để điều tra/replay có audit. Relay không poll mỗi 500ms: local wake được coalesce trong buffered channel, startup drain chạy ngay, và reconciliation fallback chỉ chạy sau 30 giây cộng jitter. Wake bị mất không làm mất event vì PostgreSQL outbox vẫn là SoT trước khi transport đạt durability policy.
 
 ### 5.4 Billing inbox/wallet
 
@@ -318,11 +319,14 @@ Hai request có thể cùng đọc `pending`:
 | Pod crash after activation commit before wake | Startup drain hoặc 30s+jitter fallback claim row |
 | Wake channel đầy/mất signal | Signal chỉ là hint; fallback reconciliation đọc durable outbox |
 | Nhiều Controlplane pod idle | Jitter lệch nhịp fallback, tránh query herd |
-| Publish persisted, mark DB fails | Republish at-least-once; JetStream Msg-Id/inbox dedupe |
-| Duplicate broker delivery | Inbox event ID + payload hash |
+| XADD/WAITAOF đạt policy, mark DB fails | Republish at-least-once; inbox event ID + payload hash dedupe |
+| Shared Redis restart/failover | AOF + replica fsync policy; outbox giữ retry nếu fence chưa đạt |
+| Shared Redis memory pressure | `volatile-lru` chỉ evict TTL cache; Stream write fail thay vì mất pending âm thầm |
+| Duplicate Stream delivery | Inbox event ID + payload hash |
 | Different event IDs same wallet | Unique `(owner_id, owner_type, currency)` |
-| Consumer DB failure | NAK/redelivery; không ACK |
-| Retry exhausted | Publish DLQ rồi `Term` original |
+| Consumer DB failure | Không `XACK`; `XAUTOCLAIM` sau 30 giây |
+| Cost pod chết giữa delivery | Consumer identity riêng; pod khác `XAUTOCLAIM` pending |
+| Retry exhausted | Atomic `XADD` DLQ + `XACK` + `XDEL` original |
 
 ## 7. Security and trust boundaries
 
@@ -331,11 +335,11 @@ Hai request có thể cùng đọc `pending`:
 | Browser → Edge | Fragment isolation, explicit POST, no-referrer |
 | Edge public route | Exact method/path, CORS, IP/device limiter |
 | OTT at rest | SHA-256 hash, TTL, constant-time compare |
-| IAM → NATS | TLS/mTLS, subject allowlist, PubAck, Msg-Id |
-| NATS → Cost | Durable explicit ACK, strict protobuf/header validation |
+| IAM → Shared Redis | TLS/ACL, Stream allowlist, same-connection `XADD + WAITAOF` |
+| Shared Redis → Cost | Consumer group, strict protobuf/envelope validation, explicit `XACK` |
 | Cost → Billing DB | Inbox + wallet atomic transaction |
 
-Broker ACL phải chỉ cho IAM publish subject V1 và Cost Manager consume/publish DLQ tương ứng. Certificate nằm trong Kubernetes Secret và được rotate. Password, OTT và email không thuộc Billing payload.
+Shared Redis ACL phải chỉ cho IAM relay `XADD/WAITAOF` vào request Stream và Cost Manager consume/ACK/DLQ đúng namespace. Certificate nằm trong Kubernetes Secret và được rotate. Password, OTT và email không thuộc Billing payload.
 
 ## 8. Hierarchy isolation
 
@@ -358,9 +362,9 @@ Workspace provisioning là workflow explicit sau login và phải có God View/a
 | Expired hàng loạt | Redis health/replica/TTL | IAM/Redis dependency incident |
 | Pending sau `500` | Role seed, Billing migration, DB error | IAM; OTT còn để retry |
 | Active thiếu role/event | Read IAM rows | Retry verify/self-heal; audit legacy source |
-| Billing outbox PENDING | attempts/available_at | Relay/NATS health |
+| Billing outbox PENDING | attempts/available_at/last_error | Relay/Shared Redis AOF/replica health |
 | Billing outbox DEAD | `last_error`, payload metadata | Fix contract/dependency; audited replay |
-| PUBLISHED nhưng không inbox | JetStream consumer/DLQ | Cost Manager/NATS |
+| PUBLISHED nhưng không inbox | Stream group pending/lag/DLQ | Cost Manager/Shared Redis |
 | Inbox APPLIED thiếu wallet | Same DB transaction violated | Billing integrity incident |
 
 IAM state:
@@ -399,7 +403,7 @@ LEFT JOIN billing.wallets w
 WHERE i.owner_id = $1;
 ```
 
-Không sửa balance hoặc status trực tiếp. DLQ replay phải giữ nguyên event ID/payload/subject, xác minh inbox trước và ghi operator/reason/timestamp.
+Không sửa balance hoặc status trực tiếp. DLQ replay phải giữ nguyên event ID/payload/event type, xác minh inbox trước và ghi operator/reason/timestamp.
 
 ## 10. Observability
 
@@ -427,20 +431,23 @@ Không dùng user/event/email/error message làm label. Trace correlation dùng 
 - [ ] Concurrent verify tạo một role và một logical Billing event.
 - [ ] Active retry repair role + event và trả stable success.
 - [ ] Hierarchy unavailable không ảnh hưởng activation.
-- [ ] NATS down không rollback active state; outbox retry được.
-- [ ] Relay chỉ mark PUBLISHED sau PubAck.
+- [ ] Shared Redis down/WAITAOF thiếu ACK không rollback active state; outbox retry được.
+- [ ] Relay chỉ mark PUBLISHED sau local AOF và required replica ACK.
+- [ ] XADD và WAITAOF chạy trên cùng Redis connection.
+- [ ] `allkeys-*` eviction bị cấm trên Shared Redis có pending Stream.
 - [ ] Duplicate delivery tạo một inbox logical event và một wallet.
 - [ ] Same event/different payload bị reject/DLQ.
 - [ ] Wallet ban đầu có cash/promotional balance bằng `0`.
 - [ ] Không tự cấp Free Tier/100 USD trong verification.
-- [ ] Runtime readiness phản ánh subscriber/DB/NATS health.
+- [ ] Runtime readiness phản ánh consumer group/Billing DB/Shared Redis health.
 
 ## 12. Residual risks
 
 | Severity | Risk | Required follow-up |
 |---|---|---|
 | P1 | Producer và consumer giữ hai proto source wire-compatible riêng | Canonical Billing proto module + descriptor CI |
-| P1 | Runtime readiness sau startup chưa chứng minh dependency luôn healthy | Aggregate DB/NATS/consumer probe |
+| P1 | Runtime readiness sau startup chưa chứng minh dependency luôn healthy | Aggregate DB/Shared Redis group/AOF replica probe |
+| P1 | Docker Compose chỉ có một Shared Redis node | Production deploy HA replica, ACL, TLS và giữ `REDIS_DURABLE_REPLICA_ACKS>=1` |
 | P2 | Public active retry có thể tạo read/repair load theo UUID | Rate limit, audit và cân nhắc durable activation receipt |
 | P2 | DEAD replay chưa có operator API/tool chuẩn | Audited replay tooling |
 | P2 | Thiếu outbox age/lag/DLQ metrics đầy đủ | Implement metrics/alerts mục 10 |
@@ -460,7 +467,7 @@ Không dùng user/event/email/error message làm label. Trace correlation dùng 
 | Billing relay/repository | `controlplane/internal/iam/service/billing_outbox_relay.go`, `repository/billing_outbox_repo.go` |
 | Billing outbox retention | `k8s/outbox-retention-cronjob.yaml` |
 | Billing protobuf producer | `controlplane/internal/iam/transport/rpc/proto/personal_wallet_provision.proto` |
-| Cost Manager subscriber | `cost-manager/api/internal/transport/nats/handler/personal_wallet_provision_handler.go` |
+| Cost Manager consumer | `cost-manager/api/internal/transport/redis/handler/personal_wallet_provision_handler.go` |
 | Billing inbox/wallet transaction | `cost-manager/api/internal/repository/account_repo.go` |
 | Billing schema | `cost-manager/api/migrations/000002_tables.up.sql`, `000007_wallet_provision_inbox.up.sql` |
 | Upstream registration | `god_view/iam/user_registration_god_view_workflow.md` |

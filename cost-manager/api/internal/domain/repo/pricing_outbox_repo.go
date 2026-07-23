@@ -17,7 +17,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: PricingOutboxRepository định nghĩa các contract SQL phục vụ việc relay tin tin bảng giá sang NATS.
+// [COMMENT]: PricingOutboxRepository định nghĩa các contract SQL phục vụ việc relay
+// hint bảng giá sang Shared Redis; PostgreSQL vẫn là pricing SoT.
 type PricingOutboxRepository interface {
 	RefreshTierVersionStatuses(ctx context.Context) error
 	GetUnpublishedOutboxBatch(ctx context.Context, limit int) ([]*entity.PricingOutboxRow, error)

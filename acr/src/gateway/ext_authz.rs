@@ -8,8 +8,8 @@ use tonic::{Request, Response, Status};
 use crate::config::Config;
 use crate::gateway::csrf::verify_csrf_protection;
 use crate::gateway::ratelimit::RateLimiter;
-use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
@@ -30,9 +30,9 @@ pub struct ExtAuthzService {
     token_mgr: Arc<TokenManager>,
     sre_token_mgr: Arc<SreTokenManager>,
     config: Config,
-    nats: Arc<Nats>,
     rate_limiter: Arc<RateLimiter>,
-    cache_redis_client: Arc<redis::Client>,
+    shared_redis_client: Arc<redis::Client>,
+    shared_redis: Arc<SharedRedisBus>,
 }
 
 impl ExtAuthzService {
@@ -41,8 +41,8 @@ impl ExtAuthzService {
         token_mgr: Arc<TokenManager>,
         sre_token_mgr: Arc<SreTokenManager>,
         config: Config,
-        nats: Arc<Nats>,
-        cache_redis_client: Arc<redis::Client>,
+        shared_redis_client: Arc<redis::Client>,
+        shared_redis: Arc<SharedRedisBus>,
     ) -> Self {
         let rate_limiter = Arc::new(RateLimiter::new(session_mgr.clone()));
         Self {
@@ -50,9 +50,9 @@ impl ExtAuthzService {
             token_mgr,
             sre_token_mgr,
             config,
-            nats,
             rate_limiter,
-            cache_redis_client,
+            shared_redis_client,
+            shared_redis,
         }
     }
 }
@@ -165,7 +165,7 @@ impl Authorization for ExtAuthzService {
             .unwrap_or("unknown");
 
         // [COMMENT]: Zone/config resolution chỉ dùng rebuildable cache Redis; auth/session state vẫn qua SessionManager.
-        let redis_client = self.cache_redis_client.clone();
+        let redis_client = self.shared_redis_client.clone();
 
         // 1. CORS Allowed Origin Check chạy cả với public route.
         if let Some(origin) = client_headers.get("origin") {
@@ -255,8 +255,8 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = crate::user::login::handle_login(
             &self.session_mgr,
             &self.token_mgr,
-            &self.nats,
             redis_client.as_ref(),
+            &self.shared_redis,
             &self.config,
             client_headers,
             &req,
@@ -272,8 +272,8 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = crate::user::verify::handle_user_session_check(
             &self.session_mgr,
             &self.token_mgr,
-            &self.nats,
             redis_client.as_ref(),
+            &self.shared_redis,
             &self.config,
             client_headers,
             method,
@@ -386,7 +386,7 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = crate::sre::zone_catalog::handle_admin_zone_catalog(
             &self.session_mgr,
             &self.sre_token_mgr,
-            &self.nats,
+            &self.shared_redis,
             redis_client.as_ref(),
             client_headers,
             method,
@@ -399,7 +399,7 @@ impl Authorization for ExtAuthzService {
 
         // User Zone Catalog
         if let Some(res) = crate::user::zone_catalog::handle_user_zone_catalog(
-            &self.nats,
+            &self.shared_redis,
             redis_client.as_ref(),
             client_headers,
             method,
@@ -414,7 +414,7 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = crate::user::zone_switcher::handle_user_zone_switch(
             &self.session_mgr,
             &self.token_mgr,
-            &self.nats,
+            &self.shared_redis,
             redis_client.as_ref(),
             &self.config,
             client_headers,
@@ -431,7 +431,7 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = crate::sre::zone_switcher::handle_sre_zone_switch(
             &self.session_mgr,
             &self.sre_token_mgr,
-            &self.nats,
+            &self.shared_redis,
             redis_client.as_ref(),
             &self.config,
             client_headers,
@@ -505,8 +505,8 @@ impl Authorization for ExtAuthzService {
                 let verify_res = verify_edge_session(
                     &self.session_mgr,
                     &self.token_mgr,
-                    &self.nats,
                     redis_client.as_ref(),
+                    &self.shared_redis,
                     &self.config,
                     &cookie_header,
                     client_headers,
@@ -559,7 +559,7 @@ impl Authorization for ExtAuthzService {
             Vec::new()
         } else if is_admin {
             match crate::sre::zone_resolution::resolve_and_verify_zone_admin(
-                &self.nats,
+                &self.shared_redis,
                 redis_client.as_ref(),
                 sre_claims.as_mut(),
                 &cookie_header,
@@ -574,7 +574,7 @@ impl Authorization for ExtAuthzService {
             }
         } else {
             match crate::user::zone_resolution::resolve_and_verify_zone_user(
-                &self.nats,
+                &self.shared_redis,
                 redis_client.as_ref(),
                 claims.as_mut(),
                 &cookie_header,

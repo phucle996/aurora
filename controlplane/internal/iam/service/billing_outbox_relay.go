@@ -2,6 +2,7 @@ package iamSvcImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,12 +12,12 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
 const personalWalletProvisionEventType = "billing.wallet.personal.provision.requested.v1"
+const personalWalletProvisionStream = "billing:wallet:personal:provision-requests"
 
 const (
 	billingOutboxClaimBatch       = 50
@@ -26,36 +27,38 @@ const (
 	billingOutboxRetryMax         = 30 * time.Second
 )
 
-var billingEventSubjects = map[string]string{
-	// [COMMENT]: Subject không đọc trực tiếp từ row; event mới phải được review và thêm vào allowlist này.
-	personalWalletProvisionEventType: personalWalletProvisionEventType,
+var billingEventStreams = map[string]string{
+	// [COMMENT]: Stream không đọc trực tiếp từ row; event mới phải được review và thêm vào allowlist này.
+	personalWalletProvisionEventType: personalWalletProvisionStream,
 }
 
 type BillingOutboxRelay struct {
-	repo   iamRepoInterface.BillingOutboxRepository
-	js     jetstream.JetStream
-	wake   chan struct{}
-	cancel context.CancelFunc
-	done   chan struct{}
+	repo        iamRepoInterface.BillingOutboxRepository
+	sharedRedis *goredis.Client
+	replicaAcks int
+	durableWait time.Duration
+	wake        chan struct{}
+	cancel      context.CancelFunc
+	done        chan struct{}
 }
 
-func NewBillingOutboxRelay(repo iamRepoInterface.BillingOutboxRepository, nc *nats.Conn) (*BillingOutboxRelay, error) {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, err
+func NewBillingOutboxRelay(
+	repo iamRepoInterface.BillingOutboxRepository,
+	sharedRedis *goredis.Client,
+	replicaAcks int,
+	durableWait time.Duration,
+) (*BillingOutboxRelay, error) {
+	if repo == nil || sharedRedis == nil {
+		return nil, errors.New("iam billing relay requires repository and Shared Redis")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: "BILLING_DOMAIN_EVENTS", Subjects: []string{personalWalletProvisionEventType},
-		Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy, MaxAge: 30 * 24 * time.Hour,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("iam billing relay: ensure stream: %w", err)
+	if replicaAcks < 0 || durableWait <= 0 {
+		return nil, errors.New("iam billing relay requires non-negative replica acks and positive durable wait")
 	}
 	return &BillingOutboxRelay{
-		repo: repo,
-		js:   js,
+		repo:        repo,
+		sharedRedis: sharedRedis,
+		replicaAcks: replicaAcks,
+		durableWait: durableWait,
 		// [COMMENT]: Capacity 1 cố ý coalesce burst verify; outbox row mới là dữ liệu cần giữ, wake chỉ là hint.
 		wake: make(chan struct{}, 1),
 		done: make(chan struct{}),
@@ -158,17 +161,61 @@ func resetBillingOutboxTimer(timer *time.Timer, delay time.Duration) {
 }
 
 func (r *BillingOutboxRelay) publish(ctx context.Context, event iamEntity.BillingOutboxEvent) {
-	subject, ok := billingEventSubjects[event.EventType]
+	stream, ok := billingEventStreams[event.EventType]
 	if !ok || !validBillingEvent(event) {
 		// [COMMENT]: Contract invalid là lỗi vĩnh viễn; đưa DEAD ngay để không đốt retry budget và gây noisy loop.
 		_ = r.repo.MarkDead(ctx, event.ID, "unsupported or invalid billing event contract")
 		return
 	}
 
-	// [COMMENT]: PubAck là ranh giới broker đã persist; Msg-Id giữ retry sau lease theo at-least-once nhưng idempotent.
-	_, err := r.js.Publish(ctx, subject, event.Payload, jetstream.WithMsgID(event.EventID.String()))
-	if err != nil {
+	// [COMMENT]: WAITAOF chỉ xác nhận các write trước đó trên cùng Redis connection,
+	// vì vậy XADD và durability fence bắt buộc dùng một dedicated pooled connection.
+	// Clone dùng chung pool nhưng nới read timeout riêng cho blocking WAITAOF, không làm
+	// tăng latency ceiling của cache/pubsub command thông thường.
+	conn := r.sharedRedis.WithTimeout(r.durableWait + time.Second).Conn()
+	defer func() { _ = conn.Close() }()
+	if err := conn.XAdd(ctx, &goredis.XAddArgs{
+		Stream: stream,
+		Values: map[string]any{
+			"event_id":   event.EventID.String(),
+			"event_type": event.EventType,
+			"payload":    event.Payload,
+		},
+	}).Err(); err != nil {
 		_ = r.repo.MarkFailed(ctx, event.ID, err.Error())
+		return
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, r.durableWait)
+	persisted, err := conn.Do(
+		waitCtx,
+		"WAITAOF",
+		1,
+		r.replicaAcks,
+		r.durableWait.Milliseconds(),
+	).Slice()
+	cancel()
+	if err != nil || len(persisted) != 2 {
+		if err == nil {
+			err = errors.New("invalid WAITAOF response")
+		}
+		_ = r.repo.MarkFailed(ctx, event.ID, err.Error())
+		return
+	}
+	localAOF, localOK := persisted[0].(int64)
+	replicaAOF, replicaOK := persisted[1].(int64)
+	if !localOK || !replicaOK || localAOF < 1 || replicaAOF < int64(r.replicaAcks) {
+		// [COMMENT]: XADD có thể đã tồn tại nhưng chưa đạt durability policy. Giữ outbox
+		// retry tạo at-least-once duplicate; Cost inbox event_id/hash chịu trách nhiệm dedupe.
+		_ = r.repo.MarkFailed(
+			ctx,
+			event.ID,
+			fmt.Sprintf(
+				"Shared Redis durability fence not met: local=%v replicas=%v required=%d",
+				persisted[0],
+				persisted[1],
+				r.replicaAcks,
+			),
+		)
 		return
 	}
 	if err := r.repo.MarkPublished(ctx, event.ID); err != nil {

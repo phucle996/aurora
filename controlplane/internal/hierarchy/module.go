@@ -40,20 +40,19 @@ import (
 	coreRepoImpl "controlplane/internal/hierarchy/repository"
 	coreSvcImpl "controlplane/internal/hierarchy/service"
 	zoneHandler "controlplane/internal/hierarchy/transport/http/handler"
+	zonePubsubHandler "controlplane/internal/hierarchy/transport/pubsub/handler"
 
 	"controlplane/internal/observability"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 type Module struct {
 	cfg            *config.Config
 	rds            *goredis.Client
-	natsConn       *nats.Conn
 	otel           *observability.OTel
-	natsSubs       []*nats.Subscription
+	zoneRedis      *zonePubsubHandler.ZoneRedisHandler
 	ZoneRepository coreRepoInterface.ZoneRepository
 	ZoneService    coreSvcInterface.ZoneService
 	ZoneHandler    *zoneHandler.ZoneHandler
@@ -79,7 +78,6 @@ func NewModule(
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
-	natsConn *nats.Conn,
 	otel *observability.OTel,
 ) (*Module, error) {
 	if cfg == nil {
@@ -97,13 +95,17 @@ func NewModule(
 	}
 
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds, natsConn)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds)
 	if zoneService == nil {
 		return nil, fmt.Errorf("zone module: zone service unavailable: zone service is nil")
 	}
 	zHandler := zoneHandler.NewZoneHandler(zoneService)
 	if zHandler == nil {
 		return nil, fmt.Errorf("zone module: zone handler is nil")
+	}
+	zoneRedis, err := zonePubsubHandler.NewZoneRedisHandler(rds, zoneService, otel)
+	if err != nil {
+		return nil, fmt.Errorf("zone module: initialize Shared Redis handler: %w", err)
 	}
 
 	// 6) Workspace management — repo, service, handler (Chia 2 dòng chảy Tenant và Personal)
@@ -152,8 +154,8 @@ func NewModule(
 	return &Module{
 		cfg:                         cfg,
 		rds:                         rds,
-		natsConn:                    natsConn,
 		otel:                        otel,
+		zoneRedis:                   zoneRedis,
 		ZoneRepository:              zoneRepo,
 		ZoneService:                 zoneService,
 		ZoneHandler:                 zHandler,
@@ -180,11 +182,7 @@ func (m *Module) Stop() {
 		m.listenCancel = nil
 	}
 
-	// [COMMENT]: Hủy đăng ký NATS subscriptions trước khi tắt ứng dụng
-	for _, sub := range m.natsSubs {
-		if sub != nil {
-			_ = sub.Unsubscribe()
-		}
+	if m.zoneRedis != nil {
+		m.zoneRedis.Stop()
 	}
-	m.natsSubs = nil
 }

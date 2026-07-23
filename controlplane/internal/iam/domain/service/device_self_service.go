@@ -22,7 +22,7 @@ type DeviceSelfService interface {
 	// [COMMENT]: RegisterLoginDevice đăng ký thiết bị đăng nhập
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 
-	// [COMMENT]: BulkTouchDevices cập nhật hàng loạt trạng thái hoạt động cho nhiều thiết bị — được gọi từ NATS Consumer
+	// [COMMENT]: BulkTouchDevices cập nhật hàng loạt trạng thái hoạt động cho nhiều thiết bị — được gọi từ Shared Redis Consumer
 	BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error
 
 	// [COMMENT]: ResolveDeviceIDByKey trả về client_device_id của thiết bị khớp với user và khóa công khai

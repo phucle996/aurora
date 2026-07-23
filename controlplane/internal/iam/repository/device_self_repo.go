@@ -182,19 +182,26 @@ func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceI
 // [COMMENT]: RevokeMyOtherDevices thu hồi các thiết bị khác ngoại trừ thiết bị chỉ định theo client_device_id, trả về danh sách client_device_id đã thu hồi
 func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) ([]uuid.UUID, error) {
 	query := fmt.Sprintf(`
-		WITH revoked_devices AS (
+		WITH target_devices AS MATERIALIZED (
+			SELECT id, COALESCE(client_device_id, id::text) AS client_device_id
+			FROM %s.devices
+			WHERE user_id = $1 AND ($2::uuid IS NULL OR id != $2)
+		),
+		revoked_devices AS (
 			UPDATE %s.devices
 			SET revoked_at=now(), updated_at=now()
-			WHERE user_id = $1 AND ($2::uuid IS NULL OR id != $2) AND revoked_at IS NULL
-			RETURNING id, COALESCE(client_device_id, id::text) AS client_device_id
+			WHERE id IN (SELECT id FROM target_devices) AND revoked_at IS NULL
+			RETURNING id
 		),
 		deleted_tokens AS (
 			DELETE FROM %s.refresh_tokens
-			WHERE user_id = $1 AND device_id IN (SELECT id FROM revoked_devices)
+			WHERE user_id = $1 AND device_id IN (SELECT id FROM target_devices)
 			RETURNING 1
 		)
-		SELECT client_device_id FROM revoked_devices
-	`, r.schema, r.schema)
+		-- [COMMENT]: Trả lại cả target đã revoked từ lần trước để retry sau lỗi Redis
+		-- XADD vẫn có đủ device IDs và khép kín split-brain DB/runtime.
+		SELECT client_device_id FROM target_devices
+	`, r.schema, r.schema, r.schema)
 	rows, err := r.db.Query(ctx, query, userID, keepDeviceID)
 	if err != nil {
 		return nil, fmt.Errorf("iam repo: revoke other devices CTE: %w", err)
@@ -216,7 +223,7 @@ func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID 
 }
 
 // [COMMENT]: BulkTouchDevices cập nhật hàng loạt last_seen_at/ip/ua cho danh sách thiết bị bằng unnest Bulk Upsert —
-// thay thế cơ chế ghi đơn lẻ per-request trước đây; được gọi từ NATS Consumer sau mỗi chu kỳ 30s.
+// thay thế cơ chế ghi đơn lẻ per-request trước đây; được gọi từ Shared Redis Consumer sau mỗi chu kỳ 30s.
 func (r *DeviceSelfRepository) BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error {
 	if len(updates) == 0 {
 		return nil

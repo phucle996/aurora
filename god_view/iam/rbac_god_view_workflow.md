@@ -418,19 +418,23 @@ compile từ `role_permissions` tại runtime, không phụ thuộc các literal
 
 ### 8.4 Billing authorization projection
 
-ACR chỉ tạo opaque Cost alias và không mang role/permission. Cost resolve permission theo L1 → shared Redis L2 → NATS subject `iam.authorization.billing.get`; chỉ IAM đọc PostgreSQL RBAC.
+ACR chỉ tạo opaque Cost alias và không mang role/permission. Cost resolve permission theo L1 → Auth Redis
+projection; khi miss, Cost request IAM qua Shared Redis Pub/Sub channel `iam.authorization.billing.get`.
+Chỉ IAM đọc PostgreSQL RBAC.
 
-IAM subscriber:
+IAM Shared Redis responder:
 
 1. đọc protobuf `RoleEntry` của active user;
 2. nhận runtime platform key ba phần và bootstrap key năm phần chỉ khi workspace là `*` hoặc nil UUID;
 3. bỏ mọi năm-phần key có workspace UUID cụ thể để không nâng quyền cục bộ thành quyền Billing global;
 4. chuẩn hóa về `billing:object:behavior`, sort và deduplicate;
-5. ghi shared L2 bằng Lua generation fence rồi trả cùng protobuf bytes cho Cost;
+5. ghi Auth Redis bằng Lua generation fence rồi trả cùng protobuf bytes qua per-request reply channel;
 6. fail closed nếu không có Billing permission.
 
 `AssignUserRole`, `UpdateRole`, `UpdateUserStatus` tăng generation, xóa L2 snapshot và fan-out
-`iam.user_role.invalidated`. Cost critical route bỏ cả L1/L2 và request IAM mới. Partial unique index
+`authz.invalidate.billing` trên Shared Redis. Cost critical route bỏ cả L1/projection hit và request IAM mới.
+Request dùng fixed-width binary `request_uuid + user_uuid`; Cost subscribe reply trước khi publish để đóng reply race,
+còn CP replicas dùng bounded concurrency + request lock để chỉ một node query PostgreSQL. Partial unique index
 `uq_user_role_platform` vẫn bảo đảm mỗi user chỉ có một platform role. Chi tiết PKCE alias, Redis key và race
 matrix nằm ở `god_view/billing/cost_console_domain_trinity_god_view.md`.
 

@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > Đây là Source of Truth cho consumer/template desired state từ Controlplane PostgreSQL xuống NATS
-> JetStream KV của đúng Zone. Durable projection transport là Central Kafka; không còn Redis Job.
+> JetStream KV của đúng Zone. Durable projection transport là Kafka transport plane; không còn Redis Job.
 > Kafka platform semantics nằm tại
 > [`kafka_platform_transport_god_view.md`](../platform/kafka_platform_transport_god_view.md).
 
@@ -63,7 +63,7 @@ COMMIT
 sequenceDiagram
     participant PG as PostgreSQL
     participant JO as JO CDC
-    participant K as Central Kafka
+    participant K as Kafka transport
 
     PG-->>JO: committed mail_outbox_records WAL
     JO->>JO: validate event/topic/Zone + encode JobCommandV1
@@ -234,22 +234,27 @@ sequenceDiagram
     participant UI as Consumer Detail
     participant CP as Controlplane
     participant R as Shared Cache Redis
+    participant N as NATS Core
     participant DP as Dataplane slot owner
     participant JO as JO runtime relay
-    participant N as NATS/Centrifugo
+    participant C as Centrifugo
 
     UI->>CP: POST runtime/watch
     CP->>CP: authorize business resource
-    CP->>R: renew short watch lease
+    CP->>R: renew lease + XADD watch request
+    R->>JO: consumer group
+    JO->>N: watch by Zone subject
+    N->>DP: in-memory watch
     DP->>DP: read dynamic lag/state from app memory
-    DP->>R: watched-only bounded report
-    JO->>R: consume/aggregate TTL snapshot
-    JO-->>N: viewer signal
-    N-->>UI: realtime update
+    DP->>N: watched-only bounded report
+    N->>JO: queue subscriber
+    JO->>R: aggregate TTL snapshot
+    JO-->>C: viewer signal
+    C-->>UI: realtime update
 ```
 
 - Dynamic lag/inflight/throughput không lưu Kafka, PostgreSQL hoặc NATS KV.
-- Không có watch thì DP không phát snapshot Central Redis cho consumer đó.
+- Không có watch memory hợp lệ thì DP không phát NATS runtime report cho consumer đó.
 - Keys có TTL; không cần history table/cleaner.
 - Hostname, credential và rendered body không đi tới UI.
 

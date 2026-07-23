@@ -1,8 +1,6 @@
 use super::db;
 use crate::config::Config;
-use crate::infra::kafka::transport_proto::{
-    DeadLetterRecordV1, StorageBucketSizesSnapshotV1,
-};
+use crate::infra::kafka::transport_proto::{DeadLetterRecordV1, StorageBucketSizesSnapshotV1};
 use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
 use prost::Message;
@@ -48,8 +46,8 @@ pub async fn run_bucket_sizes_listener(
                         source_partition: record.partition,
                         source_offset: record.offset,
                         error_code: "STORAGE_SIZES_PROTO_INVALID".to_string(),
-                        error_message:
-                            "StorageBucketSizesSnapshotV1 failed strict validation".to_string(),
+                        error_message: "StorageBucketSizesSnapshotV1 failed strict validation"
+                            .to_string(),
                         original_payload: payload.to_vec(),
                         failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
                         schema_version: 1,

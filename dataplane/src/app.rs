@@ -4,9 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::bootstrap::BootstrapResult;
 use crate::config::Config;
-use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
-// Đã lược bỏ các import liên quan đến policyengine
 use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 
 /// ============================================================================
@@ -23,11 +21,11 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 /// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
 ///   - Đóng gói toàn bộ cơ cấu đấu nối dây (wiring) giữa các thành phần.
-///   - Bảo vệ Worker Pool và các cổng I/O (Watcher, Redis, DB) khỏi việc phơi bày trực tiếp ra ngoài.
+///   - Bảo vệ Worker Pool và các cổng I/O (Watcher, Kafka, NATS) khỏi việc phơi bày trực tiếp ra ngoài.
 ///
 pub struct AppContainer {
     pub config: Arc<Config>,
-    pub runtime_redis: Arc<RedisClientManager>,
+    pub nats_core: Arc<crate::infra::nats_core::NatsCoreTransport>,
     pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã lược bỏ policy_engine khỏi AppContainer
@@ -41,7 +39,7 @@ impl AppContainer {
         (
             Self {
                 config: boot.config,
-                runtime_redis: boot.runtime_redis,
+                nats_core: boot.nats_core,
                 kafka: boot.kafka,
                 zone_kv: boot.zone_kv,
                 worker_pool: boot.worker_pool,
@@ -66,11 +64,11 @@ impl AppContainer {
             .start(self.zone_kv.clone());
         self.worker_pool.mail_runtime.consumer_supervisor.start();
 
-        // Khởi động Mail Workload Watchdog và ghi current snapshot vào Zone health KV.
+        // [COMMENT]: Health aggregate ở Zone KV; consumer runtime realtime đi NATS Core và không chạm Redis.
         crate::executor::mail::supervisor::MailWorkloadSupervisor::start(
             self.config.clone(),
             self.zone_kv.clone(),
-            self.runtime_redis.clone(),
+            self.nats_core.clone(),
             self.worker_pool.mail_runtime.clone(),
         );
 
@@ -191,7 +189,6 @@ impl AppContainer {
             .spawn_worker(
                 1,
                 self.config.clone(),
-                self.runtime_redis.clone(),
                 self.kafka.clone(),
                 self.zone_kv.clone(),
                 self.active_lock_registry.clone(),
@@ -203,7 +200,6 @@ impl AppContainer {
         // 0e. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
         let config_scale = self.config.clone();
         let worker_pool_scale = self.worker_pool.clone();
-        let runtime_redis_scale = self.runtime_redis.clone();
         let kafka_scale = self.kafka.clone();
         let zone_kv_scale = self.zone_kv.clone();
         let active_lock_registry_scale = self.active_lock_registry.clone();
@@ -270,7 +266,6 @@ impl AppContainer {
                                 .spawn_worker(
                                     i,
                                     config_scale.clone(),
-                                    runtime_redis_scale.clone(),
                                     kafka_scale.clone(),
                                     zone_kv_scale.clone(),
                                     active_lock_registry_scale.clone(),

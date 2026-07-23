@@ -19,7 +19,7 @@ message GetActiveDevicesResponse {
   repeated ActiveDeviceEntry active_devices = 1;
 }
 
-// [COMMENT]: Message gộp nhiều thiết bị gửi qua NATS để cập nhật trạng thái hoạt động cùng lúc
+// [COMMENT]: Message gộp nhiều thiết bị gửi qua Shared Redis PubSub để cập nhật trạng thái hoạt động cùng lúc
 message BulkTouchDevicesRequest {
   message DeviceUpdate {
     string device_id = 1;

@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::infra::kafka::transport_proto::{DeadLetterRecordV1, JobCommandV1};
 use crate::infra::kafka::{KafkaDelivery, KafkaSettlement, KafkaTransport};
-use crate::infra::redis::RedisClientManager;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::job_lifecycle::admission::AdmissionController;
 use crate::job_lifecycle::message::JobPayload;
@@ -30,9 +29,7 @@ impl JobConsumer {
         topic: String,
         group_name: String,
     ) {
-        let (consumer, rebalance_fence) = match kafka
-            .consumer(group_name.clone(), &topic, 32)
-            .await
+        let (consumer, rebalance_fence) = match kafka.consumer(group_name.clone(), &topic, 32).await
         {
             Ok(value) => value,
             Err(error) => {
@@ -306,11 +303,11 @@ impl JobConsumer {
         }
     }
 
-    /// Định tuyến nghiệp vụ; Redis tham số ở đây chỉ dành cho mail runtime watch/report ngắn hạn.
+    /// [COMMENT]: Định tuyến nghiệp vụ không nhận transport realtime; mail watch/report chạy
+    /// độc lập qua NATS Core supervisor để job executor không thể truy cập Central soft state.
     pub async fn dispatch_workload(
         payload: JobPayload,
         worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
-        runtime_redis: Arc<RedisClientManager>,
         zone_id: &str,
     ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
         let topic = payload.job_topic.clone();
@@ -323,14 +320,8 @@ impl JobConsumer {
         let action = &rest[1..];
         match workload {
             "mail" => {
-                crate::executor::mail::dispatch_mail_job(
-                    action,
-                    payload,
-                    worker_pool,
-                    runtime_redis,
-                    zone_id,
-                )
-                .await
+                crate::executor::mail::dispatch_mail_job(action, payload, worker_pool, zone_id)
+                    .await
             }
             "vps" => crate::executor::hypervisor::dispatch_vps_job(action, payload).await,
             "storage" => crate::executor::storage::dispatch_storage_job(action, payload).await,

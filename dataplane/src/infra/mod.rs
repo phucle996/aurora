@@ -1,3 +1,3 @@
 pub mod kafka;
-pub mod redis;
+pub mod nats_core;
 pub mod zone_kv;

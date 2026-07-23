@@ -23,11 +23,12 @@ import (
 )
 
 type App struct {
-	Cfg         *config.Config
-	dbPool      *pgxpool.Pool
-	redisClient *redis.Client
-	natsConn    *nats.Conn
-	module      *Module
+	Cfg             *config.Config
+	dbPool          *pgxpool.Pool
+	redisClient     *redis.Client
+	authRedisClient *redis.Client
+	natsConn        *nats.Conn
+	module          *Module
 
 	httpServer   *http.Server
 	grpcServer   *googlegrpc.Server
@@ -66,6 +67,13 @@ func (a *App) Init() error {
 	}
 	a.redisClient = redisClient
 
+	// [COMMENT]: Auth Redis dùng ACL riêng; Cost không có quyền truy cập session namespace.
+	authRedisClient, err := infra.ConnectRedis(a.Cfg.AuthRedis.Addr)
+	if err != nil {
+		return err
+	}
+	a.authRedisClient = authRedisClient
+
 	// 5. Connect to NATS Messaging Infrastructure
 	natsConn, err := infra.ConnectNats(&a.Cfg.NATS)
 	if err != nil {
@@ -74,7 +82,7 @@ func (a *App) Init() error {
 	a.natsConn = natsConn
 
 	// 6. Initialize Modules
-	module, err := NewModule(a.dbPool, a.natsConn, a.redisClient)
+	module, err := NewModule(a.dbPool, a.natsConn, a.redisClient, a.authRedisClient)
 	if err != nil {
 		return err
 	}
@@ -87,10 +95,11 @@ func (a *App) Init() error {
 func (a *App) Start() error {
 	const op = "app.start"
 
-	// [COMMENT]: Consumer bắt buộc start thành công trước HTTP readiness; không chạy degraded rồi làm mất backlog SLO.
-	if a.module != nil && a.module.PersonalWalletProvisionSubscriber != nil {
-		if err := a.module.PersonalWalletProvisionSubscriber.Start(); err != nil {
-			return fmt.Errorf("start personal wallet provision subscriber: %w", err)
+	// [COMMENT]: Shared Redis consumer group phải sẵn sàng trước HTTP readiness;
+	// pending command sẽ được XAUTOCLAIM khi pod cũ chết hoặc rolling restart.
+	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
+		if err := a.module.PersonalWalletProvisionConsumer.Start(); err != nil {
+			return fmt.Errorf("start personal wallet provision consumer: %w", err)
 		}
 	}
 	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
@@ -183,8 +192,8 @@ func (a *App) Stop() {
 	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
 		a.module.ResourceOwnershipSubscriber.Stop()
 	}
-	if a.module != nil && a.module.PersonalWalletProvisionSubscriber != nil {
-		a.module.PersonalWalletProvisionSubscriber.Stop()
+	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
+		a.module.PersonalWalletProvisionConsumer.Stop()
 	}
 
 	if a.module != nil && a.module.ReconcilerWorker != nil {
@@ -221,6 +230,9 @@ func (a *App) Stop() {
 
 	if a.redisClient != nil {
 		_ = a.redisClient.Close()
+	}
+	if a.authRedisClient != nil {
+		_ = a.authRedisClient.Close()
 	}
 
 	if a.natsConn != nil {

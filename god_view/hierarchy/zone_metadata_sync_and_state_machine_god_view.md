@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Đây là Source of Truth cho `hierarchy.zones.status` và
 > `hierarchy.zone_services.desired_state` tại runtime. PostgreSQL là authoritative SoT,
-> Central Kafka là durable transport, NATS JetStream KV riêng Zone là runtime snapshot.
+> Kafka transport plane là durable Central↔Zone transport, NATS JetStream KV riêng Zone là runtime snapshot.
 
 ## 0. Control header
 
@@ -157,7 +157,7 @@ phải hydrate đầy đủ desired service catalogue.
 | Node/service current health | `AURORA_ZONE_HEALTH` |
 | Lease/fencing | `AURORA_ZONE_COORDINATION` |
 | Aggregate Zone report | DP → `aurora.zone.reports.v1` → JO |
-| Dynamic consumer runtime watch | Pod memory → shared Cache Redis TTL |
+| Dynamic consumer runtime watch | Pod memory → NATS Core → Central Shared Redis TTL |
 | Metrics/traces/logs | OTel/Grafana |
 
 Zone reporter dùng rotating lease để một node tổng hợp mỗi cycle. Report chứa Kafka lag được đo bởi chính

@@ -19,18 +19,21 @@ pub async fn run_services(
     println!("Đang đăng ký và khởi chạy các background services...");
 
     // [COMMENT]: Spawn job xử lý tính cước cho dịch vụ Storage
-    let storage_billing_handle = tokio::spawn(crate::service::storage::egress_billing::run_storage_egress_billing(
-        config.clone(),
-        pg_pool.clone(),
-        ch_client.clone(),
-        redis_conn.clone(),
-        pricing_runtime.clone(),
-        shutdown_rx.clone(),
-    ));
+    let storage_billing_handle = tokio::spawn(
+        crate::service::storage::egress_billing::run_storage_egress_billing(
+            config.clone(),
+            pg_pool.clone(),
+            ch_client.clone(),
+            redis_conn.clone(),
+            pricing_runtime.clone(),
+            shutdown_rx.clone(),
+        ),
+    );
 
-    // [COMMENT]: Mỗi replica subscribe broadcast để L1 luôn warm và failover không phải đợi reload lạnh.
+    // [COMMENT]: Mỗi replica subscribe Shared Redis broadcast để L1 luôn warm và failover
+    // không phải đợi reload lạnh; periodic DB reconcile vẫn là safety net.
     let pricing_listener_handle = tokio::spawn(crate::engine::run_pricing_listener(
-        config.nats_url.clone(),
+        config.redis_url.clone(),
         pricing_runtime,
         shutdown_rx.clone(),
     ));

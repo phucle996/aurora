@@ -79,6 +79,7 @@ type App struct {
 	grpc       *bootstrap.GRPC
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
+	authRds    *goredis.Client
 	kafka      *kafkainfra.Producer
 	natsConn   *nats.Conn
 	// [COMMENT]: Vault client phục vụ kết nối quản lý khóa an toàn
@@ -119,6 +120,17 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	if rds == nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: redis client is required")
+	}
+	// [COMMENT]: Security-State/AuthZ Redis là deployment và credential riêng; không dùng logical DB.
+	authRds, err := redisinfra.NewRedis(ctx, &cfg.AuthRedis)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: auth redis init failed: %w", err)
+	}
+	app.authRds = authRds
+	if authRds == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: auth redis client is required")
 	}
 
 	// [COMMENT]: Chỉ fail-fast cấu hình Kafka/client; broker outage được xử lý tại publish để
@@ -241,7 +253,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, kafkaProducer, cacheEngine, app.natsConn, app.otel)
+	modules, err := NewGlobalModules(cfg, db, rds, authRds, kafkaProducer, cacheEngine, app.natsConn, app.otel)
 	if err != nil {
 		app.Stop()
 		return nil, err
@@ -368,6 +380,9 @@ func (a *App) Stop() {
 	}
 	if a.rds != nil {
 		_ = a.rds.Close()
+	}
+	if a.authRds != nil {
+		_ = a.authRds.Close()
 	}
 	if a.kafka != nil {
 		a.kafka.Close()

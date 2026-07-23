@@ -1,5 +1,7 @@
-use crate::infra::kafka::{transport_proto::JobCommandV1, KafkaTransport};
-use crate::infra::redis::RedisClientManager;
+use crate::infra::kafka::{
+    transport_proto::{DeadLetterRecordV1, JobCommandV1},
+    KafkaTransport,
+};
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
 // Sử dụng các module nội bộ từ job_lifecycle mới đổi tên
 use crate::job_lifecycle::consumer::JobConsumer;
@@ -48,7 +50,6 @@ impl JobRunner {
     pub fn run_job(
         payload: JobPayload,
         worker_pool: Arc<WorkerLifecycleManager>,
-        runtime_redis: Arc<RedisClientManager>,
         kafka: Arc<KafkaTransport>,
         zone_kv: Arc<ZoneKvStore>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
@@ -153,12 +154,10 @@ impl JobRunner {
                 // Thực thi định tuyến và gọi Executor nghiệp vụ, được giám sát bởi Watchdog bên ngoài
                 let payload_dispatch = payload.clone();
                 let worker_pool_dispatch = worker_pool.clone();
-                let runtime_redis_dispatch = runtime_redis.clone();
 
                 let exec_res = Ok(JobConsumer::dispatch_workload(
                     payload_dispatch,
                     worker_pool_dispatch,
-                    runtime_redis_dispatch,
                     &zone_id,
                 ).await);
 
@@ -177,27 +176,38 @@ impl JobRunner {
 
                 let mut reconcile_failure_durable = true;
                 if report.result_status == "FAILED" {
-                    if let Some(generation) = payload.reconcile_generation {
-                        // [COMMENT]: Completion marker của generation lỗi phải fail-close dù failed command đã XACK.
-                        match runtime_redis
-                            .client()
-                            .get_multiplexed_async_connection()
-                            .await
+                    if payload.reconcile_generation.is_some() {
+                        // [COMMENT]: Dataplane không có Redis trung tâm. Reconcile failure phải vào
+                        // Kafka DLQ acks=all trước khi command offset được commit.
+                        reconcile_failure_durable = if let Some(delivery) =
+                            payload.kafka_delivery.as_ref()
                         {
-                            Ok(mut connection) => {
-                                let result: redis::RedisResult<()> = redis::cmd("SET")
-                                    .arg(format!(
-                                        "mail:projection:reconcile_error:{zone_id}:{generation}"
-                                    ))
-                                    .arg(report.error_code.as_deref().unwrap_or("EXECUTION_FAILED"))
-                                    .arg("EX")
-                                    .arg(86_400)
-                                    .query_async(&mut connection)
-                                    .await;
-                                reconcile_failure_durable = result.is_ok();
-                            }
-                            Err(_) => reconcile_failure_durable = false,
-                        }
+                            let dead_letter = DeadLetterRecordV1 {
+                                event_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                                source_topic: delivery.topic.clone(),
+                                source_partition: delivery.partition,
+                                source_offset: delivery.offset,
+                                error_code: report
+                                    .error_code
+                                    .clone()
+                                    .unwrap_or_else(|| "MAIL_RECONCILE_EXECUTION_FAILED".to_string()),
+                                error_message: report.message.chars().take(1_024).collect(),
+                                original_payload: payload.payload.clone(),
+                                failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+                                schema_version: 1,
+                            };
+                            let event_key = dead_letter.event_id.clone();
+                            kafka
+                                .publish_message(
+                                    &kafka.dead_letter_topic(),
+                                    &event_key,
+                                    &dead_letter,
+                                )
+                                .await
+                                .is_ok()
+                        } else {
+                            false
+                        };
                     }
                 }
 
@@ -285,7 +295,7 @@ impl JobRunner {
                 } else if payload.reconcile_generation.is_some()
                     && report.result_status != "RETRYABLE"
                 {
-                    // [COMMENT]: Reconcile success đã durable ở Zone KV; failure durable qua generation error marker.
+                    // [COMMENT]: Reconcile success đã durable ở Zone KV; failure durable qua Kafka DLQ.
                     true
                 } else if report.result_status != "RETRYABLE" {
                     // [COMMENT]: Chỉ terminal result mới quay về JO; transient lỗi giữ command trong PEL.

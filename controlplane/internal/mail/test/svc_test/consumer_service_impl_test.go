@@ -235,15 +235,33 @@ func TestPersonalRuntimeWatchUsesShortLeaseAndRejectsPreviousEpoch(t *testing.T)
 	if first.WatchTTLSeconds != 30 || first.RuntimeObserved || !strings.HasPrefix(first.WatchLeaseID, "4:") {
 		t.Fatalf("unexpected first watch: %+v", first)
 	}
-	if _, err := redisServer.ZScore(
-		"mail:runtime:watch-index:"+current.ZoneID.String(),
-		current.ID.String(),
-	); err != nil {
-		t.Fatalf("consumer was not added to bounded Zone watch index: %v", err)
-	}
 	_, epoch, ok := strings.Cut(first.WatchLeaseID, ":")
 	if !ok {
 		t.Fatalf("invalid watch lease ID: %q", first.WatchLeaseID)
+	}
+	watchRequests, err := redisClient.XRangeN(
+		context.Background(),
+		"mail:runtime:watch-requests",
+		"-",
+		"+",
+		1,
+	).Result()
+	if err != nil || len(watchRequests) != 1 {
+		t.Fatalf("runtime watch was not enqueued for JO bridge: entries=%v err=%v", watchRequests, err)
+	}
+	rawWatch, ok := watchRequests[0].Values["payload"].(string)
+	if !ok {
+		t.Fatalf("runtime watch payload has unexpected type: %T", watchRequests[0].Values["payload"])
+	}
+	var watch mailproto.MailConsumerRuntimeWatchRequestedV1
+	if err := proto.Unmarshal([]byte(rawWatch), &watch); err != nil {
+		t.Fatalf("decode runtime watch request: %v", err)
+	}
+	if !bytes.Equal(watch.ZoneId, current.ZoneID[:]) ||
+		!bytes.Equal(watch.ConsumerId, current.ID[:]) ||
+		watch.ConfigVersion != current.ConfigVersion ||
+		watch.RuntimeEpoch != epoch {
+		t.Fatalf("unexpected runtime watch request: %+v", &watch)
 	}
 	snapshot, err := json.Marshal(map[string]any{
 		"config_version":   4,

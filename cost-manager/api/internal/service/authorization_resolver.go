@@ -10,16 +10,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
 const (
-	billingAuthorizationSubject = "iam.authorization.billing.get"
-	userRoleInvalidatedSubject  = "iam.user_role.invalidated"
-	maxAuthorizationL1Entries   = 32768
+	billingAuthorizationRequestChannel = "iam.authorization.billing.get"
+	billingAuthorizationReplyPrefix    = "iam.authorization.billing.reply."
+	billingAuthorizationInvalidation   = "authz.invalidate.billing"
+	maxAuthorizationL1Entries          = 32768
 )
 
 type authorizationCacheEntry struct {
@@ -27,64 +27,78 @@ type authorizationCacheEntry struct {
 	expiresAt   time.Time
 }
 
-// AuthorizationResolver giữ quyền ngoài Trinity: L1 cục bộ, L2 dùng chung, IAM là SoT qua NATS.
+// AuthorizationResolver giữ quyền ngoài Trinity: L1 cục bộ, Auth Redis projection, IAM là SoT qua Shared Redis request/reply.
 type AuthorizationResolver struct {
-	redis        *redis.Client
-	nats         *nats.Conn
+	authRedis    *redis.Client
+	sharedRedis  *redis.Client
 	l1Mu         sync.RWMutex
 	l1           map[uuid.UUID]authorizationCacheEntry
 	loads        singleflight.Group
-	invalidation *nats.Subscription
+	invalidation *redis.PubSub
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 }
 
-func NewAuthorizationResolver(redisClient *redis.Client, natsConn *nats.Conn) (*AuthorizationResolver, error) {
-	if redisClient == nil || natsConn == nil {
-		return nil, errors.New("authorization resolver requires Redis cache and NATS")
+func NewAuthorizationResolver(authRedisClient, sharedRedisClient *redis.Client) (*AuthorizationResolver, error) {
+	if authRedisClient == nil || sharedRedisClient == nil {
+		return nil, errors.New("authorization resolver requires Auth Redis and Shared Redis")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	resolver := &AuthorizationResolver{
-		redis: redisClient,
-		nats:  natsConn,
-		l1:    make(map[uuid.UUID]authorizationCacheEntry),
+		authRedis:   authRedisClient,
+		sharedRedis: sharedRedisClient,
+		l1:          make(map[uuid.UUID]authorizationCacheEntry),
+		cancel:      cancel,
 	}
-	subscription, err := natsConn.Subscribe(userRoleInvalidatedSubject, func(message *nats.Msg) {
-		userID, parseErr := uuid.Parse(strings.TrimSpace(string(message.Data)))
-		if parseErr != nil {
-			return
-		}
-		// [COMMENT]: Mỗi pod tự xóa L1; không dùng queue group vì invalidation phải fan-out đến toàn bộ replica.
-		resolver.l1Mu.Lock()
-		delete(resolver.l1, userID)
-		resolver.l1Mu.Unlock()
-		dataKey, generationKey, dataGenerationKey, _ := authorizationKeys(userID)
-		invalidationContext, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		defer cancel()
-		// [COMMENT]: Cost lặp lại invalidation L2 để NATS còn là đường dự phòng nếu CP vừa commit DB nhưng Redis call lỗi.
-		_ = resolver.redis.Eval(invalidationContext, `
-			redis.call("INCR", KEYS[1])
-			redis.call("EXPIRE", KEYS[1], ARGV[1])
-			redis.call("DEL", KEYS[2], KEYS[3])
-			return 1
-		`, []string{generationKey, dataKey, dataGenerationKey}, int64(86400)).Err()
-	})
-	if err != nil {
+	pubsub := sharedRedisClient.Subscribe(ctx, billingAuthorizationInvalidation)
+	// [COMMENT]: Readiness waits for Redis SUBSCRIBE ACK so the pod never serves with an unarmed L1 invalidation path.
+	if _, err := pubsub.Receive(ctx); err != nil {
+		cancel()
+		_ = pubsub.Close()
 		return nil, fmt.Errorf("subscribe IAM authorization invalidation: %w", err)
 	}
-	if err := natsConn.FlushTimeout(2 * time.Second); err != nil {
-		_ = subscription.Unsubscribe()
-		return nil, fmt.Errorf("activate IAM authorization invalidation subscription: %w", err)
-	}
-	resolver.invalidation = subscription
+	resolver.invalidation = pubsub
+	resolver.wg.Add(1)
+	go func() {
+		defer resolver.wg.Done()
+		channel := pubsub.Channel(redis.WithChannelSize(256))
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case message, ok := <-channel:
+				if !ok {
+					return
+				}
+				userID, parseErr := uuid.Parse(strings.TrimSpace(message.Payload))
+				if parseErr != nil {
+					continue
+				}
+				// [COMMENT]: CP already fenced Auth Redis; every Cost replica only drops its process-local L1.
+				resolver.l1Mu.Lock()
+				delete(resolver.l1, userID)
+				resolver.l1Mu.Unlock()
+			}
+		}
+	}()
 	return resolver, nil
 }
 
 func (r *AuthorizationResolver) Close() {
-	if r != nil && r.invalidation != nil {
-		_ = r.invalidation.Unsubscribe()
+	if r == nil {
+		return
 	}
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.invalidation != nil {
+		_ = r.invalidation.Close()
+	}
+	r.wg.Wait()
 }
 
 func authorizationKeys(userID uuid.UUID) (data, generation, dataGeneration, lock string) {
-	tag := fmt.Sprintf("{iam:authz:billing:%s}", userID)
+	tag := fmt.Sprintf("authz:billing:{%s}", userID)
 	return tag + ":data", tag + ":generation", tag + ":data_generation", tag + ":lock"
 }
 
@@ -124,7 +138,7 @@ func decodeBillingPermissions(binary []byte) (map[string]struct{}, error) {
 
 func (r *AuthorizationResolver) readL2(ctx context.Context, userID uuid.UUID) (map[string]struct{}, bool, error) {
 	dataKey, generationKey, dataGenerationKey, _ := authorizationKeys(userID)
-	values, err := r.redis.MGet(ctx, dataKey, generationKey, dataGenerationKey).Result()
+	values, err := r.authRedis.MGet(ctx, dataKey, generationKey, dataGenerationKey).Result()
 	if err != nil {
 		return nil, false, fmt.Errorf("read authorization L2: %w", err)
 	}
@@ -154,20 +168,49 @@ func (r *AuthorizationResolver) readL2(ctx context.Context, userID uuid.UUID) (m
 	return permissions, true, nil
 }
 
-func (r *AuthorizationResolver) requestIAM(ctx context.Context, userID uuid.UUID) ([]byte, error) {
-	requestContext, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+func (r *AuthorizationResolver) requestAuthorization(ctx context.Context, userID uuid.UUID) ([]byte, error) {
+	requestContext, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
 	defer cancel()
-	response, err := r.nats.RequestWithContext(requestContext, billingAuthorizationSubject, []byte(userID.String()))
+	requestID := uuid.New()
+	replyChannel := billingAuthorizationReplyPrefix + requestID.String()
+	pubsub := r.sharedRedis.Subscribe(requestContext, replyChannel)
+	defer pubsub.Close()
+	if _, err := pubsub.Receive(requestContext); err != nil {
+		return nil, fmt.Errorf("subscribe Billing authorization reply: %w", err)
+	}
+	replies := pubsub.Channel(redis.WithChannelSize(1))
+
+	// [COMMENT]: Fixed-width wire is request UUID + user UUID; subscribe-before-publish closes the reply race.
+	request := make([]byte, 0, 32)
+	request = append(request, requestID[:]...)
+	request = append(request, userID[:]...)
+	subscribers, err := r.sharedRedis.Publish(requestContext, billingAuthorizationRequestChannel, request).Result()
 	if err != nil {
-		return nil, fmt.Errorf("request IAM Billing authorization: %w", err)
+		return nil, fmt.Errorf("publish IAM Billing authorization request: %w", err)
 	}
-	if response.Header.Get("Aurora-Error") != "" {
-		return nil, errors.New(response.Header.Get("Aurora-Error"))
+	if subscribers == 0 {
+		return nil, errors.New("IAM Billing authorization resolver is unavailable")
 	}
-	if _, err := decodeBillingPermissions(response.Data); err != nil {
-		return nil, err
+
+	select {
+	case <-requestContext.Done():
+		return nil, fmt.Errorf("request IAM Billing authorization: %w", requestContext.Err())
+	case response, ok := <-replies:
+		if !ok {
+			return nil, errors.New("IAM Billing authorization reply subscription closed")
+		}
+		payload := []byte(response.Payload)
+		if len(payload) == 0 {
+			return nil, errors.New("IAM returned an empty Billing authorization response")
+		}
+		if payload[0] != 1 {
+			return nil, errors.New(string(payload[1:]))
+		}
+		if _, err := decodeBillingPermissions(payload[1:]); err != nil {
+			return nil, err
+		}
+		return payload[1:], nil
 	}
-	return response.Data, nil
 }
 
 func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forceIAM bool) (map[string]struct{}, error) {
@@ -186,7 +229,7 @@ func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forc
 		}
 
 		token := uuid.NewString()
-		acquired, err := r.redis.SetNX(ctx, lockKey, token, 2*time.Second).Result()
+		acquired, err := r.authRedis.SetNX(ctx, lockKey, token, 2*time.Second).Result()
 		if err != nil {
 			return nil, fmt.Errorf("acquire authorization refresh lock: %w", err)
 		}
@@ -205,7 +248,7 @@ func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forc
 		permissions, loadErr := func() (map[string]struct{}, error) {
 			defer func() {
 				// [COMMENT]: Compare-and-delete ngăn owner cũ xóa lock đã hết hạn rồi được pod khác chiếm.
-				_ = r.redis.Eval(context.Background(), `
+				_ = r.authRedis.Eval(context.Background(), `
 					if redis.call("GET", KEYS[1]) == ARGV[1] then
 						return redis.call("DEL", KEYS[1])
 					end
@@ -213,18 +256,18 @@ func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forc
 				`, []string{lockKey}, token).Err()
 			}()
 
-			expectedGeneration, generationErr := r.redis.Get(ctx, generationKey).Result()
+			expectedGeneration, generationErr := r.authRedis.Get(ctx, generationKey).Result()
 			if errors.Is(generationErr, redis.Nil) {
 				expectedGeneration = "0"
 			} else if generationErr != nil {
 				return nil, fmt.Errorf("read authorization generation: %w", generationErr)
 			}
-			binary, requestErr := r.requestIAM(ctx, userID)
+			binary, requestErr := r.requestAuthorization(ctx, userID)
 			if requestErr != nil {
 				return nil, requestErr
 			}
-			// [COMMENT]: Lua generation fence không cho DB snapshot cũ ghi đè invalidation xảy ra trong lúc NATS/DB đang chạy.
-			written, writeErr := r.redis.Eval(ctx, `
+			// [COMMENT]: Lua generation fence không cho DB snapshot cũ ghi đè invalidation xảy ra trong lúc request/DB đang chạy.
+			written, writeErr := r.authRedis.Eval(ctx, `
 				local current = redis.call("GET", KEYS[2]) or "0"
 				if current ~= ARGV[2] then return 0 end
 				redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[3])
@@ -275,7 +318,7 @@ func (r *AuthorizationResolver) Resolve(ctx context.Context, userID uuid.UUID, c
 		return nil, err
 	}
 	permissions := value.(map[string]struct{})
-	// [COMMENT]: L1 TTL ngắn giới hạn stale window nếu NATS invalidation tạm thời gián đoạn.
+	// [COMMENT]: L1 TTL ngắn giới hạn stale window nếu Shared Redis invalidation tạm thời gián đoạn.
 	r.l1Mu.Lock()
 	if len(r.l1) >= maxAuthorizationL1Entries {
 		now := time.Now()

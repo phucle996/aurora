@@ -2,8 +2,8 @@
 // 📂 sre/zone_catalog.rs — SRE Admin Zone Catalog Handler (GET /admin/core/zones/catalog)
 // ======================================================================================================
 
-use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::get_all_zones;
 use crate::observability::logger::Logger;
 use crate::sre::claims::SreTokenManager;
@@ -25,7 +25,7 @@ pub struct ZoneCatalogEntry {
 pub async fn handle_admin_zone_catalog(
     _session_mgr: &Arc<SessionManager>,
     _token_mgr: &Arc<SreTokenManager>,
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     _client_headers: &HashMap<String, String>,
     method: &str,
@@ -35,7 +35,7 @@ pub async fn handle_admin_zone_catalog(
         return None;
     }
 
-    let all_zones = get_all_zones(nats, redis_client).await;
+    let all_zones = get_all_zones(shared_redis, redis_client).await;
     let mut catalog = Vec::new();
 
     for z in all_zones {

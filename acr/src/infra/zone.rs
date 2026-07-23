@@ -1,14 +1,15 @@
 // ======================================================================================================
-// 📂 infra/zone.rs — Shared L1/L2 Zone Cache Primitives & NATS Zone Client
+// 📂 infra/zone.rs — Shared L1/L2 Zone Cache Primitives
 //
 // 📌 VAI TRÒ:
 //   - Cung cấp bộ L1 in-process Cache dùng chung (Shared L1 Cache) cho mọi domain (user, sre, billing).
-//   - Nếu miscache mà không dính Negative Cache -> gọi NATS Core `hierarchy.zone.get_zone_list` sync catalog.
+//   - Nếu miscache mà không dính Negative Cache -> gọi Shared Redis `hierarchy.zone.get_zone_list`.
 // ======================================================================================================
 
-use crate::infra::nats::Nats;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
@@ -20,21 +21,27 @@ pub mod zone_proto {
 
 use prost::Message as _;
 
-/// Gọi NATS Core request-reply đến Controlplane để lấy toàn bộ danh sách Zone.
-pub async fn fetch_all_zones_from_nats(nats: &Nats) -> Result<Vec<zone_proto::ZoneEntry>, String> {
+/// Gọi Shared Redis request-reply đến Controlplane để lấy toàn bộ danh sách Zone.
+pub async fn fetch_all_zones_from_shared_redis(
+    shared_redis: &Arc<SharedRedisBus>,
+) -> Result<Vec<zone_proto::ZoneEntry>, String> {
     let req = zone_proto::GetZoneListRequest {};
     let mut buf = Vec::new();
     req.encode(&mut buf)
-        .map_err(|e| format!("zone.nats: failed to encode GetZoneListRequest: {}", e))?;
+        .map_err(|e| format!("zone.redis: failed to encode GetZoneListRequest: {}", e))?;
 
-    let msg = nats
-        .client()
-        .request("hierarchy.zone.get_zone_list".to_string(), buf.into())
+    let response = shared_redis
+        .request(
+            "hierarchy.zone.get_zone_list",
+            "hierarchy.zone.get_zone_list.reply.",
+            buf,
+            Duration::from_secs(5),
+        )
         .await
-        .map_err(|e| format!("zone.nats: NATS request failed: {}", e))?;
+        .map_err(|e| format!("zone.redis: Shared Redis request failed: {}", e))?;
 
-    let resp = zone_proto::GetZoneListResponse::decode(msg.payload)
-        .map_err(|e| format!("zone.nats: failed to decode GetZoneListResponse: {}", e))?;
+    let resp = zone_proto::GetZoneListResponse::decode(response.as_slice())
+        .map_err(|e| format!("zone.redis: failed to decode GetZoneListResponse: {}", e))?;
 
     Ok(resp.zones)
 }
@@ -84,9 +91,9 @@ fn get_l1_cache() -> &'static SharedL1ZoneCache {
 
 // ─── Public Functions ──────────────────────────────────────────────────────────
 
-/// [COMMENT]: Phân giải zone_code -> (zone_id, status) qua L1 -> Redis L2 -> NATS Fallback
+/// [COMMENT]: Phân giải zone_code -> (zone_id, status) qua L1 -> Shared Redis L2 -> CP fallback.
 pub async fn resolve_code_to_id_and_status(
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     zone_code: &str,
 ) -> Option<(String, String)> {
@@ -114,8 +121,8 @@ pub async fn resolve_code_to_id_and_status(
         }
     }
 
-    // 3. Mis-cache (không dính Negative) -> Call NATS Core sync toàn bộ zone catalog
-    sync_zones_from_nats(nats, redis_client).await;
+    // 3. Mis-cache (không dính Negative) -> Shared Redis request sync toàn bộ zone catalog.
+    sync_zones_from_controlplane(shared_redis, redis_client).await;
 
     // 4. Retry L1 sau sync
     if let Some((id, status)) = l1_lookup_code(&clean_code).await {
@@ -129,7 +136,7 @@ pub async fn resolve_code_to_id_and_status(
     Logger::sys_warn(
         "zone.cache",
         &format!(
-            "Zone code '{}' not found after NATS sync. Set negative cache.",
+            "Zone code '{}' not found after Controlplane sync. Set negative cache.",
             clean_code
         ),
         "invalid_zone",
@@ -141,8 +148,11 @@ pub async fn resolve_code_to_id_and_status(
 }
 
 /// [COMMENT]: Lấy danh sách toàn bộ zones từ Shared L1 Cache
-pub async fn get_all_zones(nats: &Nats, redis_client: &redis::Client) -> Vec<ZoneItem> {
-    sync_zones_from_nats(nats, redis_client).await;
+pub async fn get_all_zones(
+    shared_redis: &Arc<SharedRedisBus>,
+    redis_client: &redis::Client,
+) -> Vec<ZoneItem> {
+    sync_zones_from_controlplane(shared_redis, redis_client).await;
 
     let cache = get_l1_cache();
     let map = cache.code_to_id.read().await;
@@ -189,7 +199,7 @@ pub async fn get_all_zones(nats: &Nats, redis_client: &redis::Client) -> Vec<Zon
         .collect()
 }
 
-/// [COMMENT]: Invalidate zone cache khi nhận NATS event
+/// [COMMENT]: Invalidate zone L1 khi nhận Shared Redis event.
 pub async fn invalidate_zone(event: &zone_proto::ZoneInvalidatedEvent) {
     let clean_code = event.zone_code.trim().to_lowercase();
     if event.deleted {
@@ -228,7 +238,9 @@ async fn l1_lookup_code(code: &str) -> Option<(String, String)> {
 }
 
 async fn l1_set_zone(code: &str, id: &str, status: &str, name: &str) {
-    let expiry = Instant::now() + Duration::from_secs(600);
+    // [COMMENT]: PubSub có thể mất message khi reconnect; TTL ngắn chặn stale L1 vô hạn
+    // và buộc ACR quay về Shared Redis L2 định kỳ.
+    let expiry = Instant::now() + Duration::from_secs(30);
 
     let cache = get_l1_cache();
     cache.code_to_id.write().await.insert(
@@ -306,10 +318,13 @@ async fn l2_set_negative(redis_client: &redis::Client, code: &str) {
     }
 }
 
-async fn sync_zones_from_nats(nats: &Nats, redis_client: &redis::Client) {
+async fn sync_zones_from_controlplane(
+    shared_redis: &Arc<SharedRedisBus>,
+    redis_client: &redis::Client,
+) {
     let _lock = get_l1_cache().single_flight.lock().await;
 
-    if let Ok(zones) = fetch_all_zones_from_nats(nats).await {
+    if let Ok(zones) = fetch_all_zones_from_shared_redis(shared_redis).await {
         for z in &zones {
             let clean_code = z.zone_code.trim().to_lowercase();
             l1_set_zone(&clean_code, &z.zone_id, &z.status, &z.name).await;

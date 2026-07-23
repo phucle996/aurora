@@ -1,15 +1,15 @@
-# Central Kafka Platform Transport — God View
+# Kafka Transport Plane — God View
 
 > [!IMPORTANT]
 > Đây là Source of Truth cho durable transport giữa Controlplane, Job Orchestrator và Dataplane.
-> Kafka thay hoàn toàn Redis Job; thay đổi này không thay Security-State Redis, shared Cache Redis,
-> Central NATS hoặc NATS JetStream KV riêng của từng Zone.
+> Kafka thay hoàn toàn Redis Job và chỉ là durable transport plane. NATS Core chở soft-state
+> Central↔Zone; NATS JetStream KV là database riêng của từng Zone. Dataplane không kết nối Redis.
 
 ## 0. Control header
 
 | Thuộc tính | Contract |
 |---|---|
-| Broker | Central Kafka, KRaft |
+| Broker | Kafka transport cluster, KRaft |
 | Dev topology | 3 combined broker/controller, replication factor `3`, min ISR `2` |
 | Wire format | Protobuf binary; không dùng JSON cho platform command/result/report |
 | Delivery | At-least-once |
@@ -17,20 +17,22 @@
 | Consumer | Manual offset commit |
 | Poison data | Publish `DeadLetterRecordV1` thành công rồi mới commit source offset |
 | Zone runtime database | NATS JetStream KV riêng Zone; Kafka không thay KV |
-| Soft runtime watch | Shared Cache Redis có TTL; Kafka không lưu dynamic per-viewer state |
+| Soft runtime watch | NATS Core + pod memory; Shared Redis chỉ nằm phía Central |
 
 ## 1. Physical topology và trust boundary
 
 ```mermaid
 flowchart LR
-    CP[Controlplane] -->|IAM verification intent| K[(Central Kafka)]
+    CP[Controlplane] -->|IAM verification intent| K[(Kafka transport)]
     PG[(Controlplane PostgreSQL)] -->|logical WAL| JO[Job Orchestrator]
     JO -->|commands, metadata snapshot| K
     K -->|manual consume| DP[Dataplane đúng Zone]
     DP -->|results, reports, storage snapshots| K
     K -->|manual consume| JO
     DP --> ZKV[(Zone NATS JetStream KV)]
-    JO --> CN[Central NATS]
+    JO <-->|runtime watch/report| CN[NATS Core]
+    CN <--> DP
+    JO <--> R[(Central Shared Redis)]
     CN --> NS[Notification Service]
     NS --> UI[Centrifugo / UI]
 ```
@@ -40,8 +42,8 @@ Connection rules:
 - ACR không kết nối Kafka. ACR chỉ gọi IAM qua security boundary hiện có.
 - IAM service không import Kafka hay Protobuf; nó gọi `AccountVerificationPublisher`.
 - Controlplane không consume platform job topics và không kết nối Zone KV.
-- JO có PostgreSQL/WAL, Kafka, Central NATS và bounded Cache Redis; không có Zone KV credential.
-- Dataplane có Kafka, Cache Redis cho runtime watch, và KV của đúng Zone; không có CP PostgreSQL hay Central NATS.
+- JO có PostgreSQL/WAL, Kafka, NATS Core và bounded Shared Redis; không có Zone KV credential.
+- Dataplane có Kafka, NATS Core và KV của đúng Zone; không có Redis hoặc CP PostgreSQL credential.
 - Kafka ACL production phải tách principal, producer topic và consumer group. Dataplane Zone A không được
   subscribe command/metadata topic của Zone B.
 
@@ -218,7 +220,7 @@ Registration identity commit xảy ra trước publish; publish là best-effort,
 | Zone command cross-wire | Topic + `target_zone_id` + ACL | DLQ/fail-close |
 | Metadata event cũ | Full snapshot + compacted topic + KV CAS | Duplicate/stale no-op |
 | Cache Redis mất | Durable Kafka không bị mất | Reconciler/watch suy giảm; job transport vẫn durable |
-| Central NATS mất | Kafka command/result vẫn tồn tại | Notification/event workflow retry theo boundary riêng |
+| NATS Core realtime mất | Kafka command/result vẫn tồn tại | Runtime soft state mất sample; heartbeat/watch kế tiếp phục hồi |
 
 Security production:
 

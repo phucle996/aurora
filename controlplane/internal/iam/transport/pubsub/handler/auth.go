@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
+	"sync"
 	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
-	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
@@ -18,423 +16,409 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
 
-// [COMMENT]: AuthNatsHandler quản lý các NATS subscription liên quan đến nghiệp vụ Auth
-type AuthNatsHandler struct {
+const (
+	verifyCredentialsChannel     = "iam.auth.verify_credentials"
+	verifyCredentialsReplyPrefix = "iam.auth.verify_credentials.reply."
+
+	verifyOpaqueTokenChannel     = "iam.auth.verify_opaque_token"
+	verifyOpaqueTokenReplyPrefix = "iam.auth.verify_opaque_token.reply."
+
+	revokeOpaqueTokenChannel     = "iam.auth.revoke_opaque_token"
+	revokeOpaqueTokenReplyPrefix = "iam.auth.revoke_opaque_token.reply."
+)
+
+// [COMMENT]: AuthRedisHandler quản lý các Redis PubSub subscription liên quan đến nghiệp vụ Auth
+type AuthRedisHandler struct {
 	cfg                   *config.Config
+	sharedRedis           *goredis.Client
 	authService           iamSvcInterface.AuthService
 	sessionRefreshService iamSvcInterface.SessionRefreshService
-	rbacPlatformRepo      iamRepoInterface.RbacPlatformRepository
-	redis                 *goredis.Client
 	otel                  *observability.OTel
+
+	cancel context.CancelFunc
+	pubsub *goredis.PubSub
+	loopWG sync.WaitGroup
+	workWG sync.WaitGroup
+	slots  chan struct{}
 }
 
-// [COMMENT]: NewAuthNatsHandler khởi tạo handler lắng nghe các sự kiện qua NATS Core cho Auth domain
-func NewAuthNatsHandler(
+// [COMMENT]: NewAuthRedisHandler khởi tạo handler lắng nghe các sự kiện qua Shared Redis PubSub cho Auth domain
+func NewAuthRedisHandler(
 	cfg *config.Config,
+	sharedRedis *goredis.Client,
 	authService iamSvcInterface.AuthService,
 	sessionRefreshService iamSvcInterface.SessionRefreshService,
-	rbacPlatformRepo iamRepoInterface.RbacPlatformRepository,
-	redisClient *goredis.Client,
 	otel *observability.OTel,
-) *AuthNatsHandler {
-	return &AuthNatsHandler{
+) (*AuthRedisHandler, error) {
+	if sharedRedis == nil || authService == nil || sessionRefreshService == nil {
+		return nil, errors.New("auth Redis handler requires Shared Redis, AuthService and SessionRefreshService")
+	}
+	return &AuthRedisHandler{
 		cfg:                   cfg,
+		sharedRedis:           sharedRedis,
 		authService:           authService,
 		sessionRefreshService: sessionRefreshService,
-		rbacPlatformRepo:      rbacPlatformRepo,
-		redis:                 redisClient,
 		otel:                  otel,
+		slots:                 make(chan struct{}, 64),
+	}, nil
+}
+
+// [COMMENT]: Start bắt đầu đăng ký các channel xác thực qua Shared Redis PubSub.
+func (h *AuthRedisHandler) Start() error {
+	if h == nil {
+		return errors.New("auth Redis handler is nil")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	pubsub := h.sharedRedis.Subscribe(ctx,
+		verifyCredentialsChannel,
+		verifyOpaqueTokenChannel,
+		revokeOpaqueTokenChannel,
+	)
+	if _, err := pubsub.Receive(ctx); err != nil {
+		cancel()
+		_ = pubsub.Close()
+		return fmt.Errorf("subscribe Auth Redis channels: %w", err)
+	}
+	h.cancel = cancel
+	h.pubsub = pubsub
+
+	h.loopWG.Add(1)
+	go func() {
+		defer h.loopWG.Done()
+		channel := pubsub.Channel(goredis.WithChannelSize(256))
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case message, ok := <-channel:
+				if !ok {
+					return
+				}
+				select {
+				case h.slots <- struct{}{}:
+					h.workWG.Add(1)
+					go func(msg *goredis.Message) {
+						defer h.workWG.Done()
+						defer func() { <-h.slots }()
+						h.dispatch(msg)
+					}(message)
+				default:
+					// [COMMENT]: CP replica bị quá tải sẽ skip tin nhắn mà không làm nghẽn DB
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
+	if msg == nil {
+		return
+	}
+	payload := []byte(msg.Payload)
+	switch msg.Channel {
+	case verifyCredentialsChannel:
+		h.handleVerifyCredentials(payload)
+	case verifyOpaqueTokenChannel:
+		h.handleVerifyOpaqueToken(payload)
+	case revokeOpaqueTokenChannel:
+		h.handleRevokeOpaqueToken(payload)
 	}
 }
 
-// [COMMENT]: Subscribe đăng ký các luồng xác thực qua NATS Core.
-func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
-	const queueGroup = "iam_auth_service" // Đảm bảo HA bằng cách chia tải qua Queue Group
-	var subs []*nats.Subscription
+// =========================================================================
+// 1. LUỒNG XÁC THỰC CREDENTIALS (VerifyUserCredentials)
+// =========================================================================
+func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// =========================================================================
-	// 1. LUỒNG XÁC THỰC CREDENTIALS (VerifyUserCredentials)
-	// =========================================================================
-	subCredentials, err := nc.QueueSubscribe("iam.auth.verify_credentials", queueGroup, func(msg *nats.Msg) {
-		ctx := context.Background()
+	var span trace.Span
+	if h.otel != nil {
+		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.verify_credentials")
+		defer span.End()
+		span.SetAttributes(
+			attribute.String("messaging.system", "redis"),
+			attribute.String("messaging.destination", verifyCredentialsChannel),
+		)
+	}
 
-		// [COMMENT]: Trích xuất distributed trace context (traceparent) từ NATS headers
-		if msg.Header != nil {
-			traceparent := msg.Header.Get("traceparent")
-			if traceparent != "" {
-				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
-			}
-		}
+	// [COMMENT]: PubSub fan-out tới mọi CP replica, vì vậy request_id là bắt buộc để chỉ một
+	// replica được phép chạm DB và phát refresh token cho cùng một lần đăng nhập.
+	if len(payload) <= 16 {
+		logger.SysWarn("Redis.VerifyUserCredentials", "Missing request id envelope")
+		return
+	}
+	requestID, err := uuid.FromBytes(payload[:16])
+	if err != nil || requestID == uuid.Nil {
+		logger.SysWarn("Redis.VerifyUserCredentials", "Invalid request id envelope")
+		return
+	}
+	reqData := payload[16:]
+	replyChannel := verifyCredentialsReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:verify_credentials:" + requestID.String()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil || !acquired {
+		// [COMMENT]: Redis lỗi thì fail-close; replica thua lock im lặng để winner trả lời ACR.
+		return
+	}
 
-		// [COMMENT]: Khởi tạo server span để giám sát hiệu năng bằng OTel
-		var span trace.Span
-		if h.otel != nil {
-			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.verify_credentials")
-			defer span.End()
-			span.SetAttributes(
-				attribute.String("messaging.system", "nats"),
-				attribute.String("messaging.destination", "iam.auth.verify_credentials"),
-			)
-		}
-
-		// [COMMENT]: Định nghĩa hàm inline để respond error nhanh
-		respondError := func(errMsg string) {
-			resp := &iamproto.VerifyUserCredentialsResponse{
-				Valid:        false,
-				ErrorMessage: errMsg,
-			}
-			respData, err := proto.Marshal(resp)
-			if err != nil {
-				logger.SysError("NATS.VerifyUserCredentials", "Failed to marshal error response")
-				return
-			}
-			_ = msg.Respond(respData)
-		}
-
-		// [COMMENT]: Giải mã nhị phân request payload (Protobuf)
-		var req iamproto.VerifyUserCredentialsRequest
-		if err := proto.Unmarshal(msg.Data, &req); err != nil {
-			logger.SysError("NATS.VerifyUserCredentials", "Failed to unmarshal request data")
-			respondError("invalid request payload")
+	respond := func(resp *iamproto.VerifyUserCredentialsResponse) {
+		if replyChannel == "" {
 			return
 		}
-
-		// [COMMENT]: Kiểm tra tham số cơ bản
-		if req.Username == "" || req.Password == "" {
-			logger.SysWarn("NATS.VerifyUserCredentials", "Username and password are required")
-			respondError("Username and password are required")
-			return
-		}
-
-		var clientDeviceID uuid.UUID
-		if req.ClientDeviceId != "" {
-			parsed, err := uuid.Parse(req.ClientDeviceId)
-			if err == nil {
-				clientDeviceID = parsed
-			}
-		}
-
-		// [COMMENT]: Map dữ liệu sang LoginRequest của Domain Entity
-		loginReq := iamEntity.LoginRequest{
-			Username:        req.Username,
-			Password:        req.Password,
-			DevicePublicKey: req.PublicKey,
-			TrustDevice:     req.TrustDevice,
-			DeviceName:      req.DeviceName,
-			ClientDeviceID:  clientDeviceID,
-			TenantDomain:    req.TenantDomain,
-			RemoteIP:        req.ClientIp,
-			UserAgent:       req.UserAgent,
-		}
-
-		// [COMMENT]: Gọi AuthService xử lý kiểm tra credentials & đăng ký thiết bị dưới DB
-		res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
-		if err != nil {
-			if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
-				// [COMMENT]: Password đã đúng và mail đã queue/cooldown; ACR dùng code ổn định này để không cấp session.
-				respondError("ACCOUNT_VERIFICATION_REQUIRED")
-				return
-			}
-			if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
-				logger.SysWarn("NATS.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
-				respondError(iamTaxonomy.ErrInvalidCredentials.Error())
-				return
-			}
-
-			if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
-				logger.SysWarn("NATS.VerifyUserCredentials", "Login attempt failed: invalid credentials")
-				respondError(iamTaxonomy.ErrInvalidCredentials.Error())
-				return
-			}
-
-			logger.SysError("NATS.VerifyUserCredentials", "Failed to verify credentials due to system error")
-			respondError("authentication service temporarily unavailable")
-			return
-		}
-
-		// [COMMENT]: Chuẩn bị response: chỉ trả tenant_id, không trả tenant_code để bảo vệ an toàn định danh
-		resp := &iamproto.VerifyUserCredentialsResponse{
-			Valid:                 res.Valid,
-			UserId:                res.UserID,
-			RoleId:                res.RoleID,
-			Level:                 res.Level,
-			TenantId:              res.TenantID, // Trả tenant_id như yêu cầu
-			ClientDeviceId:        res.ClientDeviceID,
-			RefreshToken:          res.RefreshToken,
-			RefreshTokenExpiresAt: res.RefreshTokenExpiresAt.Unix(),
-			Username:              res.Username,
-			ClientProofPublicKey:  res.ClientProofPublicKey,
-		}
-
 		respData, err := proto.Marshal(resp)
 		if err != nil {
-			logger.SysError("NATS.VerifyUserCredentials", "Failed to marshal response payload")
+			logger.SysError("Redis.VerifyUserCredentials", "Failed to marshal response payload")
 			return
 		}
-
-		if err := msg.Respond(respData); err != nil {
-			logger.SysError("NATS.VerifyUserCredentials", "Failed to send NATS response")
+		if err := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); err != nil {
+			logger.SysError("Redis.VerifyUserCredentials", "Failed to send Redis reply")
 		}
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.auth.verify_credentials: %w", err)
 	}
-	subs = append(subs, subCredentials)
-	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.verify_credentials on queue group %s", queueGroup))
 
-	// =========================================================================
-	// 2. LUỒNG XÁC THỰC OPAQUE REFRESH TOKEN (VerifyOpaqueRefreshToken)
-	// =========================================================================
-	subVerifyToken, err := nc.QueueSubscribe("iam.auth.verify_opaque_token", queueGroup, func(msg *nats.Msg) {
-		ctx := context.Background()
+	respondError := func(errMsg string) {
+		respond(&iamproto.VerifyUserCredentialsResponse{
+			Valid:        false,
+			ErrorMessage: errMsg,
+		})
+	}
 
-		if msg.Header != nil {
-			traceparent := msg.Header.Get("traceparent")
-			if traceparent != "" {
-				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
-			}
+	var req iamproto.VerifyUserCredentialsRequest
+	if err := proto.Unmarshal(reqData, &req); err != nil {
+		logger.SysError("Redis.VerifyUserCredentials", "Failed to unmarshal request data")
+		respondError("invalid request payload")
+		return
+	}
+
+	if req.Username == "" || req.Password == "" {
+		logger.SysWarn("Redis.VerifyUserCredentials", "Username and password are required")
+		respondError("Username and password are required")
+		return
+	}
+
+	var clientDeviceID uuid.UUID
+	if req.ClientDeviceId != "" {
+		if parsed, err := uuid.Parse(req.ClientDeviceId); err == nil {
+			clientDeviceID = parsed
 		}
+	}
 
-		var span trace.Span
-		if h.otel != nil {
-			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.verify_opaque_token")
-			defer span.End()
-			span.SetAttributes(
-				attribute.String("messaging.system", "nats"),
-				attribute.String("messaging.destination", "iam.auth.verify_opaque_token"),
-			)
-		}
+	loginReq := iamEntity.LoginRequest{
+		Username:        req.Username,
+		Password:        req.Password,
+		DevicePublicKey: req.PublicKey,
+		TrustDevice:     req.TrustDevice,
+		DeviceName:      req.DeviceName,
+		ClientDeviceID:  clientDeviceID,
+		TenantDomain:    req.TenantDomain,
+		RemoteIP:        req.ClientIp,
+		UserAgent:       req.UserAgent,
+	}
 
-		respondError := func(errMsg string) {
-			resp := &iamproto.VerifyOpaqueRefreshTokenResponse{
-				Valid:        false,
-				ErrorMessage: errMsg,
-			}
-			respData, err := proto.Marshal(resp)
-			if err != nil {
-				logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to marshal error response")
-				return
-			}
-			_ = msg.Respond(respData)
-		}
-
-		var req iamproto.VerifyOpaqueRefreshTokenRequest
-		if err := proto.Unmarshal(msg.Data, &req); err != nil {
-			logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
-			respondError("invalid request payload")
+	res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
+	if err != nil {
+		if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
+			respondError("ACCOUNT_VERIFICATION_REQUIRED")
 			return
 		}
+		if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
+			logger.SysWarn("Redis.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
+			respondError(iamTaxonomy.ErrInvalidCredentials.Error())
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
+			logger.SysWarn("Redis.VerifyUserCredentials", "Login attempt failed: invalid credentials")
+			respondError(iamTaxonomy.ErrInvalidCredentials.Error())
+			return
+		}
+		logger.SysError("Redis.VerifyUserCredentials", "Failed to verify credentials due to system error")
+		respondError("authentication service temporarily unavailable")
+		return
+	}
 
-		userUUID, err := uuid.Parse(req.UserId)
+	resp := &iamproto.VerifyUserCredentialsResponse{
+		Valid:                 res.Valid,
+		UserId:                res.UserID,
+		RoleId:                res.RoleID,
+		Level:                 res.Level,
+		TenantId:              res.TenantID,
+		ClientDeviceId:        res.ClientDeviceID,
+		RefreshToken:          res.RefreshToken,
+		RefreshTokenExpiresAt: res.RefreshTokenExpiresAt.Unix(),
+		Username:              res.Username,
+		ClientProofPublicKey:  res.ClientProofPublicKey,
+	}
+	respond(resp)
+}
+
+// =========================================================================
+// 2. LUỒNG XÁC THỰC OPAQUE REFRESH TOKEN (VerifyOpaqueRefreshToken)
+// =========================================================================
+func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var span trace.Span
+	if h.otel != nil {
+		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.verify_opaque_token")
+		defer span.End()
+		span.SetAttributes(
+			attribute.String("messaging.system", "redis"),
+			attribute.String("messaging.destination", verifyOpaqueTokenChannel),
+		)
+	}
+
+	// [COMMENT]: Refresh rotation là side effect; khóa request ngăn nhiều CP replica cùng
+	// xác minh/rotate một opaque token khi nhận chung một Redis PubSub message.
+	if len(payload) <= 16 {
+		logger.SysWarn("Redis.VerifyOpaqueRefreshToken", "Missing request id envelope")
+		return
+	}
+	requestID, err := uuid.FromBytes(payload[:16])
+	if err != nil || requestID == uuid.Nil {
+		logger.SysWarn("Redis.VerifyOpaqueRefreshToken", "Invalid request id envelope")
+		return
+	}
+	reqData := payload[16:]
+	replyChannel := verifyOpaqueTokenReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:verify_opaque_token:" + requestID.String()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil || !acquired {
+		return
+	}
+
+	respond := func(resp *iamproto.VerifyOpaqueRefreshTokenResponse) {
+		if replyChannel == "" {
+			return
+		}
+		respData, err := proto.Marshal(resp)
 		if err != nil {
-			respondError(fmt.Sprintf("invalid user id format: %v", err))
+			logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to marshal response payload")
 			return
 		}
+		if err := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); err != nil {
+			logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to send Redis reply")
+		}
+	}
 
-		var tenantUUIDPtr *uuid.UUID
-		if req.TenantId != nil && *req.TenantId != "" {
-			parsed, err := uuid.Parse(*req.TenantId)
-			if err != nil {
-				respondError(fmt.Sprintf("invalid tenant id format: %v", err))
-				return
-			}
+	respondError := func(errMsg string) {
+		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:        false,
+			ErrorMessage: errMsg,
+		})
+	}
+
+	var req iamproto.VerifyOpaqueRefreshTokenRequest
+	if err := proto.Unmarshal(reqData, &req); err != nil {
+		logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
+		respondError("invalid request payload")
+		return
+	}
+
+	userUUID, err := uuid.Parse(req.UserId)
+	if err != nil {
+		respondError(fmt.Sprintf("invalid user id format: %v", err))
+		return
+	}
+
+	var tenantUUIDPtr *uuid.UUID
+	if req.TenantId != nil && *req.TenantId != "" {
+		if parsed, err := uuid.Parse(*req.TenantId); err == nil {
 			tenantUUIDPtr = &parsed
-		}
-
-		res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, tenantUUIDPtr, userUUID)
-		if err != nil {
-			respondError(err.Error())
+		} else {
+			respondError(fmt.Sprintf("invalid tenant id format: %v", err))
 			return
 		}
-
-		resp := &iamproto.VerifyOpaqueRefreshTokenResponse{
-			Valid:    res.Valid,
-			UserId:   res.UserID,
-			TenantId: res.TenantID,
-			Role:     res.RoleID,
-			Level:    res.Level,
-			Username: res.Username,
-		}
-
-		respData, err := proto.Marshal(resp)
-		if err != nil {
-			logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to marshal response payload")
-			return
-		}
-
-		if err := msg.Respond(respData); err != nil {
-			logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to send NATS response")
-		}
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.auth.verify_opaque_token: %w", err)
 	}
-	subs = append(subs, subVerifyToken)
-	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.verify_opaque_token on queue group %s", queueGroup))
 
-	// =========================================================================
-	// 3. LUỒNG THU HỒI REFRESH TOKEN (RevokeOpaqueRefreshToken)
-	// =========================================================================
-	subRevokeToken, err := nc.QueueSubscribe("iam.auth.revoke_opaque_token", queueGroup, func(msg *nats.Msg) {
-		ctx := context.Background()
+	res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, tenantUUIDPtr, userUUID)
+	if err != nil {
+		respondError(err.Error())
+		return
+	}
 
-		if msg.Header != nil {
-			traceparent := msg.Header.Get("traceparent")
-			if traceparent != "" {
-				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
-			}
-		}
+	resp := &iamproto.VerifyOpaqueRefreshTokenResponse{
+		Valid:    res.Valid,
+		UserId:   res.UserID,
+		TenantId: res.TenantID,
+		Role:     res.RoleID,
+		Level:    res.Level,
+		Username: res.Username,
+	}
+	respond(resp)
+}
 
-		var span trace.Span
-		if h.otel != nil {
-			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.revoke_opaque_token")
-			defer span.End()
-			span.SetAttributes(
-				attribute.String("messaging.system", "nats"),
-				attribute.String("messaging.destination", "iam.auth.revoke_opaque_token"),
-			)
-		}
+// =========================================================================
+// 3. LUỒNG THU HỒI REFRESH TOKEN (RevokeOpaqueRefreshToken)
+// =========================================================================
+func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-		var req iamproto.RevokeOpaqueRefreshTokenRequest
-		if err := proto.Unmarshal(msg.Data, &req); err != nil {
-			logger.SysError("NATS.RevokeOpaqueRefreshToken", "Failed to unmarshal request data")
-			return
-		}
+	var span trace.Span
+	if h.otel != nil {
+		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.revoke_opaque_token")
+		defer span.End()
+		span.SetAttributes(
+			attribute.String("messaging.system", "redis"),
+			attribute.String("messaging.destination", revokeOpaqueTokenChannel),
+		)
+	}
 
-		err := h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)
-		if err != nil {
-			logger.SysError("NATS.RevokeOpaqueRefreshToken", fmt.Sprintf("Failed to revoke refresh token: %s", err.Error()))
-		}
+	// [COMMENT]: Revoke cũng dùng request envelope và distributed lock để không khuếch đại
+	// write load theo số lượng CP replica.
+	if len(payload) <= 16 {
+		logger.SysWarn("Redis.RevokeOpaqueRefreshToken", "Missing request id envelope")
+		return
+	}
+	requestID, err := uuid.FromBytes(payload[:16])
+	if err != nil || requestID == uuid.Nil {
+		logger.SysWarn("Redis.RevokeOpaqueRefreshToken", "Invalid request id envelope")
+		return
+	}
+	reqData := payload[16:]
+	replyChannel := revokeOpaqueTokenReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:revoke_opaque_token:" + requestID.String()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil || !acquired {
+		return
+	}
 
+	var req iamproto.RevokeOpaqueRefreshTokenRequest
+	if err := proto.Unmarshal(reqData, &req); err != nil {
+		logger.SysError("Redis.RevokeOpaqueRefreshToken", "Failed to unmarshal request data")
+		return
+	}
+
+	err = h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)
+	if err != nil {
+		logger.SysError("Redis.RevokeOpaqueRefreshToken", fmt.Sprintf("Failed to revoke refresh token: %s", err.Error()))
+	}
+
+	if replyChannel != "" {
 		resp := &iamproto.RevokeOpaqueRefreshTokenResponse{}
 		respData, _ := proto.Marshal(resp)
-		_ = msg.Respond(respData)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.auth.revoke_opaque_token: %w", err)
+		_ = h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err()
 	}
-	subs = append(subs, subRevokeToken)
-	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.revoke_opaque_token on queue group %s", queueGroup))
+}
 
-	// =========================================================================
-	// 4. RESOLVE BILLING AUTHORIZATION CHO COST MANAGER
-	// =========================================================================
-	// [COMMENT]: ACR chỉ xác thực alias. Cost lấy permission binary từ shared L2 hoặc request IAM khi miss.
-	subBillingAuthorization, err := nc.QueueSubscribe("iam.authorization.billing.get", queueGroup, func(msg *nats.Msg) {
-		respondError := func(message string) {
-			if msg.Reply == "" {
-				return
-			}
-			response := nats.NewMsg(msg.Reply)
-			response.Header.Set("Aurora-Error", message)
-			_ = nc.PublishMsg(response)
-		}
-
-		userID, err := uuid.Parse(strings.TrimSpace(string(msg.Data)))
-		if err != nil || h.rbacPlatformRepo == nil || h.redis == nil {
-			respondError("authorization context is invalid")
-			return
-		}
-
-		// [COMMENT]: Queue callback có deadline ngắn để một DB stall không giữ dispatcher NATS vô hạn.
-		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
-		defer cancel()
-
-		dataKey := fmt.Sprintf("{iam:authz:billing:%s}:data", userID)
-		generationKey := fmt.Sprintf("{iam:authz:billing:%s}:generation", userID)
-		dataGenerationKey := fmt.Sprintf("{iam:authz:billing:%s}:data_generation", userID)
-		var responseBinary []byte
-		for attempt := 0; attempt < 2; attempt++ {
-			expectedGeneration, generationErr := h.redis.Get(ctx, generationKey).Result()
-			if errors.Is(generationErr, goredis.Nil) {
-				expectedGeneration = "0"
-			} else if generationErr != nil {
-				respondError("authorization cache is unavailable")
-				return
-			}
-
-			binaryEntry, loadErr := h.rbacPlatformRepo.GetUserRolePermissions(ctx, userID)
-			if loadErr != nil {
-				logger.SysError("NATS.BillingAuthorization", "Failed to load user authorization")
-				respondError("authorization service unavailable")
-				return
-			}
-			var roleEntry iamproto.RoleEntry
-			if proto.Unmarshal(binaryEntry, &roleEntry) != nil {
-				respondError("authorization snapshot is invalid")
-				return
-			}
-
-			// [COMMENT]: Quyền workspace cụ thể không được nâng thành quyền Billing global; chỉ platform nil/wildcard hợp lệ.
-			permissions := make([]string, 0, len(roleEntry.Permissions))
-			seen := make(map[string]struct{}, len(roleEntry.Permissions))
-			for _, raw := range roleEntry.Permissions {
-				parts := strings.Split(raw, ":")
-				permission := ""
-				switch {
-				case len(parts) == 3 && parts[0] == "billing":
-					permission = raw
-				case len(parts) == 5 && parts[2] == "billing" &&
-					(parts[1] == "*" || parts[1] == uuid.Nil.String()):
-					permission = strings.Join(parts[2:], ":")
-				default:
-					continue
-				}
-				if _, exists := seen[permission]; !exists {
-					seen[permission] = struct{}{}
-					permissions = append(permissions, permission)
-				}
-			}
-			sort.Strings(permissions)
-			if len(permissions) == 0 {
-				respondError("billing permission is required")
-				return
-			}
-			responseBinary, err = proto.Marshal(&iamproto.RoleEntry{Permissions: permissions})
-			if err != nil {
-				respondError("authorization snapshot is invalid")
-				return
-			}
-
-			// [COMMENT]: Generation fence loại stale write nếu RBAC đổi trong lúc callback đang query PostgreSQL.
-			written, writeErr := h.redis.Eval(ctx, `
-				local current = redis.call("GET", KEYS[2]) or "0"
-				if current ~= ARGV[2] then return 0 end
-				redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[3])
-				redis.call("SET", KEYS[3], ARGV[2], "EX", ARGV[3])
-				if redis.call("EXISTS", KEYS[2]) == 0 then
-					redis.call("SET", KEYS[2], ARGV[2], "EX", ARGV[4])
-				end
-				return 1
-			`, []string{dataKey, generationKey, dataGenerationKey},
-				responseBinary, expectedGeneration, int64(120), int64(86400)).Int()
-			if writeErr != nil {
-				respondError("authorization cache is unavailable")
-				return
-			}
-			if written == 1 {
-				if msg.Reply != "" {
-					_ = nc.Publish(msg.Reply, responseBinary)
-				}
-				return
-			}
-		}
-		respondError("authorization changed while it was being resolved")
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.authorization.billing.get: %w", err)
+func (h *AuthRedisHandler) Stop() {
+	if h == nil {
+		return
 	}
-	subs = append(subs, subBillingAuthorization)
-	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: subscribed to iam.authorization.billing.get on queue group %s", queueGroup))
-
-	return subs, nil
+	if h.cancel != nil {
+		h.cancel()
+	}
+	if h.pubsub != nil {
+		_ = h.pubsub.Close()
+	}
+	h.loopWG.Wait()
+	h.workWG.Wait()
 }

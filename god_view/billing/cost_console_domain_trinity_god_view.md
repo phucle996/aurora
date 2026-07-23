@@ -12,14 +12,14 @@
 | Target origin | `https://cost-manager.aurora.local` |
 | Source session | IAM Trinity hiện có |
 | Target session | Opaque alias trỏ về source IAM session |
-| Security-State store | ACR Redis HA, AOF, `noeviction` |
-| Shared cache store | Controlplane Redis HA, dữ liệu có thể rebuild/evict |
+| Auth-State store | Redis HA DB 0, AOF, `noeviction`, namespace + ACL theo service |
+| Shared L2 store | Central Redis HA, cache/pubsub/stream/lock có thể rebuild/evict |
 | Handoff TTL | 60 giây, one-time `GETDEL` |
 | Alias TTL | `SESSION_TTL_SECS`, mặc định 30 phút |
 | Target refresh token | Không phát |
 | Target JWT | Không phát |
 | Cookie scope | Hai `__Host-*` cookie, host-only, `Secure`, `HttpOnly`, `SameSite=Lax` |
-| Authorization transport | Cost L1 → shared Redis L2 → NATS request IAM |
+| Authorization transport | Cost L1 → Auth Redis projection → Shared Redis request/reply IAM |
 | Critical proof | Cost-origin Ed25519 key + one-time nonce |
 
 ## 1. Security boundaries
@@ -28,10 +28,13 @@
 
 | Redis | Writer/reader | Dữ liệu |
 |---|---|---|
-| ACR Security-State | ACR read/write | IAM sessions, Cost aliases, source→alias index, handoff code, nonce, rate limit, recovery state |
-| Controlplane shared cache | IAM write; ACR catalog read; Cost cache read/lock/write-through | Billing permission projection, zone/config catalog và cache business có thể dựng lại |
+| Auth-State Redis DB 0 | ACR full security namespaces; IAM/Cost ACL-scoped | IAM sessions, Cost aliases, nonce/rate-limit và Billing authz projection |
+| Shared L2 Redis DB 0 | ACR/Controlplane/Cost/JO theo workflow | request/reply, Pub/Sub, bounded Stream, lock và cache business có thể dựng lại |
 
-Cost không có credential vào Security-State Redis. Controlplane và Cost không được ghi IAM session. Redis cache bị mất chỉ làm cache miss; Redis Security-State bị mất làm session fail-closed.
+Cost có credential ACL chỉ cho `authz:billing:{user_id}:*` và proof namespace được chỉ định; nó không thể đọc hoặc
+ghi `iam:user_session:*`, alias, handoff hay nonce của ACR. Controlplane chỉ được ghi authz projection/revocation
+namespace. Redis Cluster chỉ dùng DB 0; không dùng DB 1 để giả lập isolation. Shared L2 mất làm internal request/cache
+degraded, còn Auth-State mất làm session và authorization fail-closed.
 
 ### 1.2 Những thiết kế bị cấm
 
@@ -186,8 +189,8 @@ Key năm phần có workspace UUID cụ thể bị bỏ. Contract của writer l
 sequenceDiagram
     participant API as Cost API pod
     participant L1 as Cost in-process L1
-    participant L2 as Shared Redis L2
-    participant NATS
+    participant AR as Auth Redis projection
+    participant SR as Shared Redis PubSub
     participant IAM
     participant DB as IAM PostgreSQL
 
@@ -195,18 +198,21 @@ sequenceDiagram
     alt L1 hit and normal route
         L1-->>API: permission set
     else L1 miss
-        API->>L2: MGET data + generation + data_generation
-        alt valid generation-fenced L2
-            L2-->>API: RoleEntry bytes
-        else L2 miss/stale
-            API->>L2: SET refresh lock NX PX
-            API->>NATS: iam.authorization.billing.get(user_id)
-            NATS->>IAM: queue request
+        API->>AR: MGET data + generation + data_generation
+        alt valid generation-fenced projection
+            AR-->>API: RoleEntry bytes
+        else projection miss/stale
+            API->>AR: SET refresh lock NX PX
+            API->>SR: SUBSCRIBE per-request reply
+            API->>SR: PUBLISH request_uuid + user_uuid
+            SR->>IAM: fan-out request
+            IAM->>SR: bounded slot + request lock
             IAM->>DB: Get active user RoleEntry rows
             IAM->>IAM: Filter platform Billing; sort + dedupe
-            IAM->>L2: Lua write only if generation unchanged
-            IAM-->>API: RoleEntry protobuf bytes
-            API->>L2: Generation-fenced write-through
+            IAM->>AR: Lua write only if generation unchanged
+            IAM->>SR: PUBLISH per-request RoleEntry response
+            SR-->>API: RoleEntry protobuf bytes
+            API->>AR: Generation-fenced write-through
         end
         API->>L1: Cache 5 seconds
     end
@@ -217,10 +223,10 @@ sequenceDiagram
 Tất cả key dùng cùng Redis Cluster hash tag:
 
 ```text
-{iam:authz:billing:<user_id>}:data
-{iam:authz:billing:<user_id>}:generation
-{iam:authz:billing:<user_id>}:data_generation
-{iam:authz:billing:<user_id>}:lock
+authz:billing:{<user_id>}:data
+authz:billing:{<user_id>}:generation
+authz:billing:{<user_id>}:data_generation
+authz:billing:{<user_id>}:lock
 ```
 
 Reader chỉ nhận data khi `generation == data_generation`. Loader:
@@ -237,20 +243,20 @@ Lock chỉ chống stampede. Generation mới là correctness fence. Waiter dùn
 
 | Route | Resolution |
 |---|---|
-| Normal read/write | L1 5 giây → L2 → IAM |
-| `/api/v1/billing/critical/*` | Bỏ L1 và L2, buộc request IAM mới; vẫn dùng distributed lock và generation-fenced write |
+| Normal read/write | L1 5 giây → Auth Redis projection → IAM |
+| `/api/v1/billing/critical/*` | Bỏ L1/projection hit, buộc Shared Redis request IAM mới; vẫn dùng distributed lock và generation-fenced write |
 
-Critical flow không được dùng permission snapshot cũ. Nếu IAM/NATS/Redis unavailable, Cost trả `503`, không fail-open.
+Critical flow không được dùng permission snapshot cũ. Nếu IAM/Shared Redis/Auth Redis unavailable, Cost trả `503`, không fail-open.
 
 ### 4.3 Invalidation
 
 Sau `AssignUserRole`, `UpdateRole` hoặc `UpdateUserStatus` commit:
 
 1. Controlplane xóa local `user_role` L1;
-2. Lua `INCR generation`, expire generation và xóa `data`/`data_generation`;
-3. publish `iam.user_role.invalidated`;
+2. Lua trên Auth Redis `INCR generation`, expire generation và xóa `data`/`data_generation`;
+3. publish `authz.invalidate.billing` trên Shared Redis;
 4. mọi Cost replica xóa local L1;
-5. Cost subscriber lặp lại Lua invalidation làm fallback cho đường Redis từ Controlplane.
+5. Cost không lặp lại generation mutation, tránh N replica cùng `INCR`; Auth Redis Lua ở Controlplane là correctness fence.
 
 Role update ảnh hưởng nhiều user phải invalidation toàn bộ danh sách, không return giữa vòng lặp. `GetUserRolePermissions` chỉ trả quyền khi `users.status = active`; suspended/disabled không resolve được Billing permission.
 
@@ -307,22 +313,22 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 | N pod cache miss | token lock + jitter + singleflight | Một loader chính |
 | Workspace role có Billing key | Chỉ wildcard/nil platform prefix được rút gọn | Không global escalation |
 | User disabled | Active-user join + invalidation | Không permission |
-| NATS/IAM/Redis lỗi | Fail closed | `503` |
+| Shared Redis/IAM/Auth Redis lỗi | Fail closed | `503` |
 | Cost cookie mất/hết hạn | `/auth/start` PKCE lại | Không login form |
 
 ## 8. Production gates
 
-- [ ] Security-State Redis HA/AOF/`noeviction`; shared cache Redis HA và cho phép eviction.
-- [ ] Hai Redis dùng credential/ACL riêng; Cost không có quyền vào Security-State.
-- [ ] NATS Core có nhiều IAM queue subscriber cho `iam.authorization.billing.get`.
-- [ ] Subject invalidation là fan-out, không queue group ở phía Cost.
+- [ ] Auth-State Redis HA/AOF/`noeviction`; Shared L2 Redis HA và cho phép eviction.
+- [ ] Auth-State dùng DB 0 + ACL/prefix; Cost chỉ có authz/proof key pattern, không có IAM session key pattern.
+- [ ] Mỗi IAM replica subscribe Shared Redis request channel; request lock + bounded slot ngăn query PostgreSQL nhân N.
+- [ ] Shared Redis invalidation là fan-out tới mọi Cost replica; generation chỉ tăng đúng một lần ở IAM mutation path.
 - [ ] `BILLING_CONSOLE_ORIGIN` là constant HTTPS allowlist, không lấy redirect URI từ client.
 - [ ] Envoy overwrite/remove identity, permission legacy và proof headers.
 - [ ] K8s NetworkPolicy cấm direct public traffic tới Cost API/ACR.
 - [ ] Metrics có handoff issue/exchange/replay, alias verification, L1/L2 hit, lock contention, generation reject, IAM timeout và authorization deny.
 - [ ] E2E cover root, billing_admin, support read-only, platform_user, disabled user, workspace-only Billing permission và concurrent role update.
-- [ ] Chaos test cover Redis cache failover, Security-State failover, NATS loss và IAM pod rolling restart.
-- [ ] Nếu cần durable invalidation không giới hạn stale window normal route, thêm transactional IAM outbox/JetStream; không dùng NATS Core như durability boundary.
+- [ ] Chaos test cover Shared L2 failover, Auth-State failover và IAM pod rolling restart.
+- [ ] Nếu cần durable invalidation không giới hạn stale window normal route, thêm transactional IAM outbox + Redis Stream; Pub/Sub không phải durability boundary.
 
 ## 9. Code map
 
@@ -333,9 +339,9 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 | Alias/source verification | `acr/src/billing/verify.rs` |
 | ACR dispatch/header overwrite | `acr/src/gateway/ext_authz.rs` |
 | Redis role split config | `acr/src/config.rs`, `acr/src/main.rs` |
-| IAM permission responder + L2 writer | `controlplane/internal/iam/transport/pubsub/handler/auth.go` |
+| IAM Shared Redis responder + Auth Redis writer | `controlplane/internal/iam/transport/pubsub/handler/billing_authorization_redis.go` |
 | IAM RBAC invalidation | `controlplane/internal/iam/service/rbac_platform_service.go`, `user_service.go` |
-| Cost L1/L2/NATS resolver | `cost-manager/api/internal/service/authorization_resolver.go` |
+| Cost L1/Auth Redis/Shared Redis resolver | `cost-manager/api/internal/service/authorization_resolver.go` |
 | Cost identity/permission middleware | `cost-manager/api/internal/transport/middleware/identity.go` |
 | Cloud authorize bridge | `cloud-console/src/app/billing/authorize/page.tsx` |
 | Cost PKCE/session bootstrap | `cost-console/src/lib/store/useAuthStore.ts` |

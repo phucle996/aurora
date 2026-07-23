@@ -163,7 +163,7 @@ func (x *GetActiveDevicesResponse) GetActiveDevices() []*ActiveDeviceEntry {
 	return nil
 }
 
-// [COMMENT]: Message gộp nhiều thiết bị gửi qua NATS để cập nhật trạng thái hoạt động cùng lúc
+// [COMMENT]: Message gộp nhiều thiết bị gửi qua Shared Redis PubSub để cập nhật trạng thái hoạt động cùng lúc
 type BulkTouchDevicesRequest struct {
 	state         protoimpl.MessageState                  `protogen:"open.v1"`
 	Updates       []*BulkTouchDevicesRequest_DeviceUpdate `protobuf:"bytes,1,rep,name=updates,proto3" json:"updates,omitempty"`

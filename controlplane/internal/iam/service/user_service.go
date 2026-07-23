@@ -13,28 +13,27 @@ import (
 	"controlplane/internal/security"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 type UserService struct {
-	repo     iamRepoInterface.UserRepository
-	registry *cacheengine.CacheRegistry
-	nc       *nats.Conn
-	redis    *goredis.Client
+	repo        iamRepoInterface.UserRepository
+	registry    *cacheengine.CacheRegistry
+	authRedis   *goredis.Client
+	sharedRedis *goredis.Client
 }
 
 func NewUserService(
 	repo iamRepoInterface.UserRepository,
 	registry *cacheengine.CacheRegistry,
-	nc *nats.Conn,
-	redisClient *goredis.Client,
+	authRedis *goredis.Client,
+	sharedRedis *goredis.Client,
 ) iamSvcInterface.UserService {
 	return &UserService{
-		repo:     repo,
-		registry: registry,
-		nc:       nc,
-		redis:    redisClient,
+		repo:        repo,
+		registry:    registry,
+		authRedis:   authRedis,
+		sharedRedis: sharedRedis,
 	}
 }
 
@@ -46,7 +45,7 @@ func (s *UserService) ListUsers(ctx context.Context, callerLevel uint8, limit in
 	return users, err
 }
 
-// [COMMENT]: UpdateUserStatus thực hiện vô hiệu hóa hoặc cập nhật trạng thái hoạt động của user, dọn dẹp cache L1 cục bộ và truyền tin invalidation qua NATS Core
+// [COMMENT]: UpdateUserStatus cập nhật user, fence Auth Redis và fan-out L1 invalidation qua Shared Redis.
 func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, status string) error {
 	// [COMMENT]: 1. Gọi Repository để cập nhật status user dưới DB với cơ chế phân cấp
 	if err := s.repo.UpdateUserStatus(ctx, callerLevel, targetUserID, status); err != nil {
@@ -58,9 +57,9 @@ func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, t
 
 	// [COMMENT]: 3. User disable/enable cũng fence Billing L2 để trạng thái cũ không được tái cache sau race.
 	var invalidationErr error
-	if s.redis != nil {
-		tag := "{iam:authz:billing:" + targetUserID.String() + "}"
-		if err := s.redis.Eval(ctx, `
+	if s.authRedis != nil {
+		tag := "authz:billing:{" + targetUserID.String() + "}"
+		if err := s.authRedis.Eval(ctx, `
 			redis.call("INCR", KEYS[1])
 			redis.call("EXPIRE", KEYS[1], ARGV[1])
 			redis.call("DEL", KEYS[2], KEYS[3])
@@ -70,13 +69,10 @@ func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, t
 		}
 	}
 
-	// [COMMENT]: 4. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
-	if s.nc != nil {
-		err := s.nc.Publish("iam.user_role.invalidated", []byte(targetUserID.String()))
-		if err != nil {
-			if invalidationErr == nil {
-				invalidationErr = err
-			}
+	// [COMMENT]: Shared Redis fans out L1 invalidation after the Auth Redis generation fence succeeds.
+	if invalidationErr == nil && s.sharedRedis != nil {
+		if err := s.sharedRedis.Publish(ctx, "authz.invalidate.billing", targetUserID.String()).Err(); err != nil {
+			invalidationErr = fmt.Errorf("publish Billing authorization invalidation: %w", err)
 		}
 	}
 

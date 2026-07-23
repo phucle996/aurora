@@ -26,7 +26,7 @@
 flowchart LR
     CP[Controlplane Mail CRUD] --> O[(mail_outbox_records)]
     O --> JO[Job Orchestrator relay/reconciler]
-    JO --> RJ[(Central Kafka<br/>mail projection command)]
+    JO --> RJ[(Kafka transport<br/>mail projection command)]
     RJ --> PJ[dispatch_mail_job<br/>projection only]
     PJ --> KV[(Zone NATS KV<br/>consumer/template snapshot)]
 
@@ -97,7 +97,7 @@ message RabbitMqPayloadV1 {
 Invariants:
 
 - CP create/update và JO periodic reconciler đều match `source_type` một lần rồi encode đúng payload suite.
-- JO/outbox/Central Kafka/Zone KV không giải mã `source_config_envelope`.
+- JO/outbox/Kafka transport/Zone KV không giải mã `source_config_envelope`.
 - Projection Dataplane decode và bounded-validate đúng suite trước khi commit immutable snapshot vào KV.
 - Runtime không suy broker type từ `topic`, URI hay convention string.
 - Các suite dùng wire field tags khác nhau; payload của suite A gắn nhầm discriminator B fail validation thay vì decode thành chuỗi có nghĩa khác.
@@ -314,7 +314,7 @@ connection và chỉ retry sau supervisor cooldown. Kafka giữ dirty contiguous
 2. Mỗi suite ngừng poll/pull/consume và fence generation.
 3. JMAP request đã vào critical section nhận result.
 4. Suite settlement chỉ khi lease/assignment/generation còn hợp lệ.
-5. Kafka close group; Redis tasks dừng để PEL giữ work; JetStream/Rabbit bỏ ACK sau fence rồi close transport.
+5. Kafka close group; customer Redis Stream tasks dừng để PEL giữ work; JetStream/Rabbit bỏ ACK sau fence rồi close transport.
 6. Config listener dừng.
 7. Shared JMAP batcher flush/drain theo God View JMAP.
 
@@ -323,10 +323,10 @@ Không abort JMAP request rồi ACK broker. Không final-commit Kafka sau mất 
 ## 12. Health and observability
 
 Mỗi slot cập nhật snapshot trong pod-local app memory. State, lag, consumer ID và heartbeat không được
-ghi `AURORA_ZONE_HEALTH/mail.runtime.*`. Reporter của từng pod batch-check
-`mail:runtime:watch-active:{zone_id}:{consumer_id}` trong Central Redis; chỉ consumer có lease mới
-được XADD bounded delta qua `mail:consumer:reports`. Redis gate coalesce heartbeat ổn định tối đa
-10 giây nhưng watch epoch/config/state/generation/lag transition phát ngay.
+ghi `AURORA_ZONE_HEALTH/mail.runtime.*`. JO bridge watch request từ Shared Redis sang NATS Core;
+Reporter của từng pod chỉ đọc watch registry trong memory và publish bounded Protobuf delta qua
+`aurora.runtime.reports.{zone_id}.mail.consumer.v1`. JO bridge report vào Shared Redis để aggregate;
+Dataplane không có Redis credential.
 
 Zone NATS KV chỉ nhận `mail.health.node.*` aggregate không customer label và `zone.service.mail`.
 Metric processor chỉ label `zone_id + status + taxonomy code`; không label topic/queue/recipient/template.

@@ -13,10 +13,10 @@ use uuid::Uuid;
 
 use crate::engine::pricing_event_proto;
 use crate::engine::snapshot::{
-    PricingError, ServiceType, TierRange, TierPricingSnapshot, CatalogSnapshot, BillingPricingLease,
+    BillingPricingLease, CatalogSnapshot, PricingError, ServiceType, TierPricingSnapshot, TierRange,
 };
 
-pub(crate) const PRICING_EVENT_SUBJECT: &str = "billing.pricing.tier_version.published";
+pub(crate) const PRICING_EVENT_CHANNEL: &str = "billing.pricing.tier_version.published";
 
 pub(crate) struct ActivationState {
     pub(crate) billing_in_progress: bool,
@@ -333,61 +333,82 @@ pub(crate) fn checksum(code: &str, service_type: &str, ranges: &[TierRange]) -> 
     format!("{:x}", hasher.finalize())
 }
 
-// run_pricing_listener preload event version; periodic reconciliation tự chữa event bị mất khi NATS gián đoạn.
+// run_pricing_listener preload event version; periodic reconciliation tự chữa event bị mất khi
+// Shared Redis PubSub gián đoạn. PubSub chỉ là latency hint, không phải pricing SoT.
 pub async fn run_pricing_listener(
-    nats_url: String,
+    redis_url: String,
     runtime: Arc<PricingRuntime>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let client = match async_nats::connect(&nats_url).await {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("Pricing listener cannot connect to NATS: {error}");
-            return;
-        }
-    };
-    let mut subscriber = match client.subscribe(PRICING_EVENT_SUBJECT.to_string()).await {
-        Ok(subscriber) => subscriber,
-        Err(error) => {
-            eprintln!("Pricing listener cannot subscribe: {error}");
-            return;
-        }
-    };
     let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(30));
 
     loop {
-        tokio::select! {
-            message = subscriber.next() => {
-                let Some(message) = message else { break };
-                match pricing_event_proto::TierVersionPublished::decode(message.payload) {
-                    Ok(event) => {
-                        match ServiceType::parse(&event.service_type) {
-                            Ok(_) => {
-                                match Uuid::parse_str(&event.tier_version_id) {
-                                    Ok(version_id) => {
-                                        if let Err(error) = runtime.refresh_from_db(Some((version_id, event.checksum))).await {
-                                            eprintln!("Pricing event preload failed: {error}");
+        let client = match redis::Client::open(redis_url.as_str()) {
+            Ok(client) => client,
+            Err(error) => {
+                eprintln!("Pricing listener cannot parse Shared Redis URL: {error}");
+                return;
+            }
+        };
+        let mut subscriber = match client.get_async_pubsub().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("Pricing listener cannot connect to Shared Redis: {error}");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        if let Err(error) = subscriber.subscribe(PRICING_EVENT_CHANNEL).await {
+            eprintln!("Pricing listener cannot subscribe to Shared Redis: {error}");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
+        let mut messages = subscriber.on_message();
+        let mut disconnected = false;
+        while !disconnected {
+            tokio::select! {
+                message = messages.next() => {
+                    let Some(message) = message else {
+                        disconnected = true;
+                        continue;
+                    };
+                    match pricing_event_proto::TierVersionPublished::decode(message.get_payload_bytes()) {
+                        Ok(event) => {
+                            match ServiceType::parse(&event.service_type) {
+                                Ok(_) => {
+                                    match Uuid::parse_str(&event.tier_version_id) {
+                                        Ok(version_id) => {
+                                            if let Err(error) = runtime.refresh_from_db(Some((version_id, event.checksum))).await {
+                                                eprintln!("Pricing event preload failed: {error}");
+                                            }
                                         }
+                                        Err(error) => eprintln!("Pricing event has invalid version id: {error}"),
                                     }
-                                    Err(error) => eprintln!("Pricing event has invalid version id: {error}"),
+                                }
+                                Err(error) => {
+                                    eprintln!("Pricing event has unknown service type: {error}");
                                 }
                             }
-                            Err(error) => {
-                                eprintln!("Pricing event has unknown service type: {error}");
-                            }
                         }
+                        Err(error) => eprintln!("Pricing event protobuf decode failed: {error}"),
                     }
-                    Err(error) => eprintln!("Pricing event protobuf decode failed: {error}"),
                 }
-            }
-            _ = reconcile.tick() => {
-                if let Err(error) = runtime.refresh_from_db(None).await {
-                    eprintln!("Pricing periodic reconciliation failed: {error}");
+                _ = reconcile.tick() => {
+                    if let Err(error) = runtime.refresh_from_db(None).await {
+                        eprintln!("Pricing periodic reconciliation failed: {error}");
+                    }
                 }
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() { break; }
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
             }
         }
+        if *shutdown_rx.borrow() {
+            return;
+        }
+        eprintln!("Pricing listener Shared Redis PubSub disconnected; reconnecting");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }

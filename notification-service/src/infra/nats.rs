@@ -1,4 +1,3 @@
-
 #[derive(Clone)]
 pub struct NatsClient {
     client: async_nats::Client,
@@ -22,15 +21,19 @@ impl NatsClient {
 
         // Cấu hình mTLS Client Certificate & Private Key
         if let (Some(ref cert_path), Some(ref key_path)) = (client_cert, client_key) {
-            options = options.add_client_certificate(cert_path.clone().into(), key_path.clone().into());
+            options =
+                options.add_client_certificate(cert_path.clone().into(), key_path.clone().into());
             options = options.require_tls(true);
         }
 
-        let nats_client = options.connect(&nats_url)
+        let nats_client = options
+            .connect(&nats_url)
             .await
             .unwrap_or_else(|e| panic!("Failed to connect to NATS at {}: {}", nats_url, e));
 
-        Self { client: nats_client }
+        Self {
+            client: nats_client,
+        }
     }
 
     /// Lấy bản sao client NATS phục vụ các dịch vụ

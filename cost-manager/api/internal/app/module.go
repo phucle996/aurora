@@ -20,6 +20,7 @@ import (
 	"cost-manager/api/internal/service"
 	"cost-manager/api/internal/transport/http/handler"
 	natsHandler "cost-manager/api/internal/transport/nats/handler"
+	redisHandler "cost-manager/api/internal/transport/redis/handler"
 	"cost-manager/api/internal/transport/rpc"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,10 +30,10 @@ import (
 
 // [COMMENT]: Module quản lý tất cả các repository, service và handler của ứng dụng.
 type Module struct {
-	AccountRepo                       billingRepoInterface.AccountRepository
-	AccountService                    billingSvcInterface.AccountService
-	AccountHandler                    *handler.AccountHandler
-	PersonalWalletProvisionSubscriber *natsHandler.PersonalWalletProvisionSubscriber
+	AccountRepo                     billingRepoInterface.AccountRepository
+	AccountService                  billingSvcInterface.AccountService
+	AccountHandler                  *handler.AccountHandler
+	PersonalWalletProvisionConsumer *redisHandler.PersonalWalletProvisionConsumer
 
 	PlanRepo    billingRepoInterface.PlanRepository
 	PlanService billingSvcInterface.PlanService
@@ -57,12 +58,20 @@ type Module struct {
 }
 
 // [COMMENT]: NewModule khởi tạo Module và thực hiện Dependency Injection kèm nil check đầy đủ sau mỗi bước.
-func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Client) (*Module, error) {
+func NewModule(
+	dbPool *pgxpool.Pool,
+	natsConn *nats.Conn,
+	redisClient *redis.Client,
+	authRedisClient *redis.Client,
+) (*Module, error) {
 	if dbPool == nil {
 		return nil, fmt.Errorf("dbPool infrastructure connection cannot be nil")
 	}
 	if redisClient == nil {
 		return nil, fmt.Errorf("redisClient infrastructure connection cannot be nil")
+	}
+	if authRedisClient == nil {
+		return nil, fmt.Errorf("authRedisClient infrastructure connection cannot be nil")
 	}
 	if natsConn == nil {
 		return nil, fmt.Errorf("natsConn infrastructure connection cannot be nil")
@@ -82,9 +91,9 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	if accountHandler == nil {
 		return nil, fmt.Errorf("failed to initialize AccountHandler: instance is nil")
 	}
-	personalWalletProvisionSubscriber, err := natsHandler.NewPersonalWalletProvisionSubscriber(natsConn, accountService)
+	personalWalletProvisionConsumer, err := redisHandler.NewPersonalWalletProvisionConsumer(redisClient, accountService)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionSubscriber: %w", err)
+		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionConsumer: %w", err)
 	}
 
 	// 2. Plan Domain DI
@@ -109,7 +118,7 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize PricingOutboxRepository: instance is nil")
 	}
 
-	pricingOutboxRelay := service.NewPricingOutboxRelay(pricingOutboxRepo, natsConn)
+	pricingOutboxRelay := service.NewPricingOutboxRelay(pricingOutboxRepo, redisClient)
 	if pricingOutboxRelay == nil {
 		return nil, fmt.Errorf("failed to initialize PricingOutboxRelay: instance is nil")
 	}
@@ -162,30 +171,30 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipSubscriber: %w", err)
 	}
 	// [COMMENT]: Tạo subscriber authorization sau cùng để init lỗi trước đó không làm rò NATS subscription.
-	authorizationResolver, err := service.NewAuthorizationResolver(redisClient, natsConn)
+	authorizationResolver, err := service.NewAuthorizationResolver(authRedisClient, redisClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize AuthorizationResolver: %w", err)
 	}
 
 	return &Module{
-		AccountRepo:                       accountRepo,
-		AccountService:                    accountService,
-		AccountHandler:                    accountHandler,
-		PersonalWalletProvisionSubscriber: personalWalletProvisionSubscriber,
-		PlanRepo:                          planRepo,
-		PlanService:                       planService,
-		PlanHandler:                       planHandler,
-		TierRepo:                          tierRepo,
-		TierService:                       tierService,
-		TierHandler:                       tierHandler,
-		ReconcilerRepo:                    reconcilerRepo,
-		ReconcilerService:                 reconcilerService,
-		ReconcilerWorker:                  reconcilerWorker,
-		ResourceOwnershipRepo:             ownershipRepo,
-		ResourceOwnershipService:          ownershipService,
-		ResourceOwnershipSubscriber:       ownershipSubscriber,
-		PricingOutboxRepo:                 pricingOutboxRepo,
-		PricingOutboxRelay:                pricingOutboxRelay,
-		AuthorizationResolver:             authorizationResolver,
+		AccountRepo:                     accountRepo,
+		AccountService:                  accountService,
+		AccountHandler:                  accountHandler,
+		PersonalWalletProvisionConsumer: personalWalletProvisionConsumer,
+		PlanRepo:                        planRepo,
+		PlanService:                     planService,
+		PlanHandler:                     planHandler,
+		TierRepo:                        tierRepo,
+		TierService:                     tierService,
+		TierHandler:                     tierHandler,
+		ReconcilerRepo:                  reconcilerRepo,
+		ReconcilerService:               reconcilerService,
+		ReconcilerWorker:                reconcilerWorker,
+		ResourceOwnershipRepo:           ownershipRepo,
+		ResourceOwnershipService:        ownershipService,
+		ResourceOwnershipSubscriber:     ownershipSubscriber,
+		PricingOutboxRepo:               pricingOutboxRepo,
+		PricingOutboxRelay:              pricingOutboxRelay,
+		AuthorizationResolver:           authorizationResolver,
 	}, nil
 }

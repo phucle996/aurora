@@ -1,7 +1,7 @@
 # User Login — God View (Master SoT)
 
 > **IMPORTANT — SINGLE SOURCE OF TRUTH (SoT)**
-> Tài liệu này là nguồn chuẩn cho workflow đăng nhập end-user và cấp runtime session. Mọi thay đổi liên quan đến login challenge, JSON contract, tenant identity, password verification, account state, device key, refresh token, Trinity credentials hoặc Redis L2 session phải cập nhật tài liệu này trong cùng change-set.
+> Tài liệu này là nguồn chuẩn cho workflow đăng nhập end-user và cấp runtime session. Mọi thay đổi liên quan đến login challenge, JSON contract, tenant identity, password verification, account state, device key, refresh token, Trinity credentials hoặc Auth-State Redis session phải cập nhật tài liệu này trong cùng change-set.
 
 ## 0. Control header
 
@@ -12,9 +12,9 @@
 | UI consumer | Cloud Console sign-in |
 | Edge owner | Envoy + ACR ExtAuthz |
 | Identity owner | Controlplane IAM |
-| Inter-service transport | NATS Core request/reply, subject `iam.auth.verify_credentials` |
+| Inter-service transport | Shared L2 Redis Pub/Sub request/reply, channel `iam.auth.verify_credentials`; payload = `request_id[16] || protobuf` |
 | Durable SoT | PostgreSQL: users, roles, memberships, devices, refresh tokens, IAM outbox |
-| Runtime SoT | Redis L2 user session encoded bằng Prost |
+| Runtime SoT | Auth-State Redis DB0 user session encoded bằng Prost |
 | Crypto | Argon2 password verification; Ed25519 login proof; JWT HS256 qua Vault Transit HMAC-SHA256 |
 | JWT key custody | HashiCorp Vault Transit; ACR không đọc hoặc giữ raw signing key |
 | Login challenge TTL | 120 giây |
@@ -68,11 +68,11 @@
 |---|---|---|
 | Cloud Console | Tách identity UI, giữ Ed25519 key, ký challenge, gửi canonical payload | Không tự tạo tenant ID hoặc zone ID |
 | Envoy | TLS, body buffering, gọi ExtAuthz | Không xác thực password |
-| ACR | CORS/rate limit, challenge, proof verification, NATS request, session issuance, cookies | Không query trực tiếp IAM PostgreSQL |
-| NATS Core | HA request/reply đến IAM queue group | Không phải durable event store cho login RPC |
+| ACR | CORS/rate limit, challenge, proof verification, Shared Redis request, session issuance, cookies | Không query trực tiếp IAM PostgreSQL |
+| Shared L2 Redis | Central request/reply, fan-out, locks và streams | Không chứa runtime session hoặc durable identity |
 | Controlplane IAM | User lookup, password/state/role/device/refresh-token business rules | Không phát HTTP cookies |
 | PostgreSQL | Durable identity, device, role, membership, refresh token, resend outbox | Không giữ runtime access session |
-| Redis HA | One-time challenges, resend cooldown, binary runtime session và indexes | Không thay thế durable identity SoT |
+| Auth-State Redis DB0 | One-time challenges, resend cooldown, binary runtime session, indexes và ACR security outbox | Không làm transport Central-Zone hoặc business DB |
 | HashiCorp Vault Transit | Giữ HMAC key, ký và verify JWT bằng SHA2-256 | Không sở hữu user/session business state |
 
 ### 1.3 End-to-end topology
@@ -81,11 +81,11 @@
 flowchart LR
     UI[Cloud Console] -->|login challenge + login| E[Envoy]
     E -->|ExtAuthz CheckRequest| A[ACR]
-    A -->|challenge/session| R[(Redis HA)]
-    A -->|NATS request/reply| N[NATS Core]
-    N -->|queue group iam_auth_service| IAM[Controlplane IAM]
+    A -->|challenge/session| AR[(Auth-State Redis DB0)]
+    A -->|request_id + protobuf| SR[(Shared L2 Redis)]
+    SR -->|PubSub fan-out + SETNX winner| IAM[Controlplane IAM]
     IAM --> DB[(PostgreSQL)]
-    IAM -->|Protobuf response| N --> A
+    IAM -->|request-scoped reply| SR --> A
     A -->|Transit HMAC SHA2-256| V[HashiCorp Vault HA]
     A -->|HTTP 204 + Set-Cookie| E --> UI
 ```
@@ -140,7 +140,7 @@ iam:session_proof:login:{challenge_id} -> nonce, EX 120
 | Field | Normalize/validation | Security meaning |
 |---|---|---|
 | `username` | Trim, lowercase, required, không chứa `@` | Identity local part duy nhất |
-| `password` | Required, không empty | Chỉ chuyển qua NATS request/reply đến IAM |
+| `password` | Required, không empty | Chỉ chuyển qua Shared Redis request/reply đến IAM |
 | `tenant_domain` | Trim, lowercase, empty = global login | Chọn lookup global hoặc tenant membership |
 | `zone_code` | Default `global` nếu thiếu | Context zone dùng khi cấp claims/session |
 | `device_public_key` | ACR verify signature; IAM decode Base64 và yêu cầu đúng 32 bytes | Bind public key vào durable device và runtime session |
@@ -173,7 +173,7 @@ Client và ACR phải dùng chính giá trị đã canonicalize. Thay đổi use
 | `400` | Empty body, JSON sai, username/password contract sai | Không |
 | `401` | Proof sai/hết hạn/replay, credentials sai, suspended/disabled | Không |
 | `412` | Password đúng nhưng account `pending-active` | Không; direct broker resend được attempt nếu cooldown cho phép |
-| `500` | Redis/NATS/token signer/session persistence lỗi | Không được coi là login thành công |
+| `500` | Auth Redis/Shared Redis/token signer/session persistence lỗi | Không được coi là login thành công |
 
 Response `412` canonical:
 
@@ -197,33 +197,37 @@ sequenceDiagram
     autonumber
     participant UI as Cloud Console
     participant ACR
-    participant Redis as Redis HA
-    participant NATS
+    participant AuthRedis as Auth-State Redis DB0
+    participant SharedRedis as Shared L2 Redis
     participant IAM as Controlplane IAM
     participant DB as PostgreSQL
     participant Vault as Vault Transit HA
 
     UI->>ACR: POST /api/v1/auth/login/challenge
-    ACR->>Redis: SET challenge nonce EX 120
+    ACR->>AuthRedis: SET challenge nonce EX 120
     ACR-->>UI: challenge_id + nonce
     UI->>UI: Canonicalize identity and Ed25519 sign
     UI->>ACR: POST /api/v1/auth/login
-    ACR->>Redis: GET challenge
+    ACR->>AuthRedis: GET challenge
     ACR->>ACR: Verify timestamp + Ed25519 signature
-    ACR->>Redis: Lua compare-and-delete challenge
-    ACR->>NATS: request iam.auth.verify_credentials
-    NATS->>IAM: Queue group dispatch
+    ACR->>AuthRedis: Lua compare-and-delete challenge
+    ACR->>SharedRedis: SUB reply.request_id, then PUBLISH request_id[16] + protobuf
+    SharedRedis->>IAM: Fan-out đến mọi CP replica
+    IAM->>SharedRedis: SETNX dispatch lock by request_id
+    Note over IAM,SharedRedis: Chỉ lock winner được chạm PostgreSQL
     IAM->>DB: Load global user or tenant-scoped membership + role
     IAM->>IAM: Verify Argon2 password and account state
     alt pending-active
-        IAM->>Redis: SET NX resend cooldown EX 60
+        IAM->>AuthRedis: SET NX resend cooldown EX 60
         opt cooldown winner
             IAM->>DB: INSERT IAM mail outbox
         end
-        IAM-->>ACR: ACCOUNT_VERIFICATION_REQUIRED
+        IAM-->>SharedRedis: Reply ACCOUNT_VERIFICATION_REQUIRED
+        SharedRedis-->>ACR: Request-scoped protobuf response
         ACR-->>UI: HTTP 412, no session
     else suspended/disabled/invalid
-        IAM-->>ACR: Invalid credentials
+        IAM-->>SharedRedis: Reply invalid credentials
+        SharedRedis-->>ACR: Request-scoped protobuf response
         ACR-->>UI: HTTP 401
     else active
         IAM->>IAM: Canonicalize Ed25519 public key
@@ -231,10 +235,11 @@ sequenceDiagram
         opt trust_device=true
             IAM->>DB: Persist hashed refresh token
         end
-        IAM-->>ACR: Identity + role + device + proof key + raw refresh/expiry
+        IAM-->>SharedRedis: Identity + role + device + proof key + raw refresh/expiry
+        SharedRedis-->>ACR: Request-scoped protobuf response
         ACR->>Vault: HMAC-SHA2-256(header.payload)
         Vault-->>ACR: vault key version + HMAC signature
-        ACR->>Redis: Register Prost UserAccessSession + indexes
+        ACR->>AuthRedis: Register Prost UserAccessSession + indexes
         ACR-->>UI: HTTP 204 + Trinity/context cookies
     end
 ```
@@ -255,7 +260,8 @@ sequenceDiagram
 3. ACR canonicalizes username/tenant domain; không chấp nhận contract `username@domain` trên wire.
 4. ACR loads nonce, kiểm tra timestamp và signature bằng `device_public_key` trong cùng request.
 5. Chỉ sau crypto success, Lua compare-and-delete consume challenge. Hai request concurrent cùng challenge chỉ một request được đi tiếp.
-6. ACR tạo `client_device_id` candidate mới, thêm client IP/User-Agent và gửi Protobuf qua NATS Core.
+6. ACR tạo `client_device_id` candidate mới, thêm client IP/User-Agent, tạo UUID request và gửi `request_id[16] || protobuf` qua Shared Redis.
+7. Mọi CP replica đều nhận Pub/Sub message; `SET NX iam:auth:dispatch:verify_credentials:{request_id}` chọn một winner. Redis lỗi thì fail-close, replica thua lock không chạm DB.
 
 ### 3.3 Phase C — IAM credential and account-state decision
 
@@ -314,7 +320,7 @@ Prost payload:
 | `lsa` / 3 | Last-seen Unix timestamp |
 | `client_proof_public_key` / 4 | Canonical Ed25519 key cho critical session proof |
 
-Session manager đồng thời duy trì user/device access indexes và có thể evict session vượt device cap. Notification `iam.device.evicted` là best-effort sau Redis mutation; session eviction trong Redis mới là boundary chính.
+Session manager đồng thời duy trì user/device access indexes và có thể evict session vượt device cap. Khi eviction xảy ra, xóa session và `XADD iam:device:eviction-outbox` được commit trong cùng Auth Redis `MULTI/EXEC`. ACR relay outbox sang Shared Redis Stream `iam:device:evicted-events`; Controlplane consumer group chỉ `XACK` sau khi durable device/refresh cleanup thành công.
 
 ### 3.6 Success cookies AS-IS
 
@@ -394,19 +400,22 @@ erDiagram
 | Redis challenge unavailable | Fail-closed | Không gọi IAM |
 | Hai pending login cùng lúc | `SET NX` cooldown | Tối đa một outbox winner trong window |
 | Outbox insert lỗi sau cooldown winner | Best-effort DEL cooldown 500ms | Cho phép retry sớm; không cấp session |
-| NATS request timeout/unavailable | ACR trả authentication unavailable | Không cấp session |
+| Shared Redis không có subscriber/timeout | ACR trả authentication unavailable | Không cấp session |
+| Nhiều CP replica cùng nhận login | `SET NX` theo request ID, TTL 30s | Chỉ một replica chạy password/device/refresh side effects |
 | IAM replica concurrency register device | Durable constraints/repository quyết định | Không được tạo identity session nếu device persistence fail |
 | Vault Transit sign timeout/5xx/sealed | ACR fail trước Redis session write | Không có runtime session và không phát cookies |
 | Vault trả signature empty/malformed | Parser fail-closed | Không tạo JWT |
 | Redis session write fail sau Vault signing | ACR trả 500, không set cookies | Signed token không tới client; JWT không có matching Redis session |
 | ACR chết sau Redis write trước response | Client thấy failure nhưng session orphan có TTL/index cleanup | Retry tạo session mới; cần metric orphan pressure |
-| Eviction notification publish fail | Best-effort notification | Redis eviction vẫn có hiệu lực; CP cleanup có thể trễ |
+| ACR chết sau Auth Redis eviction | Eviction outbox cùng transaction | Relay khác tiếp quản pending và gửi sang Shared Redis Stream |
+| Shared Redis/CP tạm mất khi relay eviction | Không ACK Auth Redis outbox | Retry at-least-once; CP cleanup idempotent |
 
 ### 5.1 HA assumptions
 
-- Redis challenge/session cần HA và persistence phù hợp RPO; mất Redis làm login fail-closed, không fallback DB session.
-- IAM NATS subscribers dùng queue group `iam_auth_service` để chia tải giữa replicas.
-- NATS login request/reply không phải outbox; request có thể retry từ client bằng challenge mới.
+- Auth-State Redis cần HA, AOF/noeviction và ACL prefix; mất Redis làm login fail-closed, không fallback DB session.
+- Shared Redis Pub/Sub là synchronous request transport, không phải durability boundary. ACR subscribe reply trước publish, kiểm tra subscriber count và timeout fail-close.
+- CP replicas dùng broadcast + distributed request lock thay queue group. Request không có UUID envelope bị từ chối trước business service.
+- Login request/reply không phải outbox; client retry bằng challenge mới. Durable device eviction dùng Auth Redis outbox + Shared Redis Stream riêng.
 - PostgreSQL là durability boundary cho device/refresh token/outbox.
 - Vault phải chạy HA, initialized và unsealed; ACR startup authenticate bằng AppRole trong production, static token chỉ dành cho dev/test.
 - ACR Vault client có request timeout và startup retry hữu hạn. Hết retry thì process gọi `exit(1)`, nên pod không trở thành auth replica thiếu Vault.
@@ -439,7 +448,7 @@ erDiagram
 | **P1** | Login proof chứng minh giữ key vừa gửi, không phải second factor | Không được quảng bá như trusted device hoặc password-theft prevention |
 | **P2** | ACR response dùng ExtAuthz denied response với internal unauthenticated status để trả HTTP 204 | Cần integration test qua Envoy để đảm bảo proxy behavior không drift |
 | **P2** | ACR tạo candidate `client_device_id` mới mỗi login rồi IAM resolve theo public key | Cookie device ID cũ không quyết định identity; cần đảm bảo đây là contract mong muốn cho analytics/device UX |
-| **P2** | Eviction NATS notification best-effort | Durable cleanup phía Controlplane có thể trễ khi publish lỗi |
+| **P2** | Device-cap selection vẫn đọc/sort session index trước transaction eviction | Concurrent login burst cần stress test để chứng minh cap hội tụ và không orphan index |
 | **P2** | UI/ACR canonical message được implement ở hai ngôn ngữ | Cần contract vector test cross-language trong CI để tránh drift field/order/encoding |
 | **P2** | JWT verification cache Moka chưa đặt TTL riêng theo remaining token lifetime; code kiểm tra `exp` khi cache hit nhưng entry có thể nằm tới eviction | Không bypass expiry, nhưng expired entries có thể chiếm capacity; nên cấu hình expiry-aware eviction |
 
@@ -454,7 +463,8 @@ erDiagram
 | Login challenge issue/failure | route, Redis outcome | Redis outage hoặc flood |
 | Login proof rejection | reason class, route | Replay/clock drift/signature failures |
 | IAM login outcome | success, invalid credential, precondition, unavailable | Auth health và attack pattern |
-| NATS request latency/error | subject, timeout | Queue saturation hoặc replica outage |
+| Shared Redis request latency/error | channel, subscriber count, timeout | CP saturation, PubSub outage hoặc reply-router disconnect |
+| Auth Redis eviction outbox lag | stream/group/pending age | Shared Redis hoặc CP cleanup outage |
 | Password verification latency | outcome | CPU pressure/Argon2 regression |
 | Device register latency/error | repo operation | PostgreSQL contention |
 | Session register latency/error | Redis operation | Runtime session health |
@@ -468,13 +478,15 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 ### 7.2 Release checklist
 
 - [ ] Challenge response contract và TTL đúng 120 giây.
-- [ ] Login thiếu/sai/replay proof bị từ chối trước NATS IAM call.
+- [ ] Login thiếu/sai/replay proof bị từ chối trước Shared Redis IAM call.
 - [ ] UI tenant input gửi hai field canonical; legacy combined username bị từ chối.
 - [ ] JSON `public_key` legacy không được chấp nhận; chỉ `device_public_key`.
 - [ ] Global login và tenant login đều trả đúng role/scope.
 - [ ] Pending login password sai không queue resend; password đúng trả 412 và không có cookies.
 - [ ] Suspended/disabled không lộ trạng thái cụ thể.
-- [ ] Redis/NATS/Vault/PostgreSQL failure đều không tạo client-visible authenticated session.
+- [ ] Auth Redis/Shared Redis/Vault/PostgreSQL failure đều không tạo client-visible authenticated session.
+- [ ] Ba CP replica cùng nhận một request nhưng chỉ một replica persist device/refresh side effect.
+- [ ] Auth Redis eviction outbox survive ACR restart và CP consumer xử lý idempotent.
 - [ ] Vault AppRole, Transit policy và key path cấp least privilege: ACR chỉ được HMAC/verify key JWT cần thiết.
 - [ ] Vault key rotation test xác minh được JWT version cũ cho tới hết session TTL.
 - [ ] Redis Prost payload chứa canonical `client_proof_public_key`.
@@ -498,8 +510,9 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | IAM JWT construction, Vault sign/verify và Moka cache | [`acr/src/user/claims.rs`](../../acr/src/user/claims.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
 | Vault AppRole, health, Transit HTTP client | [`acr/src/infra/vault.rs`](../../acr/src/infra/vault.rs) |
 | ACR Vault/TokenManager bootstrap | [`acr/src/main.rs`](../../acr/src/main.rs) |
-| NATS Protobuf contract | [`controlplane/internal/iam/transport/rpc/proto/auth.proto`](../../controlplane/internal/iam/transport/rpc/proto/auth.proto), [`acr/proto/auth.proto`](../../acr/proto/auth.proto) |
-| IAM NATS request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
+| Shared Redis request/reply bus + Protobuf contract | [`acr/src/infra/shared_redis.rs`](../../acr/src/infra/shared_redis.rs), [`controlplane/internal/iam/transport/rpc/proto/auth.proto`](../../controlplane/internal/iam/transport/rpc/proto/auth.proto), [`acr/proto/auth.proto`](../../acr/proto/auth.proto) |
+| IAM Shared Redis request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
+| Durable device eviction relay/consumer | [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/user/device.rs`](../../acr/src/user/device.rs), [`controlplane/internal/iam/transport/pubsub/handler/device.go`](../../controlplane/internal/iam/transport/pubsub/handler/device.go) |
 | IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
 | Device persistence | [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
 | PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |

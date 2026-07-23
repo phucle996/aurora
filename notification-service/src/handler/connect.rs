@@ -1,5 +1,5 @@
 use crate::infra::centrifugo::CentrifugoClient;
-use crate::infra::nats::NatsClient;
+use crate::infra::shared_redis::SharedRedisRequestBus;
 use crate::observability::logger::Logger;
 use axum::{
     extract::State,
@@ -14,8 +14,8 @@ use std::sync::Arc;
 // Trạng thái chia sẻ cho Route Handler
 #[derive(Clone)]
 pub struct AppState {
-    // [COMMENT]: NATS client trỏ đến kết nối NATS Core
-    pub nats_client: NatsClient,
+    // [COMMENT]: Xác thực connect proxy là Central-internal request, không đi NATS Core.
+    pub shared_redis: Arc<SharedRedisRequestBus>,
     pub _centrifugo_client: CentrifugoClient,
 }
 
@@ -197,7 +197,7 @@ pub async fn handle_connect(
                 }
 
                 match crate::service::auth::admin::verify_admin_token(
-                    &state.nats_client.client(),
+                    &state.shared_redis,
                     token,
                     access_key,
                     access_secret,
@@ -298,7 +298,7 @@ pub async fn handle_connect(
                 }
 
                 match crate::service::auth::user::verify_user_token(
-                    &state.nats_client.client(),
+                    &state.shared_redis,
                     token,
                     access_key,
                     access_secret,

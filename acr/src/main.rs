@@ -39,8 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info(
         "main.config",
         &format!(
-            "Loaded config: grpc_port={}, auth_redis={}, cache_redis={}, session_ttl={}s, grace=5s (hardcoded)",
-            config.grpc_port, config.redis_url, config.cache_redis_url, config.session_ttl_secs
+            "Loaded config: grpc_port={}, auth_redis={}, shared_redis={}, session_ttl={}s, grace=5s (hardcoded)",
+            config.grpc_port, config.redis_url, config.shared_redis_url, config.session_ttl_secs
         ),
     );
 
@@ -57,17 +57,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-    let cache_redis_client = match redis::Client::open(config.cache_redis_url.clone()) {
+    let shared_redis_client = match redis::Client::open(config.shared_redis_url.clone()) {
         Ok(client) => Arc::new(client),
         Err(e) => {
             Logger::sys_error(
-                "main.cache_redis",
-                "Failed to initialize shared cache Redis client",
+                "main.shared_redis",
+                "Failed to initialize Shared L2 Redis client",
                 &e.to_string(),
             );
             std::process::exit(1);
         }
     };
+    // [COMMENT]: Shared Redis bus phải subscribe reply pattern xong trước readiness;
+    // nếu không login đầu tiên có thể publish trước khi ACR nhận được response.
+    let shared_redis_bus =
+        match crate::infra::shared_redis::SharedRedisBus::new(shared_redis_client.clone()).await {
+            Ok(bus) => bus,
+            Err(error) => {
+                Logger::sys_error(
+                    "main.shared_redis",
+                    "Failed to initialize Shared Redis request bus",
+                    &error,
+                );
+                std::process::exit(1);
+            }
+        };
 
     let vault_client = match crate::infra::vault::VaultClient::new(&config.vault).await {
         Ok(client) => Arc::new(client),
@@ -87,40 +101,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vault_client.clone(),
         config.vault.admin_api_key_path.clone(),
     ));
-    let nats = Arc::new(
-        crate::infra::nats::Nats::new(
-            config.nats_url.clone(),
-            config.nats_ca_cert.clone(),
-            config.nats_client_cert.clone(),
-            config.nats_client_key.clone(),
-        )
-        .await,
-    );
-
     let ext_authz_service = ExtAuthzService::new(
         session_mgr.clone(),
         token_mgr.clone(),
         sre_token_mgr.clone(),
         config.clone(),
-        nats.clone(),
-        cache_redis_client.clone(),
+        shared_redis_client.clone(),
+        shared_redis_bus.clone(),
     );
 
     let device_service = DeviceRpcHandler::new(session_mgr.clone());
 
-    let nats_router = crate::transport::pubsub::NatsEventRouter::new(
-        nats.client().clone(),
-        nats.clone(),
+    // [COMMENT]: Mọi ACR↔Central request/event dùng Shared Redis; startup chỉ ready
+    // sau khi auth/device/zone subscriptions và security stream group đã tồn tại.
+    let _shared_redis_router = match crate::transport::redis::SharedRedisRouter::start(
+        shared_redis_client.clone(),
+        shared_redis_bus.clone(),
         session_mgr.clone(),
         token_mgr.clone(),
         sre_token_mgr.clone(),
-        cache_redis_client,
         config.clone(),
-    );
-    nats_router.start().await;
+    )
+    .await
+    {
+        Ok(router) => router,
+        Err(error) => {
+            Logger::sys_error(
+                "main.shared_redis",
+                "Failed to initialize Shared Redis router",
+                &error,
+            );
+            std::process::exit(1);
+        }
+    };
 
-    crate::user::device::start_presence_flush_worker(redis_client.clone(), nats.client().clone())
-        .await;
+    crate::user::device::start_presence_flush_worker(
+        redis_client.clone(),
+        shared_redis_bus.clone(),
+    )
+    .await;
+    if let Err(error) = crate::user::device::start_eviction_outbox_relay(
+        redis_client.clone(),
+        shared_redis_bus.clone(),
+    )
+    .await
+    {
+        Logger::sys_error(
+            "main.shared_redis",
+            "Failed to initialize durable device eviction relay",
+            &error,
+        );
+        std::process::exit(1);
+    }
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
         .parse()

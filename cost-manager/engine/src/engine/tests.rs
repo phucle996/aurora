@@ -1,5 +1,5 @@
-use super::snapshot::{TierRange, TierPricingSnapshot, ServiceType};
-use super::runtime::{validate_ranges, checksum};
+use super::runtime::{checksum, validate_ranges};
+use super::snapshot::{ServiceType, TierPricingSnapshot, TierRange};
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -72,7 +72,9 @@ fn progressive_charge_uses_each_range_without_float_rounding() {
         ],
     };
     assert_eq!(
-        snapshot.charge_micro_units_for_bytes(15 * 1_048_576).unwrap(),
+        snapshot
+            .charge_micro_units_for_bytes(15 * 1_048_576)
+            .unwrap(),
         5_000_000
     );
 }

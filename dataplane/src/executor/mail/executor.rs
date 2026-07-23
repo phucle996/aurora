@@ -1,5 +1,4 @@
 use crate::executor::{ExecutionResult, ExecutorError};
-use crate::infra::redis::RedisClientManager;
 use crate::job_lifecycle::message::JobPayload;
 use crate::workerpool::lifecycle::WorkerLifecycleManager;
 use std::sync::Arc;
@@ -8,7 +7,6 @@ pub async fn dispatch_mail_job(
     action: &str,
     payload: JobPayload,
     worker_pool: Arc<WorkerLifecycleManager>,
-    _runtime_redis: Arc<RedisClientManager>,
     _zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
     // [COMMENT]: Projection là control path riêng; delivery payload chỉ được broker runtime xử lý.

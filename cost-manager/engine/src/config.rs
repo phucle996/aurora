@@ -66,8 +66,8 @@ impl Config {
             .unwrap_or_else(|_| "redis://controlplane-acr-redis:6379".to_string());
 
         // Đọc NATS URL cho control plane
-        let nats_url = env::var("NATS_URL")
-            .unwrap_or_else(|_| "nats://controlplane-nats:4222".to_string());
+        let nats_url =
+            env::var("NATS_URL").unwrap_or_else(|_| "nats://controlplane-nats:4222".to_string());
 
         // Cấu hình số kết nối tối đa tới Postgres, mặc định là 10
         let pg_max_connections = env::var("PG_MAX_CONNECTIONS")

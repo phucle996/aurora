@@ -3,7 +3,8 @@
 MAP: BILLING SERVICE LAYER - PRICING OUTBOX RELAY
 ============================================================================
 CONTRACT:
-1. Điều phối PricingOutboxRepository để quét outbox rows và phát sang NATS Subject `billing.pricing.tier_version.published`.
+1. Điều phối PricingOutboxRepository để quét outbox rows và phát hint sang Shared Redis
+   PubSub channel `billing.pricing.tier_version.published`.
 2. Không thực thi SQL trực tiếp tại Service Layer.
 3. Thực thi đợt relay batch inline trực tiếp trong vòng lặp ticker của Run().
 ============================================================================
@@ -20,22 +21,22 @@ import (
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	pricingv1 "cost-manager/api/internal/genproto/billing/pricing/v1"
 
-	"github.com/nats-io/nats.go"
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
-const pricingVersionPublishedSubject = "billing.pricing.tier_version.published"
+const pricingVersionPublishedChannel = "billing.pricing.tier_version.published"
 
-// PricingOutboxRelay điều phối công việc relay outbox sang NATS bằng cách gọi sang Repository Layer.
+// PricingOutboxRelay điều phối công việc relay outbox sang Shared Redis PubSub.
 type PricingOutboxRelay struct {
-	repo billingRepoInterface.PricingOutboxRepository
-	nats *nats.Conn
-	wake chan struct{}
+	repo        billingRepoInterface.PricingOutboxRepository
+	sharedRedis *goredis.Client
+	wake        chan struct{}
 }
 
 // [COMMENT]: NewPricingOutboxRelay khởi tạo instance relay outbox cho bảng giá.
-func NewPricingOutboxRelay(repo billingRepoInterface.PricingOutboxRepository, natsConn *nats.Conn) *PricingOutboxRelay {
-	return &PricingOutboxRelay{repo: repo, nats: natsConn, wake: make(chan struct{}, 1)}
+func NewPricingOutboxRelay(repo billingRepoInterface.PricingOutboxRepository, sharedRedis *goredis.Client) *PricingOutboxRelay {
+	return &PricingOutboxRelay{repo: repo, sharedRedis: sharedRedis, wake: make(chan struct{}, 1)}
 }
 
 // [COMMENT]: Notify coalesce nhiều commit liên tiếp thành một wake; producer không bao giờ bị block sau commit DB.
@@ -88,7 +89,8 @@ func (r *PricingOutboxRelay) drain(ctx context.Context, refreshStatuses bool) er
 			return nil
 		}
 
-		// 3. Duyệt danh sách bản ghi, marshal Protobuf và publish sang NATS
+		// 3. Duyệt danh sách bản ghi, marshal Protobuf và publish hint sang Shared Redis.
+		// DB outbox vẫn là SoT; Engine cold-start/reconciler tự load lại nếu PubSub bị lỡ.
 		var publishErr error
 		for _, row := range batch {
 			payload, marshalErr := proto.Marshal(&pricingv1.TierVersionPublished{
@@ -106,7 +108,16 @@ func (r *PricingOutboxRelay) drain(ctx context.Context, refreshStatuses bool) er
 				break
 			}
 
-			if err := r.nats.Publish(pricingVersionPublishedSubject, payload); err != nil {
+			// [COMMENT]: Không mark published khi không có listener nào nhận hint.
+			// Engine có thể đang rolling restart; row sẽ được retry ở reconciliation sau đó.
+			listeners, err := r.sharedRedis.Publish(ctx, pricingVersionPublishedChannel, payload).Result()
+			if err != nil {
+				_ = r.repo.RecordOutboxError(ctx, row.ID, err.Error())
+				publishErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, err)
+				break
+			}
+			if listeners == 0 {
+				err := fmt.Errorf("no pricing listener subscribed to %s", pricingVersionPublishedChannel)
 				_ = r.repo.RecordOutboxError(ctx, row.ID, err.Error())
 				publishErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, err)
 				break
@@ -122,12 +133,5 @@ func (r *PricingOutboxRelay) drain(ctx context.Context, refreshStatuses bool) er
 			return publishErr
 		}
 
-		// 4. Flush các tin nhắn NATS sang network socket
-		flushCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		if err := r.nats.FlushWithContext(flushCtx); err != nil && ctx.Err() == nil {
-			cancel()
-			return fmt.Errorf("flush pricing events failed: %w", err)
-		}
-		cancel()
 	}
 }

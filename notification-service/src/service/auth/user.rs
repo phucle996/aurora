@@ -1,13 +1,15 @@
+use crate::infra::shared_redis::SharedRedisRequestBus;
 use crate::observability::logger::Logger;
 use crate::service::auth::trinity::{
     VerifyUserTrinityTokenRequest, VerifyUserTrinityTokenResponse,
 };
 use prost::Message;
+use std::sync::Arc;
 use tonic::Status;
 
-// [COMMENT]: Thực hiện cuộc gọi gRPC/NATS xác thực Trinity Token của User
+// [COMMENT]: Thực hiện Shared Redis request/reply xác thực Trinity Token của User.
 pub async fn verify_user_token(
-    nats_client: &async_nats::Client,
+    shared_redis: &Arc<SharedRedisRequestBus>,
     access_token: String,
     access_key: String,
     access_secret: String,
@@ -15,7 +17,7 @@ pub async fn verify_user_token(
     let start_time = std::time::Instant::now();
     Logger::sys_info(
         "auth_service.user",
-        "Verifying user trinity token via NATS Request-Reply",
+        "Verifying user trinity token via Shared Redis",
     );
 
     let req = VerifyUserTrinityTokenRequest {
@@ -28,19 +30,28 @@ pub async fn verify_user_token(
     req.encode(&mut payload)
         .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
 
-    let response_msg = match nats_client
-        .request("iam.auth.verify_user_trinity".to_string(), payload.into())
+    let response_payload = match shared_redis
+        .request(
+            "iam.auth.verify_user_trinity",
+            "iam.auth.verify_user_trinity.reply.",
+            payload,
+        )
         .await
     {
-        Ok(msg) => msg,
-        Err(e) => return Err(Status::unavailable(format!("NATS request failed: {}", e))),
+        Ok(value) => value,
+        Err(e) => {
+            return Err(Status::unavailable(format!(
+                "Shared Redis request failed: {}",
+                e
+            )))
+        }
     };
 
-    let res = VerifyUserTrinityTokenResponse::decode(response_msg.payload.as_ref())
+    let res = VerifyUserTrinityTokenResponse::decode(response_payload.as_slice())
         .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
 
     let latency = start_time.elapsed();
-    crate::observability::metrics::MetricsManager::record_nats_call(
+    crate::observability::metrics::MetricsManager::record_redis_call(
         "verify_user_trinity_token",
         "ok",
         latency,

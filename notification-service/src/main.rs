@@ -4,13 +4,13 @@ mod config;
 mod handler;
 mod infra;
 mod listener;
-mod service;
 mod observability;
+mod service;
 
 use config::Config;
 use observability::logger::Logger;
-use observability::otel::OtelTracer;
 use observability::metrics::MetricsManager;
+use observability::otel::OtelTracer;
 use std::net::SocketAddr;
 
 #[tokio::main]

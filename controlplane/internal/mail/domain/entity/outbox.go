@@ -13,7 +13,7 @@ const (
 	// OutboxStatusPending: Trạng thái ban đầu khi mail job/config event được commit bền vững.
 	OutboxStatusPending OutboxStatus = "PENDING"
 
-	// OutboxStatusProcessing: Dataplane/projector đã nhận job từ Redis Stream.
+	// OutboxStatusProcessing: JO/Dataplane projector đã nhận durable command từ Kafka transport.
 	OutboxStatusProcessing OutboxStatus = "PROCESSING"
 
 	// OutboxStatusSucceeded: Executor/projector hoàn thành thành công.

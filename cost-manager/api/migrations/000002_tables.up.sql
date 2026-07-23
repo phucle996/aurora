@@ -316,7 +316,8 @@ CREATE TABLE IF NOT EXISTS billing.resource_ownership_head (
     CONSTRAINT ck_resource_ownership_state CHECK (resource_state IN ('ACTIVE', 'DELETED'))
 );
 
--- 20. Inbox idempotency cho personal wallet provisioning events nhận từ JetStream
+-- 20. Inbox idempotency cho personal wallet provisioning events nhận từ Shared Redis Stream.
+-- [COMMENT]: event_id là hàng rào cuối để retry/XAUTOCLAIM không tạo trùng wallet.
 CREATE TABLE IF NOT EXISTS billing.wallet_provision_inbox (
     event_id        UUID PRIMARY KEY,
     schema_version  INT NOT NULL CHECK (schema_version = 1),

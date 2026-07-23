@@ -19,14 +19,13 @@ receivers:
                 kubernetes_namespace: "controlplane"
                 release: "controlplane"
 
-        # [REDIS MULTI-TARGET SCRAPER]: Cào security Redis và L2 Cache; Job transport đã chuyển sang Kafka.
+        # [REDIS SCRAPER]: Dev exporter chỉ cào Shared L2; Auth Redis cần credential metrics riêng trong production.
         # Cơ chế hoạt động: Gửi request đến http://controlplane-redis-exporter:9121/scrape?target=redis://...
         - job_name: 'redis-exporter'
           scrape_interval: 15s
           static_configs:
             - targets:
                 - 'redis://controlplane-cp-redis:6379'
-                - 'redis://controlplane-acr-redis:6379'
           metrics_path: /scrape
           relabel_configs:
             # 1. Chuyển địa chỉ đích ban đầu thành tham số query "target" cho exporter

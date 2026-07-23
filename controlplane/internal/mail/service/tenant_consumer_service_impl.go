@@ -25,13 +25,13 @@ import (
 var tenantMailConsumerEventNamespace = uuid.MustParse("43de31a4-0c86-54e9-8384-47b33f541c28")
 
 type tenantConsumerServiceImpl struct {
-	repo     mailRepoInterface.TenantConsumerRepository
-	redisJob *goredis.Client
+	repo        mailRepoInterface.TenantConsumerRepository
+	sharedRedis *goredis.Client
 }
 
 // NewTenantConsumerService khoi tao service quản lý consumer o scope Tenant.
-func NewTenantConsumerService(repo mailRepoInterface.TenantConsumerRepository, redisJob *goredis.Client) mailSvcInterface.TenantConsumerService {
-	return &tenantConsumerServiceImpl{repo: repo, redisJob: redisJob}
+func NewTenantConsumerService(repo mailRepoInterface.TenantConsumerRepository, sharedRedis *goredis.Client) mailSvcInterface.TenantConsumerService {
+	return &tenantConsumerServiceImpl{repo: repo, sharedRedis: sharedRedis}
 }
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Tenant.
@@ -465,8 +465,8 @@ func (s *tenantConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, re
 	if err != nil {
 		return nil, err
 	}
-	if s.redisJob == nil {
-		return nil, fmt.Errorf("mail tenant runtime watch: redis job unavailable: %w", mailTaxonomy.ErrRuntimeUnavailable)
+	if s.sharedRedis == nil {
+		return nil, fmt.Errorf("mail tenant runtime watch: shared Redis unavailable: %w", mailTaxonomy.ErrRuntimeUnavailable)
 	}
 
 	const watchTTL = 30 * time.Second
@@ -482,32 +482,27 @@ redis.call('SET',KEYS[1],lease,'PX',ARGV[4])
 redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',now)
 redis.call('ZADD',KEYS[2],now+tonumber(ARGV[4]),ARGV[2])
 redis.call('PEXPIRE',KEYS[2],tonumber(ARGV[4])*2)
-redis.call('ZREMRANGEBYSCORE',KEYS[4],'-inf',now)
-redis.call('ZADD',KEYS[4],now+tonumber(ARGV[4]),ARGV[5])
-redis.call('PEXPIRE',KEYS[4],tonumber(ARGV[4])*2)
 local snapshot=redis.call('GET',KEYS[3])
 if not snapshot then snapshot='' end
-return {lease,snapshot}
+return {lease,snapshot,now}
 `)
 	result, err := script.Run(
 		ctx,
-		s.redisJob,
+		s.sharedRedis,
 		[]string{
 			fmt.Sprintf("mail:runtime:watch-active:%s:%s", req.ZoneID, req.ID),
 			fmt.Sprintf("mail:runtime:watchers:%s:%s", req.ZoneID, req.ID),
 			fmt.Sprintf("mail:runtime:snapshot:tenant:%s", req.ID),
-			fmt.Sprintf("mail:runtime:watch-index:%s", req.ZoneID),
 		},
 		current.ConfigVersion,
 		req.ActorUserID.String(),
 		uuid.NewString(),
 		watchTTL.Milliseconds(),
-		req.ID.String(),
 	).Slice()
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant runtime watch: create lease: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
 	}
-	if len(result) != 2 {
+	if len(result) != 3 {
 		return nil, fmt.Errorf("mail tenant runtime watch: invalid redis reply: %w", mailTaxonomy.ErrRuntimeUnavailable)
 	}
 
@@ -516,12 +511,45 @@ return {lease,snapshot}
 	if req.WatchLeaseID == "" {
 		return nil, fmt.Errorf("mail tenant runtime watch: empty lease: %w", mailTaxonomy.ErrRuntimeUnavailable)
 	}
+	serverNowMS, _ := result[2].(int64)
+	_, runtimeEpoch, epochOK := strings.Cut(req.WatchLeaseID, ":")
+	if serverNowMS <= 0 || !epochOK || uuid.Validate(runtimeEpoch) != nil {
+		return nil, fmt.Errorf("mail tenant runtime watch: invalid lease epoch: %w", mailTaxonomy.ErrRuntimeUnavailable)
+	}
+	watchEventID := uuid.NewSHA1(
+		mailRuntimeWatchEventNamespace,
+		[]byte(fmt.Sprintf("%s:%s:%s", req.ZoneID, req.ID, runtimeEpoch)),
+	)
+	watchPayload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.MailConsumerRuntimeWatchRequestedV1{
+		Metadata: &mailproto.MailEventMetadataV1{
+			EventId:          watchEventID[:],
+			SchemaVersion:    1,
+			OccurredAtUnixMs: serverNowMS,
+			Producer:         "controlplane-mail-runtime-watch",
+		},
+		ZoneId:          req.ZoneID[:],
+		ConsumerId:      req.ID[:],
+		ConfigVersion:   current.ConfigVersion,
+		RuntimeEpoch:    runtimeEpoch,
+		ExpiresAtUnixMs: serverNowMS + watchTTL.Milliseconds(),
+	})
+	if marshalErr != nil {
+		return nil, fmt.Errorf("mail tenant runtime watch: encode NATS bridge request: %w", marshalErr)
+	}
+	if err = s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
+		Stream: "mail:runtime:watch-requests",
+		MaxLen: 10_000,
+		Approx: true,
+		Values: map[string]any{"payload": watchPayload},
+	}).Err(); err != nil {
+		return nil, fmt.Errorf("mail tenant runtime watch: enqueue NATS bridge request: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
+	}
 	req.WatchTTLSeconds = uint32(watchTTL / time.Second)
 	rawSnapshot, _ := result[1].(string)
 	if strings.TrimSpace(rawSnapshot) == "" {
 		return req, nil
 	}
-	_, watchEpoch, epochOK := strings.Cut(req.WatchLeaseID, ":")
+	watchEpoch := runtimeEpoch
 	var snapshot struct {
 		ConfigVersion   uint64                          `json:"config_version"`
 		RuntimeEpoch    string                          `json:"runtime_epoch"`

@@ -2,18 +2,19 @@
 // 📂 sre/zone_resolution.rs — Admin/SRE Zone Context Resolution & Verification
 // ======================================================================================================
 
-use crate::infra::nats::Nats;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::sre::claims::SreClaims;
 use crate::user::zone_resolution::{resolve_zone_context, ZoneResolutionError};
 use envoy_types::ext_authz::v3::CheckResponseExt;
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tonic::{Response, Status};
 
 /// [COMMENT]: Phân giải và xác thực Zone dành riêng cho Admin (SRE).
 pub async fn resolve_and_verify_zone_admin(
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     claims: Option<&mut SreClaims>,
     cookie_header: &str,
@@ -26,7 +27,8 @@ pub async fn resolve_and_verify_zone_admin(
 
     let mut cookies_to_set_zone = Vec::new();
 
-    let zone_res = resolve_zone_context(nats, redis_client, cookie_header, client_headers).await;
+    let zone_res =
+        resolve_zone_context(shared_redis, redis_client, cookie_header, client_headers).await;
 
     let (resolved_zone_id, resolved_zone_code, resolved_zone_status) = match zone_res {
         Ok(res) => (Some(res.0), Some(res.1), Some(res.2)),

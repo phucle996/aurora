@@ -207,157 +207,164 @@ pub async fn run_consumer_report_listener(
 
             if let (Some(zone_id), Some(batch)) = (zone_id, batch) {
                 terminal = true;
-                for report in batch.reports {
-                    let metadata = report.metadata.as_ref();
-                    let event_id =
-                        metadata.and_then(|value| Uuid::from_slice(&value.event_id).ok());
-                    let consumer_id = Uuid::from_slice(&report.consumer_id).ok();
-                    let runtime_state =
-                        MailConsumerRuntimeState::try_from(report.runtime_state).ok();
-                    let occurred_at = metadata.and_then(|value| {
-                        chrono::DateTime::<Utc>::from_timestamp_millis(value.occurred_at_unix_ms)
-                    });
-                    let now = Utc::now();
-                    let runtime_slot = report
-                        .instance_id
-                        .strip_prefix("slot:")
-                        .and_then(|slot| slot.parse::<i32>().ok());
-                    let contract_valid = event_id.is_some()
-                        && consumer_id.is_some()
-                        && runtime_state
-                            .is_some_and(|value| value != MailConsumerRuntimeState::Unspecified)
-                        && metadata.is_some_and(|value| {
-                            value.schema_version == 1
-                                && value.producer == "dataplane-mail-consumer"
-                                && value.traceparent.len() <= 128
-                        })
-                        && occurred_at.is_some_and(|value| {
-                            value <= now + ChronoDuration::minutes(5)
-                                && value >= now - ChronoDuration::hours(24)
-                        })
-                        && runtime_slot.is_some_and(|slot| (0..256).contains(&slot))
-                        && report.error_code.len() <= 100
-                        && report.error_code.bytes().all(|byte| {
-                            byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-                        })
-                        && report.error_message.len() <= 1_024
-                        && !report.error_message.chars().any(char::is_control)
-                        && report.config_version > 0
-                        && report.runtime_generation > 0
-                        && report.report_sequence > 0
-                        && Uuid::parse_str(&report.runtime_epoch).is_ok()
-                        && report.config_version <= i64::MAX as u64
-                        && report.runtime_generation <= i64::MAX as u64
-                        && report.report_sequence <= i64::MAX as u64
-                        && report.consumer_lag <= i64::MAX as u64;
-                    if !contract_valid {
-                        validation_error = "MAIL_CONSUMER_REPORT_CONTRACT_INVALID".to_string();
-                        continue;
-                    }
-
-                    let state = match runtime_state {
-                        Some(MailConsumerRuntimeState::Stopped) => "stopped",
-                        Some(MailConsumerRuntimeState::Starting) => "starting",
-                        Some(MailConsumerRuntimeState::Running) => "running",
-                        Some(MailConsumerRuntimeState::Paused) => "paused",
-                        Some(MailConsumerRuntimeState::Draining) => "draining",
-                        Some(MailConsumerRuntimeState::Error) => "error",
-                        Some(MailConsumerRuntimeState::Degraded) => "degraded",
-                        Some(MailConsumerRuntimeState::Unspecified) | None => unreachable!(),
-                    };
-                    let consumer_id = consumer_id.expect("validated consumer id");
-                    let occurred_at = occurred_at.expect("validated occurred at");
-                    let runtime_slot = runtime_slot.expect("validated runtime slot");
-                    let target = pg_client
-                        .query(&resolve_consumer_scope, &[&consumer_id, &zone_id])
-                        .await;
-                    let target = match target {
-                        Ok(rows) if rows.len() == 1 => {
-                            let row = &rows[0];
-                            (
-                                row.get::<_, String>(0),
-                                row.get::<_, i64>(1),
-                                row.get::<_, i32>(2),
-                                row.get::<_, String>(3),
+                if Uuid::from_slice(&batch.zone_id).ok() != Some(zone_id) {
+                    validation_error = "MAIL_CONSUMER_REPORT_ZONE_MISMATCH".to_string();
+                } else {
+                    for report in batch.reports {
+                        let metadata = report.metadata.as_ref();
+                        let event_id =
+                            metadata.and_then(|value| Uuid::from_slice(&value.event_id).ok());
+                        let consumer_id = Uuid::from_slice(&report.consumer_id).ok();
+                        let runtime_state =
+                            MailConsumerRuntimeState::try_from(report.runtime_state).ok();
+                        let occurred_at = metadata.and_then(|value| {
+                            chrono::DateTime::<Utc>::from_timestamp_millis(
+                                value.occurred_at_unix_ms,
                             )
+                        });
+                        let now = Utc::now();
+                        let runtime_slot = report
+                            .instance_id
+                            .strip_prefix("slot:")
+                            .and_then(|slot| slot.parse::<i32>().ok());
+                        let contract_valid = event_id.is_some()
+                            && consumer_id.is_some()
+                            && runtime_state.is_some_and(|value| {
+                                value != MailConsumerRuntimeState::Unspecified
+                            })
+                            && metadata.is_some_and(|value| {
+                                value.schema_version == 1
+                                    && value.producer == "dataplane-mail-consumer"
+                                    && value.traceparent.len() <= 128
+                            })
+                            && occurred_at.is_some_and(|value| {
+                                value <= now + ChronoDuration::minutes(5)
+                                    && value >= now - ChronoDuration::hours(24)
+                            })
+                            && runtime_slot.is_some_and(|slot| (0..256).contains(&slot))
+                            && report.error_code.len() <= 100
+                            && report.error_code.bytes().all(|byte| {
+                                byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                            })
+                            && report.error_message.len() <= 1_024
+                            && !report.error_message.chars().any(char::is_control)
+                            && report.config_version > 0
+                            && report.runtime_generation > 0
+                            && report.report_sequence > 0
+                            && Uuid::parse_str(&report.runtime_epoch).is_ok()
+                            && report.config_version <= i64::MAX as u64
+                            && report.runtime_generation <= i64::MAX as u64
+                            && report.report_sequence <= i64::MAX as u64
+                            && report.consumer_lag <= i64::MAX as u64;
+                        if !contract_valid {
+                            validation_error = "MAIL_CONSUMER_REPORT_CONTRACT_INVALID".to_string();
+                            continue;
                         }
-                        Ok(_) => {
-                            Logger::sys_warn(
+
+                        let state = match runtime_state {
+                            Some(MailConsumerRuntimeState::Stopped) => "stopped",
+                            Some(MailConsumerRuntimeState::Starting) => "starting",
+                            Some(MailConsumerRuntimeState::Running) => "running",
+                            Some(MailConsumerRuntimeState::Paused) => "paused",
+                            Some(MailConsumerRuntimeState::Draining) => "draining",
+                            Some(MailConsumerRuntimeState::Error) => "error",
+                            Some(MailConsumerRuntimeState::Degraded) => "degraded",
+                            Some(MailConsumerRuntimeState::Unspecified) | None => unreachable!(),
+                        };
+                        let consumer_id = consumer_id.expect("validated consumer id");
+                        let occurred_at = occurred_at.expect("validated occurred at");
+                        let runtime_slot = runtime_slot.expect("validated runtime slot");
+                        let target = pg_client
+                            .query(&resolve_consumer_scope, &[&consumer_id, &zone_id])
+                            .await;
+                        let target = match target {
+                            Ok(rows) if rows.len() == 1 => {
+                                let row = &rows[0];
+                                (
+                                    row.get::<_, String>(0),
+                                    row.get::<_, i64>(1),
+                                    row.get::<_, i32>(2),
+                                    row.get::<_, String>(3),
+                                )
+                            }
+                            Ok(_) => {
+                                Logger::sys_warn(
                                 "mail.consumer_report.scope",
                                 "Consumer report did not match exactly one consumer in its Zone",
                                 "MAIL_CONSUMER_REPORT_SCOPE_MISMATCH",
                             );
-                            continue;
-                        }
-                        Err(error) => {
-                            terminal = false;
-                            Logger::sys_error(
-                                "mail.consumer_report.scope",
-                                "Could not validate consumer scope; leaving batch pending",
-                                &error.to_string(),
-                            );
-                            if pg_client.is_closed() {
-                                return Err(error.into());
+                                continue;
                             }
-                            break;
-                        }
-                    };
-                    let (scope, current_config_version, parallelism, desired_state) = target;
-                    if current_config_version <= 0
-                        || report.config_version != current_config_version as u64
-                        || runtime_slot < 0
-                        || runtime_slot >= parallelism
-                    {
-                        // [COMMENT]: Report của config cũ là terminal stale data, không phải lỗi
-                        // transport để retry; watch mới chỉ nhận đúng active version.
-                        validation_error = "MAIL_CONSUMER_REPORT_CONFIG_STALE".to_string();
-                        continue;
-                    }
-
-                    let ttl_ms = config
-                        .mail_runtime_report_ttl_secs
-                        .saturating_mul(1_000)
-                        .min(i64::MAX as u64);
-                    let expires_at = occurred_at
-                        + ChronoDuration::milliseconds(ttl_ms.min(i64::MAX as u64) as i64);
-                    let slot_snapshot = SlotRuntimeSnapshot {
-                        config_version: report.config_version,
-                        runtime_epoch: report.runtime_epoch.clone(),
-                        runtime_generation: report.runtime_generation,
-                        report_sequence: report.report_sequence,
-                        state: state.to_string(),
-                        consumer_lag: report.consumer_lag,
-                        error_code: report.error_code,
-                        error_message: report.error_message,
-                        observed_at_unix_ms: occurred_at.timestamp_millis(),
-                        expires_at_unix_ms: expires_at.timestamp_millis(),
-                    };
-                    let slot_json = match serde_json::to_string(&slot_snapshot) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            validation_error =
-                                "MAIL_CONSUMER_REPORT_SERIALIZATION_FAILED".to_string();
-                            Logger::sys_error(
-                                "mail.consumer_report.serialize",
-                                "Could not serialize bounded runtime slot",
-                                &error.to_string(),
-                            );
+                            Err(error) => {
+                                terminal = false;
+                                Logger::sys_error(
+                                    "mail.consumer_report.scope",
+                                    "Could not validate consumer scope; leaving batch pending",
+                                    &error.to_string(),
+                                );
+                                if pg_client.is_closed() {
+                                    return Err(error.into());
+                                }
+                                break;
+                            }
+                        };
+                        let (scope, current_config_version, parallelism, desired_state) = target;
+                        if current_config_version <= 0
+                            || report.config_version != current_config_version as u64
+                            || runtime_slot < 0
+                            || runtime_slot >= parallelism
+                        {
+                            // [COMMENT]: Report của config cũ là terminal stale data, không phải lỗi
+                            // transport để retry; watch mới chỉ nhận đúng active version.
+                            validation_error = "MAIL_CONSUMER_REPORT_CONFIG_STALE".to_string();
                             continue;
                         }
-                    };
-                    let active_watch_key =
-                        format!("mail:runtime:watch-active:{zone_id}:{consumer_id}");
-                    let slot_key = format!(
-                        "mail:runtime:slot:{scope}:{consumer_id}:{}",
-                        report.instance_id
-                    );
-                    let slot_index_key = format!("mail:runtime:slot-index:{scope}:{consumer_id}");
-                    let revision_key = format!("mail:runtime:revision:{scope}:{consumer_id}");
 
-                    // [COMMENT]: Lease check + generation/sequence fence + slot update là một
-                    // Redis transaction. Report ngoài watch window không tạo bất kỳ runtime key.
-                    let applied: redis::RedisResult<Vec<String>> = redis::Script::new(
-                        "local lease=redis.call('GET',KEYS[1]); \
+                        let ttl_ms = config
+                            .mail_runtime_report_ttl_secs
+                            .saturating_mul(1_000)
+                            .min(i64::MAX as u64);
+                        let expires_at = occurred_at
+                            + ChronoDuration::milliseconds(ttl_ms.min(i64::MAX as u64) as i64);
+                        let slot_snapshot = SlotRuntimeSnapshot {
+                            config_version: report.config_version,
+                            runtime_epoch: report.runtime_epoch.clone(),
+                            runtime_generation: report.runtime_generation,
+                            report_sequence: report.report_sequence,
+                            state: state.to_string(),
+                            consumer_lag: report.consumer_lag,
+                            error_code: report.error_code,
+                            error_message: report.error_message,
+                            observed_at_unix_ms: occurred_at.timestamp_millis(),
+                            expires_at_unix_ms: expires_at.timestamp_millis(),
+                        };
+                        let slot_json = match serde_json::to_string(&slot_snapshot) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                validation_error =
+                                    "MAIL_CONSUMER_REPORT_SERIALIZATION_FAILED".to_string();
+                                Logger::sys_error(
+                                    "mail.consumer_report.serialize",
+                                    "Could not serialize bounded runtime slot",
+                                    &error.to_string(),
+                                );
+                                continue;
+                            }
+                        };
+                        let active_watch_key =
+                            format!("mail:runtime:watch-active:{zone_id}:{consumer_id}");
+                        let slot_key = format!(
+                            "mail:runtime:slot:{scope}:{consumer_id}:{}",
+                            report.instance_id
+                        );
+                        let slot_index_key =
+                            format!("mail:runtime:slot-index:{scope}:{consumer_id}");
+                        let revision_key = format!("mail:runtime:revision:{scope}:{consumer_id}");
+
+                        // [COMMENT]: Lease check + generation/sequence fence + slot update là một
+                        // Redis transaction. Report ngoài watch window không tạo bất kỳ runtime key.
+                        let applied: redis::RedisResult<Vec<String>> = redis::Script::new(
+                            "local lease=redis.call('GET',KEYS[1]); \
                          if not lease then return {} end; \
                          if lease ~= ARGV[1]..':'..ARGV[4] then return {} end; \
                          local existing=redis.call('GET',KEYS[2]); \
@@ -380,62 +387,41 @@ pub async fn run_consumer_report_listener(
                          local revision=redis.call('INCR',KEYS[4]); \
                          redis.call('PEXPIRE',KEYS[4],tonumber(ARGV[6])*2); \
                          return {lease,tostring(revision)}",
-                    )
-                    .key(&active_watch_key)
-                    .key(&slot_key)
-                    .key(&slot_index_key)
-                    .key(&revision_key)
-                    .arg(report.config_version)
-                    .arg(report.runtime_generation)
-                    .arg(report.report_sequence)
-                    .arg(&report.runtime_epoch)
-                    .arg(slot_json)
-                    .arg(ttl_ms)
-                    .invoke_async(&mut redis_conn)
-                    .await;
-                    let applied = match applied {
-                        Ok(values) if values.len() == 2 => values,
-                        Ok(_) => continue,
-                        Err(error) => {
-                            terminal = false;
-                            Logger::sys_error(
-                                "mail.consumer_report.redis",
-                                "Could not fence runtime slot; leaving batch pending",
-                                &error.to_string(),
-                            );
-                            break;
-                        }
-                    };
-                    let active_lease = &applied[0];
-                    let runtime_revision = applied[1].parse::<u64>().unwrap_or_default();
-                    let Some((_, runtime_epoch)) = active_lease.split_once(':') else {
-                        validation_error = "MAIL_CONSUMER_REPORT_LEASE_INVALID".to_string();
-                        continue;
-                    };
+                        )
+                        .key(&active_watch_key)
+                        .key(&slot_key)
+                        .key(&slot_index_key)
+                        .key(&revision_key)
+                        .arg(report.config_version)
+                        .arg(report.runtime_generation)
+                        .arg(report.report_sequence)
+                        .arg(&report.runtime_epoch)
+                        .arg(slot_json)
+                        .arg(ttl_ms)
+                        .invoke_async(&mut redis_conn)
+                        .await;
+                        let applied = match applied {
+                            Ok(values) if values.len() == 2 => values,
+                            Ok(_) => continue,
+                            Err(error) => {
+                                terminal = false;
+                                Logger::sys_error(
+                                    "mail.consumer_report.redis",
+                                    "Could not fence runtime slot; leaving batch pending",
+                                    &error.to_string(),
+                                );
+                                break;
+                            }
+                        };
+                        let active_lease = &applied[0];
+                        let runtime_revision = applied[1].parse::<u64>().unwrap_or_default();
+                        let Some((_, runtime_epoch)) = active_lease.split_once(':') else {
+                            validation_error = "MAIL_CONSUMER_REPORT_LEASE_INVALID".to_string();
+                            continue;
+                        };
 
-                    let mut slot_keys: Vec<String> = match redis::cmd("SMEMBERS")
-                        .arg(&slot_index_key)
-                        .query_async(&mut redis_conn)
-                        .await
-                    {
-                        Ok(values) => values,
-                        Err(error) => {
-                            terminal = false;
-                            Logger::sys_error(
-                                "mail.consumer_report.aggregate",
-                                "Could not read runtime slot index; leaving batch pending",
-                                &error.to_string(),
-                            );
-                            break;
-                        }
-                    };
-                    slot_keys.sort();
-                    slot_keys.truncate(256);
-                    let slot_values: Vec<Option<String>> = if slot_keys.is_empty() {
-                        Vec::new()
-                    } else {
-                        match redis::cmd("MGET")
-                            .arg(&slot_keys)
+                        let mut slot_keys: Vec<String> = match redis::cmd("SMEMBERS")
+                            .arg(&slot_index_key)
                             .query_async(&mut redis_conn)
                             .await
                         {
@@ -444,123 +430,147 @@ pub async fn run_consumer_report_listener(
                                 terminal = false;
                                 Logger::sys_error(
                                     "mail.consumer_report.aggregate",
-                                    "Could not read runtime slots; leaving batch pending",
+                                    "Could not read runtime slot index; leaving batch pending",
                                     &error.to_string(),
                                 );
                                 break;
                             }
-                        }
-                    };
+                        };
+                        slot_keys.sort();
+                        slot_keys.truncate(256);
+                        let slot_values: Vec<Option<String>> = if slot_keys.is_empty() {
+                            Vec::new()
+                        } else {
+                            match redis::cmd("MGET")
+                                .arg(&slot_keys)
+                                .query_async(&mut redis_conn)
+                                .await
+                            {
+                                Ok(values) => values,
+                                Err(error) => {
+                                    terminal = false;
+                                    Logger::sys_error(
+                                        "mail.consumer_report.aggregate",
+                                        "Could not read runtime slots; leaving batch pending",
+                                        &error.to_string(),
+                                    );
+                                    break;
+                                }
+                            }
+                        };
 
-                    let aggregate_now = Utc::now();
-                    let mut live_slots = Vec::new();
-                    for raw in slot_values.into_iter().flatten() {
-                        let Ok(slot) = serde_json::from_str::<SlotRuntimeSnapshot>(&raw) else {
+                        let aggregate_now = Utc::now();
+                        let mut live_slots = Vec::new();
+                        for raw in slot_values.into_iter().flatten() {
+                            let Ok(slot) = serde_json::from_str::<SlotRuntimeSnapshot>(&raw) else {
+                                continue;
+                            };
+                            if slot.config_version == report.config_version
+                                && slot.runtime_epoch == report.runtime_epoch
+                                && slot.expires_at_unix_ms > aggregate_now.timestamp_millis()
+                            {
+                                live_slots.push(slot);
+                            }
+                        }
+                        if live_slots.is_empty() {
+                            continue;
+                        }
+
+                        let mut active_instances = 0_u32;
+                        let mut total_lag = 0_u64;
+                        let mut observed_at_unix_ms = 0_i64;
+                        let mut expires_at_unix_ms = i64::MAX;
+                        let mut has_error = false;
+                        let mut has_degraded = false;
+                        let mut has_draining = false;
+                        let mut has_starting = false;
+                        let mut has_running = false;
+                        let mut has_paused = false;
+                        let mut aggregate_error_code = String::new();
+                        let mut aggregate_error_message = String::new();
+                        for slot in &live_slots {
+                            if slot.state != "stopped" {
+                                active_instances = active_instances.saturating_add(1);
+                            }
+                            total_lag = total_lag.saturating_add(slot.consumer_lag);
+                            observed_at_unix_ms = observed_at_unix_ms.max(slot.observed_at_unix_ms);
+                            expires_at_unix_ms = expires_at_unix_ms.min(slot.expires_at_unix_ms);
+                            match slot.state.as_str() {
+                                "error" => has_error = true,
+                                "degraded" => has_degraded = true,
+                                "draining" => has_draining = true,
+                                "starting" => has_starting = true,
+                                "running" => has_running = true,
+                                "paused" => has_paused = true,
+                                _ => {}
+                            }
+                            if aggregate_error_code.is_empty() && !slot.error_code.is_empty() {
+                                aggregate_error_code.clone_from(&slot.error_code);
+                                aggregate_error_message.clone_from(&slot.error_message);
+                            }
+                        }
+                        let incomplete_parallelism = live_slots.len() < parallelism as usize;
+                        let aggregate_state = if has_error {
+                            "error"
+                        } else if has_degraded
+                            || (desired_state == "enabled" && incomplete_parallelism)
+                        {
+                            "degraded"
+                        } else if has_draining {
+                            "draining"
+                        } else if has_starting {
+                            "starting"
+                        } else if has_running {
+                            "running"
+                        } else if has_paused || desired_state == "paused" {
+                            "paused"
+                        } else {
+                            "stopped"
+                        };
+                        let Some(observed_at) =
+                            chrono::DateTime::<Utc>::from_timestamp_millis(observed_at_unix_ms)
+                        else {
+                            validation_error =
+                                "MAIL_CONSUMER_REPORT_OBSERVED_AT_INVALID".to_string();
                             continue;
                         };
-                        if slot.config_version == report.config_version
-                            && slot.runtime_epoch == report.runtime_epoch
-                            && slot.expires_at_unix_ms > aggregate_now.timestamp_millis()
-                        {
-                            live_slots.push(slot);
-                        }
-                    }
-                    if live_slots.is_empty() {
-                        continue;
-                    }
-
-                    let mut active_instances = 0_u32;
-                    let mut total_lag = 0_u64;
-                    let mut observed_at_unix_ms = 0_i64;
-                    let mut expires_at_unix_ms = i64::MAX;
-                    let mut has_error = false;
-                    let mut has_degraded = false;
-                    let mut has_draining = false;
-                    let mut has_starting = false;
-                    let mut has_running = false;
-                    let mut has_paused = false;
-                    let mut aggregate_error_code = String::new();
-                    let mut aggregate_error_message = String::new();
-                    for slot in &live_slots {
-                        if slot.state != "stopped" {
-                            active_instances = active_instances.saturating_add(1);
-                        }
-                        total_lag = total_lag.saturating_add(slot.consumer_lag);
-                        observed_at_unix_ms = observed_at_unix_ms.max(slot.observed_at_unix_ms);
-                        expires_at_unix_ms = expires_at_unix_ms.min(slot.expires_at_unix_ms);
-                        match slot.state.as_str() {
-                            "error" => has_error = true,
-                            "degraded" => has_degraded = true,
-                            "draining" => has_draining = true,
-                            "starting" => has_starting = true,
-                            "running" => has_running = true,
-                            "paused" => has_paused = true,
-                            _ => {}
-                        }
-                        if aggregate_error_code.is_empty() && !slot.error_code.is_empty() {
-                            aggregate_error_code.clone_from(&slot.error_code);
-                            aggregate_error_message.clone_from(&slot.error_message);
-                        }
-                    }
-                    let incomplete_parallelism = live_slots.len() < parallelism as usize;
-                    let aggregate_state = if has_error {
-                        "error"
-                    } else if has_degraded || (desired_state == "enabled" && incomplete_parallelism)
-                    {
-                        "degraded"
-                    } else if has_draining {
-                        "draining"
-                    } else if has_starting {
-                        "starting"
-                    } else if has_running {
-                        "running"
-                    } else if has_paused || desired_state == "paused" {
-                        "paused"
-                    } else {
-                        "stopped"
-                    };
-                    let Some(observed_at) =
-                        chrono::DateTime::<Utc>::from_timestamp_millis(observed_at_unix_ms)
-                    else {
-                        validation_error = "MAIL_CONSUMER_REPORT_OBSERVED_AT_INVALID".to_string();
-                        continue;
-                    };
-                    let Some(snapshot_expires_at) =
-                        chrono::DateTime::<Utc>::from_timestamp_millis(expires_at_unix_ms)
-                    else {
-                        validation_error = "MAIL_CONSUMER_REPORT_EXPIRES_AT_INVALID".to_string();
-                        continue;
-                    };
-                    let snapshot = ConsumerRuntimeSnapshot {
-                        config_version: report.config_version,
-                        runtime_epoch,
-                        runtime_revision,
-                        state: aggregate_state,
-                        active_instances,
-                        consumer_lag: total_lag,
-                        error_code: &aggregate_error_code,
-                        error_message: &aggregate_error_message,
-                        observed_at,
-                        expires_at: snapshot_expires_at,
-                    };
-                    let snapshot_json = match serde_json::to_string(&snapshot) {
-                        Ok(value) => value,
-                        Err(error) => {
+                        let Some(snapshot_expires_at) =
+                            chrono::DateTime::<Utc>::from_timestamp_millis(expires_at_unix_ms)
+                        else {
                             validation_error =
-                                "MAIL_CONSUMER_REPORT_SERIALIZATION_FAILED".to_string();
-                            Logger::sys_error(
-                                "mail.consumer_report.serialize",
-                                "Could not serialize aggregate runtime snapshot",
-                                &error.to_string(),
-                            );
+                                "MAIL_CONSUMER_REPORT_EXPIRES_AT_INVALID".to_string();
                             continue;
-                        }
-                    };
-                    let snapshot_key = format!("mail:runtime:snapshot:{scope}:{consumer_id}");
-                    let snapshot_ttl_ms = expires_at_unix_ms
-                        .saturating_sub(aggregate_now.timestamp_millis())
-                        .max(1);
-                    let committed: redis::RedisResult<i64> = redis::Script::new(
+                        };
+                        let snapshot = ConsumerRuntimeSnapshot {
+                            config_version: report.config_version,
+                            runtime_epoch,
+                            runtime_revision,
+                            state: aggregate_state,
+                            active_instances,
+                            consumer_lag: total_lag,
+                            error_code: &aggregate_error_code,
+                            error_message: &aggregate_error_message,
+                            observed_at,
+                            expires_at: snapshot_expires_at,
+                        };
+                        let snapshot_json = match serde_json::to_string(&snapshot) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                validation_error =
+                                    "MAIL_CONSUMER_REPORT_SERIALIZATION_FAILED".to_string();
+                                Logger::sys_error(
+                                    "mail.consumer_report.serialize",
+                                    "Could not serialize aggregate runtime snapshot",
+                                    &error.to_string(),
+                                );
+                                continue;
+                            }
+                        };
+                        let snapshot_key = format!("mail:runtime:snapshot:{scope}:{consumer_id}");
+                        let snapshot_ttl_ms = expires_at_unix_ms
+                            .saturating_sub(aggregate_now.timestamp_millis())
+                            .max(1);
+                        let committed: redis::RedisResult<i64> = redis::Script::new(
                         "if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end; \
                          local existing=redis.call('GET',KEYS[2]); \
                          if existing then \
@@ -578,64 +588,65 @@ pub async fn run_consumer_report_listener(
                     .arg(snapshot_ttl_ms)
                     .invoke_async(&mut redis_conn)
                     .await;
-                    match committed {
-                        Ok(1) => {}
-                        Ok(_) => continue,
-                        Err(error) => {
-                            terminal = false;
-                            Logger::sys_error(
+                        match committed {
+                            Ok(1) => {}
+                            Ok(_) => continue,
+                            Err(error) => {
+                                terminal = false;
+                                Logger::sys_error(
                                 "mail.consumer_report.snapshot",
                                 "Could not commit aggregate runtime snapshot; leaving batch pending",
                                 &error.to_string(),
                             );
-                            break;
+                                break;
+                            }
                         }
-                    }
 
-                    // [COMMENT]: Watcher list cũng dùng Redis server time. NATS Core/Centrifugo là
-                    // best-effort wake-up; snapshot Redis cho phép UI recover khi notification mất.
-                    let watchers: redis::RedisResult<Vec<String>> = redis::Script::new(
-                        "local t=redis.call('TIME'); \
+                        // [COMMENT]: Watcher list cũng dùng Redis server time. NATS Core/Centrifugo là
+                        // best-effort wake-up; snapshot Redis cho phép UI recover khi notification mất.
+                        let watchers: redis::RedisResult<Vec<String>> = redis::Script::new(
+                            "local t=redis.call('TIME'); \
                          local now=(tonumber(t[1])*1000)+math.floor(tonumber(t[2])/1000); \
                          redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now); \
                          return redis.call('ZRANGEBYSCORE',KEYS[1],now,'+inf','LIMIT',0,256)",
-                    )
-                    .key(format!("mail:runtime:watchers:{zone_id}:{consumer_id}"))
-                    .invoke_async(&mut redis_conn)
-                    .await;
-                    if let Ok(watchers) = watchers {
-                        let notification = serde_json::json!({
-                            "event_type": "mail.consumer.runtime.changed",
-                            "scope": scope,
-                            "consumer_id": consumer_id,
-                            "config_version": report.config_version,
-                            "runtime_epoch": runtime_epoch,
-                            "runtime_revision": runtime_revision,
-                            "state": aggregate_state,
-                            "active_instances": active_instances,
-                            "consumer_lag": total_lag,
-                            "error_code": aggregate_error_code,
-                            "error_message": aggregate_error_message,
-                            "observed_at": observed_at,
-                            "expires_at": snapshot_expires_at,
-                        });
-                        if let Ok(payload) = serde_json::to_vec(&notification) {
-                            for watcher in watchers {
-                                if Uuid::parse_str(&watcher).is_err() {
-                                    continue;
-                                }
-                                if let Err(error) = nats_client
-                                    .publish(
-                                        format!("mail.runtime.notifications.{watcher}"),
-                                        payload.clone().into(),
-                                    )
-                                    .await
-                                {
-                                    Logger::sys_warn(
+                        )
+                        .key(format!("mail:runtime:watchers:{zone_id}:{consumer_id}"))
+                        .invoke_async(&mut redis_conn)
+                        .await;
+                        if let Ok(watchers) = watchers {
+                            let notification = serde_json::json!({
+                                "event_type": "mail.consumer.runtime.changed",
+                                "scope": scope,
+                                "consumer_id": consumer_id,
+                                "config_version": report.config_version,
+                                "runtime_epoch": runtime_epoch,
+                                "runtime_revision": runtime_revision,
+                                "state": aggregate_state,
+                                "active_instances": active_instances,
+                                "consumer_lag": total_lag,
+                                "error_code": aggregate_error_code,
+                                "error_message": aggregate_error_message,
+                                "observed_at": observed_at,
+                                "expires_at": snapshot_expires_at,
+                            });
+                            if let Ok(payload) = serde_json::to_vec(&notification) {
+                                for watcher in watchers {
+                                    if Uuid::parse_str(&watcher).is_err() {
+                                        continue;
+                                    }
+                                    if let Err(error) = nats_client
+                                        .publish(
+                                            format!("mail.runtime.notifications.{watcher}"),
+                                            payload.clone().into(),
+                                        )
+                                        .await
+                                    {
+                                        Logger::sys_warn(
                                         "mail.consumer_report.notify",
                                         "Runtime notification publish failed; Redis snapshot remains recoverable",
                                         &error.to_string(),
                                     );
+                                    }
                                 }
                             }
                         }

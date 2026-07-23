@@ -8,7 +8,7 @@
 
 | Luồng | Đích | Mục đích | Không được chứa |
 |---|---|---|---|
-| Consumer runtime watch | Dataplane memory → shared Cache Redis → JO TTL snapshot → NATS Core/Centrifugo | Consumer Detail đang mở | Recipient, rendered body, credential, physical pod identity |
+| Consumer runtime watch | CP Shared Redis Stream → JO → NATS Core → Dataplane memory → NATS Core → JO Shared Redis snapshot → Centrifugo | Consumer Detail đang mở | Recipient, rendered body, credential, physical pod identity |
 | Operational health | Zone NATS KV chỉ cho health/state-machine; runtime workload đi thẳng OTLP | Zone decision, Grafana, Alertmanager | Customer/workspace/consumer/template ID, lag, payload, credential |
 
 `hierarchy.zone_services.desired_state` vẫn là Controlplane business/control state. Grafana không ghi
@@ -20,15 +20,20 @@ bằng timestamp fence; không có Mail infrastructure Admin UI/API.
 ```mermaid
 flowchart LR
     UI[Consumer Detail] -->|POST runtime/watch, renew| CP[Controlplane]
-    CP -->|30s lease + watcher ZSET| RJ[(Shared Cache Redis)]
+    CP -->|30s lease + watcher ZSET + XADD request| RJ[(Shared Cache Redis)]
+    RJ --> WB[JO watch bridge]
+    WB -->|Protobuf watch| NATS[NATS Core]
+    NATS -->|Zone subject| WR[Dataplane memory watch registry]
     SLOT[Dataplane slot] --> MEM[Pod-local runtime memory]
     MEM --> REP[Reporter on every pod]
-    REP -->|MGET active leases| RJ
-    REP -->|watched only, XADD batch| STREAM[mail:consumer:reports]
+    WR --> REP
+    REP -->|watched only, Protobuf batch| NATS
+    NATS --> RB[JO report bridge]
+    RB -->|XADD| STREAM[mail:consumer:reports]
     STREAM --> JO[JO blocking consumer]
     JO -->|scope/config guard| DB[(Controlplane PostgreSQL)]
     JO -->|fenced ephemeral aggregate| RJ
-    JO -->|best effort| NATS[NATS Core]
+    JO -->|best effort notification| NATS
     NATS --> NS[Notification Service]
     NS --> CENTRI[Centrifugo personal channel]
     CENTRI --> UI
@@ -48,25 +53,27 @@ flowchart LR
    - set `mail:runtime:watch-active:{zone_id}:{consumer_id}` TTL 30 giây, value
      `{config_version}:{runtime_epoch}`;
    - upsert actor vào `mail:runtime:watchers:{zone_id}:{consumer_id}` ZSET bằng Redis server time;
-   - upsert consumer vào `mail:runtime:watch-index:{zone_id}` ZSET để Dataplane discovery có
-     cost theo số Detail đang mở thay vì toàn bộ slot đang chạy;
+   - XADD `MailConsumerRuntimeWatchRequestedV1` vào `mail:runtime:watch-requests`;
    - trả snapshot current cùng epoch nếu còn fresh.
-3. Browser renew lease khi Consumer Detail còn mở. Rời màn hình thì không renew; không có explicit
+3. JO consumer group publish watch lên subject
+   `aurora.runtime.watch.{zone_id}.mail.consumer.v1`, rồi mới ACK/XDEL Redis entry.
+4. Mọi Dataplane pod trong Zone subscribe cùng subject, validate Zone/config/epoch/expiry và giữ
+   watch trong memory. Không Dataplane nào có Redis credential.
+5. Browser renew lease khi Consumer Detail còn mở. Rời màn hình thì không renew; không có explicit
    stop correctness requirement vì lease tự hết hạn.
-4. Mỗi Dataplane pod giữ state/lag/heartbeat của slot nó đang sở hữu trong app memory. Reporter của
-   chính pod đọc Zone watch index, batched `MGET` active lease rồi intersect với local map;
-   consumer không có lease không tạo Central Redis write.
-5. Stable state được coalesce tối đa 10 giây; watch epoch mới, config/state/generation/lag/takeover
-   phát ngay. Tối đa 250 report/512 KiB mỗi Redis Stream entry.
-6. JO validate Zone envelope, protobuf, đúng một Personal/Tenant aggregate, workspace placement,
+6. Mỗi Dataplane pod intersect watch memory với slot memory rồi publish tối đa 250 report/512 KiB
+   qua `aurora.runtime.reports.{zone_id}.mail.consumer.v1`.
+7. JO NATS queue subscriber validate subject/Zone rồi XADD vào `mail:consumer:reports`.
+8. JO validate protobuf, đúng một Personal/Tenant aggregate, workspace placement,
    active `config_version` và `slot < parallelism`.
-7. JO atomically fence Redis slot bằng `(config_version, runtime_generation, report_sequence)`, derive
+9. JO atomically fence Redis slot bằng `(config_version, runtime_generation, report_sequence)`, derive
    aggregate và commit `mail:runtime:snapshot:{scope}:{consumer_id}` chỉ khi watch lease/epoch còn đúng.
-8. JO publish best-effort `mail.runtime.notifications.{actor_user_id}`. Notification Service lọc
+10. JO publish best-effort `mail.runtime.notifications.{actor_user_id}`. Notification Service lọc
    allowlist field rồi publish `mail.consumer.runtime.changed` vào `personal:{actor_user_id}`.
 
-NATS Core/Centrifugo chỉ là wake-up signal. Mất notification không làm mất correctness: lần renew
-watch tiếp theo trả Redis snapshot. NATS publish lỗi không giữ Redis Stream entry trong PEL.
+NATS Core là at-most-once soft-state data path Central↔Zone; Centrifugo chỉ là viewer wake-up signal.
+Mất notification/report không làm sai business correctness: UI renew watch và Dataplane heartbeat kế tiếp
+sẽ dựng lại Redis snapshot. NATS report lỗi không tạo durable retry backlog.
 
 ## 4. Runtime data boundaries
 
@@ -75,7 +82,7 @@ watch tiếp theo trả Redis snapshot. NATS publish lỗi không giữ Redis St
 - Không có runtime outbox: viewer demand là soft-state lease, không phải durable business mutation.
 - `runtime_node_id` và `runtime_boot_id` chỉ dùng reporter fence/signature nội bộ, không đi snapshot
   customer hoặc Centrifugo.
-- Redis runtime slot/index/revision/snapshot đều có TTL; report ngoài watch window không tạo key.
+- Redis runtime slot/revision/snapshot đều có TTL; Dataplane không đọc các key này.
 - Snapshot phải cùng `config_version + runtime_epoch` với lease mà Controlplane vừa renew; snapshot
   của watch cũ được coi là cache miss dù TTL chưa hết.
 - `consumer_lag` chỉ được coi là số đo thật khi từng broker suite có native sampler đã test. Wire V1
@@ -116,12 +123,14 @@ queue và broker identifier không được làm metric label.
 | Failure/race | Guard | Outcome |
 |---|---|---|
 | Unauthorized watch | DB ownership/membership check trước Redis | Không tạo lease/watcher |
-| Update config trong watch | Lease value bind config version; epoch đổi | Runtime cũ bị bỏ |
+| Update config trong watch | Lease value bind config version; NATS watch mang config/epoch | Runtime cũ bị bỏ |
 | Pod cũ report sau takeover | Generation + sequence Lua fence | Không overwrite slot mới |
 | Hai JO replica aggregate sai thứ tự | Runtime revision + lease compare khi commit | Snapshot mới không rollback |
 | Watch hết hạn giữa report | Lua recheck active lease lúc slot và snapshot commit | Không materialize/publish |
 | NATS/Centrifugo mất event | Redis snapshot + renew response | UI recover không cần status polling |
-| Redis/DB tạm lỗi trong JO | Không ACK Stream, PEL reclaim | Idempotent retry |
+| Redis lỗi trước NATS watch publish | Không ACK watch Stream, PEL reclaim | Idempotent retry |
+| NATS Core mất watch/report | At-most-once soft state, UI renew và heartbeat định kỳ | Tự phục hồi, không sai business |
+| Redis/DB lỗi khi aggregate | Report sample hiện tại có thể mất; heartbeat sau gửi lại | Snapshot không rollback |
 | Hai pod cùng infra probe | Rotating CAS lease + jitter | Một winner mỗi chu kỳ |
 | Holder infra cũ hoàn tất chậm | Renew + fenced KV PUT | Không overwrite `zone.service.mail` |
 

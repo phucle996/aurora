@@ -2,7 +2,7 @@
 // 📂 user/zone_catalog.rs — User Zone Catalog Handler (GET /api/v1/zones/catalog)
 // ======================================================================================================
 
-use crate::infra::nats::Nats;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::get_all_zones;
 use crate::observability::logger::Logger;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
@@ -10,6 +10,7 @@ use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tonic::{Response, Status};
 
 #[derive(Serialize)]
@@ -20,7 +21,7 @@ pub struct ZoneCatalogEntry {
 
 /// [COMMENT]: Intercept GET /api/v1/zones/catalog dành cho User domain.
 pub async fn handle_user_zone_catalog(
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     _client_headers: &HashMap<String, String>,
     method: &str,
@@ -30,7 +31,7 @@ pub async fn handle_user_zone_catalog(
         return None;
     }
 
-    let all_zones = get_all_zones(nats, redis_client).await;
+    let all_zones = get_all_zones(shared_redis, redis_client).await;
     let mut catalog = Vec::new();
 
     for z in all_zones {

@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -21,26 +20,26 @@ import (
 type RbacPlatformService struct {
 	repo        iamRepoInterface.RbacPlatformRepository
 	cacheEngine *cacheengine.CacheRegistry
-	nc          *nats.Conn
-	redis       *goredis.Client
+	authRedis   *goredis.Client
+	sharedRedis *goredis.Client
 }
 
 // [COMMENT]: NewRbacPlatformService khởi tạo một thể hiện mới của RbacPlatformService
 func NewRbacPlatformService(
 	repo iamRepoInterface.RbacPlatformRepository,
 	cacheEngine *cacheengine.CacheRegistry,
-	nc *nats.Conn,
-	redisClient *goredis.Client,
+	authRedis *goredis.Client,
+	sharedRedis *goredis.Client,
 ) iamSvcInterface.RbacPlatformService {
 	return &RbacPlatformService{
 		repo:        repo,
 		cacheEngine: cacheEngine,
-		nc:          nc,
-		redis:       redisClient,
+		authRedis:   authRedis,
+		sharedRedis: sharedRedis,
 	}
 }
 
-// [COMMENT]: AssignUserRole thực hiện gán vai trò platform cho user, thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core
+// [COMMENT]: AssignUserRole gán vai trò, fence Auth Redis và fan-out L1 invalidation qua Shared Redis.
 func (s *RbacPlatformService) AssignUserRole(ctx context.Context, callerLevel uint8, userID uuid.UUID, roleID uuid.UUID) error {
 	// [COMMENT]: 1. Gọi Repo để thực hiện gán và cập nhật DB (với check phân cấp CTE)
 	if err := s.repo.AssignUserRole(ctx, callerLevel, userID, roleID); err != nil {
@@ -52,9 +51,9 @@ func (s *RbacPlatformService) AssignUserRole(ctx context.Context, callerLevel ui
 
 	// [COMMENT]: 3. Tăng generation và xóa snapshot trong một Lua call để reader không ghi lại dữ liệu cũ sau race.
 	var invalidationErr error
-	if s.redis != nil {
-		tag := "{iam:authz:billing:" + userID.String() + "}"
-		if err := s.redis.Eval(ctx, `
+	if s.authRedis != nil {
+		tag := "authz:billing:{" + userID.String() + "}"
+		if err := s.authRedis.Eval(ctx, `
 			redis.call("INCR", KEYS[1])
 			redis.call("EXPIRE", KEYS[1], ARGV[1])
 			redis.call("DEL", KEYS[2], KEYS[3])
@@ -64,9 +63,11 @@ func (s *RbacPlatformService) AssignUserRole(ctx context.Context, callerLevel ui
 		}
 	}
 
-	// [COMMENT]: 4. Phát tán sự kiện invalidation cache qua NATS Core đến mọi Cost/Controlplane replica.
-	if s.nc != nil {
-		_ = s.nc.Publish("iam.user_role.invalidated", []byte(userID.String()))
+	// [COMMENT]: Shared Redis Pub/Sub chỉ fan-out xóa L1; Auth Redis generation ở trên mới là correctness fence.
+	if invalidationErr == nil && s.sharedRedis != nil {
+		if err := s.sharedRedis.Publish(ctx, "authz.invalidate.billing", userID.String()).Err(); err != nil {
+			invalidationErr = fmt.Errorf("publish Billing authorization invalidation: %w", err)
+		}
 	}
 
 	return invalidationErr
@@ -185,32 +186,38 @@ func (s *RbacPlatformService) GetRoleDetails(ctx context.Context, callerLevel ui
 	return s.repo.GetRoleDetails(ctx, callerLevel, roleID)
 }
 
-// [COMMENT]: UpdateRole cập nhật thông tin vai trò platform cùng danh sách permissions được gán có kiểm tra cấp bậc caller level, thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core cho các user bị ảnh hưởng
+// [COMMENT]: UpdateRole cập nhật role rồi fence/fan-out authorization cho toàn bộ user bị ảnh hưởng.
 func (s *RbacPlatformService) UpdateRole(ctx context.Context, callerUserID uuid.UUID, callerLevel uint8, input *iamEntity.UpdateRoleInput) error {
 	affectedUserIDs, err := s.repo.UpdateRole(ctx, callerUserID, callerLevel, input)
 	if err != nil {
 		return err
 	}
 
-	// [COMMENT]: Thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core cho các user bị ảnh hưởng
+	// [COMMENT]: Thu hồi L1 cục bộ, fence Auth Redis rồi fan-out qua Shared Redis cho từng user.
 	var invalidationErr error
 	for _, uID := range affectedUserIDs {
 		s.cacheEngine.L1.Delete("user_role:" + uID.String())
-		if s.redis != nil {
-			tag := "{iam:authz:billing:" + uID.String() + "}"
-			if err := s.redis.Eval(ctx, `
+		userInvalidationSucceeded := true
+		if s.authRedis != nil {
+			tag := "authz:billing:{" + uID.String() + "}"
+			if err := s.authRedis.Eval(ctx, `
 				redis.call("INCR", KEYS[1])
 				redis.call("EXPIRE", KEYS[1], ARGV[1])
 				redis.call("DEL", KEYS[2], KEYS[3])
 				return 1
 			`, []string{tag + ":generation", tag + ":data", tag + ":data_generation"}, int64(86400)).Err(); err != nil {
+				userInvalidationSucceeded = false
 				if invalidationErr == nil {
 					invalidationErr = fmt.Errorf("invalidate Billing authorization cache after role update: %w", err)
 				}
 			}
 		}
-		if s.nc != nil {
-			_ = s.nc.Publish("iam.user_role.invalidated", []byte(uID.String()))
+		if userInvalidationSucceeded && s.sharedRedis != nil {
+			if err := s.sharedRedis.Publish(ctx, "authz.invalidate.billing", uID.String()).Err(); err != nil {
+				if invalidationErr == nil {
+					invalidationErr = fmt.Errorf("publish Billing authorization invalidation: %w", err)
+				}
+			}
 		}
 	}
 

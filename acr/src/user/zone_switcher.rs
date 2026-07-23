@@ -3,8 +3,8 @@
 // ======================================================================================================
 
 use crate::config::Config;
-use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
 use crate::token::TokenManager;
@@ -67,7 +67,7 @@ fn sha256_hash(secret: &str) -> String {
 pub async fn handle_user_zone_switch(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    nats: &Nats,
+    shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
     config: &Config,
     client_headers: &HashMap<String, String>,
@@ -103,7 +103,7 @@ pub async fn handle_user_zone_switch(
     let resolved = if zone_code == "global" {
         Some(("global".to_string(), "active".to_string()))
     } else {
-        resolve_code_to_id_and_status(nats, redis_client, &zone_code).await
+        resolve_code_to_id_and_status(shared_redis, redis_client, &zone_code).await
     };
 
     let (zone_id, zone_status) = match resolved {

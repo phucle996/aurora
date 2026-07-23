@@ -2,8 +2,6 @@ package iam
 
 import (
 	"context"
-
-	pubsubHandler "controlplane/internal/iam/transport/pubsub/handler"
 )
 
 // Bootstrap khởi tạo runtime side-effects của IAM module.
@@ -20,28 +18,23 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	if m.billingOutboxRelay != nil {
 		m.billingOutboxRelay.Start()
 	}
-	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply) và bulk presence updates
-	if m.natsConn != nil {
-		authNatsHandler := pubsubHandler.NewAuthNatsHandler(
-			m.cfg,
-			m.AuthService,
-			m.SessionRefreshService,
-			m.RbacPlatformRepository,
-			m.rds,
-			m.otel,
-		)
-		subs, err := authNatsHandler.Subscribe(m.natsConn)
-		if err != nil {
+	// [COMMENT]: Cost authz miss stays inside Central through Shared Redis; the resolved projection is fenced in Auth Redis.
+	if m.billingAuthorizationRedisHandler != nil {
+		if err := m.billingAuthorizationRedisHandler.Start(); err != nil {
 			return err
 		}
-		m.natsSubs = append(m.natsSubs, subs...)
-
-		deviceNatsHandler := pubsubHandler.NewDeviceNatsHandler(m.cfg, m.deviceSelfSvcImpl, m.otel)
-		deviceSubs, err := deviceNatsHandler.Subscribe(m.natsConn)
-		if err != nil {
+	}
+	// [COMMENT]: Khởi động Shared Redis PubSub subscriber để lắng nghe và điều phối luồng Auth
+	if m.authRedisHandler != nil {
+		if err := m.authRedisHandler.Start(); err != nil {
 			return err
 		}
-		m.natsSubs = append(m.natsSubs, deviceSubs...)
+	}
+	// [COMMENT]: Khởi động Shared Redis PubSub subscriber cho Device domain (bulk presence & evicted)
+	if m.deviceRedisHandler != nil {
+		if err := m.deviceRedisHandler.Start(); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -53,15 +46,16 @@ func (m *IAMModule) Stop() {
 		return
 	}
 
-	// [COMMENT]: Hủy đăng ký NATS subscriptions trước khi tắt ứng dụng
-	for _, sub := range m.natsSubs {
-		if sub != nil {
-			_ = sub.Unsubscribe()
-		}
+	if m.deviceRedisHandler != nil {
+		m.deviceRedisHandler.Stop()
 	}
-	m.natsSubs = nil
+	if m.authRedisHandler != nil {
+		m.authRedisHandler.Stop()
+	}
+	if m.billingAuthorizationRedisHandler != nil {
+		m.billingAuthorizationRedisHandler.Stop()
+	}
 	if m.billingOutboxRelay != nil {
 		m.billingOutboxRelay.Stop()
 	}
-
 }
