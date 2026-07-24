@@ -1,5 +1,4 @@
 use prost::Message;
-use sha2::{Digest, Sha256};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -18,17 +17,16 @@ pub struct JobConsumer;
 
 impl JobConsumer {
     /// [COMMENT]: Kafka intake dùng manual commit; terminal offset chỉ được settle ở JobRunner sau durable result/retry/DLQ.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn start_ingestion(
+    pub async fn start_zone_ingestion(
         config: Arc<crate::config::Config>,
         kafka: Arc<KafkaTransport>,
         zone_kv: Arc<ZoneKvStore>,
-        tx: tokio::sync::mpsc::Sender<JobPayload>,
+        tx: async_channel::Sender<JobPayload>,
         cancel_token: CancellationToken,
-        active_jobs: Arc<AtomicUsize>,
-        topic: String,
-        group_name: String,
+        admitted_jobs: Arc<AtomicUsize>,
     ) {
+        let topic = kafka.zone_command_topic(&config.zone_id);
+        let group_name = format!("aurora-dataplane-zone-{}-v1", config.zone_id);
         let (consumer, rebalance_fence) = match kafka.consumer(group_name.clone(), &topic, 32).await
         {
             Ok(value) => value,
@@ -75,7 +73,7 @@ impl JobConsumer {
             last_logged_status.clear();
 
             let admission = admission_controller
-                .evaluate(active_jobs.load(Ordering::SeqCst), config.max_workers);
+                .evaluate(admitted_jobs.load(Ordering::SeqCst), config.max_workers);
             if admission.is_broken {
                 tokio::select! {
                     _ = cancel_token.cancelled() => break,
@@ -107,10 +105,8 @@ impl JobConsumer {
                     }
                 }
             };
-            if topic == kafka.zone_command_topic(&config.zone_id) {
-                // [COMMENT]: Lag lấy ngay từ consumer fetch state, không quét broker bằng một polling client phụ.
-                kafka.observe_job_lag(&consumer).await;
-            }
+            // [COMMENT]: Lag lấy ngay từ consumer fetch state, không quét broker bằng một polling client phụ.
+            kafka.observe_job_lag(&consumer).await;
             let assignment_epoch = rebalance_fence.epoch();
 
             for record in records {
@@ -138,7 +134,11 @@ impl JobConsumer {
                             && command.payload_schema_version > 0
                             && !command.job_topic.trim().is_empty()
                             && !command.source_domain.trim().is_empty()
-                            && !command.resource_id.trim().is_empty() =>
+                            && !command.resource_id.trim().is_empty()
+                            && crate::observability::otel::OtelTracer::is_valid_propagation_context(
+                                &command.traceparent,
+                                &command.tracestate,
+                            ) =>
                     {
                         command
                     }
@@ -167,11 +167,9 @@ impl JobConsumer {
                     }
                 };
 
-                // [COMMENT]: Topic Zone và target_zone_id phải đồng thuận; sai routing fail-close vào DLQ.
-                if !command.target_zone_id.is_empty()
-                    && command.target_zone_id != config.zone_id
-                    && record.topic == kafka.zone_command_topic(&config.zone_id)
-                {
+                // [COMMENT]: Dataplane chỉ có một command namespace theo Zone.
+                // Target rỗng hoặc khác Zone đều là vi phạm trust boundary và phải vào DLQ.
+                if command.target_zone_id != config.zone_id {
                     let error_code = "JOB_TARGET_ZONE_MISMATCH";
                     let dlq = DeadLetterRecordV1 {
                         event_id: stable_job_dlq_event_id(
@@ -185,7 +183,7 @@ impl JobConsumer {
                         source_offset: record.offset,
                         error_code: error_code.to_string(),
                         error_message: format!(
-                            "envelope target {} does not match consumer zone {}",
+                            "envelope target {:?} does not match consumer zone {}",
                             command.target_zone_id, config.zone_id
                         ),
                         original_payload: raw_payload.to_vec(),
@@ -221,7 +219,7 @@ impl JobConsumer {
                     .iter()
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>();
-                let mut payload = JobPayload {
+                let payload = JobPayload {
                     job_id,
                     job_version: command.job_version,
                     attempt: command.attempt,
@@ -229,8 +227,10 @@ impl JobConsumer {
                     source_domain: command.source_domain,
                     resource_id: command.resource_id,
                     payload_schema_version: command.payload_schema_version,
-                    payload: command.payload,
+                    payload: Arc::from(command.payload),
                     trace_id,
+                    traceparent: command.traceparent,
+                    tracestate: command.tracestate,
                     idle: command.idle_seconds,
                     reconcile_generation: command.reconcile_generation,
                     target_zone_id: command.target_zone_id,
@@ -253,104 +253,13 @@ impl JobConsumer {
                     sleep(Duration::from_millis(hasher.finish() % 250)).await;
                 }
 
-                let job_key_digest = Sha256::digest(payload.job_id.as_bytes());
-                let lock_key = format!("lease.job.{job_key_digest:x}");
-                let owner_id = format!(
-                    "{}-{}",
-                    std::env::var("HOSTNAME").unwrap_or_else(|_| std::process::id().to_string()),
-                    uuid::Uuid::new_v4()
-                );
-                match zone_kv
-                    .acquire_lease(&lock_key, &owner_id, Duration::from_secs(30))
-                    .await
-                {
-                    Ok(Some(lease)) => payload.zone_lease = Some(lease),
-                    Ok(None) => {
-                        // [COMMENT]: Chờ xấp xỉ lease TTL rồi mới tạo một durable retry; republish mỗi 250ms
-                        // khi owner đang chạy sẽ khuếch đại duplicate thành broker storm.
-                        let retry_kafka = kafka.clone();
-                        let retry_topic = record.topic.clone();
-                        let retry_key = command.job_id.clone();
-                        let retry_payload = raw_payload.clone();
-                        let retry_delivery = delivery.clone();
-                        let retry_assignment_epoch = assignment_epoch;
-                        tokio::spawn(async move {
-                            let jitter = rand::random::<u64>() % 2_000;
-                            sleep(Duration::from_millis(30_000 + jitter)).await;
-                            match retry_kafka
-                                .publish(&retry_topic, &retry_key, retry_payload.as_ref())
-                                .await
-                            {
-                                Ok(()) => {
-                                    // [COMMENT]: Rebalance epoch trong delivery ngăn task trì hoãn commit assignment mới.
-                                    if let Err(error) = retry_delivery.settle().await {
-                                        Logger::sys_error_with_fields(
-                                            "job.ingestion.retry",
-                                            "JOB_LEASE_RETRY_SETTLEMENT_FAILED",
-                                            "Lease-contention retry was published but source settlement failed; duplicate replay is expected",
-                                            &error,
-                                            LogFields {
-                                                kafka_topic: Some(&retry_topic),
-                                                assignment_epoch: Some(retry_assignment_epoch),
-                                                retryable: Some(true),
-                                                outcome: Some("replay_expected"),
-                                                ..LogFields::default()
-                                            },
-                                        );
-                                    }
-                                }
-                                Err(error) => Logger::sys_error_with_fields(
-                                    "job.ingestion.retry",
-                                    "JOB_LEASE_RETRY_PUBLISH_FAILED",
-                                    "Could not publish delayed retry after job lease contention; source remains unsettled",
-                                    &error,
-                                    LogFields {
-                                        kafka_topic: Some(&retry_topic),
-                                        assignment_epoch: Some(retry_assignment_epoch),
-                                        retryable: Some(true),
-                                        outcome: Some("unsettled"),
-                                        ..LogFields::default()
-                                    },
-                                ),
-                            }
-                        });
-                        continue;
-                    }
-                    Err(error) => {
-                        Logger::sys_error(
-                            "job.ingestion",
-                            &format!("Zone KV lease acquisition failed: {error}"),
-                            "ZONE_KV_LEASE_ERROR",
-                        );
-                        continue;
-                    }
-                }
-
-                active_jobs.fetch_add(1, Ordering::SeqCst);
-                let lease = payload.zone_lease.clone();
+                admitted_jobs.fetch_add(1, Ordering::SeqCst);
                 let send_result = tokio::select! {
                     _ = cancel_token.cancelled() => Err("shutdown"),
                     result = tx.send(payload) => result.map_err(|_| "worker channel closed"),
                 };
                 if let Err(error) = send_result {
-                    active_jobs.fetch_sub(1, Ordering::SeqCst);
-                    if let Some(lease) = lease {
-                        if let Err(release_error) = zone_kv.release_lease(&lease).await {
-                            Logger::sys_warn_with_fields(
-                                "job.ingestion",
-                                "JOB_DISPATCH_LEASE_RELEASE_FAILED",
-                                "Worker dispatch failed and immediate lease release also failed; TTL fencing remains active",
-                                &release_error,
-                                LogFields {
-                                    operation_id: Some(&lease.key),
-                                    fencing_token: Some(lease.fencing_token),
-                                    retryable: Some(false),
-                                    outcome: Some("ttl_expiry_required"),
-                                    ..LogFields::default()
-                                },
-                            );
-                        }
-                    }
+                    admitted_jobs.fetch_sub(1, Ordering::SeqCst);
                     Logger::sys_error(
                         "job.ingestion",
                         &format!("Kafka job dispatch failed: {error}"),
@@ -365,7 +274,7 @@ impl JobConsumer {
     /// độc lập qua NATS Core supervisor để job executor không thể truy cập Central soft state.
     pub async fn dispatch_workload(
         payload: JobPayload,
-        worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
+        worker_pool: Arc<crate::workerpool::pool::WorkerLifecycleManager>,
         zone_id: &str,
     ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
         let topic = payload.job_topic.clone();

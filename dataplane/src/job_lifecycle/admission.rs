@@ -1,5 +1,5 @@
 use crate::observability::logger::Logger;
-use crate::observability::resource::ResourceMonitor;
+use crate::observability::metrics::NodeRuntimeSampler;
 
 /// ============================================================================
 /// 📂 MODULE: job_receiver/admission.rs - Bộ Điều Phối & Quản Lý Ngắt Mạch Tải (Admission Controller)
@@ -39,8 +39,8 @@ impl AdmissionController {
             0.0
         };
 
-        let cpu_usage = ResourceMonitor::cpu_usage();
-        let ram_usage = ResourceMonitor::ram_usage();
+        let cpu_usage = NodeRuntimeSampler::cpu_usage();
+        let ram_usage = NodeRuntimeSampler::ram_usage();
 
         // R là giá trị lớn nhất trong ba chỉ số tài nguyên
         let r = active_ratio.max(cpu_usage).max(ram_usage);

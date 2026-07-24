@@ -1,8 +1,8 @@
 syntax = "proto3";
 package job;
 
-// WARNING: This file is duplicated in job-proxy/proto/job_event.proto.
-// If you modify this file, you MUST also update the duplicated file in job-proxy!
+// WARNING: This contract is duplicated in Job Orchestrator and Notification Service.
+// Both copies must remain byte-identical.
 
 // Định nghĩa thông điệp gửi từ Job-Proxy qua Redis Stream
 message JobNotificationEvent {
@@ -13,6 +13,9 @@ message JobNotificationEvent {
   string title = 5;         // Tiêu đề của thông báo
   string message = 6;       // Nội dung chi tiết của thông báo
   int64 created_at = 7;     // Thời điểm xảy ra sự kiện dưới dạng Unix Epoch seconds
-  string trace_parent = 8;  // Trace context nội bộ cho distributed tracing (Job-Proxy → Notification Service, không truyền tới client)
+  string trace_parent = 8;  // W3C traceparent của Redis producer span
+  string trace_state = 9;   // W3C tracestate; không truyền tới browser
+  string resource_id = 10;  // Resource business để UI refresh đúng aggregate
+  uint32 job_version = 11;  // Fence/ordering metadata, không dùng làm metric label
+  uint32 attempt = 12;
 }
-

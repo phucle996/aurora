@@ -3,6 +3,8 @@ use super::model::{MailSubmitError, MailSubmitResult, PreparedMail};
 use crate::config::Config;
 use crate::executor::mail::supervisor::MailWorkloadMetrics;
 use crate::observability::logger::Logger;
+use opentelemetry::trace::{FutureExt, Link, TraceContextExt};
+use opentelemetry::Context;
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,6 +15,7 @@ use tokio::time::Instant;
 struct QueuedMail {
     mail: PreparedMail,
     reply: oneshot::Sender<MailSubmitResult>,
+    trace_context: Context,
 }
 
 enum Command {
@@ -69,6 +72,7 @@ impl MailBatcherHandle {
         let enqueue = self.tx.send(Command::Submit(QueuedMail {
             mail,
             reply: reply_tx,
+            trace_context: Context::current(),
         }));
         match tokio::time::timeout(self.enqueue_timeout, enqueue).await {
             Ok(Ok(())) => {}
@@ -225,11 +229,37 @@ async fn flush_batch(
         "executor.mail.batch",
         &format!("Submitting JMAP mail batch with {} items", batch.len()),
     );
+    // [COMMENT]: Một batch có nhiều causal message contexts nên không thể chọn
+    // tùy ý một parent. Links giữ đủ quan hệ mà không tạo parent chain sai.
+    let links = batch
+        .iter()
+        .take(32)
+        .filter_map(|item| {
+            let span = item.trace_context.span();
+            span.span_context()
+                .is_valid()
+                .then(|| Link::with_context(span.span_context().clone()))
+        })
+        .collect::<Vec<_>>();
+    let batch_context = crate::observability::otel::OtelTracer::start_span_with_parent_and_links(
+        "send stalwart.jmap batch",
+        opentelemetry::trace::SpanKind::Producer,
+        vec![
+            opentelemetry::KeyValue::new("messaging.operation.type", "send"),
+            opentelemetry::KeyValue::new("aurora.mail.batch.size", batch.len() as i64),
+        ],
+        links,
+        &Context::new(),
+    );
     let (mails, replies): (Vec<_>, Vec<_>) = batch
         .into_iter()
         .map(|item| (item.mail, item.reply))
         .unzip();
-    let results = client.submit_batch(&mails).await;
+    let results = client
+        .submit_batch(&mails)
+        .with_context(batch_context.clone())
+        .await;
+    let batch_failed = results.iter().any(Result::is_err);
     for (reply, result) in replies.into_iter().zip(results) {
         metrics.pending_items.fetch_sub(1, Ordering::Relaxed);
         if result.is_ok() {
@@ -239,6 +269,10 @@ async fn flush_batch(
         }
         let _ = reply.send(result);
     }
+    crate::observability::otel::OtelTracer::finish_span(
+        &batch_context,
+        batch_failed.then_some("MAIL_JMAP_BATCH_FAILED"),
+    );
     metrics.in_flight_batches.fetch_sub(1, Ordering::Relaxed);
 }
 

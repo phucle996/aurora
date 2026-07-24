@@ -2,7 +2,7 @@ use prost::Message;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::zone_leader_session::ZoneLeaderSession;
+use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::infra::kafka::transport_proto::{DeadLetterRecordV1, ZoneMetadataSnapshotV1};
 use crate::infra::kafka::{KafkaDelivery, KafkaSettlement, KafkaTransport};

@@ -20,6 +20,8 @@ pub async fn handle_job_notification(
         // [COMMENT]: operation cho phép client phân biệt loại job để quyết định silent hay hiển thị notification
         "operation": payload.get("operation").cloned().unwrap_or(serde_json::Value::Null),
         "resource_id": payload.get("resource_id").cloned().unwrap_or(serde_json::Value::Null),
+        "job_version": payload.get("job_version").cloned().unwrap_or(serde_json::Value::Null),
+        "attempt": payload.get("attempt").cloned().unwrap_or(serde_json::Value::Null),
     });
 
     let mut client_event = filtered_data;

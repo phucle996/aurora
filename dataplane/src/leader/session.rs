@@ -1,3 +1,5 @@
+//! Fenced leader session shared by all leader-only duties.
+
 use std::sync::Arc;
 use std::time::Duration;
 

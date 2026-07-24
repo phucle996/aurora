@@ -40,9 +40,15 @@ impl Logger {
         })
     }
 
-    // Trích xuất mã trace_id từ Task-Local Storage nếu có để đính kèm vào JSON log
+    // Active OTel context is authoritative for Redis/Kafka work; task-local is
+    // retained only for the legacy connect handler until that path is migrated.
     fn get_trace_part() -> String {
-        if let Some(ctx) = crate::observability::otel::OtelTracer::get_current_trace() {
+        if let (Some(trace_id), Some(span_id)) = (
+            crate::observability::otel::OtelTracer::get_current_trace_id(),
+            crate::observability::otel::OtelTracer::get_current_span_id(),
+        ) {
+            format!(",\"trace_id\":\"{trace_id}\",\"span_id\":\"{span_id}\"")
+        } else if let Some(ctx) = crate::observability::otel::OtelTracer::get_current_trace() {
             format!(",\"trace_id\":\"{}\"", ctx.trace_id)
         } else {
             "".to_string()

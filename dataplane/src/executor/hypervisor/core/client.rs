@@ -72,14 +72,22 @@ impl ProxmoxClient {
     pub async fn fetch_nodes(&self) -> Result<Vec<ProxmoxNodeRaw>, String> {
         let url = format!("{}/api2/json/nodes", self.api_url.trim_end_matches('/'));
 
-        let response = self
+        let request = self
             .client
             .get(&url)
             // [COMMENT]: Proxmox yêu cầu Authorization header dạng: PVEAPIToken=user@realm!id=secret
-            .header("Authorization", &self.api_token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+            .header("Authorization", &self.api_token);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "GET proxmox.nodes",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "GET"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new("url.template", "/api2/json/nodes"),
+            ],
+            request,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!(

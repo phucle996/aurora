@@ -1,6 +1,6 @@
 use crate::executor::{ExecutionResult, ExecutorError};
 use crate::job_lifecycle::message::JobPayload;
-use crate::workerpool::lifecycle::WorkerLifecycleManager;
+use crate::workerpool::pool::WorkerLifecycleManager;
 use std::sync::Arc;
 
 pub async fn dispatch_mail_job(

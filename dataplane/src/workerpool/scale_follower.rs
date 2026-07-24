@@ -1,15 +1,11 @@
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
-use crate::infra::kafka::KafkaTransport;
-use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::{LogFields, Logger};
-use crate::workerpool::lifecycle::WorkerLifecycleManager;
-use crate::workerpool::watchdog::ActiveLockRegistry;
+use crate::workerpool::pool::{TaskGuard, WorkerLifecycleManager};
+use crate::workerpool::runtime::WorkerJobRuntime;
 
 pub(crate) const WORKER_SCALE_DIRECTIVE_KEY: &str = "signal.workers.scale";
 
@@ -30,32 +26,39 @@ fn validate_worker_scale_directive_target(
     min_workers: usize,
     max_workers: usize,
     now_ms: u64,
+    last_leader_fencing_token: u64,
+    last_issued_at_unix_ms: u64,
 ) -> Option<usize> {
     (directive.zone_id == zone_id
+        && !directive.lag_stale
         && directive.leader_fencing_token > 0
+        && directive.issued_at_unix_ms <= directive.expires_at_unix_ms
         && directive.expires_at_unix_ms > now_ms
         && directive.target_per_node >= min_workers
-        && directive.target_per_node <= max_workers)
+        && directive.target_per_node <= max_workers
+        && (directive.leader_fencing_token > last_leader_fencing_token
+            || (directive.leader_fencing_token == last_leader_fencing_token
+                && directive.issued_at_unix_ms >= last_issued_at_unix_ms)))
         .then_some(directive.target_per_node)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn start_worker_scale_follower(
-    config: Arc<Config>,
+pub(crate) fn start_worker_scale_directive_follower(
     worker_pool: Arc<WorkerLifecycleManager>,
-    kafka: Arc<KafkaTransport>,
-    zone_kv: Arc<ZoneKvStore>,
-    active_lock_registry: Arc<ActiveLockRegistry>,
-    rx: Arc<
-        tokio::sync::Mutex<tokio::sync::mpsc::Receiver<crate::job_lifecycle::message::JobPayload>>,
-    >,
-    active_jobs: Arc<AtomicUsize>,
+    runtime: Arc<WorkerJobRuntime>,
+    task_guard: TaskGuard,
 ) {
     tokio::spawn(async move {
+        let _task_guard = task_guard;
         let shutdown = worker_pool.cancel_token();
         let mut last_failure_code: Option<&'static str> = None;
+        let mut last_leader_fencing_token = 0_u64;
+        let mut last_issued_at_unix_ms = 0_u64;
         loop {
-            let directive = match zone_kv.coordination_get(WORKER_SCALE_DIRECTIVE_KEY).await {
+            let directive = match runtime
+                .zone_kv()
+                .coordination_get(WORKER_SCALE_DIRECTIVE_KEY)
+                .await
+            {
                 Err(error) => {
                     log_scale_follower_failure_transition(
                         &mut last_failure_code,
@@ -91,17 +94,19 @@ pub(crate) fn start_worker_scale_follower(
                     Ok(directive) => {
                         if validate_worker_scale_directive_target(
                             &directive,
-                            &config.zone_id,
-                            config.min_workers,
-                            config.max_workers,
+                            &runtime.config().zone_id,
+                            runtime.config().min_workers,
+                            runtime.config().max_workers,
                             current_unix_time_millis(),
+                            last_leader_fencing_token,
+                            last_issued_at_unix_ms,
                         )
                         .is_none()
                         {
                             log_scale_follower_failure_transition(
                                 &mut last_failure_code,
                                 "WORKER_SCALE_DIRECTIVE_CONTRACT_INVALID",
-                                "Ignored wrong-zone, expired, unfenced, or out-of-bounds worker scale directive",
+                                "Ignored stale-lag, wrong-zone, expired, out-of-order, unfenced, or out-of-bounds worker scale directive",
                                 "",
                                 LogFields {
                                     leader_fencing_token: Some(
@@ -113,6 +118,8 @@ pub(crate) fn start_worker_scale_follower(
                             );
                             None
                         } else {
+                            last_leader_fencing_token = directive.leader_fencing_token;
+                            last_issued_at_unix_ms = directive.issued_at_unix_ms;
                             log_scale_follower_recovered(&mut last_failure_code);
                             Some(directive)
                         }
@@ -122,27 +129,10 @@ pub(crate) fn start_worker_scale_follower(
             if let Some(directive) = directive {
                 apply_worker_scale_directive_target(
                     directive.target_per_node,
-                    &config,
                     &worker_pool,
-                    &kafka,
-                    &zone_kv,
-                    &active_lock_registry,
-                    &rx,
-                    &active_jobs,
+                    &runtime,
                 )
                 .await;
-                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
-                    crate::workerpool::metrics::MetricsType::KafkaConsumerLag {
-                        zone_id: config.zone_id.clone(),
-                        lag: directive.observed_zone_lag,
-                    },
-                );
-                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
-                    crate::workerpool::metrics::MetricsType::ActiveConnectionsCount {
-                        zone_id: config.zone_id.clone(),
-                        count: worker_pool.active_worker_ids().len(),
-                    },
-                );
             }
 
             tokio::select! {
@@ -181,21 +171,18 @@ fn log_scale_follower_recovered(last_failure_code: &mut Option<&'static str>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn apply_worker_scale_directive_target(
     target: usize,
-    config: &Arc<Config>,
     worker_pool: &Arc<WorkerLifecycleManager>,
-    kafka: &Arc<KafkaTransport>,
-    zone_kv: &Arc<ZoneKvStore>,
-    active_lock_registry: &Arc<ActiveLockRegistry>,
-    rx: &Arc<
-        tokio::sync::Mutex<tokio::sync::mpsc::Receiver<crate::job_lifecycle::message::JobPayload>>,
-    >,
-    active_jobs: &Arc<AtomicUsize>,
+    runtime: &Arc<WorkerJobRuntime>,
 ) {
     let active_ids = worker_pool.active_worker_ids();
     let current = active_ids.len();
+    crate::observability::metrics::WorkerControlMetrics::record_scale_target(
+        &runtime.config().zone_id,
+        "follower",
+        target,
+    );
     if target == current {
         return;
     }
@@ -206,17 +193,7 @@ async fn apply_worker_scale_directive_target(
     if target > current {
         for worker_id in 1..=target {
             if !active_ids.contains(&worker_id) {
-                worker_pool
-                    .spawn_worker(
-                        worker_id,
-                        config.clone(),
-                        kafka.clone(),
-                        zone_kv.clone(),
-                        active_lock_registry.clone(),
-                        rx.clone(),
-                        active_jobs.clone(),
-                    )
-                    .await;
+                worker_pool.spawn_worker(worker_id, runtime.clone());
             }
         }
     } else {
@@ -254,7 +231,11 @@ mod tests {
     #[test]
     fn accepts_only_current_zone_unexpired_fenced_target() {
         assert_eq!(
-            validate_worker_scale_directive_target(&directive(), "zone-a", 1, 10, 150),
+            validate_worker_scale_directive_target(&directive(), "zone-a", 1, 10, 150, 0, 0),
+            Some(3)
+        );
+        assert_eq!(
+            validate_worker_scale_directive_target(&directive(), "zone-a", 1, 10, 150, 7, 99,),
             Some(3)
         );
     }
@@ -262,11 +243,11 @@ mod tests {
     #[test]
     fn rejects_expired_or_wrong_zone_target() {
         assert_eq!(
-            validate_worker_scale_directive_target(&directive(), "zone-a", 1, 10, 200),
+            validate_worker_scale_directive_target(&directive(), "zone-a", 1, 10, 200, 0, 0),
             None
         );
         assert_eq!(
-            validate_worker_scale_directive_target(&directive(), "zone-b", 1, 10, 150),
+            validate_worker_scale_directive_target(&directive(), "zone-b", 1, 10, 150, 0, 0),
             None
         );
     }
@@ -276,13 +257,33 @@ mod tests {
         let mut value = directive();
         value.target_per_node = 11;
         assert_eq!(
-            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150),
+            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150, 0, 0),
             None
         );
         value.target_per_node = 3;
         value.leader_fencing_token = 0;
         assert_eq!(
-            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150),
+            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_stale_lag_and_out_of_order_directive() {
+        let mut value = directive();
+        value.lag_stale = true;
+        assert_eq!(
+            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150, 0, 0),
+            None
+        );
+
+        value.lag_stale = false;
+        assert_eq!(
+            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150, 8, 0),
+            None
+        );
+        assert_eq!(
+            validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150, 7, 101),
             None
         );
     }

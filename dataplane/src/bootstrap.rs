@@ -1,12 +1,11 @@
 use dotenvy::dotenv;
 use std::error::Error;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::observability::logger::Logger;
 // Đã loại bỏ PolicyEngine để đơn giản hóa kiến trúc Dataplane
-use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
+use crate::workerpool::pool::WorkerLifecycleManager;
 
 /// ============================================================================
 /// 📂 MODULE: bootstrap.rs - Khởi Tạo Hạ Tầng Hệ Thống Dataplane (Bootstrapping)
@@ -31,7 +30,6 @@ pub struct BootstrapResult {
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã loại bỏ trường policy_engine trong BootstrapResult
     pub worker_pool: Arc<WorkerLifecycleManager>,
-    pub worker_signal_rx: mpsc::Receiver<WorkerSignal>,
 }
 
 /// Khởi chạy chuỗi hành động bootstrap hạ tầng hệ thống.
@@ -78,8 +76,7 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // [COMMENT]: JMAP client + batcher được tạo đúng một lần cho toàn pod; cấu hình/auth sai làm bootstrap fail-fast.
     let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone())
         .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
-    let (worker_pool, worker_signal_rx) = WorkerLifecycleManager::new(mail_runtime);
-    let worker_pool = Arc::new(worker_pool);
+    let worker_pool = Arc::new(WorkerLifecycleManager::new(mail_runtime));
 
     Ok(BootstrapResult {
         config: Arc::new(cfg),
@@ -87,6 +84,5 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         kafka,
         zone_kv,
         worker_pool,
-        worker_signal_rx,
     })
 }

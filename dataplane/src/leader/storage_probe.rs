@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::zone_leader_session::ZoneLeaderSession;
+use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::{LogFields, Logger};

@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::handler::connect::AppState;
 use crate::infra::centrifugo::CentrifugoClient;
 use crate::infra::nats::NatsClient;
+use crate::infra::redis::RedisSubscriber;
 use crate::infra::shared_redis::SharedRedisRequestBus;
 use crate::listener::NatsListener;
 use crate::observability::logger::Logger;
@@ -35,12 +36,16 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
         cfg.centrifugo_api_key.clone(),
     );
 
-    // 3. Khởi tạo NATS Listener cho việc đồng bộ dung lượng và kết quả công việc
+    // NATS Core chỉ giữ soft-state/runtime từ Zone. Job completion nội vùng
+    // Central được consume từ Shared L2 Redis Stream.
     let nats_listener = NatsListener::new(nats_client.clone(), centrifugo_client.clone());
+    let redis_subscriber = RedisSubscriber::new(shared_redis.client(), centrifugo_client.clone());
 
-    // 4. Khởi chạy ngầm vòng lặp lắng nghe NATS Core
     tokio::spawn(async move {
         nats_listener.start_listening().await;
+    });
+    tokio::spawn(async move {
+        redis_subscriber.start_listening().await;
     });
 
     Arc::new(AppState {

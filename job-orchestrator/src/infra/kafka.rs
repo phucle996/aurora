@@ -167,9 +167,6 @@ impl KafkaTransport {
     pub fn zone_command_topic(&self, zone_id: &str) -> String {
         format!("{}.jobs.commands.zone.{}.v1", self.topic_prefix, zone_id)
     }
-    pub fn platform_command_topic(&self) -> String {
-        format!("{}.jobs.commands.platform.v1", self.topic_prefix)
-    }
     pub fn result_topic(&self) -> String {
         format!("{}.jobs.results.v1", self.topic_prefix)
     }

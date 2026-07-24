@@ -1,4 +1,5 @@
 use crate::observability::logger::Logger;
+use opentelemetry::trace::FutureExt;
 use reqwest::Client;
 use serde::Serialize;
 
@@ -59,7 +60,15 @@ impl CentrifugoClient {
             data,
         };
 
-        // Thực hiện cuộc gọi HTTP POST gửi tin nhắn sang Centrifugo
+        let trace_context = crate::observability::otel::OtelTracer::start_current_span(
+            "POST centrifugo.publish",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "POST"),
+                opentelemetry::KeyValue::new("server.address", "centrifugo"),
+            ],
+        );
+        let propagation = crate::observability::otel::OtelTracer::inject_context(&trace_context);
         let mut request = self
             .client
             .post(&url)
@@ -67,26 +76,23 @@ impl CentrifugoClient {
             .header("Authorization", format!("apikey {}", self.api_key)) // Dự phòng Authorization header cho các phiên bản cũ hơn
             .json(&payload);
 
-        // Đính kèm Trace Context (traceparent) nếu được truyền trong luồng thực thi async hiện tại
-        if let Some(traceparent) = crate::observability::otel::OtelTracer::get_traceparent() {
-            request = request.header("traceparent", traceparent);
+        if !propagation.traceparent.is_empty() {
+            request = request.header("traceparent", propagation.traceparent);
+        }
+        if !propagation.tracestate.is_empty() {
+            request = request.header("tracestate", propagation.tracestate);
         }
 
-        let response = request.send().await?;
-
-        // Ghi nhận cảnh báo nếu Centrifugo phản hồi mã lỗi không thành công (ví dụ: 401 Unauthorized, 404)
-        if !response.status().is_success() {
-            let status = response.status();
-            Logger::sys_warn(
-                "centrifugo.publish_failed",
-                &format!(
-                    "Failed to publish message to Centrifugo, status: {}",
-                    status
-                ),
-                "http_error",
-            );
-        }
-
-        Ok(())
+        let result = request
+            .send()
+            .with_context(trace_context.clone())
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map(|_| ());
+        crate::observability::otel::OtelTracer::finish_span(
+            &trace_context,
+            result.as_ref().err().map(|_| "CENTRIFUGO_PUBLISH_FAILED"),
+        );
+        result
     }
 }

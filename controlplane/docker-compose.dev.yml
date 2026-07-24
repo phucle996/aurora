@@ -467,7 +467,6 @@ services:
             --config min.insync.replicas=1
         }
         create_topic aurora.jobs.commands.zone.019f3d3e-997d-7894-9236-c5122634cb4f.v1 6
-        create_topic aurora.jobs.commands.platform.v1 6
         create_topic aurora.jobs.results.v1 12
         create_topic aurora.jobs.dlq.v1 6
         create_topic aurora.zone.metadata.queries.v1 6
@@ -537,6 +536,10 @@ services:
       # Endpoint gRPC của OTel Collector để gửi traces (Tempo)
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       OTEL_TRACE_SAMPLE_RATIO: "0.25"
+      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_BSP_EXPORT_TIMEOUT: "5000"
       MINIO_HOST: "minio"
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: "minioadmin"
@@ -592,6 +595,10 @@ services:
       METRICS_PORT: "2112"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       OTEL_TRACE_SAMPLE_RATIO: "0.25"
+      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_BSP_EXPORT_TIMEOUT: "5000"
       MINIO_HOST: "minio"
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: "minioadmin"
@@ -639,6 +646,10 @@ services:
       METRICS_PORT: "2112"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       OTEL_TRACE_SAMPLE_RATIO: "0.25"
+      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_BSP_EXPORT_TIMEOUT: "5000"
       MINIO_HOST: "minio"
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: "minioadmin"
@@ -819,6 +830,11 @@ services:
       NATS_URL: "nats://controlplane-nats:4222"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
+      OTEL_TRACE_SAMPLE_RATIO: "0.25"
+      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_BSP_EXPORT_TIMEOUT: "5000"
     depends_on:
       psql:
         condition: service_healthy
@@ -905,7 +921,7 @@ services:
       - APP_PORT=8083
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
-      # [COMMENT]: Kết nối trực tiếp tới NATS Core phục vụ realtime pubsub
+      # [COMMENT]: NATS Core chỉ phục vụ soft-state/runtime; job notification dùng Shared Redis.
       - NATS_ADDR=nats://nats:4222
       - SHARED_REDIS_URL=redis://controlplane-cp-redis:6379/0
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E

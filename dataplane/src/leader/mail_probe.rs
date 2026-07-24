@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::zone_leader_session::ZoneLeaderSession;
+use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::executor::mail::supervisor::{
     LocalMailNodeSnapshot, MailBackpressureSnapshot, MailOperationalMetricsSnapshot,

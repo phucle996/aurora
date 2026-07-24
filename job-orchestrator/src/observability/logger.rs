@@ -61,10 +61,15 @@ impl Logger {
 
     /// Lấy phân đoạn trace_id định dạng JSON để gắn vào logs
     fn get_trace_segment() -> String {
-        if let Some(tid) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-            format!(",\"trace_id\":\"{}\"", tid)
-        } else {
-            "".to_string()
+        match (
+            crate::observability::otel::OtelTracer::get_current_trace_id(),
+            crate::observability::otel::OtelTracer::get_current_span_id(),
+        ) {
+            (Some(trace_id), Some(span_id)) => {
+                format!(",\"trace_id\":\"{trace_id}\",\"span_id\":\"{span_id}\"")
+            }
+            (Some(trace_id), None) => format!(",\"trace_id\":\"{trace_id}\""),
+            _ => String::new(),
         }
     }
 

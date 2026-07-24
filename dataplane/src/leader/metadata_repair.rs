@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::zone_leader_session::ZoneLeaderSession;
+use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::infra::kafka::transport_proto::ZoneMetadataQueryV1;
 use crate::infra::kafka::KafkaTransport;

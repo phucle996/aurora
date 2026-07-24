@@ -11,7 +11,7 @@
 |---|---|
 | Broker | Kafka transport cluster, KRaft |
 | Dev topology | 3 combined broker/controller, replication factor `3`, min ISR `2` |
-| Wire format | Protobuf binary; không dùng JSON cho platform command/result/report |
+| Wire format | Protobuf binary; không dùng JSON cho command/result/report |
 | Delivery | At-least-once |
 | Producer | Stable key, idempotent producer, `acks=all`, zstd, bounded retry |
 | Consumer | Manual offset commit |
@@ -33,7 +33,8 @@ flowchart LR
     JO <-->|runtime watch/report| CN[NATS Core]
     CN <--> DP
     JO <--> R[(Central Shared Redis)]
-    CN --> NS[Notification Service]
+    R -->|job notification Stream| NS[Notification Service]
+    CN -->|runtime soft-state only| NS
     NS --> UI[Centrifugo / UI]
 ```
 
@@ -41,9 +42,11 @@ Connection rules:
 
 - ACR không kết nối Kafka. ACR chỉ gọi IAM qua security boundary hiện có.
 - IAM service không import Kafka hay Protobuf; nó gọi `AccountVerificationPublisher`.
-- Controlplane không consume platform job topics và không kết nối Zone KV.
+- Controlplane không consume runtime command topics và không kết nối Zone KV.
 - JO có PostgreSQL/WAL, Kafka, NATS Core và bounded Shared Redis; không có Zone KV credential.
 - Dataplane có Kafka, NATS Core và KV của đúng Zone; không có Redis hoặc CP PostgreSQL credential.
+- Không tồn tại shared platform command topic. Mọi runtime command phải có UUID Zone hợp lệ;
+  JO publish vào topic per-Zone và fail-closed với route `platform`, `global`, rỗng hoặc nil UUID.
 - Kafka ACL production phải tách principal, producer topic và consumer group. Dataplane Zone A không được
   subscribe command/metadata topic của Zone B.
 
@@ -54,7 +57,6 @@ Prefix mặc định là `aurora`.
 | Topic | Key | Producer | Consumer | Policy |
 |---|---|---|---|---|
 | `aurora.jobs.commands.zone.<zone_uuid>.v1` | `job_id` | JO | DP trong Zone | 6+ partitions, delete retention |
-| `aurora.jobs.commands.platform.v1` | `job_id` | JO | DP platform group | 6+ partitions, delete retention |
 | `aurora.jobs.results.v1` | `job_id` | DP | JO | 12+ partitions, delete retention |
 | `aurora.jobs.dlq.v1` | DLQ `event_id` | DP/JO | SRE tooling | delete retention dài |
 | `aurora.zone.metadata.queries.v1` | `zone_id` | DP | JO | delete retention |
@@ -108,7 +110,7 @@ sequenceDiagram
     JO->>K: publish stable key, acks=all
     K-->>JO: durable ACK from ISR
     JO->>PG: advance replication LSN
-    K-->>DP: poll Zone/platform topic
+    K-->>DP: poll đúng Zone command topic
     DP->>DP: validate schema + Zone binding
     DP->>KV: acquire fenced job lease
     DP->>DP: execute idempotent workload
@@ -150,18 +152,20 @@ sequenceDiagram
     participant K as Kafka results
     participant JO as JO result consumer
     participant PG as PostgreSQL
-    participant N as Central NATS
+    participant R as Shared L2 Redis
+    participant NS as Notification Service
 
     DP->>K: PROCESSING/terminal Protobuf, acks=all
     K-->>JO: manual poll
     JO->>JO: strict decode/validation
     JO->>PG: guarded result transaction
-    JO->>N: realtime notification when required
+    JO->>R: bounded job notification Stream when required
     JO->>K: commit offset
+    R-->>NS: consumer-group delivery; ACK after Centrifugo 2xx
 ```
 
 - Poison result được DLQ rồi mới commit.
-- Transient DB/NATS failure dừng listener trước khi record offset cao hơn được commit.
+- Transient DB/Shared Redis failure dừng listener trước khi record offset cao hơn được commit.
 - Supervisor/Kubernetes restart replay từ committed offset.
 - Result transaction phải idempotent theo `job_id`, topic, attempt và terminal fence.
 

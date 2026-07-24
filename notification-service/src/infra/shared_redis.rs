@@ -61,6 +61,10 @@ impl SharedRedisRequestBus {
         Ok(bus)
     }
 
+    pub fn client(&self) -> Arc<redis::Client> {
+        self.client.clone()
+    }
+
     pub async fn request(
         &self,
         request_channel: &str,

@@ -39,10 +39,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // 2. Build the Application Module Graph container
-    let (app, worker_signal_rx) = app::AppContainer::new(boot_result);
+    let app = app::AppContainer::new(boot_result);
 
     // 3. Start the application background services & workers
-    app.start(worker_signal_rx).await;
+    app.start().await;
 
     // 4. Block on OS shutdown signals (SIGINT hoặc SIGTERM).
     //    - SIGINT  (Ctrl+C) → developer dừng thủ công khi dev local.

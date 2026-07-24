@@ -1,5 +1,4 @@
-pub mod auto_scale;
-pub mod lifecycle;
-pub mod metrics;
+pub mod lease_watchdog;
+pub mod pool;
+pub mod runtime;
 pub mod scale_follower;
-pub mod watchdog;

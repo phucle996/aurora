@@ -1195,7 +1195,7 @@ pub(crate) fn canonical_consumer_sha256(event: &MailConsumerUpsertV1) -> [u8; 32
 pub(crate) fn canonical_template_sha256(subject: &str, raw_html: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(subject.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
     hasher.update(raw_html);
     hasher.finalize().into()
 }

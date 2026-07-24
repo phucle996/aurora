@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use super::zone_leader_session::ZoneLeaderSession;
+use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::executor::mail::MailRuntime;
 use crate::infra::kafka::KafkaTransport;
@@ -194,58 +194,48 @@ fn spawn_zone_leader_duties(
 ) -> JoinSet<()> {
     let mut duties = JoinSet::new();
 
-    duties.spawn(
-        super::zone_metadata_kafka_listener::run_zone_metadata_kafka_listener(
-            session.clone(),
-            zone_kv.clone(),
-            kafka.clone(),
-            config.clone(),
-        ),
-    );
-    duties.spawn(
-        super::zone_metadata_repair_publisher::run_zone_metadata_repair_publisher(
-            session.clone(),
-            kafka.clone(),
-            config.clone(),
-        ),
-    );
-    duties.spawn(super::zone_report_publisher::run_zone_report_publisher(
+    duties.spawn(super::metadata_listener::run_zone_metadata_kafka_listener(
         session.clone(),
         zone_kv.clone(),
         kafka.clone(),
         config.clone(),
     ));
-    duties.spawn(super::hypervisor_health_probe::run_hypervisor_health_probe(
+    duties.spawn(super::metadata_repair::run_zone_metadata_repair_publisher(
+        session.clone(),
+        kafka.clone(),
+        config.clone(),
+    ));
+    duties.spawn(super::report_publisher::run_zone_report_publisher(
+        session.clone(),
+        zone_kv.clone(),
+        kafka.clone(),
+        config.clone(),
+    ));
+    duties.spawn(super::hypervisor_probe::run_hypervisor_health_probe(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
     ));
-    duties.spawn(super::storage_health_probe::run_storage_health_probe(
+    duties.spawn(super::storage_probe::run_storage_health_probe(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
     ));
-    duties.spawn(
-        super::storage_bucket_size_scanner::run_storage_bucket_size_scanner(
-            session.clone(),
-            config.clone(),
-            zone_kv.clone(),
-            kafka.clone(),
-        ),
-    );
-    duties.spawn(
-        super::mail_infrastructure_health_probe::run_mail_infrastructure_health_probe(
-            session.clone(),
-            config.clone(),
-            zone_kv.clone(),
-            mail_runtime,
-        ),
-    );
-    duties.spawn(
-        super::zone_worker_scale_controller::run_zone_worker_scale_controller(
-            session, config, zone_kv,
-        ),
-    );
+    duties.spawn(super::bucket_scanner::run_storage_bucket_size_scanner(
+        session.clone(),
+        config.clone(),
+        zone_kv.clone(),
+        kafka.clone(),
+    ));
+    duties.spawn(super::mail_probe::run_mail_infrastructure_health_probe(
+        session.clone(),
+        config.clone(),
+        zone_kv.clone(),
+        mail_runtime,
+    ));
+    duties.spawn(super::scale_controller::run_zone_worker_scale_controller(
+        session, config, zone_kv,
+    ));
     duties
 }
 

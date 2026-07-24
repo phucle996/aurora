@@ -145,7 +145,7 @@ queue và broker identifier không được làm metric label.
 | Redis aggregate/NATS signal | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
 | Centrifugo bridge | `notification-service/src/service/mail/runtime.rs` |
 | Pod-local health state | `dataplane/src/executor/mail/supervisor/local_observer.rs` |
-| Zonal aggregate health | `dataplane/src/leader/mail_infrastructure_health_probe.rs` |
+| Zonal aggregate health | `dataplane/src/leader/mail_probe.rs` |
 | OTel metrics | `dataplane/src/executor/mail/supervisor/metrics.rs` |
 
 Không được tái tạo runtime PostgreSQL tables, `mail.runtime.*` Zone KV keys,

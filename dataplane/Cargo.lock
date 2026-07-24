@@ -350,6 +350,7 @@ dependencies = [
  "aes-gcm",
  "ahash",
  "arc-swap",
+ "async-channel",
  "async-nats",
  "async-trait",
  "aws-config",

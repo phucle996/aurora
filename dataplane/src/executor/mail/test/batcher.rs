@@ -12,6 +12,7 @@ fn queued_mail(index: usize) -> QueuedMail {
             estimated_bytes: 1024,
         },
         reply,
+        trace_context: opentelemetry::Context::new(),
     }
 }
 

@@ -36,6 +36,21 @@ pub(super) async fn publish_mail_projection_command(
     if owns_lock != 1 {
         return Err("MAIL_RECONCILE_FENCED".into());
     }
+    let topic = kafka.zone_command_topic(&zone_id.to_string());
+    let producer_context = crate::observability::otel::OtelTracer::start_current_span(
+        format!("send {topic}"),
+        opentelemetry::trace::SpanKind::Producer,
+        vec![
+            opentelemetry::KeyValue::new("messaging.system", "kafka"),
+            opentelemetry::KeyValue::new("messaging.operation.type", "send"),
+            opentelemetry::KeyValue::new("messaging.destination.name", topic.clone()),
+            opentelemetry::KeyValue::new("aurora.job.id", event_id.to_string()),
+            opentelemetry::KeyValue::new("aurora.job.topic", job_topic.to_string()),
+            opentelemetry::KeyValue::new("aurora.zone.id", zone_id.to_string()),
+            opentelemetry::KeyValue::new("aurora.reconcile.generation", generation as i64),
+        ],
+    );
+    let propagation = crate::observability::otel::OtelTracer::inject_context(&producer_context);
     let command = JobCommandV1 {
         job_id: event_id.as_bytes().to_vec(),
         job_version: 1,
@@ -50,14 +65,21 @@ pub(super) async fn publish_mail_projection_command(
         reconcile_generation: Some(generation),
         target_zone_id: zone_id.to_string(),
         transport_schema_version: 1,
+        traceparent: propagation.traceparent,
+        tracestate: propagation.tracestate,
     };
-    kafka
-        .publish_message(
-            &kafka.zone_command_topic(&zone_id.to_string()),
-            event_id.as_bytes(),
-            &command,
-        )
-        .await
-        .map_err(std::io::Error::other)?;
+    use opentelemetry::trace::FutureExt;
+    let publish_result = kafka
+        .publish_message(&topic, event_id.as_bytes(), &command)
+        .with_context(producer_context.clone())
+        .await;
+    crate::observability::otel::OtelTracer::finish_span(
+        &producer_context,
+        publish_result
+            .as_ref()
+            .err()
+            .map(|_| "KAFKA_RECONCILE_PUBLISH_FAILED"),
+    );
+    publish_result.map_err(std::io::Error::other)?;
     Ok(())
 }

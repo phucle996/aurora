@@ -291,7 +291,6 @@ impl CdcStreamer {
             "CdcStreamer: Nhận được sự kiện WAL từ Postgres",
         );
 
-        let trace_id_hex_clone = trace_id_hex.clone();
         let event_id_clone = event_id.clone();
         let job_topic_clone = job_topic.clone();
         let routing_scope_clone = routing_scope.clone();
@@ -302,114 +301,107 @@ impl CdcStreamer {
         let payload_schema_version_str_clone = payload_schema_version_str.clone();
         let idle_str_clone = idle_str.clone();
         let source_domain_clone = source_domain.clone();
+        let producer_context = OtelTracer::start_span_with_parent(
+            format!("send {}", job_topic_clone),
+            opentelemetry::trace::SpanKind::Producer,
+            vec![
+                opentelemetry::KeyValue::new("messaging.system", "kafka"),
+                opentelemetry::KeyValue::new("messaging.operation.type", "send"),
+                opentelemetry::KeyValue::new("aurora.job.id", event_id_clone.clone()),
+                opentelemetry::KeyValue::new("aurora.job.topic", job_topic_clone.clone()),
+                // [COMMENT]: PostgreSQL chỉ lưu correlation trace ID legacy. Nó không
+                // được giả làm remote parent vì thiếu parent span và sampling flags.
+                opentelemetry::KeyValue::new("aurora.legacy_trace_id", trace_id_hex),
+            ],
+            &opentelemetry::Context::new(),
+        );
+        let propagation = OtelTracer::inject_context(&producer_context);
 
-        crate::observability::otel::CURRENT_TRACE_ID
-            .scope(trace_id_hex_clone, async move {
-                use opentelemetry::trace::{Span, TraceContextExt, Tracer};
+        use opentelemetry::trace::FutureExt;
+        let publish_result: Result<(), Box<dyn std::error::Error>> = async move {
+            let payload_bytes = match decode_pg_bytea(&payload_hex_clone) {
+                Ok(bytes) => bytes,
+                Err(error) => return Err(error),
+            };
 
-                let cx = if let Some(parent_ctx) = OtelTracer::parse_traceparent(&trace_id_hex) {
-                    opentelemetry::Context::current().with_remote_span_context(parent_ctx)
-                } else {
-                    opentelemetry::Context::current()
-                };
+            let job_version = job_version_str_clone.parse::<u32>().unwrap_or(1);
+            let payload_schema_version =
+                payload_schema_version_str_clone.parse::<u32>().unwrap_or(1);
+            let idle = if idle_str_clone.is_empty() {
+                None
+            } else {
+                idle_str_clone.parse::<u32>().ok()
+            };
 
-                let tracer = opentelemetry::global::tracer("job-proxy");
-                let mut span =
-                    tracer.start_with_context(format!("cdc.push.{}", job_topic_clone), &cx);
+            // [COMMENT]: Durable runtime commands luôn thuộc đúng một Zone.
+            // Platform/global routing không được fallback thành shared topic vì một consumer
+            // bất kỳ có thể nhận side effect vốn thuộc Zone khác.
+            let target_zone_id = canonical_zone_route(
+                &source_domain_clone,
+                &routing_scope_clone,
+                &mail_zone_id_clone,
+            )
+            .map_err(std::io::Error::other)?;
+            let topic = self.kafka.zone_command_topic(&target_zone_id);
+            {
+                use opentelemetry::trace::TraceContextExt;
+                opentelemetry::Context::current().span().set_attribute(
+                    opentelemetry::KeyValue::new("aurora.zone.id", target_zone_id.clone()),
+                );
+            }
 
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "job_id",
-                    event_id_clone.clone(),
-                ));
-                let payload_bytes = match decode_pg_bytea(&payload_hex_clone) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        span.record_error(e.as_ref());
-                        return Err(e);
-                    }
-                };
+            let event_uuid = uuid::Uuid::parse_str(&event_id_clone)
+                .map_err(|error| format!("invalid outbox event_id: {error}"))?;
+            let command = JobCommandV1 {
+                job_id: event_uuid.as_bytes().to_vec(),
+                job_version,
+                attempt: 0,
+                job_topic: job_topic_clone.clone(),
+                source_domain: source_domain_clone.clone(),
+                resource_id: resource_id_clone,
+                payload_schema_version,
+                payload: payload_bytes,
+                trace_id: trace_id_bytes,
+                idle_seconds: idle,
+                reconcile_generation: None,
+                target_zone_id,
+                transport_schema_version: 1,
+                traceparent: propagation.traceparent,
+                tracestate: propagation.tracestate,
+            };
 
-                let job_version = job_version_str_clone.parse::<u32>().unwrap_or(1);
-                let payload_schema_version =
-                    payload_schema_version_str_clone.parse::<u32>().unwrap_or(1);
-                let idle = if idle_str_clone.is_empty() {
-                    None
-                } else {
-                    idle_str_clone.parse::<u32>().ok()
-                };
-
-                let (topic, target_zone_id) = if source_domain_clone == "MAIL" {
-                    // [COMMENT]: PostgreSQL UUID column đã loại string scope; nil UUID vẫn bị chặn trước khi tạo topic.
-                    let parsed_zone_id = uuid::Uuid::parse_str(&mail_zone_id_clone)
-                        .map_err(|error| format!("invalid mail zone_id: {error}"))?;
-                    if parsed_zone_id.is_nil() {
-                        return Err("invalid mail zone_id: nil UUID".into());
-                    }
-                    let canonical_zone_id = parsed_zone_id.to_string();
-                    (
-                        self.kafka.zone_command_topic(&canonical_zone_id),
-                        canonical_zone_id,
-                    )
-                } else if routing_scope_clone == "platform" || routing_scope_clone == "global" {
-                    (self.kafka.platform_command_topic(), "platform".to_string())
-                } else {
-                    let zone_id = if routing_scope_clone.starts_with("zone:") {
-                        routing_scope_clone
-                            .strip_prefix("zone:")
-                            .unwrap_or(&routing_scope_clone)
-                            .to_string()
-                    } else {
-                        routing_scope_clone.clone()
-                    };
-                    (self.kafka.zone_command_topic(&zone_id), zone_id)
-                };
-
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "zone_id",
-                    target_zone_id.clone(),
-                ));
-                let event_uuid = uuid::Uuid::parse_str(&event_id_clone)
-                    .map_err(|error| format!("invalid outbox event_id: {error}"))?;
-                let command = JobCommandV1 {
-                    job_id: event_uuid.as_bytes().to_vec(),
-                    job_version,
-                    attempt: 0,
-                    job_topic: job_topic_clone.clone(),
-                    source_domain: source_domain_clone.clone(),
-                    resource_id: resource_id_clone,
-                    payload_schema_version,
-                    payload: payload_bytes,
-                    trace_id: trace_id_bytes,
-                    idle_seconds: idle,
-                    reconcile_generation: None,
-                    target_zone_id,
-                    transport_schema_version: 1,
-                };
-
-                match self
-                    .kafka
-                    .publish_message(&topic, event_uuid.as_bytes(), &command)
-                    .await
-                {
-                    Ok(()) => {
-                        Logger::job_log(
-                            &event_id_clone,
-                            &job_topic_clone,
-                            0,
-                            "cdc.push_success",
-                            &format!("CdcStreamer: Đã publish job Protobuf vào Kafka {topic}"),
-                        );
-                        crate::observability::metrics::MetricsManager::inc_stream_jobs_pushed();
-                    }
-                    Err(error) => {
-                        span.record_error(&std::io::Error::other(error.clone()));
-                        return Err(std::io::Error::other(error).into());
-                    }
+            match self
+                .kafka
+                .publish_message(&topic, event_uuid.as_bytes(), &command)
+                .await
+            {
+                Ok(()) => {
+                    Logger::job_log(
+                        &event_id_clone,
+                        &job_topic_clone,
+                        0,
+                        "cdc.push_success",
+                        &format!("CdcStreamer: Đã publish job Protobuf vào Kafka {topic}"),
+                    );
+                    crate::observability::metrics::MetricsManager::inc_stream_jobs_pushed();
                 }
+                Err(error) => {
+                    return Err(std::io::Error::other(error).into());
+                }
+            }
 
-                Ok(())
-            })
-            .await?;
+            Ok(())
+        }
+        .with_context(producer_context.clone())
+        .await;
+        OtelTracer::finish_span(
+            &producer_context,
+            publish_result
+                .as_ref()
+                .err()
+                .map(|_| "KAFKA_COMMAND_PUBLISH_FAILED"),
+        );
+        publish_result?;
 
         Ok(())
     }
@@ -492,6 +484,24 @@ impl CdcStreamer {
     }
 }
 
+fn canonical_zone_route(
+    source_domain: &str,
+    routing_scope: &str,
+    mail_zone_id: &str,
+) -> Result<String, String> {
+    let raw_zone_id = if source_domain == "MAIL" {
+        mail_zone_id
+    } else {
+        routing_scope.strip_prefix("zone:").unwrap_or(routing_scope)
+    };
+    let parsed_zone_id = uuid::Uuid::parse_str(raw_zone_id)
+        .map_err(|error| format!("runtime command requires a valid zone UUID: {error}"))?;
+    if parsed_zone_id.is_nil() {
+        return Err("runtime command requires a non-nil zone UUID".to_string());
+    }
+    Ok(parsed_zone_id.to_string())
+}
+
 /// Giải mã chuỗi hex biểu diễn cột BYTEA trong replication message của Postgres
 fn decode_pg_bytea(val: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     if !val.starts_with("\\x") {
@@ -508,4 +518,27 @@ fn decode_pg_bytea(val: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         bytes.push(byte);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_zone_route;
+
+    const ZONE_ID: &str = "019f3d3e-997d-7894-9236-c5122634cb4f";
+
+    #[test]
+    fn canonical_zone_route_accepts_mail_and_scoped_storage_routes() {
+        assert_eq!(canonical_zone_route("MAIL", "", ZONE_ID).unwrap(), ZONE_ID);
+        assert_eq!(
+            canonical_zone_route("STORAGE", &format!("zone:{ZONE_ID}"), "").unwrap(),
+            ZONE_ID
+        );
+    }
+
+    #[test]
+    fn canonical_zone_route_rejects_shared_and_nil_routes() {
+        assert!(canonical_zone_route("STORAGE", "platform", "").is_err());
+        assert!(canonical_zone_route("STORAGE", "global", "").is_err());
+        assert!(canonical_zone_route("MAIL", "", "00000000-0000-0000-0000-000000000000").is_err());
+    }
 }

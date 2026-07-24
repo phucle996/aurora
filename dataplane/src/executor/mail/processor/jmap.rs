@@ -75,12 +75,17 @@ impl JmapClient {
             "using": ["urn:ietf:params:jmap:core"],
             "methodCalls": [["Core/echo", {"dataplane": "mail"}, "health"]]
         });
-        let response = self
-            .request()
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|error| format!("JMAP health request failed: {error}"))?;
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "POST stalwart.jmap.health",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "POST"),
+                opentelemetry::KeyValue::new("server.address", "stalwart-jmap"),
+                opentelemetry::KeyValue::new("aurora.operation", "healthcheck"),
+            ],
+            self.request().json(&payload),
+        )
+        .await
+        .map_err(|error| format!("JMAP health request failed: {error}"))?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -96,7 +101,18 @@ impl JmapClient {
         let mut last_error = MailSubmitError::new("MAIL_JMAP_UNAVAILABLE", true);
 
         for attempt in 0..=self.max_retries {
-            match self.request().json(&payload).send().await {
+            let response = crate::observability::otel::OtelTracer::trace_http_request(
+                "POST stalwart.jmap.submit",
+                vec![
+                    opentelemetry::KeyValue::new("http.request.method", "POST"),
+                    opentelemetry::KeyValue::new("server.address", "stalwart-jmap"),
+                    opentelemetry::KeyValue::new("aurora.mail.batch.size", mails.len() as i64),
+                    opentelemetry::KeyValue::new("aurora.retry.attempt", attempt as i64),
+                ],
+                self.request().json(&payload),
+            )
+            .await;
+            match response {
                 Ok(response) if response.status().is_success() => {
                     return match response.json::<Value>().await {
                         Ok(value) => self.parse_batch_response(mails, &value),

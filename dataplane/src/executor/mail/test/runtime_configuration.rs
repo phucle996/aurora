@@ -196,7 +196,7 @@ fn stream_discriminator_requires_the_matching_suite_payload() {
 fn canonical_template_hash_matches_go_html_escaping_contract() {
     let mut hasher = Sha256::new();
     hasher.update("A < B & C".as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
     hasher.update("<p>Hi</p>".as_bytes());
     let expected: [u8; 32] = hasher.finalize().into();
     assert_eq!(

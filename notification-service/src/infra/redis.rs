@@ -1,270 +1,320 @@
-use redis::{Client, Value};
-use crate::observability::logger::Logger;
 use crate::infra::centrifugo::CentrifugoClient;
-use std::time::Duration;
-use tokio::time::sleep;
-use prost::Message;
-use chrono::{Utc, TimeZone};
+use crate::observability::logger::Logger;
 use crate::observability::metrics::MetricsManager;
-use crate::observability::otel::TraceContext;
+use opentelemetry::trace::FutureExt;
+use prost::Message;
+use redis::streams::{
+    StreamClaimReply, StreamId, StreamPendingCountReply, StreamReadOptions, StreamReadReply,
+};
+use redis::{AsyncCommands, Value};
+use std::sync::Arc;
+use std::time::Duration;
 
-// Sinh mã Rust từ file proto/job_event.proto
+const JOB_NOTIFICATION_STREAM: &str = "stream:{job_notifications}";
+const CONSUMER_GROUP: &str = "notification-service-v1";
+const READ_BATCH_SIZE: usize = 16;
+const CLAIM_IDLE_MS: usize = 30_000;
+
 pub mod job {
     tonic::include_proto!("job");
 }
-use job::JobNotificationEvent;
 
-// Bộ lắng nghe và điều phối thông điệp từ Redis Stream
 pub struct RedisSubscriber {
-    client: Client,                       // Redis Client để tạo kết nối mới
-    centrifugo_client: CentrifugoClient,  // Client để chuyển tiếp tin nhắn đến Gateway Centrifugo
-    consumer_name: String,                // Định danh duy nhất cho Consumer Replica (Pod name)
+    client: Arc<redis::Client>,
+    centrifugo_client: CentrifugoClient,
+    consumer_name: String,
 }
 
 impl RedisSubscriber {
-    // Khởi tạo một RedisSubscriber mới
-    pub fn new(redis_url: &str, centrifugo_client: CentrifugoClient) -> Self {
-        // [ignoring loop detection]
-        let client = Client::open(redis_url).expect("Failed to open connection to Redis");
-        
-        // Đọc hostname từ môi trường để làm danh tính của Pod trong K8s Consumer Group
-        let consumer_name = std::env::var("HOSTNAME")
-            .unwrap_or_else(|_| "notification_service_local".to_string());
-            
+    pub fn new(client: Arc<redis::Client>, centrifugo_client: CentrifugoClient) -> Self {
+        let hostname =
+            std::env::var("HOSTNAME").unwrap_or_else(|_| "notification-service".to_string());
         Self {
             client,
             centrifugo_client,
-            consumer_name,
+            // A new process identity lets XCLAIM distinguish a restarted pod from
+            // the dead connection that still owns entries in the PEL.
+            consumer_name: format!("{hostname}-{}", uuid::Uuid::new_v4().simple()),
         }
     }
 
-    // Khởi chạy vòng lặp lắng nghe với cơ chế tự động kết nối lại khi mất mạng (reconnect loop)
     pub async fn start_listening(&self) {
-        Logger::sys_info("redis.subscriber", "Starting Redis Stream connection loop listener...");
-        
         let mut retry_delay = Duration::from_secs(1);
-        let max_delay = Duration::from_secs(30);
-
         loop {
-            // Thực thi vòng lặp chính, nếu có lỗi kết nối sẽ bắt lấy và chờ retry
-            if let Err(e) = self.listen_loop().await {
-                Logger::sys_error(
-                    "redis.subscriber",
-                    "Error in Redis subscription stream loop. Attempting connection recovery...",
-                    &format!("{:?}", e),
-                );
-                
-                // Exponential backoff: nhân đôi thời gian chờ tới khi đạt giới hạn 30s
-                sleep(retry_delay).await;
-                retry_delay = std::cmp::min(retry_delay * 2, max_delay);
-            } else {
-                // Nếu thoát ra thành công không lỗi, reset thời gian chờ về mặc định 1s
-                retry_delay = Duration::from_secs(1);
-            }
-        }
-    }
-
-    // Vòng lặp chính đọc dữ liệu từ Redis Stream
-    async fn listen_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // [ignoring loop detection]
-        // 1. Tạo kết nối bất đồng bộ thực tế tới Redis
-        let mut conn = self.client.get_async_connection().await?;
-        Logger::sys_info("redis.subscriber", "Successfully established async connection to Redis Cluster.");
-
-        // 2. Tạo Consumer Group nếu chưa tồn tại (lệnh XGROUP CREATE)
-        // Lỗi BUSYGROUP sẽ tự động bị bỏ qua nếu Group đã tồn tại trước đó.
-        let group_create_result: redis::RedisResult<()> = redis::cmd("XGROUP")
-            .arg("CREATE")
-            .arg("stream:job_notifications")       // Tên Redis Stream lắng nghe
-            .arg("notification_consumers")         // Tên Consumer Group của chúng ta
-            .arg("$")                              // Chỉ tiêu thụ các tin nhắn mới phát sinh từ đây trở đi
-            .arg("MKSTREAM")                       // Tự động tạo stream trống nếu chưa có
-            .query_async(&mut conn)
-            .await;
-
-        if let Err(e) = group_create_result {
-            // Chỉ ghi log debug vì đây thường là lỗi BUSYGROUP do group đã tồn tại
-            Logger::sys_info("redis.subscriber", &format!("XGROUP CREATE group check: {:?}", e.detail()));
-        }
-
-        // 3. Vòng lặp vô hạn đọc tin nhắn chưa được xử lý (XREADGROUP)
-        loop {
-            // Đọc tối đa 10 tin nhắn mỗi chu kỳ, block tối đa 2000ms nếu không có tin mới
-            let result: Value = redis::cmd("XREADGROUP")
-                .arg("GROUP")
-                .arg("notification_consumers")
-                .arg(&self.consumer_name)
-                .arg("COUNT")
-                .arg("10")
-                .arg("BLOCK")
-                .arg("2000")
-                .arg("STREAMS")
-                .arg("stream:job_notifications")
-                .arg(">")                           // Chỉ đọc tin nhắn chưa giao cho ai
-                .query_async(&mut conn)
-                .await?;
-
-            // 4. Giải mã cấu trúc dữ liệu trả về từ Redis Stream
-            // Định dạng trả về: [[stream_name, [[message_id, [key1, value1, key2, value2, ...]], ...]], ...]
-            if let Value::Bulk(streams) = result {
-                for stream in streams {
-                    if let Value::Bulk(stream_data) = stream {
-                        if stream_data.len() >= 2 {
-                            if let Value::Bulk(messages) = &stream_data[1] {
-                                for message in messages {
-                                    if let Value::Bulk(msg_data) = message {
-                                        if msg_data.len() >= 2 {
-                                            // Lấy Message ID phục vụ cho việc gửi lệnh XACK sau này
-                                            let message_id = match &msg_data[0] {
-                                                Value::Data(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-                                                _ => continue,
-                                            };
-
-                                            if let Value::Bulk(fields) = &msg_data[1] {
-                                                // Tìm trường "data" chứa mảng nhị phân bytes Protobuf
-                                                let mut binary_data = None;
-                                                for chunk in fields.chunks(2) {
-                                                    if chunk.len() == 2 {
-                                                        if let Value::Data(key_bytes) = &chunk[0] {
-                                                            let key = String::from_utf8_lossy(key_bytes);
-                                                            if key == "data" {
-                                                                if let Value::Data(val_bytes) = &chunk[1] {
-                                                                    binary_data = Some(val_bytes.clone());
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                // 5. Xử lý giải mã bản tin và đẩy qua Centrifugo
-                                                if let Some(raw_bytes) = binary_data {
-                                                    MetricsManager::record_redis_event("consumed");
-                                                    if let Ok(event) = JobNotificationEvent::decode(&*raw_bytes) {
-                                                        // Trích xuất hoặc khởi tạo Trace Context từ sự kiện nhận được
-                                                        let trace_ctx = TraceContext::parse(&event.trace_parent)
-                                                            .unwrap_or_else(TraceContext::new_random);
-                                                        
-                                                        let centrifugo_client = self.centrifugo_client.clone();
-                                                        let message_id_clone = message_id.clone();
-                                                        let event_job_id = event.job_id.clone();
-                                                        let event_user_id = event.user_id.clone();
-                                                        let event_status = event.status.clone();
-                                                        let event_title = event.title.clone();
-                                                        let event_message = event.message.clone();
-                                                        let event_created_at = event.created_at;
-                                                        let event_type = event.event_type.clone();
-                                                        let event_trace_parent = event.trace_parent.clone();
-                                                        let client = self.client.clone();
-
-                                                        // Thực thi xử lý nghiệp vụ đẩy tin trong phạm vi Trace Context
-                                                        crate::observability::otel::CURRENT_TRACE.scope(trace_ctx, async move {
-                                                            use opentelemetry::trace::{Span, Tracer};
-
-                                                            // Lấy Trace Context hiện tại từ task-local
-                                                            let trace_ctx_opt = crate::observability::otel::OtelTracer::get_current_trace();
-                                                            let tracer = opentelemetry::global::tracer("notification-service");
-
-                                                            let cx = if let Some(ref tc) = trace_ctx_opt {
-                                                                tc.get_otel_context()
-                                                            } else {
-                                                                opentelemetry::Context::current()
-                                                            };
-
-                                                            // Tạo OTel Span để đồng bộ distributed tracing
-                                                            let mut span = tracer.start_with_context(
-                                                                format!("notification.publish.{}", event_type),
-                                                                &cx,
-                                                            );
-                                                            span.set_attribute(opentelemetry::KeyValue::new("job_id", event_job_id.clone()));
-                                                            span.set_attribute(opentelemetry::KeyValue::new("user_id", event_user_id.clone()));
-
-                                                            Logger::sys_info(
-                                                                "redis.subscriber",
-                                                                &format!(
-                                                                    "Successfully decoded job event {} for user: {} with trace_parent: {}",
-                                                                    event_job_id, event_user_id, event_trace_parent
-                                                                ),
-                                                            );
-
-                                                            // Chuyển đổi Unix timestamp sang chuỗi ISO 8601 UTC
-                                                            let datetime = Utc.timestamp_opt(event_created_at, 0).unwrap();
-                                                            
-                                                            // Đóng gói JSON tinh giản hoàn toàn (lược bỏ job_id và event_type)
-                                                            let client_payload = serde_json::json!({
-                                                                "status": event_status,
-                                                                "title": event_title,
-                                                                "message": event_message,
-                                                                "created_at": datetime.to_rfc3339()
-                                                            });
-
-                                                            // Phát sự kiện tới Centrifugo API
-                                                            let channel_name = format!("personal:{}", event_user_id);
-                                                            match centrifugo_client.publish(&channel_name, client_payload).await {
-                                                                Ok(_) => {
-                                                                    MetricsManager::record_centrifugo_publish("success");
-                                                                    
-                                                                    // Đo lường độ trễ từ khi phát sinh CDC ở DB đến lúc xuất bản Websocket
-                                                                    let current_time = Utc::now().timestamp();
-                                                                    let lag = (current_time - event_created_at).max(0) as f64;
-                                                                    MetricsManager::record_delivered_lag("success", Duration::from_secs_f64(lag));
-
-                                                                    // Tạo kết nối Redis riêng để thực hiện XACK tránh nghẽn thread đọc
-                                                                    if let Ok(mut ack_conn) = client.get_async_connection().await {
-                                                                        let ack_res: redis::RedisResult<()> = redis::cmd("XACK")
-                                                                            .arg("stream:job_notifications")
-                                                                            .arg("notification_consumers")
-                                                                            .arg(&message_id_clone)
-                                                                            .query_async(&mut ack_conn)
-                                                                            .await;
-                                                                        
-                                                                        if let Err(ack_err) = ack_res {
-                                                                            MetricsManager::record_redis_event("ack_failed");
-                                                                            Logger::sys_error(
-                                                                                "redis.subscriber",
-                                                                                "Failed to ACK message",
-                                                                                &format!("{:?}", ack_err),
-                                                                            );
-                                                                        } else {
-                                                                            MetricsManager::record_redis_event("ack_success");
-                                                                        }
-                                                                    } else {
-                                                                        MetricsManager::record_redis_event("ack_conn_failed");
-                                                                        Logger::sys_error(
-                                                                            "redis.subscriber",
-                                                                            "Failed to obtain Redis connection for XACK",
-                                                                            "connection_error",
-                                                                        );
-                                                                    }
-                                                                }
-                                                                Err(pub_err) => {
-                                                                    span.record_error(&pub_err);
-                                                                    MetricsManager::record_centrifugo_publish("failed");
-                                                                    Logger::sys_error(
-                                                                        "redis.subscriber",
-                                                                        "Failed to publish to Centrifugo. Message held in PEL.",
-                                                                        &format!("{:?}", pub_err),
-                                                                    );
-                                                                }
-                                                            }
-                                                        }).await;
-                                                    } else {
-                                                        MetricsManager::record_redis_event("decode_failed");
-                                                        Logger::sys_error(
-                                                            "redis.subscriber",
-                                                            "Protobuf decode failed for incoming stream message.",
-                                                            &message_id,
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            match self.listen_loop().await {
+                Ok(()) => retry_delay = Duration::from_secs(1),
+                Err(error) => {
+                    Logger::sys_error(
+                        "redis.job_notifications",
+                        "Shared Redis notification consumer disconnected; reconnecting",
+                        &error.to_string(),
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = std::cmp::min(retry_delay * 2, Duration::from_secs(30));
                 }
             }
         }
+    }
+
+    async fn listen_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut connection = self.client.get_async_connection().await?;
+        ensure_consumer_group(&mut connection).await?;
+        Logger::sys_info(
+            "redis.job_notifications",
+            "Listening for job notifications on Shared Redis Stream",
+        );
+
+        loop {
+            let pending: StreamPendingCountReply = connection
+                .xpending_count(
+                    JOB_NOTIFICATION_STREAM,
+                    CONSUMER_GROUP,
+                    "-",
+                    "+",
+                    READ_BATCH_SIZE,
+                )
+                .await?;
+            let entries = if pending.ids.is_empty() {
+                read_new_entries(&mut connection, &self.consumer_name).await?
+            } else {
+                let stale_ids = pending
+                    .ids
+                    .iter()
+                    .filter(|entry| entry.last_delivered_ms >= CLAIM_IDLE_MS)
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>();
+                if stale_ids.is_empty() {
+                    // Do not overtake an in-flight lower entry. This globally bounds
+                    // concurrency and preserves notification order across replicas.
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
+                let claimed: StreamClaimReply = connection
+                    .xclaim(
+                        JOB_NOTIFICATION_STREAM,
+                        CONSUMER_GROUP,
+                        &self.consumer_name,
+                        CLAIM_IDLE_MS,
+                        &stale_ids,
+                    )
+                    .await?;
+                claimed.ids
+            };
+
+            for entry in entries {
+                if let Err(error) = self.process_entry(&mut connection, entry).await {
+                    MetricsManager::record_redis_stream_event("delivery_failed");
+                    Logger::sys_error(
+                        "redis.job_notifications",
+                        "Job notification remains pending for bounded retry",
+                        &error.to_string(),
+                    );
+                    // Entries were delivered to this consumer as an ordered batch.
+                    // Stop here so later terminal state cannot overtake this entry.
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn process_entry(
+        &self,
+        connection: &mut redis::aio::Connection,
+        entry: StreamId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let payload = match entry.map.get("data") {
+            Some(Value::Data(payload)) => payload,
+            _ => {
+                MetricsManager::record_redis_stream_event("invalid_envelope");
+                Logger::sys_error(
+                    "redis.job_notifications",
+                    "Dropping malformed internal notification envelope",
+                    "REDIS_NOTIFICATION_DATA_REQUIRED",
+                );
+                ack_and_delete(connection, &entry.id).await?;
+                return Ok(());
+            }
+        };
+        let event = match job::JobNotificationEvent::decode(payload.as_slice()) {
+            Ok(event) if valid_event(&event) => event,
+            _ => {
+                MetricsManager::record_redis_stream_event("invalid_contract");
+                Logger::sys_error(
+                    "redis.job_notifications",
+                    "Dropping malformed internal job notification contract",
+                    "JOB_NOTIFICATION_PROTO_INVALID",
+                );
+                ack_and_delete(connection, &entry.id).await?;
+                return Ok(());
+            }
+        };
+
+        let parent = crate::observability::otel::OtelTracer::extract_context(
+            &event.trace_parent,
+            &event.trace_state,
+        );
+        let context = crate::observability::otel::OtelTracer::start_span_with_parent(
+            format!("process {}", JOB_NOTIFICATION_STREAM),
+            opentelemetry::trace::SpanKind::Consumer,
+            vec![
+                opentelemetry::KeyValue::new("messaging.system", "redis"),
+                opentelemetry::KeyValue::new("messaging.operation.type", "process"),
+                opentelemetry::KeyValue::new("messaging.destination.name", JOB_NOTIFICATION_STREAM),
+                opentelemetry::KeyValue::new("messaging.message.id", entry.id.clone()),
+                opentelemetry::KeyValue::new("aurora.job.id", event.job_id.clone()),
+                opentelemetry::KeyValue::new("aurora.job.version", i64::from(event.job_version)),
+                opentelemetry::KeyValue::new("aurora.job.attempt", i64::from(event.attempt)),
+            ],
+            &parent,
+        );
+
+        let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+            let created_at = chrono::DateTime::from_timestamp(event.created_at, 0)
+                .ok_or("invalid notification timestamp")?
+                .to_rfc3339();
+            let client_payload = serde_json::json!({
+                "status": event.status,
+                "title": event.title,
+                "message": event.message,
+                "created_at": created_at,
+                "job_id": event.job_id,
+                "operation": event.event_type,
+                "resource_id": event.resource_id,
+                "job_version": event.job_version,
+                "attempt": event.attempt,
+            });
+            crate::service::job::notification::handle_job_notification(
+                &self.centrifugo_client,
+                &event.user_id,
+                client_payload,
+            )
+            .await?;
+            // ACK and XDEL are atomic. A crash after Centrifugo publish but before
+            // this script leaves the entry in PEL and may duplicate transaction_id.
+            ack_and_delete(connection, &entry.id).await?;
+            Ok(())
+        }
+        .with_context(context.clone())
+        .await;
+
+        crate::observability::otel::OtelTracer::finish_span(
+            &context,
+            result
+                .as_ref()
+                .err()
+                .map(|_| "JOB_NOTIFICATION_DELIVERY_FAILED"),
+        );
+        if result.is_ok() {
+            MetricsManager::record_redis_stream_event("delivered");
+        }
+        result
+    }
+}
+
+async fn ensure_consumer_group(connection: &mut redis::aio::Connection) -> redis::RedisResult<()> {
+    let result: redis::RedisResult<()> = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(JOB_NOTIFICATION_STREAM)
+        .arg(CONSUMER_GROUP)
+        .arg("0")
+        .arg("MKSTREAM")
+        .query_async(connection)
+        .await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == Some("BUSYGROUP") => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn read_new_entries(
+    connection: &mut redis::aio::Connection,
+    consumer_name: &str,
+) -> redis::RedisResult<Vec<StreamId>> {
+    let options = StreamReadOptions::default()
+        .group(CONSUMER_GROUP, consumer_name)
+        .count(READ_BATCH_SIZE)
+        .block(2_000);
+    let reply: StreamReadReply = connection
+        .xread_options(&[JOB_NOTIFICATION_STREAM], &[">"], &options)
+        .await?;
+    Ok(reply
+        .keys
+        .into_iter()
+        .flat_map(|stream| stream.ids)
+        .collect())
+}
+
+async fn ack_and_delete(
+    connection: &mut redis::aio::Connection,
+    entry_id: &str,
+) -> redis::RedisResult<()> {
+    let _: i64 = redis::Script::new(
+        r#"
+        local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+        if acknowledged == 1 then
+            return redis.call('XDEL', KEYS[1], ARGV[2])
+        end
+        return 0
+        "#,
+    )
+    .key(JOB_NOTIFICATION_STREAM)
+    .arg(CONSUMER_GROUP)
+    .arg(entry_id)
+    .invoke_async(connection)
+    .await?;
+    Ok(())
+}
+
+fn valid_event(event: &job::JobNotificationEvent) -> bool {
+    uuid::Uuid::parse_str(&event.job_id).is_ok()
+        && uuid::Uuid::parse_str(&event.user_id).is_ok()
+        && matches!(event.status.as_str(), "PROCESSING" | "SUCCESS" | "FAILED")
+        && !event.event_type.is_empty()
+        && event.event_type.len() <= 128
+        && event.title.len() <= 256
+        && event.message.len() <= 4_096
+        && event.resource_id.len() <= 256
+        && crate::observability::otel::OtelTracer::is_valid_propagation_context(
+            &event.trace_parent,
+            &event.trace_state,
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event() -> job::JobNotificationEvent {
+        job::JobNotificationEvent {
+            job_id: uuid::Uuid::new_v4().to_string(),
+            user_id: uuid::Uuid::new_v4().to_string(),
+            status: "SUCCESS".to_string(),
+            event_type: "storage.bucket.create".to_string(),
+            title: "Bucket Created".to_string(),
+            message: String::new(),
+            created_at: chrono::Utc::now().timestamp(),
+            trace_parent: String::new(),
+            trace_state: String::new(),
+            resource_id: "bucket-1".to_string(),
+            job_version: 1,
+            attempt: 0,
+        }
+    }
+
+    #[test]
+    fn rolling_event_without_trace_context_is_valid() {
+        assert!(valid_event(&event()));
+    }
+
+    #[test]
+    fn partial_trace_context_and_oversized_message_are_rejected() {
+        let mut candidate = event();
+        candidate.trace_state = "vendor=value".to_string();
+        assert!(!valid_event(&candidate));
+
+        candidate.trace_state.clear();
+        candidate.message = "x".repeat(4_097);
+        assert!(!valid_event(&candidate));
     }
 }

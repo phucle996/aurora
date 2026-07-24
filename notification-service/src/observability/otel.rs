@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
+use opentelemetry::{global, Context, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     metrics::{PeriodicReader, SdkMeterProvider},
@@ -8,7 +9,17 @@ use opentelemetry_sdk::{
     trace::{self, Sampler},
     Resource,
 };
+use std::borrow::Cow;
+use std::collections::HashMap;
 use tokio::task_local;
+
+const MAX_TRACEPARENT_BYTES: usize = 128;
+const MAX_TRACESTATE_BYTES: usize = 512;
+
+pub struct PropagationContext {
+    pub traceparent: String,
+    pub tracestate: String,
+}
 
 // ============================================================================
 // 📂 MODULE: observability/otel.rs - OpenTelemetry Integrations for Notification Service
@@ -49,11 +60,6 @@ impl TraceContext {
         let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
 
         Self { trace_id, span_id }
-    }
-
-    /// Tạo chuỗi định dạng traceparent chuẩn W3C để truyền đi qua HTTP/gRPC headers
-    pub fn to_traceparent(&self) -> String {
-        format!("00-{}-{}-01", self.trace_id, self.span_id)
     }
 
     /// Chuyển đổi thông tin Trace Context nội bộ thành opentelemetry::Context để liên kết các Span
@@ -197,14 +203,99 @@ impl OtelTracer {
         );
     }
 
+    pub fn extract_context(traceparent: &str, tracestate: &str) -> Context {
+        if traceparent.is_empty()
+            || traceparent.len() > MAX_TRACEPARENT_BYTES
+            || tracestate.len() > MAX_TRACESTATE_BYTES
+        {
+            return Context::new();
+        }
+        let mut carrier = HashMap::with_capacity(2);
+        carrier.insert("traceparent".to_string(), traceparent.to_string());
+        if !tracestate.is_empty() {
+            carrier.insert("tracestate".to_string(), tracestate.to_string());
+        }
+        global::get_text_map_propagator(|propagator| {
+            propagator.extract_with_context(&Context::new(), &carrier)
+        })
+    }
+
+    pub fn is_valid_propagation_context(traceparent: &str, tracestate: &str) -> bool {
+        if traceparent.is_empty() {
+            return tracestate.is_empty();
+        }
+        Self::extract_context(traceparent, tracestate)
+            .span()
+            .span_context()
+            .is_valid()
+    }
+
+    pub fn start_span_with_parent(
+        name: impl Into<Cow<'static, str>>,
+        kind: SpanKind,
+        attributes: Vec<KeyValue>,
+        parent: &Context,
+    ) -> Context {
+        let tracer = global::tracer("aurora-notification-service");
+        let span = tracer
+            .span_builder(name)
+            .with_kind(kind)
+            .with_attributes(attributes)
+            .start_with_context(&tracer, parent);
+        parent.clone().with_span(span)
+    }
+
+    pub fn start_current_span(
+        name: impl Into<Cow<'static, str>>,
+        kind: SpanKind,
+        attributes: Vec<KeyValue>,
+    ) -> Context {
+        Self::start_span_with_parent(name, kind, attributes, &Context::current())
+    }
+
+    pub fn finish_span(context: &Context, error_code: Option<&str>) {
+        let span = context.span();
+        if let Some(error_code) = error_code {
+            span.set_attribute(KeyValue::new("error.type", error_code.to_string()));
+            span.set_status(Status::error(error_code.to_string()));
+        } else {
+            span.set_status(Status::Ok);
+        }
+        span.end();
+    }
+
+    pub fn inject_context(context: &Context) -> PropagationContext {
+        let mut carrier = HashMap::with_capacity(2);
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(context, &mut carrier);
+        });
+        PropagationContext {
+            traceparent: carrier.remove("traceparent").unwrap_or_default(),
+            tracestate: carrier.remove("tracestate").unwrap_or_default(),
+        }
+    }
+
+    pub fn get_current_trace_id() -> Option<String> {
+        let context = Context::current();
+        let span = context.span();
+        let span_context = span.span_context();
+        span_context
+            .is_valid()
+            .then(|| span_context.trace_id().to_string())
+    }
+
+    pub fn get_current_span_id() -> Option<String> {
+        let context = Context::current();
+        let span = context.span();
+        let span_context = span.span_context();
+        span_context
+            .is_valid()
+            .then(|| span_context.span_id().to_string())
+    }
+
     /// Lấy TraceContext hiện tại của async task nếu có
     pub fn get_current_trace() -> Option<TraceContext> {
         CURRENT_TRACE.try_with(|t| t.clone()).ok()
-    }
-
-    /// Lấy chuỗi traceparent hiện tại của async task nếu có
-    pub fn get_traceparent() -> Option<String> {
-        CURRENT_TRACE.try_with(|t| t.to_traceparent()).ok()
     }
 
     /// Giải phóng tài nguyên và Flush toàn bộ traces/metrics còn lại trước khi container dừng

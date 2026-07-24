@@ -15,6 +15,7 @@ static HTTP_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static NATS_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
+static REDIS_STREAM_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static CENTRIFUGO_PUBLISHES: OnceLock<Counter<u64>> = OnceLock::new();
 static DELIVERED_EVENT_LAG: OnceLock<Histogram<f64>> = OnceLock::new();
 
@@ -28,6 +29,7 @@ impl MetricsManager {
         let _ = Self::nats_events();
         let _ = Self::redis_calls();
         let _ = Self::redis_duration();
+        let _ = Self::redis_stream_events();
         let _ = Self::centrifugo_publishes();
         let _ = Self::delivered_event_lag();
     }
@@ -77,6 +79,15 @@ impl MetricsManager {
         })
     }
 
+    fn redis_stream_events() -> &'static Counter<u64> {
+        REDIS_STREAM_EVENTS.get_or_init(|| {
+            global::meter("aurora-notification-service")
+                .u64_counter("notification_shared_redis_stream_events_total")
+                .with_description("Shared Redis job notification stream outcomes")
+                .init()
+        })
+    }
+
     fn centrifugo_publishes() -> &'static Counter<u64> {
         CENTRIFUGO_PUBLISHES.get_or_init(|| {
             global::meter("aurora-notification-service")
@@ -121,6 +132,10 @@ impl MetricsManager {
         ];
         Self::redis_calls().add(1, &attrs);
         Self::redis_duration().record(duration.as_secs_f64(), &attrs);
+    }
+
+    pub fn record_redis_stream_event(status: &'static str) {
+        Self::redis_stream_events().add(1, &[KeyValue::new("status", status)]);
     }
 
     /// Ghi nhận chỉ số đẩy thông báo sang Centrifugo

@@ -274,7 +274,7 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Delete result cũ đến sau mutation mới | Không có mutation mới khi delete live; DP fence lấy từ `next_*` để vượt mọi allocated candidate và JO khóa outbox + aggregate |
 | Result đến sau terminal FAILED | Mọi FAILED là terminal cho operation ID; create/update/publish cleanup candidate, còn delete giữ aggregate và retry bằng operation ID mới |
 | PROCESSING/FAILED của attempt cũ đến sai thứ tự | `mail_outbox_records.result_attempt` fence theo attempt; `FAILED` và `SUCCEEDED` đều terminal cho operation ID, retry business operation phải dùng event ID mới |
-| JO commit terminal result nhưng NATS notify lỗi | Redis result không ACK; cùng terminal result được redeliver chỉ trả notification metadata, không chạy lại promote/cleanup/delete; `transaction_id` giữ nguyên nên UI overwrite |
+| JO commit business transaction nhưng Shared Redis notification enqueue lỗi | Kafka result không commit; cùng terminal result được redeliver chỉ trả notification metadata, không chạy lại promote/cleanup/delete; `transaction_id` giữ nguyên nên UI overwrite |
 | Runtime report từ pod cũ | Ephemeral Redis slot + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Authorized context mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |

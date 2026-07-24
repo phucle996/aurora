@@ -171,6 +171,7 @@ pub struct KafkaTransport {
     topic_prefix: String,
     observed_job_lag: AtomicU64,
     observed_job_lag_stale: AtomicBool,
+    observed_job_lag_at_ms: AtomicU64,
 }
 
 impl KafkaTransport {
@@ -246,6 +247,7 @@ impl KafkaTransport {
             topic_prefix: config.kafka_topic_prefix.trim_end_matches('.').to_string(),
             observed_job_lag: AtomicU64::new(0),
             observed_job_lag_stale: AtomicBool::new(true),
+            observed_job_lag_at_ms: AtomicU64::new(0),
         }))
     }
 
@@ -283,10 +285,6 @@ impl KafkaTransport {
 
     pub fn zone_command_topic(&self, zone_id: &str) -> String {
         format!("{}.jobs.commands.zone.{}.v1", self.topic_prefix, zone_id)
-    }
-
-    pub fn platform_command_topic(&self) -> String {
-        format!("{}.jobs.commands.platform.v1", self.topic_prefix)
     }
 
     pub fn result_topic(&self) -> String {
@@ -339,10 +337,10 @@ impl KafkaTransport {
         static LAST_LAG_CHECK: AtomicU64 = AtomicU64::new(0);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
             .unwrap_or_default();
         let last = LAST_LAG_CHECK.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < 5 {
+        if now.saturating_sub(last) < 5_000 {
             return;
         }
         LAST_LAG_CHECK.store(now, Ordering::Relaxed);
@@ -352,12 +350,14 @@ impl KafkaTransport {
             .store(lag.lag.values().copied().sum(), Ordering::Release);
         self.observed_job_lag_stale
             .store(!lag.stale_partitions.is_empty(), Ordering::Release);
+        self.observed_job_lag_at_ms.store(now, Ordering::Release);
     }
 
-    pub fn job_lag_snapshot(&self) -> (u64, bool) {
+    pub fn job_lag_snapshot(&self) -> (u64, bool, u64) {
         (
             self.observed_job_lag.load(Ordering::Acquire),
             self.observed_job_lag_stale.load(Ordering::Acquire),
+            self.observed_job_lag_at_ms.load(Ordering::Acquire),
         )
     }
 }

@@ -7,7 +7,9 @@ health và coordination. Dataplane không có credential Redis trung tâm.
 God View chính:
 
 - [`leader_worker_god_view.md`](../god_view/dataplane/leader_worker_god_view.md)
-- [`observability_logging_god_view.md`](../god_view/dataplane/observability_logging_god_view.md)
+- Node runtime sampling và resource-aware autoscaling được mô tả trong phần `Kafka lag và scale signal`
+  của `leader_worker_god_view.md`.
+- [`telemetry_god_view.md`](../god_view/dataplane/telemetry_god_view.md)
 - [`kafka_platform_transport_god_view.md`](../god_view/platform/kafka_platform_transport_god_view.md)
 - [`zone_metadata_sync_and_state_machine_god_view.md`](../god_view/hierarchy/zone_metadata_sync_and_state_machine_god_view.md)
 - [`mail_configuration_projection_god_view.md`](../god_view/mail/mail_configuration_projection_god_view.md)
@@ -16,7 +18,7 @@ God View chính:
 
 | Thành phần | Vai trò |
 |---|---|
-| Kafka transport | Zone/platform command, result, metadata, report, storage snapshot |
+| Kafka transport | Per-Zone command, result, metadata, report, storage snapshot |
 | NATS Core | Runtime watch và consumer snapshot best-effort |
 | Zone NATS `AURORA_ZONE_CONFIG` | Zone metadata và mail immutable projection |
 | Zone NATS `AURORA_ZONE_HEALTH` | Rebuildable current health |
@@ -27,11 +29,14 @@ Dataplane không kết nối CP/Billing PostgreSQL, Shared/Auth Redis hoặc Vau
 transport còn `NATS_ZONE_URL` là Zone-local JetStream; hai endpoint phải khác nhau. Production Zone KV
 dùng file storage và replica `3/5`.
 
+Dataplane chỉ subscribe `aurora.jobs.commands.zone.<zone_uuid>.v1`; không có fallback hoặc shared
+platform command topic. Envelope thiếu `target_zone_id` hoặc mang Zone khác phải fail-closed vào DLQ.
+
 ## 2. Job lifecycle
 
 ```mermaid
 sequenceDiagram
-    participant K as Kafka Zone/platform topic
+    participant K as Kafka Zone command topic
     participant JC as JobConsumer
     participant KV as Zone Coordination KV
     participant Q as Bounded MPSC
@@ -108,8 +113,13 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 - `src/infra/zone_kv.rs`: buckets, CAS metadata và fenced lease.
 - `src/job_lifecycle/consumer.rs`: command validation, DLQ, lease, dispatch.
 - `src/job_lifecycle/runner.rs`: execution, retry/result durability.
-- `src/workerpool/watchdog.rs`: timeout/lease renewal.
+- `src/job_lifecycle/lease.rs`: acquire lease sau dequeue và bounded delayed retry.
+- `src/job_lifecycle/timeout_reporter.rs`: durable timeout result rồi mới settle Kafka source.
+- `src/workerpool/runtime.rs`: immutable job wiring và bounded multi-consumer queue.
+- `src/workerpool/pool.rs`: execution-aware worker slots, drain và shutdown barrier.
+- `src/workerpool/lease_watchdog.rs`: job timeout và fenced lease renewal.
 - `src/leader/`: election, metadata, health probe, report, storage scan và scale decision.
+- `src/leader/scale_policy.rs`: scale hysteresis/cooldown và resource safeguard.
 - `src/workerpool/scale_follower.rs`: apply fenced worker target.
 - `src/executor/mail/runtime/`: customer broker suites.
 - `src/executor/mail/processor/`: render/JMAP/batching.
@@ -124,6 +134,10 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 | `APP_LOG_MAX_FIELD_BYTES` | `16384` | Clamped `1024..262144`; áp dụng trước JSON serialization |
 | `APP_LOG_RATE_LIMIT_MS` | `5000` | Clamped `100..60000`; chỉ suppress warning/error trùng |
 | `OTEL_TRACE_SAMPLE_RATIO` | `1.0` | Clamped `0..1`; ParentBased ratio chỉ áp dụng cho root trace mới |
+| `OTEL_BSP_MAX_QUEUE_SIZE` | SDK default | Bounded in-process span queue; đầy thì drop trace, không block job |
+| `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | SDK default | Phải nhỏ hơn hoặc bằng queue size |
+| `OTEL_BSP_SCHEDULE_DELAY` | SDK default | Milliseconds giữa các lần batch export |
+| `OTEL_BSP_EXPORT_TIMEOUT` | SDK default | Milliseconds timeout cho một batch export |
 
 Dataplane emit một NDJSON record trên stdout cho mỗi event. Không cấu hình thêm direct OTLP Logs
 song song với filelog collector vì cùng record sẽ bị ingest hai lần.

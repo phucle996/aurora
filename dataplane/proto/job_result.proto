@@ -12,4 +12,7 @@ message JobExecutionResultProto {
   optional string error_code = 7; // Mã lỗi (nếu có, e.g. "EXECUTION_TIMEOUT")
   string message = 8;       // Thông điệp kết quả chi tiết
 	string source_domain = 9; // Domain sở hữu outbox nguồn: IAM | MAIL | STORAGE
+  // [COMMENT]: Context của Kafka producer result để JO tạo consumer span đúng parent.
+  string traceparent = 10;
+  string tracestate = 11;
 }

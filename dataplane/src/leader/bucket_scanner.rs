@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::zone_leader_session::ZoneLeaderSession;
+use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::executor::storage::core::client::MinioClient;
 use crate::infra::kafka::transport_proto::{BucketSizeV1, StorageBucketSizesSnapshotV1};
@@ -101,13 +101,20 @@ pub(crate) async fn run_storage_bucket_size_scanner(
 async fn scan_all_customer_storage_bucket_sizes() -> Result<HashMap<String, i64>, String> {
     let minio_client = MinioClient::from_env_private().await;
     let s3 = minio_client.s3();
-    let buckets = s3
-        .list_buckets()
-        .send()
-        .await
-        .map_err(|error| format!("list buckets failed: {error}"))?
-        .buckets
-        .unwrap_or_default();
+    let buckets = crate::observability::otel::OtelTracer::trace_result(
+        "S3 ListBuckets",
+        opentelemetry::trace::SpanKind::Client,
+        vec![
+            opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+            opentelemetry::KeyValue::new("rpc.service", "S3"),
+            opentelemetry::KeyValue::new("rpc.method", "ListBuckets"),
+        ],
+        s3.list_buckets().send(),
+    )
+    .await
+    .map_err(|error| format!("list buckets failed: {error}"))?
+    .buckets
+    .unwrap_or_default();
     let mut bucket_sizes = HashMap::new();
 
     for bucket in buckets {
@@ -124,10 +131,18 @@ async fn scan_all_customer_storage_bucket_sizes() -> Result<HashMap<String, i64>
             if let Some(token) = &continuation_token {
                 request = request.continuation_token(token);
             }
-            let response = request
-                .send()
-                .await
-                .map_err(|error| format!("list objects for {name} failed: {error}"))?;
+            let response = crate::observability::otel::OtelTracer::trace_result(
+                "S3 ListObjectsV2",
+                opentelemetry::trace::SpanKind::Client,
+                vec![
+                    opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                    opentelemetry::KeyValue::new("rpc.service", "S3"),
+                    opentelemetry::KeyValue::new("rpc.method", "ListObjectsV2"),
+                ],
+                request.send(),
+            )
+            .await
+            .map_err(|error| format!("list objects for {name} failed: {error}"))?;
             for object in response.contents.unwrap_or_default() {
                 total_size = total_size.saturating_add(object.size.unwrap_or_default());
             }

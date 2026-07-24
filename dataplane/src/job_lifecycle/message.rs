@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// ============================================================================
 /// 📂 MODULE: job-receiver/message.rs - Đặc Tả Cấu Trúc Message & Phân Tích Dữ Liệu
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 ///   - Trường `trace_id` là bắt buộc để liên kết vết xử lý (trace context propagation) từ Controlplane
 ///     qua Dataplane, hỗ trợ SRE truy vết lỗi xuyên suốt hệ thống cực nhanh.
 ///
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct JobPayload {
     /// Mã định danh duy nhất của Job nghiệp vụ.
     pub job_id: String,
@@ -50,27 +50,29 @@ pub struct JobPayload {
     pub payload_schema_version: u32,
 
     /// Dữ liệu kỹ thuật chi tiết phục vụ thực thi nghiệp vụ dưới dạng nhị phân.
-    pub payload: Vec<u8>,
+    pub payload: Arc<[u8]>,
 
     /// Mã định danh vết xử lý xuyên suốt hệ thống (Distributed Trace Context).
     pub trace_id: String,
+
+    /// W3C context của producer span tại JO. Hai field này mới là propagation
+    /// contract; `trace_id` phía trên chỉ giữ compatibility/correlation.
+    pub traceparent: String,
+    pub tracestate: String,
 
     /// Hạn mức thời gian chạy tối đa (giây) của công việc
     pub idle: Option<u32>,
 
     /// [COMMENT]: Chỉ có ở DB-backed reconciliation command; live WAL job để None.
-    #[serde(default)]
     pub reconcile_generation: Option<u64>,
 
     /// [COMMENT]: Zone đích được ký trong envelope; consumer Zone fail-close nếu không khớp Zone hiện tại.
-    #[serde(default)]
     pub target_zone_id: String,
 
     /// [COMMENT]: Kafka delivery metadata chỉ sinh lúc consume, không được serialize vào domain payload.
-    #[serde(skip)]
     pub kafka_delivery: Option<crate::infra::kafka::KafkaDelivery>,
 
-    /// [COMMENT]: Lease runtime chỉ sinh sau khi consume; không phải field của Kafka envelope.
-    #[serde(skip)]
+    /// [COMMENT]: Lease runtime chỉ sinh sau dequeue, ngay tại execution boundary;
+    /// không giữ lease trong queue và không phải field của Kafka envelope.
     pub zone_lease: Option<crate::infra::zone_kv::ZoneLease>,
 }

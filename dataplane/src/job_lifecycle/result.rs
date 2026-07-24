@@ -146,6 +146,8 @@ impl JobResultReporter {
         kafka: &crate::infra::kafka::KafkaTransport,
         result: &JobExecutionResult,
     ) -> Result<(), String> {
+        use opentelemetry::trace::FutureExt;
+
         // Parse UUID string thành 16 bytes nhị phân
         let job_id_bytes = uuid::Uuid::parse_str(&result.job_id)
             .map(|value| value.as_bytes().to_vec())
@@ -158,7 +160,24 @@ impl JobResultReporter {
             decode_hex(&result.trace_id)
         };
 
-        // Khởi tạo Protobuf payload tương thích với schema
+        let result_topic = kafka.result_topic();
+        let producer_context = crate::observability::otel::OtelTracer::start_current_span(
+            format!("send {result_topic}"),
+            opentelemetry::trace::SpanKind::Producer,
+            vec![
+                opentelemetry::KeyValue::new("messaging.system", "kafka"),
+                opentelemetry::KeyValue::new("messaging.operation.type", "send"),
+                opentelemetry::KeyValue::new("messaging.destination.name", result_topic.clone()),
+                opentelemetry::KeyValue::new("aurora.job.id", result.job_id.clone()),
+                opentelemetry::KeyValue::new("aurora.job.version", i64::from(result.job_version)),
+                opentelemetry::KeyValue::new("aurora.job.attempt", i64::from(result.attempt)),
+                opentelemetry::KeyValue::new("aurora.job.outcome", result.result_status.clone()),
+            ],
+        );
+        let propagation = crate::observability::otel::OtelTracer::inject_context(&producer_context);
+
+        // [COMMENT]: Inject context của producer span, không reuse context của consumer
+        // span; JO nhờ vậy nhìn thấy đúng cạnh Dataplane result-send → JO result-process.
         let proto_msg = job_proto::JobExecutionResultProto {
             job_id: job_id_bytes,
             job_version: result.job_version,
@@ -169,12 +188,23 @@ impl JobResultReporter {
             error_code: result.error_code.clone(),
             message: result.message.clone(),
             source_domain: result.source_domain.clone(),
+            traceparent: propagation.traceparent,
+            tracestate: propagation.tracestate,
         };
 
         let key = proto_msg.job_id.clone();
-        kafka
-            .publish_message(&kafka.result_topic(), &key, &proto_msg)
-            .await?;
+        let publish_result = kafka
+            .publish_message(&result_topic, &key, &proto_msg)
+            .with_context(producer_context.clone())
+            .await;
+        crate::observability::otel::OtelTracer::finish_span(
+            &producer_context,
+            publish_result
+                .as_ref()
+                .err()
+                .map(|_| "KAFKA_RESULT_PUBLISH_FAILED"),
+        );
+        publish_result?;
 
         crate::observability::logger::Logger::sys_info(
             "job.result",

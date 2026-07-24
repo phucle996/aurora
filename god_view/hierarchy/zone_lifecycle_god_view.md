@@ -81,8 +81,8 @@ stateDiagram-v2
 
 | Trạng thái | Ý nghĩa | Code / Reference quan trọng |
 |:---|:---|:---|
-| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80). Zone leader vẫn probe JMAP và xuất OTel/Grafana trước khi activate: [`mail_infrastructure_health_probe.rs`](../../dataplane/src/leader/mail_infrastructure_health_probe.rs). |
-| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ Platform L1: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103). Zone leader tổng hợp queue pressure, JMAP và Stalwart health vào Zone KV/OTel: [`mail_infrastructure_health_probe.rs`](../../dataplane/src/leader/mail_infrastructure_health_probe.rs). |
+| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80). Zone leader vẫn probe JMAP và xuất OTel/Grafana trước khi activate: [`mail_probe.rs`](../../dataplane/src/leader/mail_probe.rs). |
+| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ command topic của đúng Zone: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103). Zone leader tổng hợp queue pressure, JMAP và Stalwart health vào Zone KV/OTel: [`mail_probe.rs`](../../dataplane/src/leader/mail_probe.rs). |
 | **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L29). |
 | **`maintenance`** | Zone bảo trì | Chặn kéo Job mới, chạy nốt worker pool: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Cho phép SRE update service toggle desired_state: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L434). |
 | **`disabled`** | Vô hiệu hóa hoàn toàn | Dataplane không kéo job mới; health observer vẫn xuất OTel nhưng fenced `zone.service.mail` quảng cáo `down/0`. Dead-man không tự đổi lifecycle hoặc `desired_state`.<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
@@ -119,7 +119,7 @@ Trạng thái đo đạc và phản ánh sức khỏe thực tế (actual_state)
 | Trạng thái | Ý nghĩa | Điều kiện chuyển dịch / Telemetry Source | Code / Reference cập nhật vào DB SoT |
 |:---|:---|:---|:---|
 | **`unknown`** | Chưa nhận được báo cáo tài nguyên | Giá trị mặc định khi khởi tạo hoặc chưa có report push về. | [`zone_repo.go#CreateZone()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219) |
-| **`healthy`** | Hoạt động bình thường, ổn định | Fresh successful JMAP probe và batch queue còn capacity. | [`mail_infrastructure_health_probe.rs`](../../dataplane/src/leader/mail_infrastructure_health_probe.rs) → `zone.service.mail` → leader Zone reporter |
+| **`healthy`** | Hoạt động bình thường, ổn định | Fresh successful JMAP probe và batch queue còn capacity. | [`mail_probe.rs`](../../dataplane/src/leader/mail_probe.rs) → `zone.service.mail` → leader Zone reporter |
 | **`degraded`** | Gặp sự cố hiệu năng hoặc nghẽn | Một phần Dataplane probe lỗi, queue pressure cao hoặc inventory bị truncate. | Generic Zone report với `actual_observed_at` fence |
 | **`unhealthy`** | Lỗi logic / probe chưa đủ bằng chứng | Reserved status cho monitor khác; Mail observer hiện derive healthy/degraded/down. | Generic Zone report với `actual_observed_at` fence |
 | **`down`** | Offline hoàn toàn | Không còn fresh successful JMAP probe, service disabled hoặc generic dead-man timeout. | Generic Zone report với `actual_observed_at` fence |
@@ -314,7 +314,7 @@ sequenceDiagram
 1. **Khởi chạy container**: Tiến trình Dataplane bootstrap tại [`app.rs#AppContainer::start()`](../../dataplane/src/app.rs#L55).
 2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) đọc `zone.metadata` từ `AURORA_ZONE_CONFIG`. Vì trạng thái là `planned`, consumer ngắt kéo Job mới và sleep 1s. Metadata thiếu/hỏng hoặc KV unavailable cũng dừng ingestion theo fail-closed.
 3. **Mail Health Observation**:
-   * [`mail_infrastructure_health_probe.rs`](../../dataplane/src/leader/mail_infrastructure_health_probe.rs) dùng JMAP health cùng local pending/in-flight batch pressure cho Zone KV và OTel/Grafana; không có CP infrastructure projection.
+   * [`mail_probe.rs`](../../dataplane/src/leader/mail_probe.rs) dùng JMAP health cùng local pending/in-flight batch pressure cho Zone KV và OTel/Grafana; không có CP infrastructure projection.
    * Node Resource Monitor ghi snapshot từng pod vào `AURORA_ZONE_HEALTH/zone.node.<node_id>`; Gateway bỏ snapshot cũ hơn 15 giây.
 
 ---
@@ -364,9 +364,9 @@ sequenceDiagram
 1. **CDC Metadata Event**:
    * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs).
    * JO đọc full aggregate và publish `ZoneMetadataSnapshotV1` vào Kafka compacted topic riêng Zone.
-   * DP leader [`zone_metadata_kafka_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata_kafka_listener.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
+   * DP leader [`metadata_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/metadata_listener.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
 2. **Telemetry Pack & Report**:
-   * Dataplane [`zone_report_publisher`](../../dataplane/src/leader/zone_report_publisher.rs) chạy dưới stable `lease.zone.leader`, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
+   * Dataplane [`report_publisher`](../../dataplane/src/leader/report_publisher.rs) chạy dưới stable `lease.zone.leader`, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
    * Gateway đóng gói `ZoneReport` Protobuf, dùng Zone ID làm record key và `acks=all`.
 3. **Write-back DB SoT**:
    * JO [`run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs) manual-consume Kafka, decode Protobuf và commit sau side effects.
@@ -502,10 +502,10 @@ sequenceDiagram
 ```
 
 1. **CDC Snapshot**: Sự kiện update bảng `zones` được stream từ WAL tới JO; JO đọc/publish full aggregate vào Kafka compacted topic riêng Zone.
-2. **Dataplane KV Sync**: DP leader [`zone_metadata_kafka_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata_kafka_listener.rs) validate Zone rồi CAS-apply full `AURORA_ZONE_CONFIG/zone.metadata`.
+2. **Dataplane KV Sync**: DP leader [`metadata_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/metadata_listener.rs) validate Zone rồi CAS-apply full `AURORA_ZONE_CONFIG/zone.metadata`.
 3. **State Machine Reaction**:
    * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
-   * **Mail Health Observer**: [`leader/mail_infrastructure_health_probe.rs`](../../dataplane/src/leader/mail_infrastructure_health_probe.rs) tiếp tục ghi fenced Zone health và OTel metrics; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
+   * **Mail Health Observer**: [`leader/mail_probe.rs`](../../dataplane/src/leader/mail_probe.rs) tiếp tục ghi fenced Zone health và OTel metrics; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
 
 ---
 
@@ -625,7 +625,7 @@ sequenceDiagram
 ```
 
 1. **CDC Snapshot**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services`, đọc full aggregate và publish Kafka bằng Zone ID key.
-2. **DP Listener**: [`zone_metadata_kafka_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata_kafka_listener.rs) consume full snapshot và CAS-apply `AURORA_ZONE_CONFIG/zone.metadata`.
+2. **DP Listener**: [`metadata_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/metadata_listener.rs) consume full snapshot và CAS-apply `AURORA_ZONE_CONFIG/zone.metadata`.
 3. **Monitor Reaction**: Mail/storage/hypervisor monitor đọc `services[type]`. Nếu `false`, monitor không gọi backend nhưng ghi current snapshot `down/0` hoặc empty/down để xóa trạng thái khỏe cũ; DecisionEngine filter service disabled trước khi đánh giá. Nếu `true`, monitor thực hiện health check đầy đủ.
 4. **Fallback khi miss RAM**: Nếu `EnabledServicesMap` trong JO không có entry cho zone_id+service (ví dụ sau khi JO restart), JO **đọc trực tiếp từ PostgreSQL** (`zone_services` table) để lấy `desired_state` hiện tại và nạp lại vào RAM trước khi ra quyết định.
 
@@ -735,7 +735,7 @@ sequenceDiagram
 ```
 
 1. **CDC Broadcast**: JO phát hiện DELETE và phải phát terminal metadata contract bền vững trên Kafka; không dùng ephemeral PubSub.
-2. **DP Detach**: DP leader [`zone_metadata_kafka_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata_kafka_listener.rs) ghi nhận và đưa agent về trạng thái treo/dừng hoạt động đồng bộ.
+2. **DP Detach**: DP leader [`metadata_listener::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/metadata_listener.rs) ghi nhận và đưa agent về trạng thái treo/dừng hoạt động đồng bộ.
 3. **JO Cleanup**: JO Backpressure Listener [`listener.rs`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L15) dừng tracking heartbeat của zone và dọn dẹp các cache vùng nhớ tạm trên RAM.
 
 ---
@@ -753,7 +753,7 @@ Cơ chế tự phục hồi cấu hình (Self-Healing) giúp đảm bảo Datapl
 ---
 
 ### 9.2 Cơ Chế Trigger
-1. **Khởi động nguội (Cold Start)**: Trigger ngay khi Dataplane giành `lease.zone.leader` trong [`zone_metadata_repair_publisher.rs`](../../dataplane/src/leader/zone_metadata_repair_publisher.rs).
+1. **Khởi động nguội (Cold Start)**: Trigger ngay khi Dataplane giành `lease.zone.leader` trong [`metadata_repair.rs`](../../dataplane/src/leader/metadata_repair.rs).
 2. **Định kỳ (Periodic Polling)**: Sau khoảng 720 gateway cycle (xấp xỉ 60 phút), reporter kích hoạt một vòng repair mới; coordination lease loại duplicate query giữa các pod.
 3. **Distributed Lease Guard**: Các pod CAS stable key `lease.zone.leader` trong `AURORA_ZONE_COORDINATION`, TTL 15 giây và renew 5 giây. Value mang owner và fencing token; leader cũ không thể renew/release session mới.
 4. **JO Metadata Handler**: JO lắng nghe kênh truy vấn tại [`listener.rs#run_metadata_query_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L460) để đọc dữ liệu SoT trực tiếp từ Postgres và phản hồi ngược lại cho Dataplane.
@@ -840,7 +840,7 @@ khi replica khác takeover.
 
 ### 11.1 Health Observer (Mail / Stalwart)
 
-Ghi fenced Zone health và OTel metrics cho Mail JMAP, local batch pressure, Dataplane node và Stalwart registry. Triển khai tại [`leader/mail_infrastructure_health_probe.rs`](../../dataplane/src/leader/mail_infrastructure_health_probe.rs).
+Ghi fenced Zone health và OTel metrics cho Mail JMAP, local batch pressure, Dataplane node và Stalwart registry. Triển khai tại [`leader/mail_probe.rs`](../../dataplane/src/leader/mail_probe.rs).
 
 ```mermaid
 sequenceDiagram
@@ -879,7 +879,7 @@ sequenceDiagram
 ### 11.2 Hypervisor Monitor (Proxmox VE Cluster)
 
 Đo đạc chỉ số sức khỏe của các node ảo hóa. Chỉ Zone leader thực hiện tại
-[`leader/hypervisor_health_probe.rs`](../../dataplane/src/leader/hypervisor_health_probe.rs).
+[`leader/hypervisor_probe.rs`](../../dataplane/src/leader/hypervisor_probe.rs).
 
 ```mermaid
 sequenceDiagram
@@ -919,20 +919,22 @@ sequenceDiagram
 
 ---
 
-### 11.3 Resource Monitor (Node Self-Reporter)
+### 11.3 Node Runtime Metrics (Node Self-Reporter)
 
-Báo cáo năng lực tính toán hiện tại của DP Node. Triển khai tại [`resource.rs`](../../dataplane/src/observability/resource/mod.rs).
+Báo cáo năng lực tính toán hiện tại của DP Node. Triển khai tại [`metrics.rs`](../../dataplane/src/observability/metrics.rs).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant DP as 💻 DP (ResourceMonitor)
+    participant DP as 💻 DP (NodeRuntimeSampler)
     participant OS as 💻 OS / WorkerPool
+    participant OTel as 📈 OTel Collector
     participant KV as 🗄️ NATS Zone Health KV
 
     Note over DP: Định kỳ 5 giây
-    DP->>OS: Đọc tải CPU, RAM hiện tại & số active_workers
-    OS-->>DP: cpu_usage, ram_usage, workers_count
+    DP->>OS: Đọc cgroup CPU/RAM & số active_workers
+    OS-->>DP: NodeRuntimeSample trong RAM
+    DP->>OTel: Export gauges qua OTel metrics
     DP->>KV: PUT zone.node.{node_id} cpu, ram, active_workers, updated_at
 ```
 
@@ -1153,17 +1155,17 @@ sequenceDiagram
 
 | # | Rủi Ro | Cơ Chế Bảo Vệ | File & Location |
 |:---|:---|:---|:---|
-| 1 | **Write Stampede** khi sync metadata | CAS `lease.zone.leader` — chỉ một owner/fencing thắng | `dataplane/src/leader/zone_leader_supervisor.rs` |
-| 2 | **Lease orphan** khi pod crash | Logical expiry 15s cho phép replica khác takeover | `dataplane/src/leader/zone_leader_supervisor.rs` |
+| 1 | **Write Stampede** khi sync metadata | CAS `lease.zone.leader` — chỉ một owner/fencing thắng | `dataplane/src/leader/supervisor.rs` |
+| 2 | **Lease orphan** khi pod crash | Logical expiry 15s cho phép replica khác takeover | `dataplane/src/leader/supervisor.rs` |
 | 3 | **Owner cũ release lease mới** | Renew/release bắt buộc khớp owner và fencing token | `dataplane/src/infra/zone_kv.rs` |
-| 4 | **CDC packet loss** khi Kafka path gián đoạn | Cold-start/hourly reconciliation từ PostgreSQL SoT | `dataplane/src/leader/zone_metadata_repair_publisher.rs` |
+| 4 | **CDC packet loss** khi Kafka path gián đoạn | Cold-start/hourly reconciliation từ PostgreSQL SoT | `dataplane/src/leader/metadata_repair.rs` |
 | 5 | **Replay Attack** (resend request đã bắt) | Redis SETNX `iam:nonce:{nonce}` EX 120 atomic | `signature.rs#L86-L113` |
 | 6 | **Clock Skew Attack** (timestamp cũ để bypass) | `|now - ts| ≤ 120s` check | `signature.rs#L56-L71` |
 | 7 | **Out-of-order Hypervisor heartbeat** | `WHERE last_active_at < sent_at` trong UPSERT | `db.rs#L312` |
 | 8 | **actual_state IOPS spam** (ghi mỗi 5s) | Throttle: 3 điều kiện (status / delta>10 / >120s) | `listener.rs#L242-L258` |
 | 9 | **HA out-of-order Zone report** | `zone_services.actual_observed_at` chỉ nhận timestamp mới hơn | `reverse_provider/zone/db.rs` |
 | 9 | **Zone flapping** (active↔congested) | Hysteresis: overload threshold > recovery threshold | `decision.rs#L33-L38` |
-| 10 | **Miss CDC khi cold start** | Leader reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/leader/zone_metadata_repair_publisher.rs` |
+| 10 | **Miss CDC khi cold start** | Leader reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/leader/metadata_repair.rs` |
 | 11 | **Zombie generic Zone report** | Dead Man's Switch hạ owned actual health; lifecycle/desired chỉ SRE được sửa | `reverse_provider/zone/listener/deadman.rs` |
 | 12 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
 | 13 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
@@ -1186,18 +1188,17 @@ sequenceDiagram
 | `aurora.zone.metadata.queries.v1` | Kafka topic | Broker policy | Durable ZoneMetadataQueryV1 | DP → JO |
 | `aurora.zone.reports.v1` | Kafka topic | Broker policy | Protobuf ZoneReport | DP → JO |
 | `aurora.jobs.commands.zone.<zone_id>.v1` | Kafka topic | Broker policy | JobCommandV1 | JO → DP |
-| `aurora.jobs.commands.platform.v1` | Kafka topic | Broker policy | Platform JobCommandV1 | JO → DP |
 
 ### NATS JetStream KV — Per-Zone Internal
 
 | Bucket / Key | Type | Retention | Nội Dung | Owner |
 |:---|:---|:---|:---|:---|
 | `AURORA_ZONE_CONFIG/zone.metadata` | JSON KV | Persistent, history 1 | `{status, services, updated_at}` | DP CDC/Reconciliation |
-| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | `leader/mail_infrastructure_health_probe.rs` |
+| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | `leader/mail_probe.rs` |
 | `AURORA_ZONE_HEALTH/mail.health.node.<node_id>` | JSON KV | Max age 24h; logical stale by observer interval | Per-process Mail pressure snapshot, no probe | Every Dataplane Mail pod |
-| `AURORA_ZONE_HEALTH/zone.service.storage` | JSON KV | Max age 24h, history 1 | MinIO status/capacity/leader fencing | `leader/storage_health_probe.rs` |
-| `AURORA_ZONE_HEALTH/zone.service.hypervisor` | JSON KV | Max age 24h, history 1 | Hypervisor node snapshot/leader fencing | `leader/hypervisor_health_probe.rs` |
-| `AURORA_ZONE_HEALTH/zone.node.<node_id>` | JSON KV | Max age 24h; logical stale 15s | CPU, RAM, workers, updated_at | ResourceMonitor |
+| `AURORA_ZONE_HEALTH/zone.service.storage` | JSON KV | Max age 24h, history 1 | MinIO status/capacity/leader fencing | `leader/storage_probe.rs` |
+| `AURORA_ZONE_HEALTH/zone.service.hypervisor` | JSON KV | Max age 24h, history 1 | Hypervisor node snapshot/leader fencing | `leader/hypervisor_probe.rs` |
+| `AURORA_ZONE_HEALTH/zone.node.<node_id>` | JSON KV | Max age 24h; logical stale 15s | CPU, RAM, workers, updated_at | NodeRuntimeSampler |
 | `AURORA_ZONE_COORDINATION/lease.zone.leader` | CAS lease | Logical TTL 15s | owner/fencing/expiry/last owner | Leader Coordinator |
 | `AURORA_ZONE_COORDINATION/signal.workers.scale` | Fenced soft directive | TTL 15s | zone/target/lag/leader fencing/expiry | Leader scaler → Worker followers |
 | `AURORA_ZONE_COORDINATION/lease.job.<sha256>` | CAS lease | Logical TTL 30s | owner/fencing/expiry | Job lifecycle |

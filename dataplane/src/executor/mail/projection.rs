@@ -115,7 +115,7 @@ pub async fn apply_mail_consumer_upsert(
             "MAIL_PROJECTION_SCHEMA_UNSUPPORTED".to_string(),
         ));
     }
-    let event = MailConsumerUpsertV1::decode(payload.payload.as_slice()).map_err(|error| {
+    let event = MailConsumerUpsertV1::decode(payload.payload.as_ref()).map_err(|error| {
         ExecutorError::ExecutionFailed(format!("MAIL_CONSUMER_UPSERT_DECODE: {error}"))
     })?;
     let metadata = event.metadata.as_ref().ok_or_else(|| {
@@ -341,7 +341,7 @@ pub async fn apply_mail_consumer_delete(
             "MAIL_PROJECTION_ZONE_MISMATCH".to_string(),
         ));
     }
-    let event = MailConsumerDeleteV1::decode(payload.payload.as_slice()).map_err(|error| {
+    let event = MailConsumerDeleteV1::decode(payload.payload.as_ref()).map_err(|error| {
         ExecutorError::ExecutionFailed(format!("MAIL_CONSUMER_DELETE_DECODE: {error}"))
     })?;
     let metadata = event.metadata.as_ref().ok_or_else(|| {
@@ -427,7 +427,7 @@ pub async fn apply_mail_template_version_published(
         ));
     }
     let event =
-        MailTemplateVersionPublishedV1::decode(payload.payload.as_slice()).map_err(|error| {
+        MailTemplateVersionPublishedV1::decode(payload.payload.as_ref()).map_err(|error| {
             ExecutorError::ExecutionFailed(format!("MAIL_TEMPLATE_PUBLISH_DECODE: {error}"))
         })?;
     let metadata = event.metadata.as_ref().ok_or_else(|| {
@@ -574,7 +574,7 @@ pub async fn apply_mail_template_deleted(
             "MAIL_PROJECTION_ZONE_MISMATCH".to_string(),
         ));
     }
-    let event = MailTemplateDeletedV1::decode(payload.payload.as_slice()).map_err(|error| {
+    let event = MailTemplateDeletedV1::decode(payload.payload.as_ref()).map_err(|error| {
         ExecutorError::ExecutionFailed(format!("MAIL_TEMPLATE_DELETE_DECODE: {error}"))
     })?;
     let metadata = event.metadata.as_ref().ok_or_else(|| {
@@ -657,9 +657,10 @@ pub async fn apply_mail_reconcile_completed(
             "MAIL_PROJECTION_ZONE_MISMATCH".to_string(),
         ));
     }
-    let event = MailProjectionReconcileCompletedV1::decode(payload.payload.as_slice()).map_err(
-        |error| ExecutorError::ExecutionFailed(format!("MAIL_RECONCILE_MARKER_DECODE: {error}")),
-    )?;
+    let event =
+        MailProjectionReconcileCompletedV1::decode(payload.payload.as_ref()).map_err(|error| {
+            ExecutorError::ExecutionFailed(format!("MAIL_RECONCILE_MARKER_DECODE: {error}"))
+        })?;
     let metadata = event.metadata.as_ref().ok_or_else(|| {
         ExecutorError::ExecutionFailed("MAIL_EVENT_METADATA_REQUIRED".to_string())
     })?;

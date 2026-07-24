@@ -83,7 +83,7 @@ owned by Billing God Views; this workflow only supplies current storage measurem
 
 ## 5. Code map
 
-- `dataplane/src/leader/storage_bucket_size_scanner.rs`: leader-only customer bucket size scan + Kafka publish.
+- `dataplane/src/leader/bucket_scanner.rs`: leader-only customer bucket size scan + Kafka publish.
 - `job-orchestrator/src/reverse_provider/storage/listener.rs`: validate/update/NATS/commit.
 - `job-orchestrator/src/reverse_provider/storage/db.rs`: Personal/Tenant size update.
 - `controlplane/internal/storage/`: authorized list API.

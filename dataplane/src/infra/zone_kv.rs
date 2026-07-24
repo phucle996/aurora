@@ -268,6 +268,13 @@ impl ZoneKvStore {
             .map_err(|error| error.to_string())
     }
 
+    pub async fn health_delete(&self, key: impl AsRef<str>) -> Result<(), String> {
+        self.health
+            .delete(key)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     /// [COMMENT]: Health writer cũ không được overwrite cycle mới dù request cũ hoàn tất sau khi lease đã takeover.
     pub async fn health_put_fenced(
         &self,
@@ -353,7 +360,18 @@ impl ZoneKvStore {
     }
 
     pub async fn read_zone_metadata(&self) -> Result<ZoneMetadata, String> {
-        match self.config_get("zone.metadata").await? {
+        let snapshot = crate::observability::otel::OtelTracer::trace_result(
+            "KV GetZoneMetadata",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("db.system", "nats_jetstream_kv"),
+                opentelemetry::KeyValue::new("db.namespace", "AURORA_ZONE_CONFIG"),
+                opentelemetry::KeyValue::new("db.operation.name", "get"),
+            ],
+            self.config_get("zone.metadata"),
+        )
+        .await?;
+        match snapshot {
             Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
             None => Ok(ZoneMetadata::default()),
         }
@@ -400,7 +418,17 @@ impl ZoneKvStore {
         owner_id: &str,
         ttl: Duration,
     ) -> Result<Option<ZoneLease>, String> {
-        self.acquire_lease_internal(key, owner_id, ttl).await
+        crate::observability::otel::OtelTracer::trace_result(
+            "KV AcquireLease",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("db.system", "nats_jetstream_kv"),
+                opentelemetry::KeyValue::new("db.namespace", "AURORA_ZONE_COORDINATION"),
+                opentelemetry::KeyValue::new("db.operation.name", "cas"),
+            ],
+            self.acquire_lease_internal(key, owner_id, ttl),
+        )
+        .await
     }
 
     async fn acquire_lease_internal(
@@ -525,6 +553,28 @@ impl ZoneKvStore {
     }
 
     pub async fn release_lease(&self, lease: &ZoneLease) -> Result<bool, String> {
+        let context = crate::observability::otel::OtelTracer::start_current_span(
+            "KV ReleaseLease",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("db.system", "nats_jetstream_kv"),
+                opentelemetry::KeyValue::new("db.namespace", "AURORA_ZONE_COORDINATION"),
+                opentelemetry::KeyValue::new("db.operation.name", "cas"),
+            ],
+        );
+        use opentelemetry::trace::FutureExt;
+        let result = self
+            .release_lease_internal(lease)
+            .with_context(context.clone())
+            .await;
+        crate::observability::otel::OtelTracer::finish_span(
+            &context,
+            result.as_ref().err().map(|_| "ZONE_KV_RELEASE_FAILED"),
+        );
+        result
+    }
+
+    async fn release_lease_internal(&self, lease: &ZoneLease) -> Result<bool, String> {
         for _ in 0..3 {
             let Some(entry) = self
                 .coordination

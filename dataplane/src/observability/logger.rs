@@ -433,6 +433,8 @@ impl Logger {
         let sequence = PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
         let trace_id =
             crate::observability::otel::OtelTracer::get_current_trace_id().unwrap_or_default();
+        let span_id =
+            crate::observability::otel::OtelTracer::get_current_span_id().unwrap_or_default();
         let event_id = bounded_field(fields.event_id.unwrap_or_default());
         let operation_id = bounded_field(fields.operation_id.unwrap_or_default());
         let kafka_topic = bounded_field(fields.kafka_topic.unwrap_or_default());
@@ -458,7 +460,7 @@ impl Logger {
                     event_id = event_id.as_ref(),
                     operation_id = operation_id.as_ref(),
                     trace_id = trace_id.as_str(),
-                    span_id = "",
+                    span_id = span_id.as_str(),
                     job_version = fields.job_version.unwrap_or_default(),
                     leader_fencing_token = fields.leader_fencing_token.unwrap_or_default(),
                     fencing_token = fields.fencing_token.unwrap_or_default(),
@@ -507,6 +509,8 @@ impl Logger {
         let sequence = PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
         let trace_id =
             crate::observability::otel::OtelTracer::get_current_trace_id().unwrap_or_default();
+        let span_id =
+            crate::observability::otel::OtelTracer::get_current_span_id().unwrap_or_default();
         let message = protected_field(message);
         let job_id = bounded_field(job_id);
         let job_topic = bounded_field(job_topic);
@@ -534,7 +538,7 @@ impl Logger {
             event_id = event_id.as_ref(),
             operation_id = operation_id.as_ref(),
             trace_id = trace_id.as_str(),
-            span_id = "",
+            span_id = span_id.as_str(),
             job_id = job_id.as_ref(),
             job_topic = job_topic.as_ref(),
             job_version = fields.job_version.unwrap_or_default(),

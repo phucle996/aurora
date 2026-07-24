@@ -14,6 +14,15 @@ use observability::metrics::MetricsManager;
 use observability::otel::OtelTracer;
 use reverse_provider::ReverseProvider;
 
+struct OtelShutdownGuard;
+
+impl Drop for OtelShutdownGuard {
+    fn drop(&mut self) {
+        // Flush cả các lỗi bootstrap xảy ra sau khi provider đã được cài đặt.
+        OtelTracer::stop();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
@@ -35,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Khởi tạo logger có cấu trúc, OpenTelemetry Tracer & Metrics (Push model)
     Logger::init();
     OtelTracer::init(&config);
+    let _otel_shutdown_guard = OtelShutdownGuard;
     MetricsManager::init();
     Logger::sys_info(
         "main.init",
@@ -77,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| -> Box<dyn std::error::Error> {
             format!("CDC bootstrap thất bại: {}", e).into()
         })?;
-    let consumer = JobResultConsumer::new(config.clone(), kafka.clone(), nats_client.clone());
+    let consumer = JobResultConsumer::new(config.clone(), kafka.clone(), cache_redis.clone());
     let reverse_provider = ReverseProvider::new(
         config.clone(),
         cache_redis.clone(),
@@ -88,37 +98,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = config.database_url.clone();
     let nats_url = config.env_nats_url.clone();
 
-    // 4. Chạy song song các luồng nền độc lập (HA)
-    tokio::select! {
+    // [COMMENT]: Không gọi process::exit sau khi OTel đã khởi tạo; exit thô bỏ
+    // toàn bộ batch queue. Mọi terminal branch hội tụ về một bounded shutdown.
+    let run_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
         res = streamer.run() => {
-            if let Err(err) = res {
-                Logger::sys_error("main.run", "CDC Worker (Outbound) gặp lỗi nghiêm trọng", &err.to_string());
-                std::process::exit(1);
+            match res {
+                Ok(()) => Err("CDC worker stopped unexpectedly".into()),
+                Err(error) => Err(format!("CDC worker failed: {error}").into()),
             }
         }
         res = consumer.run() => {
-            if let Err(err) = res {
-                Logger::sys_error("main.run", "Result Consumer (Inbound) gặp lỗi nghiêm trọng", &err.to_string());
-                std::process::exit(1);
+            match res {
+                Ok(()) => Err("result consumer stopped unexpectedly".into()),
+                Err(error) => Err(format!("result consumer failed: {error}").into()),
             }
         }
         res = reverse_provider.run() => {
-            if let Err(err) = res {
-                Logger::sys_error("main.run", "Reverse Provider gặp lỗi nghiêm trọng", &err.to_string());
-                std::process::exit(1);
+            match res {
+                Ok(()) => Err("reverse provider stopped unexpectedly".into()),
+                Err(error) => Err(format!("reverse provider failed: {error}").into()),
             }
         }
         _ = lifecycle_relay::relay::run_relay_loop(db_url, nats_url) => {
-            Logger::sys_error("main.run", "Resource Lifecycle Relay Worker dừng đột ngột", "");
-            std::process::exit(1);
+            Err("resource lifecycle relay stopped unexpectedly".into())
         }
         _ = reverse_provider::mail::reconciler::run_periodic_mail_reconciliation(
             config.clone(), cache_redis.clone(), kafka.clone()
         ) => {
-            Logger::sys_error("main.run", "Mail DB-backed Reconciler dừng đột ngột", "");
-            std::process::exit(1);
+            Err("mail reconciler stopped unexpectedly".into())
         }
-    }
+        signal = shutdown_signal() => {
+            match signal {
+                Ok(()) => {
+                    Logger::sys_info("main.shutdown", "Received SIGINT/SIGTERM; stopping workers");
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+    };
 
-    Ok(())
+    if let Err(error) = &run_result {
+        Logger::sys_error(
+            "main.run",
+            "Job Orchestrator terminal worker failure",
+            &error.to_string(),
+        );
+    }
+    run_result
+}
+
+async fn shutdown_signal() -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = sigint.recv() => Ok(()),
+        _ = sigterm.recv() => Ok(()),
+    }
 }

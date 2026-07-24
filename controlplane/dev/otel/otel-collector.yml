@@ -107,6 +107,12 @@ receivers:
         on_error: send_quiet
 
 processors:
+  # [COMMENT]: Collector đơn trong Docker phải tự giới hạn RSS khi backend chậm;
+  # application queue và persistent exporter queue vẫn là các boundary độc lập.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
   batch:
   # [OPTIMIZATION & DATA SUSTAINABILITY]: Bộ lọc loại bỏ log rác từ chính hệ thống giám sát
   # Giúp tránh vòng lặp ghi log vô hạn (log loop) và tối ưu hóa dung lượng lưu trữ trên môi trường HA.
@@ -241,6 +247,16 @@ exporters:
   # [VictoriaTraces Integration]: Đóng vai trò làm backend lưu trữ traces cho hệ thống
   otlphttp/victoriatraces:
     endpoint: "http://controlplane-victoriatraces:10428/insert/opentelemetry"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 0s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 10000
+      storage: file_storage
     tls:
       insecure: true
 
@@ -252,22 +268,22 @@ service:
     # (Đã loại bỏ exporter debug để tránh spam console log)
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [otlphttp/victoriatraces]
     # Pipeline metrics (Đã loại bỏ exporter debug)
     metrics:
       receivers: [otlp, prometheus]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [prometheusremotewrite]
     # Pipeline logs (Đã loại bỏ exporter debug)
     logs:
       receivers: [otlp, filelog]
       # Bổ sung filter/exclude_noise trước transform để lọc bỏ log rác ngay khi nhận được
-      processors: [filter/exclude_noise, transform, batch]
+      processors: [memory_limiter, filter/exclude_noise, transform, batch]
       exporters: [otlphttp/victorialogs]
 
     # Pipeline logs/metering: Lọc logs Envoy Storage, trích xuất metrics và lưu vào ClickHouse
     logs/metering:
       receivers: [filelog]
-      processors: [transform, filter/only_storage_envoy, transform/metering, batch]
+      processors: [memory_limiter, transform, filter/only_storage_envoy, transform/metering, batch]
       exporters: [clickhouse]

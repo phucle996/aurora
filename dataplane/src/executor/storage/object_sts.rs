@@ -54,17 +54,26 @@ impl Executor for ObjectStsExecutor {
 
         // [COMMENT]: 3. Khởi tạo STS client và gọi AssumeRole
         let sts_client = MinioClient::sts_client_from_env().await;
-        let sts_res = sts_client
-            .assume_role()
-            .role_arn("arn:aws:iam::123456789012:role/s3-console-direct")
-            .role_session_name("s3-console-session")
-            .policy(policy)
-            .duration_seconds(duration as i32)
-            .send()
-            .await
-            .map_err(|e| {
-                ExecutorError::ExecutionFailed(format!("AssumeRole failed on MinIO: {}", e))
-            })?;
+        let sts_res = crate::observability::otel::OtelTracer::trace_result(
+            "STS AssumeRole",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                opentelemetry::KeyValue::new("rpc.service", "STS"),
+                opentelemetry::KeyValue::new("rpc.method", "AssumeRole"),
+            ],
+            sts_client
+                .assume_role()
+                .role_arn("arn:aws:iam::123456789012:role/s3-console-direct")
+                .role_session_name("s3-console-session")
+                .policy(policy)
+                .duration_seconds(duration as i32)
+                .send(),
+        )
+        .await
+        .map_err(|e| {
+            ExecutorError::ExecutionFailed(format!("AssumeRole failed on MinIO: {}", e))
+        })?;
 
         let credentials = sts_res.credentials.ok_or_else(|| {
             ExecutorError::ExecutionFailed("MinIO STS response missing credentials".to_string())

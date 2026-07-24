@@ -263,6 +263,47 @@ impl MailMessageProcessor {
         payload: Bytes,
         submission_id: String,
     ) -> MailProcessingStatus {
+        let stream_type = configuration
+            .stream
+            .stream_type
+            .as_str_name()
+            .to_ascii_lowercase();
+        let process_context = crate::observability::otel::OtelTracer::start_span_with_parent(
+            format!("process customer-mail {stream_type}"),
+            opentelemetry::trace::SpanKind::Consumer,
+            vec![
+                KeyValue::new("messaging.system", stream_type),
+                KeyValue::new("messaging.operation.type", "process"),
+                KeyValue::new("aurora.zone.id", self.zone_id.clone()),
+                KeyValue::new("aurora.runtime.accepting", generation_fence.is_accepting()),
+            ],
+            // [COMMENT]: Customer broker context is untrusted. Start a fresh trace
+            // instead of letting customer sampled flags control platform telemetry cost.
+            &opentelemetry::Context::new(),
+        );
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+        let status = self
+            .process_inner(configuration, generation_fence, payload, submission_id)
+            .with_context(process_context.clone())
+            .await;
+        let (outcome, code) = processing_status_fields(&status);
+        process_context
+            .span()
+            .set_attribute(KeyValue::new("aurora.mail.outcome", outcome));
+        crate::observability::otel::OtelTracer::finish_span(
+            &process_context,
+            (outcome != "accepted").then_some(code),
+        );
+        status
+    }
+
+    async fn process_inner(
+        &self,
+        configuration: Arc<RuntimeConsumerConfiguration>,
+        generation_fence: Arc<RuntimeGenerationFence>,
+        payload: Bytes,
+        submission_id: String,
+    ) -> MailProcessingStatus {
         // [COMMENT]: Global permit chặn tổng inflight của mọi suite nhưng không can thiệp cách broker ACK/retry.
         let _permit = match self.concurrency.acquire().await {
             Ok(permit) => permit,
@@ -421,12 +462,7 @@ impl MailMessageProcessor {
     }
 
     fn record_outcome(&self, outcome: &MailProcessingStatus) {
-        let (status, code) = match outcome {
-            MailProcessingStatus::Accepted => ("accepted", "MAIL_ACCEPTED"),
-            MailProcessingStatus::PermanentRejected { code } => ("rejected", *code),
-            MailProcessingStatus::Retryable { code } => ("retryable", *code),
-            MailProcessingStatus::Ambiguous { code } => ("ambiguous", *code),
-        };
+        let (status, code) = processing_status_fields(outcome);
         // [COMMENT]: Chỉ taxonomy low-cardinality; không dùng consumer/topic/recipient/template làm metric label.
         processing_outcome_metric().add(
             1,
@@ -436,6 +472,15 @@ impl MailMessageProcessor {
                 KeyValue::new("code", code),
             ],
         );
+    }
+}
+
+fn processing_status_fields(outcome: &MailProcessingStatus) -> (&'static str, &'static str) {
+    match outcome {
+        MailProcessingStatus::Accepted => ("accepted", "MAIL_ACCEPTED"),
+        MailProcessingStatus::PermanentRejected { code } => ("rejected", *code),
+        MailProcessingStatus::Retryable { code } => ("retryable", *code),
+        MailProcessingStatus::Ambiguous { code } => ("ambiguous", *code),
     }
 }
 

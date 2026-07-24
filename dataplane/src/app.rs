@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 use crate::bootstrap::BootstrapResult;
 use crate::config::Config;
 use crate::observability::logger::Logger;
-use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
+use crate::workerpool::pool::WorkerLifecycleManager;
+use crate::workerpool::runtime::WorkerJobRuntime;
 
 /// ============================================================================
 /// 📂 MODULE: app.rs - Bộ Quản Lý Đồ Thị Đối Tượng Ứng Dụng (AppContainer)
@@ -30,32 +30,32 @@ pub struct AppContainer {
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
-    pub active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
+    pub job_execution_lease_registry:
+        Arc<crate::workerpool::lease_watchdog::JobExecutionLeaseRegistry>,
 }
 
 impl AppContainer {
     /// Dựng đồ thị Module Graph từ kết quả bootstrap.
-    pub fn new(boot: BootstrapResult) -> (Self, mpsc::Receiver<WorkerSignal>) {
-        (
-            Self {
-                config: boot.config,
-                nats_core: boot.nats_core,
-                kafka: boot.kafka,
-                zone_kv: boot.zone_kv,
-                worker_pool: boot.worker_pool,
-                active_lock_registry: Arc::new(
-                    crate::workerpool::watchdog::ActiveLockRegistry::new(),
-                ),
-            },
-            boot.worker_signal_rx,
-        )
+    pub fn new(boot: BootstrapResult) -> Self {
+        Self {
+            config: boot.config,
+            nats_core: boot.nats_core,
+            kafka: boot.kafka,
+            zone_kv: boot.zone_kv,
+            worker_pool: boot.worker_pool,
+            job_execution_lease_registry: Arc::new(
+                crate::workerpool::lease_watchdog::JobExecutionLeaseRegistry::new(),
+            ),
+        }
     }
 
     /// Kích hoạt các luồng giám sát và tác vụ ngầm hoạt động (Watcher, Event loop).
-    pub async fn start(&self, mut worker_signal_rx: mpsc::Receiver<WorkerSignal>) {
+    pub async fn start(&self) {
         // 0b. Khởi tạo OpenTelemetry (Traces & Metrics) kết nối tới OTel Collector
         crate::observability::otel::OtelTracer::init(&self.config);
-        crate::workerpool::metrics::WorkerMetricsManager::init_registry();
+        crate::observability::metrics::NodeRuntimeMetrics::init_registry();
+        crate::observability::metrics::JobExecutionMetrics::init_registry();
+        crate::observability::metrics::WorkerControlMetrics::init_registry();
 
         // [COMMENT]: Phase 5 hydrate/watch NATS KV trước; Phase 6 supervisor chỉ đọc immutable COW snapshots.
         self.worker_pool
@@ -77,16 +77,23 @@ impl AppContainer {
         );
 
         // Sinh node_id độc nhất cho instance Dataplane này (dùng hostname hoặc uuid làm fallback)
-        let node_id = hostname::get()
+        let node_hostname = hostname::get()
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+        // A boot suffix prevents a restarted StatefulSet pod from sharing a
+        // health key with a paused incarnation that can resume later.
+        let node_id = format!("{node_hostname}-{}", uuid::Uuid::new_v4());
 
-        // Khởi động ResourceMonitor; mỗi node ghi snapshot riêng vào Zone health KV.
-        crate::observability::resource::ResourceMonitor::start_dataplane_resource_snapshot_writer(
+        let admitted_jobs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        // Khởi động NodeRuntimeSampler; mỗi node ghi snapshot riêng vào Zone health KV.
+        crate::observability::metrics::NodeRuntimeSampler::start_node_runtime_sampler(
             node_id,
             self.zone_kv.clone(),
             self.worker_pool.clone(),
             self.kafka.clone(),
+            admitted_jobs.clone(),
+            self.worker_pool.track_task(),
         );
 
         // [COMMENT]: Một entry point duy nhất sở hữu election và mọi Zone-wide singleton duty.
@@ -100,111 +107,105 @@ impl AppContainer {
         );
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
-        let registry = self.active_lock_registry.clone();
+        let registry = self.job_execution_lease_registry.clone();
         let zone_kv_watchdog = self.zone_kv.clone();
-        let kafka_watchdog = self.kafka.clone();
+        let watchdog_shutdown = self.worker_pool.cancel_token();
+        let watchdog_task_guard = self.worker_pool.track_task();
+        let timeout_report_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
+        let (timeout_report_tx, timeout_report_rx) =
+            tokio::sync::mpsc::channel(timeout_report_capacity);
+        let timeout_reporter_kafka = self.kafka.clone();
+        let timeout_reporter_shutdown = self.worker_pool.cancel_token();
+        let timeout_reporter_guard = self.worker_pool.track_task();
         tokio::spawn(async move {
-            crate::workerpool::watchdog::start_watchdog_loop(
+            let _timeout_reporter_guard = timeout_reporter_guard;
+            crate::job_lifecycle::timeout_reporter::run_execution_timeout_reporter(
+                timeout_report_rx,
+                timeout_reporter_kafka,
+                timeout_reporter_shutdown,
+            )
+            .await;
+        });
+        tokio::spawn(async move {
+            let _watchdog_task_guard = watchdog_task_guard;
+            crate::workerpool::lease_watchdog::run_job_execution_lease_watchdog(
                 registry,
                 zone_kv_watchdog,
-                kafka_watchdog,
-                30,                      // TTL Zone KV lease là 30 giây
+                crate::job_lifecycle::lease::JOB_EXECUTION_LEASE_TTL_SECS,
                 Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
+                watchdog_shutdown,
+                timeout_report_tx,
             )
             .await;
         });
 
-        // 0b. Khởi tạo Kênh truyền tin và Bộ đếm active_jobs dùng chung
-        let (tx, rx) = tokio::sync::mpsc::channel::<crate::job_lifecycle::message::JobPayload>(100);
-        let rx_shared = Arc::new(tokio::sync::Mutex::new(rx));
-        let active_jobs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lease_retry_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
+        let (job_execution_lease_retry_tx, job_execution_lease_retry_rx) =
+            tokio::sync::mpsc::channel(lease_retry_capacity);
+        let lease_retry_kafka = self.kafka.clone();
+        let lease_retry_shutdown = self.worker_pool.cancel_token();
+        let lease_retry_task_guard = self.worker_pool.track_task();
+        tokio::spawn(async move {
+            let _lease_retry_task_guard = lease_retry_task_guard;
+            crate::job_lifecycle::lease::run_job_execution_lease_retry_publisher(
+                job_execution_lease_retry_rx,
+                lease_retry_kafka,
+                lease_retry_shutdown,
+            )
+            .await;
+        });
 
-        // 0c. [COMMENT]: Khởi chạy dual persistent IngestionDaemons: một cho Zone, một cho Platform
+        // 0b. Khởi tạo bounded job channel và admitted_jobs counter dùng chung.
+        let (tx, rx) = async_channel::bounded::<crate::job_lifecycle::message::JobPayload>(
+            self.config.job_queue_capacity,
+        );
+        let worker_runtime = Arc::new(WorkerJobRuntime::new(
+            self.config.clone(),
+            self.kafka.clone(),
+            self.zone_kv.clone(),
+            self.job_execution_lease_registry.clone(),
+            rx,
+            admitted_jobs.clone(),
+            job_execution_lease_retry_tx,
+        ));
+
+        // [COMMENT]: Mỗi Dataplane chỉ consume command topic của đúng Zone.
+        // Không nhận topic dùng chung vì nó phá vỡ routing và credential boundary giữa các Zone.
         let config_ingest_zone = self.config.clone();
         let kafka_ingest_zone = self.kafka.clone();
         let zone_kv_ingest_zone = self.zone_kv.clone();
-        let tx_ingest_zone = tx.clone();
-        let active_jobs_ingest_zone = active_jobs.clone();
+        let tx_ingest_zone = tx;
+        let admitted_jobs_ingest_zone = admitted_jobs.clone();
         let cancel_token_zone = self.worker_pool.cancel_token();
-        let zone_topic = kafka_ingest_zone.zone_command_topic(&config_ingest_zone.zone_id);
-        let zone_group = format!("aurora-dataplane-zone-{}-v1", config_ingest_zone.zone_id);
+        let zone_ingestion_guard = self.worker_pool.track_task();
 
         tokio::spawn(async move {
-            crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
+            let _zone_ingestion_guard = zone_ingestion_guard;
+            crate::job_lifecycle::consumer::JobConsumer::start_zone_ingestion(
                 config_ingest_zone,
                 kafka_ingest_zone,
                 zone_kv_ingest_zone,
                 tx_ingest_zone,
                 cancel_token_zone,
-                active_jobs_ingest_zone,
-                zone_topic,
-                zone_group,
+                admitted_jobs_ingest_zone,
             )
             .await;
         });
 
-        let config_ingest_plat = self.config.clone();
-        let kafka_ingest_plat = self.kafka.clone();
-        let zone_kv_ingest_plat = self.zone_kv.clone();
-        let tx_ingest_plat = tx;
-        let active_jobs_ingest_plat = active_jobs.clone();
-        let cancel_token_plat = self.worker_pool.cancel_token();
-
-        tokio::spawn(async move {
-            // [COMMENT]: Trì hoãn 500ms để tránh tranh chấp khóa (LeveledRwLock) khi 2 consumer kafka cùng khởi tạo song song.
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
-                config_ingest_plat,
-                kafka_ingest_plat.clone(),
-                zone_kv_ingest_plat,
-                tx_ingest_plat,
-                cancel_token_plat,
-                active_jobs_ingest_plat,
-                kafka_ingest_plat.platform_command_topic(),
-                "aurora-dataplane-platform-v1".to_string(),
-            )
-            .await;
-        });
-
-        // 0d. Khởi tạo 1 Worker ban đầu hoạt động xử lý tin từ channel
-        self.worker_pool
-            .spawn_worker(
-                1,
-                self.config.clone(),
-                self.kafka.clone(),
-                self.zone_kv.clone(),
-                self.active_lock_registry.clone(),
-                rx_shared.clone(),
-                active_jobs.clone(),
-            )
-            .await;
+        // Bootstrap the configured baseline immediately; the leader directive
+        // is an optimization signal and may be stale during failover.
+        for worker_id in 1..=self.config.min_workers {
+            self.worker_pool
+                .spawn_worker(worker_id, worker_runtime.clone());
+        }
 
         // [COMMENT]: Worker không tự quyết định scale. Nó chỉ apply directive có leader fencing
         // và TTL từ AURORA_ZONE_COORDINATION; directive stale thì giữ capacity hiện tại.
-        crate::workerpool::scale_follower::start_worker_scale_follower(
-            self.config.clone(),
+        crate::workerpool::scale_follower::start_worker_scale_directive_follower(
             self.worker_pool.clone(),
-            self.kafka.clone(),
-            self.zone_kv.clone(),
-            self.active_lock_registry.clone(),
-            rx_shared,
-            active_jobs,
+            worker_runtime,
+            self.worker_pool.track_task(),
         );
-
-        // 1. Khởi chạy luồng giám sát sự cố/hoạt động của Worker Pool
-        tokio::spawn(async move {
-            while let Some(signal) = worker_signal_rx.recv().await {
-                match signal {
-                    WorkerSignal::RestartWorker(id) => {
-                        Logger::sys_warn(
-                            "workerpool.lifecycle",
-                            &format!("Worker {} crashed/panic, restarting...", id),
-                            "Panic/Crash Detected",
-                        );
-                    }
-                }
-            }
-        });
 
         Logger::sys_info(
             "system.bootstrap",

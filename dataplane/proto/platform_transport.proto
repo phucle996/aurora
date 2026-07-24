@@ -19,6 +19,10 @@ message JobCommandV1 {
   optional uint64 reconcile_generation = 11;
   string target_zone_id = 12;
   uint32 transport_schema_version = 13;
+  // [COMMENT]: W3C context thuộc producer span thực tế; trace_id phía trên chỉ còn
+  // là correlation ID legacy và không đủ để tái tạo parent/sampling decision.
+  string traceparent = 14;
+  string tracestate = 15;
 }
 
 // [COMMENT]: Dataplane cold-start gửi query durable; JO trả full aggregate

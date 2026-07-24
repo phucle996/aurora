@@ -69,7 +69,9 @@ impl MetricsManager {
         NOTIFICATIONS_SENT.get_or_init(|| {
             global::meter("aurora-job-orchestrator")
                 .u64_counter("job_proxy_notifications_sent_total")
-                .with_description("Tong so thong bao realtime da day vao stream:job_notifications")
+                .with_description(
+                    "Tong so thong bao realtime da enqueue vao Shared Redis job notification stream",
+                )
                 .init()
         })
     }

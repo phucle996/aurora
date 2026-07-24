@@ -46,21 +46,33 @@ impl MinioClient {
 
     /// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
     pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
-        self.s3_client
-            .create_bucket()
-            .bucket(bucket_name)
-            .send()
-            .await?;
+        crate::observability::otel::OtelTracer::trace_result(
+            "S3 CreateBucket",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                opentelemetry::KeyValue::new("rpc.service", "S3"),
+                opentelemetry::KeyValue::new("rpc.method", "CreateBucket"),
+            ],
+            self.s3_client.create_bucket().bucket(bucket_name).send(),
+        )
+        .await?;
         Ok(())
     }
 
     // [COMMENT]: Xóa bucket vật lý khỏi MinIO phục vụ cơ chế rollback khi tạo lỗi
     pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
-        self.s3_client
-            .delete_bucket()
-            .bucket(bucket_name)
-            .send()
-            .await?;
+        crate::observability::otel::OtelTracer::trace_result(
+            "S3 DeleteBucket",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                opentelemetry::KeyValue::new("rpc.service", "S3"),
+                opentelemetry::KeyValue::new("rpc.method", "DeleteBucket"),
+            ],
+            self.s3_client.delete_bucket().bucket(bucket_name).send(),
+        )
+        .await?;
         Ok(())
     }
 

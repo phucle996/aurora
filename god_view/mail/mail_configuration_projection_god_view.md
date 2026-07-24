@@ -167,19 +167,21 @@ sequenceDiagram
     participant K as Kafka results
     participant JO as JO result consumer
     participant DB as CP PostgreSQL
-    participant N as Central NATS
+    participant R as Shared L2 Redis
+    participant NS as Notification Service
     participant UI as Centrifugo/UI
 
     DP->>K: PROCESSING/terminal result, acks=all
     K-->>JO: manual poll
     JO->>DB: lock outbox + guarded promote/cleanup/hard-delete
-    JO->>N: customer-safe realtime completion
-    N-->>UI: notification
+    JO->>R: customer-safe realtime completion
+    R-->>NS: consumer-group delivery
+    NS-->>UI: notification
     JO->>K: commit offset
 ```
 
 - Poison result → durable DLQ → commit.
-- DB/NATS transient failure dừng listener trước khi offset cao hơn được commit.
+- DB/Shared Redis transient failure dừng listener trước khi offset cao hơn được commit.
 - Replay không lặp business mutation nhờ job/topic/attempt/terminal guards.
 - UI không poll status URL; realtime notification merge với fresh business read.
 

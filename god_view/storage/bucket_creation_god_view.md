@@ -16,7 +16,7 @@
 | Result | `JobExecutionResultProto` trên `aurora.jobs.results.v1` |
 | Executor | Dataplane Storage trong đúng Zone |
 | Delivery | At-least-once; manual contiguous Kafka commit |
-| UI completion | NATS Core → Notification → Centrifugo |
+| UI completion | Shared L2 Redis Stream → Notification → Centrifugo |
 | Billing ownership | Durable lifecycle event sau create/delete terminal success |
 
 ## 1. Create transaction
@@ -83,7 +83,8 @@ sequenceDiagram
     participant KR as Kafka results
     participant JO as JO result consumer
     participant DB as PostgreSQL
-    participant N as Central NATS
+    participant R as Shared L2 Redis
+    participant NS as Notification Service
     participant UI as Centrifugo/UI
 
     K-->>DP: JobCommandV1
@@ -97,13 +98,14 @@ sequenceDiagram
         DP->>K: settle original contiguous offset
         KR-->>JO: manual poll
         JO->>DB: guarded terminal transaction
-        JO->>N: customer-safe completion
+        JO->>R: customer-safe completion
         JO->>KR: commit result offset
-        N-->>UI: operation result
+        R-->>NS: consumer-group delivery
+        NS-->>UI: operation result
     end
 ```
 
-Result consumer không commit offset cao hơn nếu record thấp hơn gặp transient DB/NATS failure. Poison result
+Result consumer không commit offset cao hơn nếu record thấp hơn gặp transient DB/Shared Redis failure. Poison result
 đi DLQ trước commit. Duplicate terminal result là no-op theo job/topic/attempt/terminal guards.
 
 ## 4. Create/delete resource-first semantics

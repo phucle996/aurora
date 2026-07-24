@@ -27,6 +27,8 @@ pub struct Config {
     /// Cấu hình OpenTelemetry exporter (gửi traces/metrics đến OTel Collector)
     pub env_nats_url: String,
     pub otel_exporter_otlp_endpoint: String,
+    /// Root trace ratio; incoming W3C parent decisions remain authoritative.
+    pub otel_trace_sample_ratio: f64,
     /// Định danh vùng (zone_id) để đánh nhãn metrics/traces
     pub zone_id: String,
     /// Danh sách các bảng outbox cần theo dõi CDC (ví dụ: mail.mail_outbox_records)
@@ -83,6 +85,15 @@ impl Config {
         // Đọc endpoint của OpenTelemetry Collector (mặc định trỏ tới otel-collector trên cổng 4317)
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|_| "http://controlplane-otel-collector:4317".to_string());
+        let configured_trace_sample_ratio = env::var("OTEL_TRACE_SAMPLE_RATIO")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0);
+        let otel_trace_sample_ratio = if configured_trace_sample_ratio.is_finite() {
+            configured_trace_sample_ratio.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
 
         // Đọc zone_id từ biến môi trường (mặc định là unknown)
         let zone_id = env::var("ZONE_ID").unwrap_or_else(|_| "unknown".to_string());
@@ -160,6 +171,7 @@ impl Config {
             publication_name,
             env_nats_url,
             otel_exporter_otlp_endpoint,
+            otel_trace_sample_ratio,
             zone_id,
             cdc_sources,
             max_setup_retries,

@@ -43,6 +43,9 @@ pub struct Config {
     // Được nạp tĩnh qua biến môi trường để tối ưu hóa hiệu năng, loại bỏ overengineering của PolicyEngine.
     pub max_workers: usize,
 
+    /// Bounded queue before execution; jobs do not hold a Zone lease while waiting here.
+    pub job_queue_capacity: usize,
+
     /// [COMMENT]: Direct JMAP endpoint và service-account binding dùng cho shared bulk-mail client.
     pub stalwart_jmap_url: String,
     pub stalwart_jmap_account_id: String,
@@ -141,7 +144,7 @@ impl Config {
     ///   2. Nếu thiếu khóa thiết yếu, lập tức gọi abort tiến trình.
     ///   3. Trả về thực thể `Config` hoàn chỉnh.
     pub fn load() -> Self {
-        Self {
+        let config = Self {
             // ============================================================================
             // 🚀 CẤU HÌNH CHUNG
             // ============================================================================
@@ -226,17 +229,19 @@ impl Config {
             nats_zone_kv_replicas: parse_env("NATS_ZONE_KV_REPLICAS", 3_usize),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
-            otel_trace_sample_ratio: parse_env("OTEL_TRACE_SAMPLE_RATIO", 1.0_f64).clamp(0.0, 1.0),
+            otel_trace_sample_ratio: {
+                let ratio = parse_env("OTEL_TRACE_SAMPLE_RATIO", 1.0_f64);
+                if ratio.is_finite() {
+                    ratio.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                }
+            },
             // Nạp min_workers từ biến môi trường MIN_WORKERS, mặc định là 1 để giữ tối thiểu 1 worker hoạt động.
-            min_workers: env::var("MIN_WORKERS")
-                .unwrap_or_else(|_| "1".to_string())
-                .parse::<usize>()
-                .unwrap_or(1),
+            min_workers: parse_worker_limit("MIN_WORKERS", 1),
             // Nạp max_workers từ biến môi trường MAX_WORKERS, mặc định là 100 nếu không được cấu hình.
-            max_workers: env::var("MAX_WORKERS")
-                .unwrap_or_else(|_| "100".to_string())
-                .parse::<usize>()
-                .unwrap_or(100),
+            max_workers: parse_worker_limit("MAX_WORKERS", 100),
+            job_queue_capacity: parse_env("JOB_QUEUE_CAPACITY", 100_usize).clamp(1, 100_000),
 
             // [COMMENT]: JMAP batch transport; secrets có thể được inject từ Kubernetes Secret/Vault Agent.
             stalwart_jmap_url: env::var("STALWART_JMAP_URL")
@@ -390,6 +395,31 @@ impl Config {
             proxmox_tls_insecure: env::var("PROXMOX_TLS_INSECURE")
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false),
+        };
+        if config.min_workers > config.max_workers {
+            crate::observability::logger::Logger::sys_error(
+                "system.bootstrap",
+                "MIN_WORKERS must be less than or equal to MAX_WORKERS",
+                "WORKER_LIMITS_INVALID",
+            );
+            std::process::abort();
+        }
+        config
+    }
+}
+
+fn parse_worker_limit(name: &str, default: usize) -> usize {
+    const MAX_WORKER_LIMIT: usize = 4_096;
+    let raw = env::var(name).unwrap_or_else(|_| default.to_string());
+    match raw.parse::<usize>() {
+        Ok(value) if (1..=MAX_WORKER_LIMIT).contains(&value) => value,
+        _ => {
+            crate::observability::logger::Logger::sys_error(
+                "system.bootstrap",
+                &format!("{name} must be an integer in 1..={MAX_WORKER_LIMIT}"),
+                "WORKER_LIMIT_INVALID",
+            );
+            std::process::abort();
         }
     }
 }
