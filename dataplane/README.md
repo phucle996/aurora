@@ -119,7 +119,7 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 - `src/workerpool/pool.rs`: execution-aware worker slots, drain và shutdown barrier.
 - `src/workerpool/lease_watchdog.rs`: job timeout và fenced lease renewal.
 - `src/leader/`: election, metadata, health probe, report, storage scan và scale decision.
-- `src/leader/scale_policy.rs`: scale hysteresis/cooldown và resource safeguard.
+- `src/leader/worker_scaling.rs`: zonal scale controller, hysteresis/cooldown và resource safeguard.
 - `src/workerpool/scale_follower.rs`: apply fenced worker target.
 - `src/executor/mail/runtime/`: customer broker suites.
 - `src/executor/mail/processor/`: render/JMAP/batching.

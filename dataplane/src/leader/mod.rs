@@ -1,14 +1,8 @@
-mod bucket_scanner;
-mod hypervisor_probe;
-mod mail_probe;
-mod metadata_listener;
-mod metadata_repair;
-mod report_publisher;
-mod scale_controller;
-mod scale_policy;
-mod session;
-mod storage_probe;
-mod supervisor;
+mod infra;
+mod leadership;
+mod worker_scaling;
+mod zone_metadata;
+mod zone_report;
 
 use std::sync::Arc;
 
@@ -39,7 +33,7 @@ impl ZoneLeaderSupervisor {
     ) {
         tokio::spawn(async move {
             let _task_guard = task_guard;
-            supervisor::run_zone_leader_supervisor(config, zone_kv, kafka, mail_runtime, shutdown)
+            leadership::run_zone_leader_supervisor(config, zone_kv, kafka, mail_runtime, shutdown)
                 .await;
         });
     }

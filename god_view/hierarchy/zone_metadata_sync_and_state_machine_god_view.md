@@ -186,10 +186,9 @@ Nếu lag stale, Decision Engine giữ state hiện tại thay vì tự động 
 - `job-orchestrator/src/cdc/mod.rs`: full metadata snapshot publisher.
 - `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: durable query consumer.
 - `job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs`: Zone report consumer.
-- `dataplane/src/leader/supervisor.rs`: Zone leader election/failover.
-- `dataplane/src/leader/metadata_listener.rs`: compacted Zone metadata snapshot listener/projector.
-- `dataplane/src/leader/metadata_repair.rs`: cold-start/periodic Zone metadata query publisher.
-- `dataplane/src/leader/report_publisher.rs`: Zone report aggregation.
+- `dataplane/src/leader/leadership.rs`: Zone leader election/failover và fenced session.
+- `dataplane/src/leader/zone_metadata.rs`: compacted snapshot listener/projector và repair query publisher.
+- `dataplane/src/leader/zone_report.rs`: Zone report aggregation.
 - `dataplane/src/job_lifecycle/consumer.rs`: fail-closed state reaction.
 - `dataplane/src/infra/zone_kv.rs`: KV CAS and fencing.
 - `dataplane/src/infra/kafka.rs`: manual consumer and contiguous settlement.

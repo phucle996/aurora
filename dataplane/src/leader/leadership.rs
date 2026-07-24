@@ -4,16 +4,102 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use super::session::ZoneLeaderSession;
 use crate::config::Config;
 use crate::executor::mail::MailRuntime;
 use crate::infra::kafka::KafkaTransport;
-use crate::infra::zone_kv::ZoneKvStore;
+use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
 use crate::observability::logger::{LogFields, Logger};
 
 const LEADER_LEASE_KEY: &str = "lease.zone.leader";
 const LEADER_LEASE_TTL: Duration = Duration::from_secs(15);
 const LEADER_RENEW_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Fenced session shared by every leader-only duty.
+#[derive(Clone)]
+pub(crate) struct ZoneLeaderSession {
+    zone_kv: Arc<ZoneKvStore>,
+    lease: ZoneLease,
+    cancelled: CancellationToken,
+}
+
+impl ZoneLeaderSession {
+    pub(crate) fn new(
+        zone_kv: Arc<ZoneKvStore>,
+        lease: ZoneLease,
+        cancelled: CancellationToken,
+    ) -> Self {
+        Self {
+            zone_kv,
+            lease,
+            cancelled,
+        }
+    }
+
+    pub(crate) fn owner_id(&self) -> &str {
+        &self.lease.owner_id
+    }
+
+    pub(crate) fn fencing_token(&self) -> u64 {
+        self.lease.fencing_token
+    }
+
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancelled.clone()
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.is_cancelled()
+    }
+
+    /// [COMMENT]: Đây là security/failure boundary trước mọi probe/publish của leader.
+    /// KV read lỗi cũng fail-closed để pod bị partition không tiếp tục làm stale leader.
+    pub(crate) async fn permits_external_side_effect(&self) -> bool {
+        if self.cancelled.is_cancelled() {
+            return false;
+        }
+        match self.zone_kv.lease_is_current(&self.lease).await {
+            Ok(true) => true,
+            Ok(false) => {
+                Logger::sys_warn_with_fields(
+                    "leader.side_effect_guard",
+                    "ZONE_LEADER_FENCED",
+                    "Leader side effect was denied because the lease is no longer current",
+                    "",
+                    LogFields {
+                        operation_id: Some(&self.lease.owner_id),
+                        leader_fencing_token: Some(self.lease.fencing_token),
+                        outcome: Some("denied"),
+                        ..LogFields::default()
+                    },
+                );
+                false
+            }
+            Err(error) => {
+                Logger::sys_warn_with_fields(
+                    "leader.side_effect_guard",
+                    "ZONE_LEADER_LEASE_READ_FAILED",
+                    "Leader side effect was denied because current lease could not be verified",
+                    &error,
+                    LogFields {
+                        operation_id: Some(&self.lease.owner_id),
+                        leader_fencing_token: Some(self.lease.fencing_token),
+                        retryable: Some(true),
+                        outcome: Some("denied"),
+                        ..LogFields::default()
+                    },
+                );
+                false
+            }
+        }
+    }
+
+    pub(crate) async fn wait(&self, duration: Duration) -> bool {
+        tokio::select! {
+            _ = self.cancelled.cancelled() => false,
+            _ = tokio::time::sleep(duration) => true,
+        }
+    }
+}
 
 pub(crate) async fn run_zone_leader_supervisor(
     config: Arc<Config>,
@@ -194,46 +280,46 @@ fn spawn_zone_leader_duties(
 ) -> JoinSet<()> {
     let mut duties = JoinSet::new();
 
-    duties.spawn(super::metadata_listener::run_zone_metadata_kafka_listener(
+    duties.spawn(super::zone_metadata::run_zone_metadata_kafka_listener(
         session.clone(),
         zone_kv.clone(),
         kafka.clone(),
         config.clone(),
     ));
-    duties.spawn(super::metadata_repair::run_zone_metadata_repair_publisher(
+    duties.spawn(super::zone_metadata::run_zone_metadata_repair_publisher(
         session.clone(),
         kafka.clone(),
         config.clone(),
     ));
-    duties.spawn(super::report_publisher::run_zone_report_publisher(
+    duties.spawn(super::zone_report::run_zone_report_publisher(
         session.clone(),
         zone_kv.clone(),
         kafka.clone(),
         config.clone(),
     ));
-    duties.spawn(super::hypervisor_probe::run_hypervisor_health_probe(
+    duties.spawn(super::infra::hypervisor::run_hypervisor_health_probe(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
     ));
-    duties.spawn(super::storage_probe::run_storage_health_probe(
+    duties.spawn(super::infra::storage::run_storage_health_probe(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
     ));
-    duties.spawn(super::bucket_scanner::run_storage_bucket_size_scanner(
+    duties.spawn(super::infra::storage::run_storage_bucket_size_scanner(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
         kafka.clone(),
     ));
-    duties.spawn(super::mail_probe::run_mail_infrastructure_health_probe(
+    duties.spawn(super::infra::mail::run_mail_infrastructure_health_probe(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
         mail_runtime,
     ));
-    duties.spawn(super::scale_controller::run_zone_worker_scale_controller(
+    duties.spawn(super::worker_scaling::run_zone_worker_scale_controller(
         session, config, zone_kv,
     ));
     duties

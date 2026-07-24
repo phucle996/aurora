@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::session::ZoneLeaderSession;
+use super::super::leadership::ZoneLeaderSession;
 use crate::config::Config;
 use crate::executor::hypervisor::core::client::{ProxmoxClient, ProxmoxNodeRaw};
 use crate::infra::zone_kv::ZoneKvStore;

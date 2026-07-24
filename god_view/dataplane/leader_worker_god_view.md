@@ -168,14 +168,13 @@ checkpoint tuân theo `god_view/dataplane/telemetry_god_view.md`.
 
 ## 7. Code map
 
-- `dataplane/src/leader/supervisor.rs`: election, renew, duty supervision và resignation.
-- `dataplane/src/leader/session.rs`: leader session và fail-closed side-effect guard.
-- `dataplane/src/leader/metadata_listener.rs`, `metadata_repair.rs`: Kafka metadata projection/repair.
-- `dataplane/src/leader/report_publisher.rs`: Zone aggregate/report.
-- `dataplane/src/leader/hypervisor_probe.rs`, `storage_probe.rs`, `mail_probe.rs`: recurring infra probes.
-- `dataplane/src/leader/bucket_scanner.rs`: MinIO customer bucket size scan.
-- `dataplane/src/leader/scale_controller.rs`: zonal lag aggregation và scale decision.
-- `dataplane/src/leader/scale_policy.rs`: hysteresis, cooldown và resource-aware scale policy.
+- `dataplane/src/leader/leadership.rs`: election, fenced session, duty supervision và resignation.
+- `dataplane/src/leader/zone_metadata.rs`: Kafka metadata projection và cold-start/periodic repair.
+- `dataplane/src/leader/zone_report.rs`: Zone aggregate/report.
+- `dataplane/src/leader/infra/hypervisor.rs`: recurring Proxmox health probe.
+- `dataplane/src/leader/infra/storage.rs`: MinIO health probe và customer bucket-size scan.
+- `dataplane/src/leader/infra/mail.rs`: recurring JMAP/Stalwart health probe.
+- `dataplane/src/leader/worker_scaling.rs`: zonal lag aggregation, hysteresis và resource-aware scale policy.
 - `dataplane/src/observability/metrics.rs`: one-sample cgroup/proc probe, job/watchdog/scale OTel instruments.
 - `dataplane/src/workerpool/runtime.rs`: immutable worker wiring và bounded multi-consumer queue.
 - `dataplane/src/workerpool/pool.rs`: execution-aware worker slots, generation và shutdown barrier.
