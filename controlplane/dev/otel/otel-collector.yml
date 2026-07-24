@@ -2,6 +2,11 @@ extensions:
   # [COMMENT]: Khai báo docker_observer để giám sát các container thông qua unix:///var/run/docker.sock
   docker_observer:
     endpoint: unix:///var/run/docker.sock
+  # [COMMENT]: Filelog checkpoints phải sống qua collector restart; nếu chỉ giữ offset trong RAM
+  # thì restart có thể đọc trùng hoặc bỏ qua container log trong cửa sổ downtime.
+  file_storage:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
 
 receivers:
   otlp:
@@ -43,13 +48,18 @@ receivers:
             - target_label: __address__
               replacement: 'controlplane-redis-exporter:9121'
 
-  # filelog đọc trực tiếp từ đĩa của Docker host mà không cần gọi qua docker.sock (bảo mật hơn)
+  # filelog đọc một canonical raw Docker path. Không tail đồng thời symlink của cùng inode vì
+  # dual path tạo duplicate-ingestion ambiguity khi fingerprint/checkpoint được rebuild.
   filelog:
+    start_at: end
+    storage: file_storage
+    # App logger bounds fields far below this limit. Truncate a pathological infra line rather
+    # than split it into multiple fragments that look like independent structured events.
+    max_log_size: 1MiB
+    max_log_size_behavior: truncate
     include:
-      - /var/lib/docker/containers_by_name/*.log
       - /var/lib/docker/containers/*/*-json.log
     exclude:
-      - /var/lib/docker/containers_by_name/controlplane-otel-collector.log
       - /var/lib/docker/containers/${env:HOSTNAME}*/*
     include_file_path: true
     operators:
@@ -79,17 +89,17 @@ receivers:
         on_error: send_quiet
       # 4. Đưa trường `msg` trong log app hoặc infra làm nội dung tin nhắn chính hiển thị ở body
       - type: move
+        id: move_message_to_body
+        from: attributes.message
+        to: body
+        on_error: send_quiet
+      # 4b. Schema cũ của Go/infra dùng `msg`; Dataplane chuẩn hóa trên `message`.
+      - type: move
         id: move_msg_to_body
         from: attributes.msg
         to: body
         on_error: send_quiet
-      # 5. Trích xuất container_name thực sự từ tên file symlink containers_by_name
-      - type: regex_parser
-        id: extract_container_name
-        regex: '^/var/lib/docker/containers_by_name/(?P<container_name>[^/]+)\.log$'
-        parse_from: attributes["log.file.path"]
-        on_error: send_quiet
-      # 5b. Fallback: Trích xuất container_id nếu không khớp đường dẫn symlink
+      # 5. Trích xuất container_id từ canonical raw Docker path.
       - type: regex_parser
         id: extract_container_id
         regex: '^/var/lib/docker/containers/(?P<container_id>[a-f0-9]+)/'
@@ -124,6 +134,9 @@ processors:
       - context: log
         statements:
           # [COMMENT]: Ánh xạ container_name trực tiếp theo tên thực tế dựa trên container_id prefix
+          # JSON-looking application lines that failed parser_app remain raw in body. Preserve an
+          # explicit diagnostic attribute instead of silently presenting them as structured logs.
+          - set(attributes["app_json_parse_error"], true) where IsMatch(body, "^\\s*\\{") and attributes["level"] == nil
           - set(attributes["container_name"], "admin-ui-nginx") where IsMatch(attributes["container_id"], "^42eca33b4987")
           - set(attributes["container_name"], "aurora-acr") where IsMatch(attributes["container_id"], "^2b5f8445e46e")
           - set(attributes["container_name"], "aurora-centrifugo") where IsMatch(attributes["container_id"], "^73df715e7d6c")
@@ -211,7 +224,17 @@ exporters:
   otlphttp/victorialogs:
     endpoint: "http://controlplane-victorialogs:9428/insert/opentelemetry"
     headers:
-      "VL-Stream-Fields": "container_name"
+      "VL-Stream-Fields": "container_name,service_name,zone_id,node_id"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 0s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 10000
+      storage: file_storage
     tls:
       insecure: true
   # Exporter gửi dữ liệu traces sang VictoriaTraces bằng chuẩn OTLP HTTP
@@ -222,7 +245,7 @@ exporters:
       insecure: true
 
 service:
-  extensions: [docker_observer]
+  extensions: [docker_observer, file_storage]
   pipelines:
     # Pipeline traces nhận log qua OTLP gRPC/HTTP và xuất sang VictoriaTraces
     # [VictoriaTraces Integration]: Nhận traceparent phân tán từ các microservices

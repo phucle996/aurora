@@ -12,7 +12,7 @@ use crate::infra::kafka::{KafkaDelivery, KafkaSettlement, KafkaTransport};
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::job_lifecycle::admission::AdmissionController;
 use crate::job_lifecycle::message::JobPayload;
-use crate::observability::logger::Logger;
+use crate::observability::logger::{LogFields, Logger};
 
 pub struct JobConsumer;
 
@@ -144,25 +144,25 @@ impl JobConsumer {
                     }
                     _ => {
                         // [COMMENT]: Poison record phải đi DLQ bền vững trước khi bỏ qua offset gốc.
+                        let error_code = "JOB_COMMAND_PROTO_INVALID";
                         let dlq = DeadLetterRecordV1 {
-                            event_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                            event_id: stable_job_dlq_event_id(
+                                &record.topic,
+                                record.partition,
+                                record.offset,
+                                error_code,
+                            ),
                             source_topic: record.topic.clone(),
                             source_partition: record.partition,
                             source_offset: record.offset,
-                            error_code: "JOB_COMMAND_PROTO_INVALID".to_string(),
+                            error_code: error_code.to_string(),
                             error_message: "JobCommandV1 failed strict validation".to_string(),
                             original_payload: raw_payload.to_vec(),
                             failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
                             schema_version: 1,
                         };
-                        let event_key = dlq.event_id.clone();
-                        if kafka
-                            .publish_message(&kafka.dead_letter_topic(), &event_key, &dlq)
-                            .await
-                            .is_ok()
-                        {
-                            let _ = delivery.settle().await;
-                        }
+                        quarantine_job_record(kafka.as_ref(), &delivery, dlq, assignment_epoch)
+                            .await;
                         continue;
                     }
                 };
@@ -172,12 +172,18 @@ impl JobConsumer {
                     && command.target_zone_id != config.zone_id
                     && record.topic == kafka.zone_command_topic(&config.zone_id)
                 {
+                    let error_code = "JOB_TARGET_ZONE_MISMATCH";
                     let dlq = DeadLetterRecordV1 {
-                        event_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                        event_id: stable_job_dlq_event_id(
+                            &record.topic,
+                            record.partition,
+                            record.offset,
+                            error_code,
+                        ),
                         source_topic: record.topic.clone(),
                         source_partition: record.partition,
                         source_offset: record.offset,
-                        error_code: "JOB_TARGET_ZONE_MISMATCH".to_string(),
+                        error_code: error_code.to_string(),
                         error_message: format!(
                             "envelope target {} does not match consumer zone {}",
                             command.target_zone_id, config.zone_id
@@ -186,20 +192,29 @@ impl JobConsumer {
                         failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
                         schema_version: 1,
                     };
-                    let event_key = dlq.event_id.clone();
-                    if kafka
-                        .publish_message(&kafka.dead_letter_topic(), &event_key, &dlq)
-                        .await
-                        .is_ok()
-                    {
-                        let _ = delivery.settle().await;
-                    }
+                    quarantine_job_record(kafka.as_ref(), &delivery, dlq, assignment_epoch).await;
                     continue;
                 }
 
                 let job_id = match uuid::Uuid::from_slice(&command.job_id) {
                     Ok(value) => value.to_string(),
-                    Err(_) => continue,
+                    Err(error) => {
+                        Logger::sys_error_with_fields(
+                            "job.ingestion.validation",
+                            "JOB_ID_UUID_INVALID",
+                            "Validated job command contained an invalid job UUID",
+                            &error.to_string(),
+                            LogFields {
+                                kafka_topic: Some(&record.topic),
+                                kafka_partition: Some(record.partition),
+                                kafka_offset: Some(record.offset),
+                                assignment_epoch: Some(assignment_epoch),
+                                outcome: Some("rejected"),
+                                ..LogFields::default()
+                            },
+                        );
+                        continue;
+                    }
                 };
                 let trace_id = command
                     .trace_id
@@ -258,16 +273,45 @@ impl JobConsumer {
                         let retry_key = command.job_id.clone();
                         let retry_payload = raw_payload.clone();
                         let retry_delivery = delivery.clone();
+                        let retry_assignment_epoch = assignment_epoch;
                         tokio::spawn(async move {
                             let jitter = rand::random::<u64>() % 2_000;
                             sleep(Duration::from_millis(30_000 + jitter)).await;
-                            if retry_kafka
+                            match retry_kafka
                                 .publish(&retry_topic, &retry_key, retry_payload.as_ref())
                                 .await
-                                .is_ok()
                             {
-                                // [COMMENT]: Rebalance epoch trong delivery ngăn task trì hoãn commit assignment mới.
-                                let _ = retry_delivery.settle().await;
+                                Ok(()) => {
+                                    // [COMMENT]: Rebalance epoch trong delivery ngăn task trì hoãn commit assignment mới.
+                                    if let Err(error) = retry_delivery.settle().await {
+                                        Logger::sys_error_with_fields(
+                                            "job.ingestion.retry",
+                                            "JOB_LEASE_RETRY_SETTLEMENT_FAILED",
+                                            "Lease-contention retry was published but source settlement failed; duplicate replay is expected",
+                                            &error,
+                                            LogFields {
+                                                kafka_topic: Some(&retry_topic),
+                                                assignment_epoch: Some(retry_assignment_epoch),
+                                                retryable: Some(true),
+                                                outcome: Some("replay_expected"),
+                                                ..LogFields::default()
+                                            },
+                                        );
+                                    }
+                                }
+                                Err(error) => Logger::sys_error_with_fields(
+                                    "job.ingestion.retry",
+                                    "JOB_LEASE_RETRY_PUBLISH_FAILED",
+                                    "Could not publish delayed retry after job lease contention; source remains unsettled",
+                                    &error,
+                                    LogFields {
+                                        kafka_topic: Some(&retry_topic),
+                                        assignment_epoch: Some(retry_assignment_epoch),
+                                        retryable: Some(true),
+                                        outcome: Some("unsettled"),
+                                        ..LogFields::default()
+                                    },
+                                ),
                             }
                         });
                         continue;
@@ -291,7 +335,21 @@ impl JobConsumer {
                 if let Err(error) = send_result {
                     active_jobs.fetch_sub(1, Ordering::SeqCst);
                     if let Some(lease) = lease {
-                        let _ = zone_kv.release_lease(&lease).await;
+                        if let Err(release_error) = zone_kv.release_lease(&lease).await {
+                            Logger::sys_warn_with_fields(
+                                "job.ingestion",
+                                "JOB_DISPATCH_LEASE_RELEASE_FAILED",
+                                "Worker dispatch failed and immediate lease release also failed; TTL fencing remains active",
+                                &release_error,
+                                LogFields {
+                                    operation_id: Some(&lease.key),
+                                    fencing_token: Some(lease.fencing_token),
+                                    retryable: Some(false),
+                                    outcome: Some("ttl_expiry_required"),
+                                    ..LogFields::default()
+                                },
+                            );
+                        }
                     }
                     Logger::sys_error(
                         "job.ingestion",
@@ -329,5 +387,78 @@ impl JobConsumer {
                 "Unsupported workload type: {workload}"
             ))),
         }
+    }
+}
+
+fn stable_job_dlq_event_id(
+    source_topic: &str,
+    source_partition: i32,
+    source_offset: i64,
+    error_code: &str,
+) -> Vec<u8> {
+    // [COMMENT]: Reprocessing the same poison offset after publish-before-settle must retain the
+    // same logical DLQ identity; consumers can then deduplicate at-least-once publication.
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        format!("{source_topic}\0{source_partition}\0{source_offset}\0{error_code}").as_bytes(),
+    )
+    .as_bytes()
+    .to_vec()
+}
+
+async fn quarantine_job_record(
+    kafka: &KafkaTransport,
+    delivery: &KafkaDelivery,
+    dlq: DeadLetterRecordV1,
+    assignment_epoch: u64,
+) {
+    let event_id = uuid::Uuid::from_slice(&dlq.event_id)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let fields = || LogFields {
+        event_id: Some(event_id.as_str()),
+        kafka_topic: Some(dlq.source_topic.as_str()),
+        kafka_partition: Some(dlq.source_partition),
+        kafka_offset: Some(dlq.source_offset),
+        assignment_epoch: Some(assignment_epoch),
+        outcome: Some("quarantined"),
+        ..LogFields::default()
+    };
+    let event_key = dlq.event_id.clone();
+    match kafka
+        .publish_message(&kafka.dead_letter_topic(), &event_key, &dlq)
+        .await
+    {
+        Ok(()) => match delivery.settle().await {
+            Ok(()) => Logger::sys_warn_with_fields(
+                "job.ingestion.quarantine",
+                &dlq.error_code,
+                "Invalid Kafka job command was durably quarantined before source settlement",
+                "",
+                fields(),
+            ),
+            Err(error) => Logger::sys_error_with_fields(
+                "job.ingestion.quarantine",
+                "JOB_DLQ_SOURCE_SETTLEMENT_FAILED",
+                "DLQ publish succeeded but source Kafka offset settlement failed; replay is expected",
+                &error,
+                LogFields {
+                    retryable: Some(true),
+                    outcome: Some("replay_expected"),
+                    ..fields()
+                },
+            ),
+        },
+        Err(error) => Logger::sys_error_with_fields(
+            "job.ingestion.quarantine",
+            "JOB_DLQ_PUBLISH_FAILED",
+            "Invalid Kafka job command remains unsettled because durable DLQ publish failed",
+            &error,
+            LogFields {
+                retryable: Some(true),
+                outcome: Some("unsettled"),
+                ..fields()
+            },
+        ),
     }
 }

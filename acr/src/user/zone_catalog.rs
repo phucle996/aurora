@@ -19,6 +19,10 @@ pub struct ZoneCatalogEntry {
     pub name: String,
 }
 
+fn is_user_visible_zone_status(status: &str) -> bool {
+    matches!(status, "active" | "draining")
+}
+
 /// [COMMENT]: Intercept GET /api/v1/zones/catalog dành cho User domain.
 pub async fn handle_user_zone_catalog(
     shared_redis: &Arc<SharedRedisBus>,
@@ -35,7 +39,7 @@ pub async fn handle_user_zone_catalog(
     let mut catalog = Vec::new();
 
     for z in all_zones {
-        if z.status == "active" || z.status == "draining" {
+        if is_user_visible_zone_status(&z.status) {
             catalog.push(ZoneCatalogEntry {
                 code: z.code,
                 name: z.name,
@@ -75,4 +79,22 @@ pub async fn handle_user_zone_catalog(
     response.set_http_response(denied_builder);
 
     Some(Ok(Response::new(response)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_user_visible_zone_status;
+
+    #[test]
+    fn user_catalog_only_exposes_active_or_draining_zones() {
+        assert!(is_user_visible_zone_status("active"));
+        assert!(is_user_visible_zone_status("draining"));
+
+        for hidden_status in ["planned", "maintenance", "disabled", "inactive", ""] {
+            assert!(
+                !is_user_visible_zone_status(hidden_status),
+                "{hidden_status} must not be exposed in the user catalog"
+            );
+        }
+    }
 }

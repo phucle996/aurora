@@ -1,6 +1,5 @@
 use dotenvy::dotenv;
 use std::error::Error;
-use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -40,10 +39,7 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // 1. Load environment variables from .env
     dotenv().ok();
 
-    // 2. Initialize structured logging system
-    Logger::init();
-    // Flush stdout ngay lập tức sau init để đảm bảo log hiển thị trong Docker non-TTY (block-buffered stdout).
-    std::io::stdout().flush().ok();
+    // 2. Logger is owned by main so its writer guard outlives bootstrap and every background task.
 
     // 3. Load config from Environment
     let cfg = Config::load();

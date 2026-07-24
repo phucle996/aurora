@@ -37,7 +37,7 @@ pub struct MailBatcherHandle {
 }
 
 impl MailBatcherHandle {
-    pub fn start(
+    pub fn start_mail_batcher(
         config: &Config,
         client: Arc<JmapClient>,
         metrics: Arc<MailWorkloadMetrics>,

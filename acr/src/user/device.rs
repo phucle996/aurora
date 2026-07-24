@@ -207,7 +207,10 @@ pub async fn start_eviction_outbox_relay(
                         break;
                     }
                 };
-                if !pending.keys.is_empty() {
+                // [COMMENT]: Kiểm tra xem có entry pending thực sự nào trong key.ids không
+                // (tránh bug !pending.keys.is_empty() = true khi ids rỗng làm bỏ qua Block 5s gây busy spin-loop).
+                let has_pending = pending.keys.iter().any(|key| !key.ids.is_empty());
+                if has_pending {
                     relay_eviction_entries(&shared_redis, &mut connection, pending).await;
                     continue;
                 }

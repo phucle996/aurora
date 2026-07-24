@@ -134,7 +134,19 @@ func (h *DeviceRedisHandler) Start() error {
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
-			if len(messages) == 0 {
+			// [COMMENT]: Kiểm tra xem có tin nhắn pending thực sự trong mảng stream.Messages không
+			// (tránh bug len(messages) == 1 nhưng stream.Messages rỗng làm bỏ qua Block 5s gây busy spin-loop).
+			hasPendingMessages := false
+			if len(messages) > 0 {
+				for _, stream := range messages {
+					if len(stream.Messages) > 0 {
+						hasPendingMessages = true
+						break
+					}
+				}
+			}
+
+			if !hasPendingMessages {
 				messages, err = h.sharedRedis.XReadGroup(ctx, &goredis.XReadGroupArgs{
 					Group:    evictedDevicesGroup,
 					Consumer: evictedDevicesConsumer,

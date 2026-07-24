@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::executor::mail::processor::MailMessageProcessor;
 use crate::executor::mail::runtime_proto::MailStreamType;
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
+use crate::observability::logger::{LogFields, Logger};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
@@ -216,7 +217,43 @@ impl StreamRuntimeContext {
                     .await;
                 true
             }
-            _ => false,
+            Ok(false) => {
+                Logger::sys_warn_with_fields(
+                    "mail.stream.lease",
+                    "MAIL_STREAM_SLOT_LEASE_LOST",
+                    "Mail runtime slot lease is no longer current; fencing generation",
+                    "",
+                    LogFields {
+                        operation_id: Some(&configuration.consumer_id),
+                        job_version: Some(configuration.config_version),
+                        fencing_token: Some(lease.fencing_token),
+                        runtime_generation: Some(generation),
+                        slot: Some(slot),
+                        outcome: Some("fenced"),
+                        ..LogFields::default()
+                    },
+                );
+                false
+            }
+            Err(error) => {
+                Logger::sys_warn_with_fields(
+                    "mail.stream.lease",
+                    "MAIL_STREAM_SLOT_LEASE_RENEW_FAILED",
+                    "Mail runtime slot lease renew failed; generation will fail closed",
+                    &error,
+                    LogFields {
+                        operation_id: Some(&configuration.consumer_id),
+                        job_version: Some(configuration.config_version),
+                        fencing_token: Some(lease.fencing_token),
+                        runtime_generation: Some(generation),
+                        slot: Some(slot),
+                        retryable: Some(true),
+                        outcome: Some("fenced"),
+                        ..LogFields::default()
+                    },
+                );
+                false
+            }
         }
     }
 
@@ -255,10 +292,49 @@ impl StreamRuntimeContext {
             runtime_node_id: self.instance_id.clone(),
             runtime_boot_id: self.runtime_boot_id.to_string(),
         };
-        self.runtime_snapshots
+        let key = (configuration.consumer_id.clone(), slot);
+        let previous = self
+            .runtime_snapshots
             .write()
             .expect("mail runtime snapshot lock poisoned")
-            .insert((configuration.consumer_id.clone(), slot), snapshot);
+            .insert(key, snapshot);
+        let changed = previous.as_ref().is_none_or(|previous| {
+            previous.state != state
+                || previous.error_code != error_code
+                || previous.runtime_generation != generation
+                || previous.fencing_token != lease.fencing_token
+        });
+        if changed {
+            let fields = LogFields {
+                operation_id: Some(&configuration.consumer_id),
+                job_version: Some(configuration.config_version),
+                fencing_token: Some(lease.fencing_token),
+                runtime_generation: Some(generation),
+                slot: Some(slot),
+                outcome: Some(state),
+                ..LogFields::default()
+            };
+            if state == "ERROR" {
+                Logger::sys_error_with_fields(
+                    "mail.stream.runtime_state",
+                    if error_code.is_empty() {
+                        "MAIL_STREAM_RUNTIME_ERROR"
+                    } else {
+                        error_code
+                    },
+                    "Mail consumer runtime entered ERROR state",
+                    "",
+                    fields,
+                );
+            } else {
+                Logger::sys_info_with_fields(
+                    "mail.stream.runtime_state",
+                    "MAIL_STREAM_RUNTIME_STATE_CHANGED",
+                    &format!("Mail consumer runtime state changed to {state}"),
+                    fields,
+                );
+            }
+        }
     }
 
     pub(crate) fn runtime_snapshots(&self) -> Vec<RuntimeHealthSnapshot> {

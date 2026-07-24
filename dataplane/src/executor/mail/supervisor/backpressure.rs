@@ -1,11 +1,11 @@
-pub(super) struct MailBackpressureSnapshot {
+pub(crate) struct MailBackpressureSnapshot {
     pub status: &'static str,
     pub capacity: usize,
 }
 
 impl MailBackpressureSnapshot {
     /// [COMMENT]: Policy chỉ diễn giải pressure hiện tại; bounded queue trong processor mới là nơi enforce giới hạn thật.
-    pub fn calculate(
+    pub(crate) fn calculate(
         disabled: bool,
         transport_healthy: bool,
         pending_items: usize,

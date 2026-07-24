@@ -335,6 +335,18 @@ impl KafkaTransport {
     }
 
     pub async fn observe_job_lag(&self, consumer: &Consumer) {
+        // [COMMENT]: Chỉ query lag từ krafka tối đa 1 lần mỗi 5s để tránh lock contention trong LeveledRwLock với HeartbeatController.
+        static LAST_LAG_CHECK: AtomicU64 = AtomicU64::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let last = LAST_LAG_CHECK.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 5 {
+            return;
+        }
+        LAST_LAG_CHECK.store(now, Ordering::Relaxed);
+
         let lag = consumer.lag().await;
         self.observed_job_lag
             .store(lag.lag.values().copied().sum(), Ordering::Release);

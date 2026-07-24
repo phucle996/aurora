@@ -7,7 +7,7 @@ use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
 use crate::job_lifecycle::consumer::JobConsumer;
 use crate::job_lifecycle::message::JobPayload;
 use crate::job_lifecycle::result::{JobExecutionResult, JobResultReporter};
-use crate::observability::logger::Logger;
+use crate::observability::logger::{LogFields, Logger};
 use crate::workerpool::lifecycle::WorkerLifecycleManager;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,7 +38,34 @@ impl Drop for ExecutionCleanupGuard {
 
         // Spawn một task độc lập để giải phóng tài nguyên bất đồng bộ ngoài tầm của task bị hủy
         tokio::spawn(async move {
-            let _ = zone_kv.release_lease(&lease).await;
+            match zone_kv.release_lease(&lease).await {
+                Ok(true) => {}
+                Ok(false) => Logger::sys_warn_with_fields(
+                    "job.cleanup",
+                    "JOB_LEASE_RELEASE_NOT_CURRENT",
+                    "Job lease cleanup observed a newer owner or an already released lease",
+                    "",
+                    LogFields {
+                        operation_id: Some(&lock),
+                        fencing_token: Some(lease.fencing_token),
+                        outcome: Some("already_fenced"),
+                        ..LogFields::default()
+                    },
+                ),
+                Err(error) => Logger::sys_warn_with_fields(
+                    "job.cleanup",
+                    "JOB_LEASE_RELEASE_FAILED",
+                    "Job lease cleanup failed; TTL and fencing prevent stale execution",
+                    &error,
+                    LogFields {
+                        operation_id: Some(&lock),
+                        fencing_token: Some(lease.fencing_token),
+                        retryable: Some(false),
+                        outcome: Some("ttl_expiry_required"),
+                        ..LogFields::default()
+                    },
+                ),
+            }
         });
     }
 }
@@ -141,11 +168,23 @@ impl JobRunner {
                         source_domain: payload.source_domain.clone(),
                         trace_id: payload.trace_id.clone(),
                     };
-                    let _ = JobResultReporter::report_outcome(
-                        &kafka,
-                        &processing_report,
-                    )
-                    .await;
+                    if let Err(error) =
+                        JobResultReporter::report_outcome(&kafka, &processing_report).await
+                    {
+                        Logger::sys_warn_with_fields(
+                            "job.runner.processing_report",
+                            "JOB_PROCESSING_REPORT_PUBLISH_FAILED",
+                            "Could not publish PROCESSING audit; terminal result remains the settlement boundary",
+                            &error,
+                            LogFields {
+                                operation_id: Some(&job_id),
+                                job_version: Some(payload.job_version as u64),
+                                retryable: Some(true),
+                                outcome: Some("audit_missing"),
+                                ..LogFields::default()
+                            },
+                        );
+                    }
                 }
 
                 // Đo lường thời gian bắt đầu thực thi nghiệp vụ thô

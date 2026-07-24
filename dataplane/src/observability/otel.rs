@@ -62,7 +62,11 @@ impl OtelTracer {
             .with_exporter(otlp_exporter)
             .with_trace_config(
                 trace::Config::default()
-                    .with_sampler(Sampler::AlwaysOn)
+                    // [COMMENT]: ParentBased preserves upstream trace continuity; only new root
+                    // traces are ratio-sampled to cap CPU/network at high job throughput.
+                    .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+                        config.otel_trace_sample_ratio,
+                    ))))
                     .with_resource(resource),
             )
             .install_batch(opentelemetry_sdk::runtime::Tokio)
@@ -71,8 +75,8 @@ impl OtelTracer {
                 crate::observability::logger::Logger::sys_info(
                     "tracing.init",
                     &format!(
-                        "Observability OTel: Real OpenTelemetry tracer pipeline initialized. Exporting to OTLP collector at {}",
-                        endpoint
+                        "Observability OTel tracer initialized; endpoint={}, root_sample_ratio={}",
+                        endpoint, config.otel_trace_sample_ratio
                     ),
                 );
             }
@@ -159,7 +163,31 @@ impl OtelTracer {
 
     /// Lấy trace ID hiện tại của async task phục vụ việc chèn vào logs.
     pub fn get_current_trace_id() -> Option<String> {
-        CURRENT_TRACE_ID.try_with(|tid| tid.clone()).ok()
+        CURRENT_TRACE_ID
+            .try_with(|value| {
+                let value = value.trim();
+                if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Some(value.to_ascii_lowercase());
+                }
+                let mut parts = value.split('-');
+                match (
+                    parts.next(),
+                    parts.next(),
+                    parts.next(),
+                    parts.next(),
+                    parts.next(),
+                ) {
+                    (Some("00"), Some(trace_id), Some(_span_id), Some(_flags), None)
+                        if trace_id.len() == 32
+                            && trace_id.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+                    {
+                        Some(trace_id.to_ascii_lowercase())
+                    }
+                    _ => None,
+                }
+            })
+            .ok()
+            .flatten()
     }
 
     /// Phân tích cú pháp chuỗi trace_id thô hoặc traceparent chuẩn W3C thành SpanContext.

@@ -272,7 +272,10 @@ impl MailConfigurationRuntime {
         })
     }
 
-    pub fn start(self: &Arc<Self>, zone_kv: Arc<ZoneKvStore>) {
+    pub fn start_mail_configuration_runtime_projection(
+        self: &Arc<Self>,
+        zone_kv: Arc<ZoneKvStore>,
+    ) {
         let mut task = self.task.lock().expect("mail config task mutex poisoned");
         if task.is_some() {
             return;
@@ -280,7 +283,9 @@ impl MailConfigurationRuntime {
 
         let runtime = self.clone();
         *task = Some(tokio::spawn(async move {
-            runtime.run(zone_kv).await;
+            runtime
+                .run_mail_configuration_projection_loop(zone_kv)
+                .await;
         }));
     }
 
@@ -404,7 +409,7 @@ impl MailConfigurationRuntime {
             .map_err(|error: Arc<ConfigurationLoadError>| (*error).clone())
     }
 
-    async fn run(self: Arc<Self>, zone_kv: Arc<ZoneKvStore>) {
+    async fn run_mail_configuration_projection_loop(self: Arc<Self>, zone_kv: Arc<ZoneKvStore>) {
         // [COMMENT]: NATS KV watch/scan là control-plane signal; jitter giữ các replica lệch pha.
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.instance_id.hash(&mut hasher);

@@ -61,28 +61,19 @@ impl AppContainer {
         self.worker_pool
             .mail_runtime
             .configuration
-            .start(self.zone_kv.clone());
-        self.worker_pool.mail_runtime.consumer_supervisor.start();
+            .start_mail_configuration_runtime_projection(self.zone_kv.clone());
+        self.worker_pool
+            .mail_runtime
+            .consumer_supervisor
+            .start_mail_consumer_runtime_supervisor();
 
         // [COMMENT]: Health aggregate ở Zone KV; consumer runtime realtime đi NATS Core và không chạm Redis.
-        crate::executor::mail::supervisor::MailWorkloadSupervisor::start(
+        crate::executor::mail::supervisor::MailWorkloadSupervisor::start_mail_runtime_reporting(
             self.config.clone(),
             self.zone_kv.clone(),
             self.nats_core.clone(),
             self.worker_pool.mail_runtime.clone(),
-        );
-
-        // [COMMENT]: Khởi động Storage Workload Watchdog giám sát MinIO qua rotating KV lease.
-        crate::executor::storage::StorageWorkloadMonitor::start(
-            self.config.clone(),
-            self.zone_kv.clone(),
-        );
-
-        // [COMMENT]: Khởi động luồng quét dung lượng bucket định kỳ mỗi 15s
-        crate::executor::storage::StorageSizesSyncer::start(
-            self.config.clone(),
-            self.zone_kv.clone(),
-            self.kafka.clone(),
+            self.worker_pool.cancel_token(),
         );
 
         // Sinh node_id độc nhất cho instance Dataplane này (dùng hostname hoặc uuid làm fallback)
@@ -91,32 +82,21 @@ impl AppContainer {
             .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
 
         // Khởi động ResourceMonitor; mỗi node ghi snapshot riêng vào Zone health KV.
-        crate::observability::resource::ResourceMonitor::start_monitor(
+        crate::observability::resource::ResourceMonitor::start_dataplane_resource_snapshot_writer(
             node_id,
             self.zone_kv.clone(),
             self.worker_pool.clone(),
+            self.kafka.clone(),
         );
 
-        // Khởi động HypervisorMonitor polling Proxmox Cluster API mỗi 15 giây (Luồng B Auto-Discovery)
-        // Monitor này ghi snapshot `zone.service.hypervisor` để ZoneStatusGateway tổng hợp.
-        // Nếu PROXMOX_API_URL hoặc PROXMOX_API_TOKEN chưa set, monitor tự degraded gracefully.
-        crate::executor::hypervisor::core::monitor::HypervisorMonitor::start(
+        // [COMMENT]: Một entry point duy nhất sở hữu election và mọi Zone-wide singleton duty.
+        crate::leader::ZoneLeaderSupervisor::start_zone_leader_supervisor(
             self.config.clone(),
-            self.zone_kv.clone(),
-        );
-
-        // Khởi động Zone Gateway tổng hợp snapshot KV và đẩy report Protobuf qua Kafka.
-        crate::zone_gateway::ZoneStatusGateway::start_zone_gateway(
             self.zone_kv.clone(),
             self.kafka.clone(),
-            self.config.clone(),
-        );
-
-        // Khởi động CDC Metadata Event Listener lắng nghe các sự kiện cập nhật cấu hình thời gian thực
-        crate::zone_gateway::ZoneStatusGateway::start_metadata_event_listener(
-            self.zone_kv.clone(),
-            self.kafka.clone(),
-            self.config.clone(),
+            self.worker_pool.mail_runtime.clone(),
+            self.worker_pool.cancel_token(),
+            self.worker_pool.track_task(),
         );
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
@@ -171,6 +151,8 @@ impl AppContainer {
         let cancel_token_plat = self.worker_pool.cancel_token();
 
         tokio::spawn(async move {
+            // [COMMENT]: Trì hoãn 500ms để tránh tranh chấp khóa (LeveledRwLock) khi 2 consumer kafka cùng khởi tạo song song.
+            tokio::time::sleep(Duration::from_millis(500)).await;
             crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
                 config_ingest_plat,
                 kafka_ingest_plat.clone(),
@@ -197,98 +179,17 @@ impl AppContainer {
             )
             .await;
 
-        // 0e. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
-        let config_scale = self.config.clone();
-        let worker_pool_scale = self.worker_pool.clone();
-        let kafka_scale = self.kafka.clone();
-        let zone_kv_scale = self.zone_kv.clone();
-        let active_lock_registry_scale = self.active_lock_registry.clone();
-        let rx_scale = rx_shared.clone();
-        let active_jobs_scale = active_jobs.clone();
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-
-                // 1. Trích xuất min_workers và max_workers cấu hình tĩnh trực tiếp từ Config
-                let min_workers = config_scale.min_workers;
-                let max_workers = config_scale.max_workers;
-
-                let auto_scaler =
-                    crate::workerpool::auto_scale::AutoScaleEngine::new(min_workers, max_workers);
-
-                // [COMMENT]: Lag đến từ Kafka consumer state; stale snapshot không được dùng để scale-up mù.
-                let (kafka_lag, lag_stale) = kafka_scale.job_lag_snapshot();
-                let lag = if lag_stale { 0 } else { kafka_lag };
-                let latency = 0.0;
-                let active_conns = 0; // Thống kê kết nối giả lập
-
-                // Ghi nhận các chỉ số đo đạc thu được vào OpenTelemetry Registry phục vụ giám sát HA
-                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
-                    crate::workerpool::metrics::MetricsType::KafkaConsumerLag {
-                        zone_id: config_scale.zone_id.clone(),
-                        lag,
-                    },
-                );
-
-                // 3. Đánh giá tải thực tế
-                let active_ids = worker_pool_scale.active_worker_ids();
-                let current_count = active_ids.len();
-
-                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
-                    crate::workerpool::metrics::MetricsType::ActiveConnectionsCount {
-                        zone_id: config_scale.zone_id.clone(),
-                        count: current_count,
-                    },
-                );
-
-                let target_count =
-                    auto_scaler.evaluate_scale(current_count, lag, latency, active_conns);
-
-                // Chỉ log khi target khác với current (có scale up/down thực sự).
-                // Khi hệ thống đứng yên ở cùng mức worker, autoscaler im lặng để tránh log spam.
-                if target_count != current_count {
-                    Logger::sys_info(
-                        "worker.scaler",
-                        &format!(
-                            "Autoscaler scaling: {} -> {} workers (lag={}, latency={:.2}ms)",
-                            current_count, target_count, lag, latency
-                        ),
-                    );
-                }
-
-                if target_count > current_count {
-                    // Scale Up: Spawn thêm worker
-                    for i in 1..=target_count {
-                        if !active_ids.contains(&i) {
-                            worker_pool_scale
-                                .spawn_worker(
-                                    i,
-                                    config_scale.clone(),
-                                    kafka_scale.clone(),
-                                    zone_kv_scale.clone(),
-                                    active_lock_registry_scale.clone(),
-                                    rx_scale.clone(),
-                                    active_jobs_scale.clone(),
-                                )
-                                .await;
-                        }
-                    }
-                } else if target_count < current_count {
-                    // Scale Down: Terminate bớt worker (ID lớn nhất)
-                    let mut sorted_ids = active_ids.clone();
-                    sorted_ids.sort_by(|a, b| b.cmp(a));
-
-                    let diff = current_count - target_count;
-                    for i in 0..diff {
-                        if let Some(&worker_id) = sorted_ids.get(i) {
-                            worker_pool_scale.terminate_worker(worker_id);
-                        }
-                    }
-                }
-            }
-        });
+        // [COMMENT]: Worker không tự quyết định scale. Nó chỉ apply directive có leader fencing
+        // và TTL từ AURORA_ZONE_COORDINATION; directive stale thì giữ capacity hiện tại.
+        crate::workerpool::scale_follower::start_worker_scale_follower(
+            self.config.clone(),
+            self.worker_pool.clone(),
+            self.kafka.clone(),
+            self.zone_kv.clone(),
+            self.active_lock_registry.clone(),
+            rx_shared,
+            active_jobs,
+        );
 
         // 1. Khởi chạy luồng giám sát sự cố/hoạt động của Worker Pool
         tokio::spawn(async move {

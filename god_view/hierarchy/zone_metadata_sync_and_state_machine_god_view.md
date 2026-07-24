@@ -14,7 +14,7 @@
 | Repair | DP cold-start/periodic query topic → JO full snapshot response |
 | Wire | `ZoneMetadataQueryV1`, `ZoneMetadataSnapshotV1` |
 | Runtime key | `AURORA_ZONE_CONFIG/zone.metadata` |
-| Coordination | `AURORA_ZONE_COORDINATION/lease.gateway.metadata_sync` |
+| Coordination | Stable `AURORA_ZONE_COORDINATION/lease.zone.leader` |
 | Apply | Full aggregate + CAS |
 | Failure | Missing/corrupt/unavailable metadata → fail-closed ingestion |
 
@@ -26,10 +26,10 @@ flowchart LR
     CP --> PG[(PostgreSQL SoT)]
     PG -->|WAL| JO[JO CDC]
     JO -->|full snapshot| KT[(Kafka metadata Zone topic)]
-    KT --> DPL[DP metadata listener]
+    KT --> DPL[DP leader metadata listener]
     DPL -->|CAS full aggregate| CFG[(AURORA_ZONE_CONFIG)]
 
-    DPR[DP reconciler] -->|fenced lease| COORD[(AURORA_ZONE_COORDINATION)]
+    DPR[DP leader reconciler] -->|current leader guard| COORD[(AURORA_ZONE_COORDINATION)]
     DPR -->|ZoneMetadataQueryV1| KQ[(Kafka query topic)]
     KQ --> JOQ[JO query listener]
     JOQ --> PG
@@ -102,8 +102,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant A as DP Pod A
-    participant B as DP Pod B
+    participant A as Current DP leader
     participant C as Coordination KV
     participant KQ as Kafka metadata queries
     participant JO as JO query listener
@@ -111,13 +110,8 @@ sequenceDiagram
     participant KS as Kafka Zone snapshot
     participant KV as Config KV
 
-    par lease race
-        A->>C: CAS acquire metadata-sync lease
-    and
-        B->>C: CAS acquire same lease
-    end
-    C-->>A: owner + fencing token
-    C-->>B: not acquired
+    A->>C: verify lease.zone.leader owner + fencing
+    C-->>A: current leader
     A->>KQ: ZoneMetadataQueryV1, acks=all
     KQ-->>JO: manual poll
     JO->>PG: SELECT full status + desired services
@@ -126,13 +120,12 @@ sequenceDiagram
     KS-->>A: full snapshot
     A->>KV: CAS replace aggregate
     A->>KS: commit snapshot offset
-    A->>C: release only if owner/fence still match
 ```
 
 - Query không dùng unique reply channel hay Redis PubSub.
 - Query topic durable; JO commit chỉ sau snapshot Kafka ACK.
 - Compacted response topic là shared recovery log cho toàn bộ pod trong đúng Zone.
-- Reconciler có startup run, periodic timer, deterministic jitter và no-spin lease.
+- Reconciler chạy trong leader session, có startup run, hourly timer và deterministic jitter.
 - Timeout/lỗi không suy diễn Zone thành active.
 
 ## 5. Dataplane state machine
@@ -160,9 +153,9 @@ phải hydrate đầy đủ desired service catalogue.
 | Dynamic consumer runtime watch | Pod memory → NATS Core → Central Shared Redis TTL |
 | Metrics/traces/logs | OTel/Grafana |
 
-Zone reporter dùng rotating lease để một node tổng hợp mỗi cycle. Report chứa Kafka lag được đo bởi chính
-Dataplane consumer; JO không cross-query broker bằng Zone credential. Nếu lag stale, Decision Engine giữ state
-hiện tại thay vì tự động chuyển Zone.
+Zone reporter chạy trong stable leader session. Mỗi pod xuất cached lag của các partition đang assign;
+leader cộng snapshot fresh để có lag toàn Zone. JO không cross-query broker bằng Zone credential.
+Nếu lag stale, Decision Engine giữ state hiện tại thay vì tự động chuyển Zone.
 
 ## 7. Race/failure matrix
 
@@ -172,7 +165,7 @@ hiện tại thay vì tự động chuyển Zone.
 | Query duplicate | request ID + full snapshot | Safe replay |
 | Metadata topic poison | Strict validation + durable DLQ | Commit sau DLQ ACK |
 | Pod A complete sau rebalance | Assignment epoch | Không commit owner mới |
-| N pod cold start | Zone KV lease/fencing | Một query winner mỗi cycle |
+| N pod cold start | Stable Zone leader lease/fencing | Một query/report owner |
 | Pod A release lease của B | owner + fencing compare | Reject stale release |
 | Kafka quorum loss | `acks=all`, min ISR | Không ACK/commit |
 | Zone KV unavailable | No Kafka settle | Replay sau recovery |
@@ -193,9 +186,10 @@ hiện tại thay vì tự động chuyển Zone.
 - `job-orchestrator/src/cdc/mod.rs`: full metadata snapshot publisher.
 - `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: durable query consumer.
 - `job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs`: Zone report consumer.
-- `dataplane/src/zone_gateway/listener.rs`: compacted snapshot listener/projector.
-- `dataplane/src/zone_gateway/reconciler.rs`: cold-start/periodic query publisher.
-- `dataplane/src/zone_gateway/reporter.rs`: report aggregation.
+- `dataplane/src/leader/zone_leader_supervisor.rs`: Zone leader election/failover.
+- `dataplane/src/leader/zone_metadata_kafka_listener.rs`: compacted Zone metadata snapshot listener/projector.
+- `dataplane/src/leader/zone_metadata_repair_publisher.rs`: cold-start/periodic Zone metadata query publisher.
+- `dataplane/src/leader/zone_report_publisher.rs`: Zone report aggregation.
 - `dataplane/src/job_lifecycle/consumer.rs`: fail-closed state reaction.
 - `dataplane/src/infra/zone_kv.rs`: KV CAS and fencing.
 - `dataplane/src/infra/kafka.rs`: manual consumer and contiguous settlement.

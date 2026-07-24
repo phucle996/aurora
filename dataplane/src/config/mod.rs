@@ -32,6 +32,8 @@ pub struct Config {
 
     /// Endpoint của OpenTelemetry Collector phục vụ gửi traces & metrics.
     pub otel_exporter_otlp_endpoint: String,
+    /// Root trace sample ratio; parent sampling decision is always preserved across services.
+    pub otel_trace_sample_ratio: f64,
 
     // Cấu hình số lượng Worker tối thiểu chạy ngầm (min concurrency baseline).
     // Đảm bảo hệ thống luôn có ít nhất 1 worker chạy ngầm để tiêu thụ job ngay lập tức, tránh cold start.
@@ -224,6 +226,7 @@ impl Config {
             nats_zone_kv_replicas: parse_env("NATS_ZONE_KV_REPLICAS", 3_usize),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
+            otel_trace_sample_ratio: parse_env("OTEL_TRACE_SAMPLE_RATIO", 1.0_f64).clamp(0.0, 1.0),
             // Nạp min_workers từ biến môi trường MIN_WORKERS, mặc định là 1 để giữ tối thiểu 1 worker hoạt động.
             min_workers: env::var("MIN_WORKERS")
                 .unwrap_or_else(|_| "1".to_string())

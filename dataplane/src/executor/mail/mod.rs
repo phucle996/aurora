@@ -40,7 +40,7 @@ impl MailRuntime {
         let sender = Arc::new(SenderProfile::from_config(config)?);
         let jmap = Arc::new(JmapClient::new(config, sender.clone())?);
         let metrics = Arc::new(MailWorkloadMetrics::default());
-        let batcher = MailBatcherHandle::start(config, jmap.clone(), metrics.clone());
+        let batcher = MailBatcherHandle::start_mail_batcher(config, jmap.clone(), metrics.clone());
         let configuration = runtime::MailConfigurationRuntime::new(config, zone_kv.clone());
         let processor = MailMessageProcessor::new(
             config,

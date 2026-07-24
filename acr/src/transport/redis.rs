@@ -325,7 +325,10 @@ impl SharedRedisRouter {
                             break;
                         }
                     };
-                    if !pending.keys.is_empty() {
+                    // [COMMENT]: Kiểm tra xem có entry pending thực sự nào trong key.ids không
+                    // (tránh bug !pending.keys.is_empty() = true khi ids rỗng gây busy spin-loop).
+                    let has_pending = pending.keys.iter().any(|key| !key.ids.is_empty());
+                    if has_pending {
                         process_revoke_entries(&session_mgr, &mut connection, pending).await;
                         continue;
                     }

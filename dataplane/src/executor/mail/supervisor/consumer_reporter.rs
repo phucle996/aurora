@@ -5,17 +5,19 @@ use crate::executor::mail::runtime_proto::{
     MailEventMetadataV1,
 };
 use crate::infra::nats_core::NatsCoreTransport;
-use crate::observability::logger::Logger;
+use crate::observability::logger::{LogFields, Logger};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// [COMMENT]: Reporter chỉ đọc pod-local memory và watch lease đã nhận qua NATS Core.
 /// Dataplane không đọc/ghi Shared L2 Redis; mất report là soft-state và heartbeat sau tự phục hồi.
-pub(super) fn start(
+pub(super) fn start_mail_consumer_runtime_reporter(
     config: Arc<Config>,
     nats_core: Arc<NatsCoreTransport>,
     runtime: Arc<MailRuntime>,
+    shutdown: CancellationToken,
 ) {
     tokio::spawn(async move {
         let event_namespace = Uuid::parse_str("e7b1a4a4-9150-4494-88d4-5994d312d219")
@@ -33,6 +35,9 @@ pub(super) fn start(
         };
 
         loop {
+            if shutdown.is_cancelled() {
+                return;
+            }
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
@@ -61,15 +66,48 @@ pub(super) fn start(
                             .saturating_mul(2_000) as i64
                     && Uuid::parse_str(&runtime_epoch).is_ok();
                 if !contract_valid {
+                    Logger::sys_warn_with_fields(
+                        "mail.supervisor.consumer_reporter",
+                        "MAIL_RUNTIME_SNAPSHOT_CONTRACT_INVALID",
+                        "Ignored stale or contract-invalid local runtime snapshot",
+                        "",
+                        LogFields {
+                            operation_id: Some(&snapshot.consumer_id),
+                            job_version: Some(snapshot.config_version),
+                            fencing_token: Some(snapshot.fencing_token),
+                            runtime_generation: Some(snapshot.runtime_generation),
+                            slot: Some(snapshot.slot),
+                            outcome: Some("rejected"),
+                            ..LogFields::default()
+                        },
+                    );
                     continue;
                 }
 
                 let Ok(consumer_id) = Uuid::parse_str(&snapshot.consumer_id) else {
+                    Logger::sys_warn(
+                        "mail.supervisor.consumer_reporter",
+                        "Ignored runtime snapshot with invalid consumer UUID",
+                        "MAIL_RUNTIME_CONSUMER_ID_INVALID",
+                    );
                     continue;
                 };
-                let Ok(runtime_boot_id) = Uuid::parse_str(&snapshot.runtime_boot_id) else {
+                if Uuid::parse_str(&snapshot.runtime_boot_id).is_err() {
+                    Logger::sys_warn_with_fields(
+                        "mail.supervisor.consumer_reporter",
+                        "MAIL_RUNTIME_BOOT_ID_INVALID",
+                        "Ignored runtime snapshot with invalid boot UUID",
+                        "",
+                        LogFields {
+                            operation_id: Some(&snapshot.consumer_id),
+                            runtime_generation: Some(snapshot.runtime_generation),
+                            slot: Some(snapshot.slot),
+                            outcome: Some("rejected"),
+                            ..LogFields::default()
+                        },
+                    );
                     continue;
-                };
+                }
                 let runtime_state = match snapshot.state.as_str() {
                     "STOPPED" => MailConsumerRuntimeState::Stopped,
                     "STARTING" => MailConsumerRuntimeState::Starting,
@@ -78,7 +116,22 @@ pub(super) fn start(
                     "DRAINING" => MailConsumerRuntimeState::Draining,
                     "ERROR" => MailConsumerRuntimeState::Error,
                     "DEGRADED" => MailConsumerRuntimeState::Degraded,
-                    _ => continue,
+                    _ => {
+                        Logger::sys_warn_with_fields(
+                            "mail.supervisor.consumer_reporter",
+                            "MAIL_RUNTIME_STATE_INVALID",
+                            "Ignored runtime snapshot with unsupported state",
+                            "",
+                            LogFields {
+                                operation_id: Some(&snapshot.consumer_id),
+                                runtime_generation: Some(snapshot.runtime_generation),
+                                slot: Some(snapshot.slot),
+                                outcome: Some("rejected"),
+                                ..LogFields::default()
+                            },
+                        );
+                        continue;
+                    }
                 };
                 let error_code = if snapshot.error_code.len() <= 100
                     && snapshot.error_code.bytes().all(|byte| {
@@ -86,6 +139,19 @@ pub(super) fn start(
                     }) {
                     snapshot.error_code
                 } else {
+                    Logger::sys_warn_with_fields(
+                        "mail.supervisor.consumer_reporter",
+                        "MAIL_RUNTIME_ERROR_CODE_INVALID",
+                        "Replaced invalid runtime error code before crossing the Zone trust boundary",
+                        "",
+                        LogFields {
+                            operation_id: Some(&snapshot.consumer_id),
+                            runtime_generation: Some(snapshot.runtime_generation),
+                            slot: Some(snapshot.slot),
+                            outcome: Some("sanitized"),
+                            ..LogFields::default()
+                        },
+                    );
                     "MAIL_RUNTIME_ERROR_INVALID".to_string()
                 };
                 let event_name = format!(
@@ -118,7 +184,6 @@ pub(super) fn start(
                     report_sequence: snapshot.report_sequence,
                     runtime_epoch,
                 });
-                let _ = runtime_boot_id;
             }
 
             for chunk in reports.chunks(250) {
@@ -136,10 +201,12 @@ pub(super) fn start(
                 }
             }
 
-            tokio::time::sleep(Duration::from_millis(
-                config.mail_consumer_report_interval_ms + rand::random::<u64>() % 1_000,
-            ))
-            .await;
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(Duration::from_millis(
+                    config.mail_consumer_report_interval_ms + rand::random::<u64>() % 1_000,
+                )) => {}
+            }
         }
     });
 }

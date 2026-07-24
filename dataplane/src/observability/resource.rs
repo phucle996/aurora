@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
+use crate::infra::kafka::KafkaTransport;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 use crate::workerpool::lifecycle::WorkerLifecycleManager;
@@ -37,10 +38,11 @@ impl ResourceMonitor {
     }
 
     /// Khởi chạy vòng lặp giám sát và ghi snapshot riêng cho node vào Zone KV.
-    pub fn start_monitor(
+    pub fn start_dataplane_resource_snapshot_writer(
         node_id: String,
         zone_kv: Arc<ZoneKvStore>,
         worker_pool: Arc<WorkerLifecycleManager>,
+        kafka: Arc<KafkaTransport>,
     ) {
         tokio::spawn(async move {
             Logger::sys_info(
@@ -113,6 +115,10 @@ impl ResourceMonitor {
 
                 // 3. Đọc số lượng worker đang hoạt động trên Node hiện tại
                 let active_workers = worker_pool.active_worker_ids().len();
+                // [COMMENT]: Đây là cached lag của partition Kafka assign cho pod, không mở
+                // broker polling riêng. Zone leader mới aggregate tất cả node snapshots.
+                let (job_queue_lag, job_queue_lag_stale) = kafka.job_lag_snapshot();
+                Logger::record_pipeline_metrics(&crate::config::Config::get_global().zone_id);
 
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -131,14 +137,48 @@ impl ResourceMonitor {
                     "cpu": cpu_usage / 100.0,
                     "ram": ram_usage / 100.0,
                     "active_workers": active_workers,
+                    "job_queue_lag": job_queue_lag,
+                    "job_queue_lag_stale": job_queue_lag_stale,
                     "updated_at": now
                 });
-                if let Ok(value) = serde_json::to_vec(&snapshot) {
-                    let _ = tokio::time::timeout(
+                match serde_json::to_vec(&snapshot) {
+                    Ok(value) => match tokio::time::timeout(
                         Duration::from_secs(2),
                         zone_kv.health_put(&key, bytes::Bytes::from(value)),
                     )
-                    .await;
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => Logger::sys_warn_with_fields(
+                            "resource.snapshot",
+                            "DATAPLANE_RESOURCE_SNAPSHOT_WRITE_FAILED",
+                            "Could not write local Dataplane resource snapshot to Zone health KV",
+                            &error,
+                            crate::observability::logger::LogFields {
+                                operation_id: Some(&node_id),
+                                retryable: Some(true),
+                                outcome: Some("stale"),
+                                ..Default::default()
+                            },
+                        ),
+                        Err(_) => Logger::sys_warn_with_fields(
+                            "resource.snapshot",
+                            "DATAPLANE_RESOURCE_SNAPSHOT_WRITE_TIMEOUT",
+                            "Timed out writing local Dataplane resource snapshot to Zone health KV",
+                            "",
+                            crate::observability::logger::LogFields {
+                                operation_id: Some(&node_id),
+                                retryable: Some(true),
+                                outcome: Some("stale"),
+                                ..Default::default()
+                            },
+                        ),
+                    },
+                    Err(error) => Logger::sys_error(
+                        "resource.snapshot",
+                        "Could not serialize local Dataplane resource snapshot",
+                        &error.to_string(),
+                    ),
                 }
 
                 // Thực hiện chu kỳ quét và đẩy tài nguyên định kỳ mỗi 5 giây (đồng bộ tải CPU/IO)

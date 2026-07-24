@@ -6,21 +6,37 @@ mod config;
 mod executor;
 mod infra;
 mod job_lifecycle;
+mod leader;
 mod observability;
 mod workerpool;
-mod zone_gateway;
 
 use crate::observability::logger::Logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Load deployment logging controls before installing the only global tracing subscriber.
+    dotenvy::dotenv().ok();
+
     // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
     if std::env::var("TZ").is_err() {
         std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
     }
+    let _logger_guard = Logger::init();
 
     // 1. Run bootstrap actions to initialize infrastructure & resources
-    let boot_result = bootstrap::run_actions().await?;
+    let boot_result = match bootstrap::run_actions().await {
+        Ok(result) => result,
+        Err(error) => {
+            Logger::sys_error_with_fields(
+                "system.bootstrap",
+                "DATAPLANE_BOOTSTRAP_FAILED",
+                "Dataplane bootstrap failed; process will exit before accepting workload",
+                &error.to_string(),
+                Default::default(),
+            );
+            return Err(error);
+        }
+    };
 
     // 2. Build the Application Module Graph container
     let (app, worker_signal_rx) = app::AppContainer::new(boot_result);

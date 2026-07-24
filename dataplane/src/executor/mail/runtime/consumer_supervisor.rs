@@ -65,7 +65,7 @@ impl MailConsumerSupervisor {
         })
     }
 
-    pub fn start(self: &Arc<Self>) {
+    pub fn start_mail_consumer_runtime_supervisor(self: &Arc<Self>) {
         if !self.enabled {
             Logger::sys_info(
                 "mail.stream.supervisor",
@@ -82,7 +82,9 @@ impl MailConsumerSupervisor {
         }
         let supervisor = self.clone();
         *task = Some(tokio::spawn(async move {
-            supervisor.run().await;
+            supervisor
+                .run_mail_consumer_runtime_reconciliation_loop()
+                .await;
         }));
     }
 
@@ -102,7 +104,7 @@ impl MailConsumerSupervisor {
         self.context.runtime_snapshots()
     }
 
-    async fn run(self: Arc<Self>) {
+    async fn run_mail_consumer_runtime_reconciliation_loop(self: Arc<Self>) {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.context.zone_id.hash(&mut hasher);
         self.context.instance_id.hash(&mut hasher);

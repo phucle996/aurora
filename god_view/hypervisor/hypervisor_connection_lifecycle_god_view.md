@@ -43,8 +43,8 @@ graph TD
     CP -- "6. HTTP Response JSON" --> SRE
 
     %% Luồng Auto-discovery & Heartbeat
-    DP -- "a. Poll Nodes & Metrics (Env Config)" --> PVE
-    DP -- "b. CAS rotating lease + PUT zone.service.hypervisor" --> ZoneKV
+    DP -- "a. Stable leader polls Nodes & Metrics" --> PVE
+    DP -- "b. Leader-fenced PUT zone.service.hypervisor" --> ZoneKV
     
     %% Gateway Gom & Sync L1 (ZoneStatusGateway)
     ZoneKV -- "c. Read zone.service.* snapshots" --> DP
@@ -61,7 +61,7 @@ graph TD
 
 ### 1. Current snapshot trong NATS Zone KV
 * **Health key**: `AURORA_ZONE_HEALTH/zone.service.hypervisor`
-* **Coordination key**: `AURORA_ZONE_COORDINATION/lease.health.hypervisor`
+* **Coordination key**: `AURORA_ZONE_COORDINATION/lease.zone.leader`
 * **Value**: Một JSON snapshot nguyên khối chứa toàn bộ node của chu kỳ, probe owner và fencing token:
   ```json
   {
@@ -211,8 +211,8 @@ sequenceDiagram
     participant JO as 🚀 job-orchestrator (Rust)
     participant DB as 💾 PostgreSQL (hypervisor schema)
 
-    Note over DP: [Mỗi 15s] Dataplane Agent check loop
-    DP->>KV: CAS acquire rotating lease.health.hypervisor
+    Note over DP: [Mỗi 15s] Current Zone leader check loop
+    DP->>KV: Verify lease.zone.leader owner + fencing
     DP->>KV: GET zone.metadata, require hypervisor enabled
     DP->>PVE: GET /api2/json/nodes (Query danh sách node vật lý & metrics)
     alt Kết nối Proxmox Thành Công
@@ -224,7 +224,7 @@ sequenceDiagram
         DP->>KV: PUT zone.service.hypervisor (previous nodes disconnected)
     end
 
-    Note over DP: [Mỗi 5s] ZoneStatusGateway chạy vòng lặp đồng bộ
+    Note over DP: [Mỗi 5s] Leader Zone reporter chạy vòng lặp đồng bộ
     DP->>KV: GET zone.service.mail + zone.service.hypervisor
     KV-->>DP: Trả về current workload snapshots
     DP->>DP: Gom dữ liệu workloads

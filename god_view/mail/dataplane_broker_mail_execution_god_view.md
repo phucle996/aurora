@@ -366,7 +366,8 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/l2_dispatcher.rs` |
 | JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
 | Watch-aware reporter trên từng pod | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
-| Zonal health/KV/OTel observer | `dataplane/src/executor/mail/supervisor/health_observer.rs` |
+| Pod-local Mail snapshot | `dataplane/src/executor/mail/supervisor/local_observer.rs` |
+| Leader-only health/KV/OTel observer | `dataplane/src/leader/mail_infrastructure_health_probe.rs` |
 | JO consumer report apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
 | Mail runtime/processor tests | `dataplane/src/executor/mail/test/` |
 

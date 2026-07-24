@@ -91,20 +91,45 @@ impl NatsCoreTransport {
 
             while let Some(message) = subscription.next().await {
                 if message.payload.len() > 64 << 10 {
+                    Logger::sys_warn(
+                        "nats_core.runtime_watch",
+                        "Dropped oversized runtime watch payload",
+                        "RUNTIME_WATCH_PAYLOAD_TOO_LARGE",
+                    );
                     continue;
                 }
                 let Ok(watch) =
                     MailConsumerRuntimeWatchRequestedV1::decode(message.payload.as_ref())
                 else {
+                    Logger::sys_warn(
+                        "nats_core.runtime_watch",
+                        "Dropped runtime watch that failed Protobuf decoding",
+                        "RUNTIME_WATCH_PROTO_INVALID",
+                    );
                     continue;
                 };
                 let Some(metadata) = watch.metadata.as_ref() else {
+                    Logger::sys_warn(
+                        "nats_core.runtime_watch",
+                        "Dropped runtime watch without transport metadata",
+                        "RUNTIME_WATCH_METADATA_MISSING",
+                    );
                     continue;
                 };
                 let Ok(zone_id) = Uuid::from_slice(&watch.zone_id) else {
+                    Logger::sys_warn(
+                        "nats_core.runtime_watch",
+                        "Dropped runtime watch with invalid Zone UUID",
+                        "RUNTIME_WATCH_ZONE_ID_INVALID",
+                    );
                     continue;
                 };
                 let Ok(consumer_id) = Uuid::from_slice(&watch.consumer_id) else {
+                    Logger::sys_warn(
+                        "nats_core.runtime_watch",
+                        "Dropped runtime watch with invalid consumer UUID",
+                        "RUNTIME_WATCH_CONSUMER_ID_INVALID",
+                    );
                     continue;
                 };
                 let now_ms = SystemTime::now()
@@ -123,6 +148,11 @@ impl NatsCoreTransport {
                     && watch.expires_at_unix_ms > now_ms
                     && watch.expires_at_unix_ms <= now_ms.saturating_add(60_000);
                 if !contract_valid {
+                    Logger::sys_warn(
+                        "nats_core.runtime_watch",
+                        "Dropped runtime watch that violated zone, version, producer, or expiry contract",
+                        "RUNTIME_WATCH_CONTRACT_INVALID",
+                    );
                     continue;
                 }
 

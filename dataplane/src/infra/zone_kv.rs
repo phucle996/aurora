@@ -306,6 +306,52 @@ impl ZoneKvStore {
         Err(format!("health snapshot CAS contention for {key}"))
     }
 
+    pub async fn coordination_get(&self, key: impl Into<String>) -> Result<Option<Bytes>, String> {
+        self.coordination
+            .get(key)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// [COMMENT]: Soft coordination directives vẫn phải monotonic theo leader epoch; leader cũ
+    /// không được ghi đè scale signal của leader mới sau network partition hoặc process pause.
+    pub async fn coordination_put_fenced(
+        &self,
+        key: &str,
+        value: Bytes,
+        fencing_token: u64,
+    ) -> Result<bool, String> {
+        for _ in 0..5 {
+            let current = self
+                .coordination
+                .entry(key.to_string())
+                .await
+                .map_err(|error| error.to_string())?;
+            let current_token = current
+                .as_ref()
+                .and_then(|entry| serde_json::from_slice::<serde_json::Value>(&entry.value).ok())
+                .and_then(|snapshot| {
+                    snapshot
+                        .get("leader_fencing_token")
+                        .and_then(|token| token.as_u64())
+                })
+                .unwrap_or_default();
+            if current_token > fencing_token {
+                return Ok(false);
+            }
+            let revision = current.as_ref().map_or(0, |entry| entry.revision);
+            if self
+                .coordination
+                .update(key, value.clone(), revision)
+                .await
+                .is_ok()
+            {
+                return Ok(true);
+            }
+        }
+        Err(format!("coordination directive CAS contention for {key}"))
+    }
+
     pub async fn read_zone_metadata(&self) -> Result<ZoneMetadata, String> {
         match self.config_get("zone.metadata").await? {
             Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
@@ -354,28 +400,14 @@ impl ZoneKvStore {
         owner_id: &str,
         ttl: Duration,
     ) -> Result<Option<ZoneLease>, String> {
-        self.acquire_lease_with_rotation(key, owner_id, ttl, Duration::ZERO)
-            .await
+        self.acquire_lease_internal(key, owner_id, ttl).await
     }
 
-    /// [COMMENT]: Cooldown theo stable pod ID ép chu kỳ health kế tiếp ưu tiên replica khác; một replica vẫn tự phục hồi sau cooldown.
-    pub async fn acquire_rotating_lease(
+    async fn acquire_lease_internal(
         &self,
         key: &str,
         owner_id: &str,
         ttl: Duration,
-        same_owner_cooldown: Duration,
-    ) -> Result<Option<ZoneLease>, String> {
-        self.acquire_lease_with_rotation(key, owner_id, ttl, same_owner_cooldown)
-            .await
-    }
-
-    async fn acquire_lease_with_rotation(
-        &self,
-        key: &str,
-        owner_id: &str,
-        ttl: Duration,
-        same_owner_cooldown: Duration,
     ) -> Result<Option<ZoneLease>, String> {
         for _ in 0..5 {
             let current = self
@@ -409,13 +441,6 @@ impl ZoneKvStore {
                     lease.expires_at_unix_ms
                 }
             });
-            let cooldown_ms = same_owner_cooldown.as_millis().min(u64::MAX as u128) as u64;
-            if cooldown_ms > 0
-                && previous_owner == owner_id
-                && previous_release.saturating_add(cooldown_ms) > now
-            {
-                return Ok(None);
-            }
             let next = LeaseValue {
                 owner_id: owner_id.to_string(),
                 fencing_token: previous
@@ -479,6 +504,24 @@ impl ZoneKvStore {
             }
         }
         Ok(false)
+    }
+
+    /// [COMMENT]: Leader duty gọi check read-only ngay trước external side effect. Renew chỉ do
+    /// coordinator thực hiện để tránh nhiều task CAS cùng revision và tự gây mất leadership.
+    pub async fn lease_is_current(&self, lease: &ZoneLease) -> Result<bool, String> {
+        let Some(entry) = self
+            .coordination
+            .entry(lease.key.clone())
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(false);
+        };
+        let current: LeaseValue =
+            serde_json::from_slice(&entry.value).map_err(|error| error.to_string())?;
+        Ok(current.owner_id == lease.owner_id
+            && current.fencing_token == lease.fencing_token
+            && current.expires_at_unix_ms > now_unix_ms())
     }
 
     pub async fn release_lease(&self, lease: &ZoneLease) -> Result<bool, String> {

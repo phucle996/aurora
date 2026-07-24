@@ -76,7 +76,9 @@ impl KafkaTransport {
             .linger(Duration::from_millis(5))
             .request_timeout(Duration::from_secs(10))
             .delivery_timeout(Duration::from_secs(60))
-            .retries(10);
+            .retries(10)
+            // [COMMENT]: Làm tươi metadata mỗi 5s để cập nhật nhanh danh sách các zone command topic mới tạo.
+            .metadata_max_age(Duration::from_secs(5));
         if let Some(auth) = auth.clone() {
             builder = builder.auth(auth);
         }
@@ -127,11 +129,21 @@ impl KafkaTransport {
         message
             .encode(&mut payload)
             .map_err(|error| format!("encode Kafka Protobuf failed: {error}"))?;
-        self.producer
-            .send(topic, Some(key), &payload)
-            .await
-            .map(|_| ())
-            .map_err(|error| format!("Kafka publish to {topic} failed: {error}"))
+
+        // [COMMENT]: Retry loop ngắn hỗ trợ nạp metadata khi tin nhắn đầu tiên gửi tới topic mới vừa khởi tạo.
+        let mut attempts = 0u32;
+        loop {
+            match self.producer.send(topic, Some(key), &payload).await {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    attempts += 1;
+                    if attempts >= 5 {
+                        return Err(format!("Kafka publish to {topic} failed: {error}"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+            }
+        }
     }
 
     pub async fn commit(

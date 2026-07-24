@@ -27,7 +27,7 @@ Query phải page/cursor bounded; không load toàn bộ workspace.
 
 ```mermaid
 sequenceDiagram
-    participant L as DP fenced scanner
+    participant L as DP Zone leader scanner
     participant M as MinIO
     participant K as Kafka aurora.storage.sizes.v1
     participant JO as JO storage listener
@@ -54,7 +54,8 @@ Snapshot fields:
 
 ## 2. Correctness
 
-- Scanner uses Zone coordination lease/fencing so only one full snapshot per cycle is authoritative.
+- Scanner chạy trong stable Zone leader session; current-owner check và leader fencing chỉ cho một
+  full snapshot authoritative.
 - Kafka key is Zone ID; producer uses `acks=all`.
 - JO keeps previous snapshot in memory only to suppress unchanged updates; PostgreSQL remains current business read model.
 - Poison snapshot is durable DLQ then commit.
@@ -78,11 +79,11 @@ owned by Billing God Views; this workflow only supplies current storage measurem
 | JO DB failure | Offset uncommitted; listener restart/replay |
 | NATS publish failure after DB update | Replay; DB update idempotent |
 | Poison bucket namespace/negative bytes | DLQ before commit |
-| DP pod dies | Lease expires; another node scans |
+| DP leader dies | `lease.zone.leader` expires; leader mới tiếp tục scan |
 
 ## 5. Code map
 
-- `dataplane/src/executor/storage/sizes_syncer.rs`: fenced scan + Kafka publish.
+- `dataplane/src/leader/storage_bucket_size_scanner.rs`: leader-only customer bucket size scan + Kafka publish.
 - `job-orchestrator/src/reverse_provider/storage/listener.rs`: validate/update/NATS/commit.
 - `job-orchestrator/src/reverse_provider/storage/db.rs`: Personal/Tenant size update.
 - `controlplane/internal/storage/`: authorized list API.

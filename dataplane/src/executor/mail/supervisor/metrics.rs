@@ -92,7 +92,7 @@ fn jmap_probe_success_metric() -> &'static Gauge<u64> {
     JMAP_PROBE_SUCCESS.get_or_init(|| {
         global::meter("aurora-dataplane")
             .u64_gauge("mail_jmap_probe_success")
-            .with_description("Most recent rotating JMAP health probe result")
+            .with_description("Most recent leader-owned JMAP health probe result")
             .init()
     })
 }
@@ -101,7 +101,7 @@ fn jmap_probe_duration_metric() -> &'static Histogram<f64> {
     JMAP_PROBE_DURATION.get_or_init(|| {
         global::meter("aurora-dataplane")
             .f64_histogram("mail_jmap_probe_duration_seconds")
-            .with_description("Duration of the rotating JMAP health probe")
+            .with_description("Duration of the leader-owned JMAP health probe")
             .init()
     })
 }
@@ -125,7 +125,7 @@ fn observation_error_metric() -> &'static Counter<u64> {
 }
 
 /// [COMMENT]: Snapshot này chỉ mang low-cardinality operational aggregates sang OTel/Grafana.
-pub(super) struct MailOperationalMetricsSnapshot {
+pub(crate) struct MailOperationalMetricsSnapshot {
     pub observed_at_unix_seconds: u64,
     pub state: u64,
     pub capacity_percent: u64,
@@ -149,7 +149,7 @@ pub struct MailWorkloadMetrics {
 }
 
 impl MailWorkloadMetrics {
-    pub(super) fn record_jmap_probe(
+    pub(crate) fn record_jmap_probe(
         &self,
         success: bool,
         duration_seconds: f64,
@@ -160,8 +160,8 @@ impl MailWorkloadMetrics {
         jmap_last_success_metric().record(last_success_unix_seconds, &[]);
     }
 
-    pub(super) fn record_operational_snapshot(&self, snapshot: &MailOperationalMetricsSnapshot) {
-        // [COMMENT]: Dashboard dùng timestamp này để bỏ chuỗi metric cũ khi rotating lease đổi holder.
+    pub(crate) fn record_operational_snapshot(&self, snapshot: &MailOperationalMetricsSnapshot) {
+        // [COMMENT]: Dashboard dùng timestamp này để bỏ chuỗi metric cũ khi leader epoch đổi.
         operational_observed_at_metric().record(snapshot.observed_at_unix_seconds, &[]);
         service_state_metric().record(snapshot.state, &[]);
         capacity_metric().record(snapshot.capacity_percent, &[]);
@@ -189,7 +189,7 @@ impl MailWorkloadMetrics {
         active_consumer_slots_metric().record(active_consumer_slots, &[]);
     }
 
-    pub(super) fn record_observation_error(&self, error_code: &str) {
+    pub(crate) fn record_observation_error(&self, error_code: &str) {
         if !error_code.is_empty() {
             observation_error_metric()
                 .add(1, &[KeyValue::new("error_code", error_code.to_string())]);

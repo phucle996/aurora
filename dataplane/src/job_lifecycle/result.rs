@@ -148,8 +148,8 @@ impl JobResultReporter {
     ) -> Result<(), String> {
         // Parse UUID string thành 16 bytes nhị phân
         let job_id_bytes = uuid::Uuid::parse_str(&result.job_id)
-            .map(|u| u.as_bytes().to_vec())
-            .unwrap_or_default();
+            .map(|value| value.as_bytes().to_vec())
+            .map_err(|error| format!("result job_id is not a UUID: {error}"))?;
 
         // Convert hex trace_id thành 16 bytes nhị phân
         let trace_id_bytes = if result.trace_id.is_empty() {

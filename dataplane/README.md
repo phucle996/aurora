@@ -6,6 +6,8 @@ health và coordination. Dataplane không có credential Redis trung tâm.
 
 God View chính:
 
+- [`leader_worker_god_view.md`](../god_view/dataplane/leader_worker_god_view.md)
+- [`observability_logging_god_view.md`](../god_view/dataplane/observability_logging_god_view.md)
 - [`kafka_platform_transport_god_view.md`](../god_view/platform/kafka_platform_transport_god_view.md)
 - [`zone_metadata_sync_and_state_machine_god_view.md`](../god_view/hierarchy/zone_metadata_sync_and_state_machine_god_view.md)
 - [`mail_configuration_projection_god_view.md`](../god_view/mail/mail_configuration_projection_god_view.md)
@@ -57,13 +59,15 @@ sequenceDiagram
 - Lease giảm concurrent duplicate nhưng external executor vẫn phải idempotent.
 - Watchdog renew lease bounded-concurrent; timeout publish terminal result rồi settle.
 
-## 3. Admission và autoscaling
+## 3. Leader, admission và autoscaling
 
+- Stable Zone leader giữ `lease.zone.leader`, TTL 15 giây và renew mỗi 5 giây.
+- Chỉ leader chạy recurring infrastructure probes, metadata repair, Zone report và scale decision.
 - Hysteresis mở circuit từ `80%`, đóng dưới `50%`.
 - Pacing tăng theo active workers/CPU/RAM.
 - Bounded MPSC truyền backpressure.
-- Autoscaler dùng Kafka lag từ chính consumer group.
-- Lag stale không được dùng làm tín hiệu scale/state tích cực.
+- Mỗi node xuất cached lag của partition local; leader aggregate rồi phát fenced scale directive TTL 15 giây.
+- Worker chỉ apply directive đúng Zone/chưa hết hạn; lag stale giữ target trước.
 
 ## 4. Mail runtime
 
@@ -105,7 +109,21 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 - `src/job_lifecycle/consumer.rs`: command validation, DLQ, lease, dispatch.
 - `src/job_lifecycle/runner.rs`: execution, retry/result durability.
 - `src/workerpool/watchdog.rs`: timeout/lease renewal.
-- `src/zone_gateway/`: metadata snapshot/query/report.
+- `src/leader/`: election, metadata, health probe, report, storage scan và scale decision.
+- `src/workerpool/scale_follower.rs`: apply fenced worker target.
 - `src/executor/mail/runtime/`: customer broker suites.
 - `src/executor/mail/processor/`: render/JMAP/batching.
-- `src/executor/mail/supervisor/`: consumer runtime reporting and health observation.
+- `src/executor/mail/supervisor/`: pod-local runtime reporting; không probe hạ tầng.
+
+## 7. Structured log controls
+
+| Environment | Default | Boundary |
+|---|---:|---|
+| `APP_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `APP_LOG_BUFFERED_LINES` | `16384` | Clamped `1024..262144`; queue đầy drop có metric, không block Tokio |
+| `APP_LOG_MAX_FIELD_BYTES` | `16384` | Clamped `1024..262144`; áp dụng trước JSON serialization |
+| `APP_LOG_RATE_LIMIT_MS` | `5000` | Clamped `100..60000`; chỉ suppress warning/error trùng |
+| `OTEL_TRACE_SAMPLE_RATIO` | `1.0` | Clamped `0..1`; ParentBased ratio chỉ áp dụng cho root trace mới |
+
+Dataplane emit một NDJSON record trên stdout cho mỗi event. Không cấu hình thêm direct OTLP Logs
+song song với filelog collector vì cùng record sẽ bị ingest hai lần.

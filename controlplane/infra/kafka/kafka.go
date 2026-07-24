@@ -32,6 +32,8 @@ func NewProducer(ctx context.Context, cfg *config.KafkaCfg) (*Producer, error) {
 		kgo.ProducerLinger(5 * time.Millisecond),
 		kgo.ProducerBatchMaxBytes(64 * 1024),
 		kgo.RecordRetries(10),
+		// [COMMENT]: Tự động thử lại khi gặp lỗi unknown topic do cache metadata của franz-go chưa kịp nạp từ broker.
+		kgo.UnknownTopicRetries(10),
 		kgo.RecordDeliveryTimeout(60 * time.Second),
 	}
 

@@ -14,6 +14,12 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
+const ZONE_L1_TTL: Duration = Duration::from_secs(30);
+// [FAILURE SEMANTICS]: Envoy allows 2s for the complete ext_authz check. Keep the
+// nested Redis request below that budget so ACR can still return a bounded L1 snapshot.
+const ZONE_REFRESH_TIMEOUT: Duration = Duration::from_secs(1);
+const ZONE_REFRESH_FAILURE_BACKOFF: Duration = Duration::from_secs(1);
+
 #[allow(dead_code)]
 pub mod zone_proto {
     tonic::include_proto!("core.rpc");
@@ -35,7 +41,7 @@ pub async fn fetch_all_zones_from_shared_redis(
             "hierarchy.zone.get_zone_list",
             "hierarchy.zone.get_zone_list.reply.",
             buf,
-            Duration::from_secs(5),
+            ZONE_REFRESH_TIMEOUT,
         )
         .await
         .map_err(|e| format!("zone.redis: Shared Redis request failed: {}", e))?;
@@ -76,6 +82,7 @@ struct SharedL1ZoneCache {
     code_to_id: RwLock<HashMap<String, CacheEntry<String>>>,
     id_to_status: RwLock<HashMap<String, CacheEntry<String>>>,
     id_to_name: RwLock<HashMap<String, CacheEntry<String>>>,
+    next_catalog_refresh_at: RwLock<Option<Instant>>,
     single_flight: Mutex<()>,
 }
 
@@ -85,6 +92,7 @@ fn get_l1_cache() -> &'static SharedL1ZoneCache {
         code_to_id: RwLock::new(HashMap::new()),
         id_to_status: RwLock::new(HashMap::new()),
         id_to_name: RwLock::new(HashMap::new()),
+        next_catalog_refresh_at: RwLock::new(None),
         single_flight: Mutex::new(()),
     })
 }
@@ -238,10 +246,12 @@ async fn l1_lookup_code(code: &str) -> Option<(String, String)> {
 }
 
 async fn l1_set_zone(code: &str, id: &str, status: &str, name: &str) {
+    l1_set_zone_until(code, id, status, name, Instant::now() + ZONE_L1_TTL).await;
+}
+
+async fn l1_set_zone_until(code: &str, id: &str, status: &str, name: &str, expiry: Instant) {
     // [COMMENT]: PubSub có thể mất message khi reconnect; TTL ngắn chặn stale L1 vô hạn
     // và buộc ACR quay về Shared Redis L2 định kỳ.
-    let expiry = Instant::now() + Duration::from_secs(30);
-
     let cache = get_l1_cache();
     cache.code_to_id.write().await.insert(
         code.to_string(),
@@ -322,24 +332,57 @@ async fn sync_zones_from_controlplane(
     shared_redis: &Arc<SharedRedisBus>,
     redis_client: &redis::Client,
 ) {
+    if catalog_refresh_not_due().await {
+        return;
+    }
+
     let _lock = get_l1_cache().single_flight.lock().await;
 
-    if let Ok(zones) = fetch_all_zones_from_shared_redis(shared_redis).await {
-        for z in &zones {
-            let clean_code = z.zone_code.trim().to_lowercase();
-            l1_set_zone(&clean_code, &z.zone_id, &z.status, &z.name).await;
+    // [RACE]: All waiters re-check freshness after acquiring single-flight. Without
+    // this fence, a burst would serialize into one Controlplane request per caller.
+    if catalog_refresh_not_due().await {
+        return;
+    }
 
-            if let Ok(mut conn) = redis_client.get_async_connection().await {
-                let redis_key = format!("zone:code:{}", clean_code);
-                let redis_val = format!("{}:{}", z.zone_id, z.status);
-                let _: Result<(), _> = redis::cmd("SET")
-                    .arg(&redis_key)
-                    .arg(&redis_val)
-                    .arg("EX")
-                    .arg(86400u64)
-                    .query_async(&mut conn)
-                    .await;
+    match fetch_all_zones_from_shared_redis(shared_redis).await {
+        Ok(zones) => {
+            let expiry = Instant::now() + ZONE_L1_TTL;
+            for z in &zones {
+                let clean_code = z.zone_code.trim().to_lowercase();
+                l1_set_zone_until(&clean_code, &z.zone_id, &z.status, &z.name, expiry).await;
+
+                if let Ok(mut conn) = redis_client.get_async_connection().await {
+                    let redis_key = format!("zone:code:{}", clean_code);
+                    let redis_val = format!("{}:{}", z.zone_id, z.status);
+                    let _: Result<(), _> = redis::cmd("SET")
+                        .arg(&redis_key)
+                        .arg(&redis_val)
+                        .arg("EX")
+                        .arg(86400u64)
+                        .query_async(&mut conn)
+                        .await;
+                }
             }
+            *get_l1_cache().next_catalog_refresh_at.write().await = Some(expiry);
+        }
+        Err(error) => {
+            // [BACKPRESSURE]: Bound retry amplification after a Central/Redis failure.
+            // Concurrent waiters reuse the current bounded L1 snapshot during this cooldown.
+            *get_l1_cache().next_catalog_refresh_at.write().await =
+                Some(Instant::now() + ZONE_REFRESH_FAILURE_BACKOFF);
+            Logger::sys_error(
+                "zone.cache",
+                "Failed to refresh zone catalog; serving bounded L1 snapshot",
+                &error,
+            );
         }
     }
+}
+
+async fn catalog_refresh_not_due() -> bool {
+    get_l1_cache()
+        .next_catalog_refresh_at
+        .read()
+        .await
+        .is_some_and(|expiry| Instant::now() <= expiry)
 }
