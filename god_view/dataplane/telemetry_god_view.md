@@ -295,6 +295,6 @@ queue flush. Telemetry không được trở thành command path hoặc business
 - `controlplane/dev/grafana/provisioning/dashboards/job-runtime.json`: JO throughput,
   Kafka latency/failure, DLQ, worker-exit và log-loss panels.
 - `controlplane/dev/grafana/provisioning/dashboards/job-logs.json`: cross-service job/trace log search.
-- `notification-service/src/infra/redis.rs`
+- `notification-service/src/inbound/job_stream.rs`
 - `notification-service/src/infra/centrifugo.rs`
 - `controlplane/dev/otel/otel-collector.yml`

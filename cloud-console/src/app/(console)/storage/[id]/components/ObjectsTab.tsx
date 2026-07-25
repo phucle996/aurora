@@ -107,7 +107,7 @@ function decodeObjectStsResponse(hexStr: string) {
 }
 
 export function ObjectsTab({ bucket }: ObjectsTabProps) {
-  const { subscribeToEvent } = useRealtime();
+  const { subscribeToStream } = useRealtime();
   const [currentPath, setCurrentPath] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null); // [COMMENT]: State quản lý lỗi kết nối/S3 để hiển thị inline
@@ -151,7 +151,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
           reject(new Error("Không nhận được phản hồi từ cổng bảo mật (Timeout)."));
         }, 20000);
 
-        const unsubscribe = subscribeToEvent("job.notification", (eventData: any) => {
+        const unsubscribe = subscribeToStream("job", "job.notification", (eventData: any) => {
           if (eventData.transaction_id === event_id) {
             clearTimeout(timeout);
             unsubscribe();
@@ -722,7 +722,6 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
         onClose={() => setUploadModalOpen(false)}
         bucket={bucket}
         currentPath={currentPath}
-        subscribeToEvent={subscribeToEvent}
         fetchListObjects={fetchListObjects}
         getS3Client={getS3Client}
       />

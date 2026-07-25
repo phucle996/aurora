@@ -53,7 +53,7 @@ graph TD
     acr -- "5. Kiểm tra session & Secret Hash" --> AuthRedis
     acr -- "6. PUBLISH request-scoped reply" --> SharedRedis
     SharedRedis -- "7. Return verify result" --> Notification
-    Notification -- "8. Response 200 OK + Channel 'personal:<user_id>'" --> Centrifugo
+    Notification -- "8. Response 200 OK + jobs:<user_id> + runtime:<user_id>" --> Centrifugo
     Centrifugo -- "9. Thiết lập kết nối thành công" --> Client
 ```
 
@@ -88,7 +88,7 @@ sequenceDiagram
         alt Xác thực hợp lệ
             acr-->>SharedRedis: Reply request-scoped (valid = true, admin_id)
             SharedRedis-->>NS: Nhận response
-            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["personal:<user_id>"])
+            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["jobs:<user_id>", "runtime:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
             acr-->>SharedRedis: Reply request-scoped (valid = false)
@@ -108,7 +108,7 @@ sequenceDiagram
         alt Xác thực hợp lệ
             acr-->>SharedRedis: Trả request-scoped response (valid = true, user_id)
             SharedRedis-->>NS: Nhận response
-            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["personal:<user_id>"])
+            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["jobs:<user_id>", "runtime:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
             acr-->>SharedRedis: Trả request-scoped response (valid = false)
@@ -165,9 +165,10 @@ Notification duy trì một Pub/Sub reply socket cho cả pod. Mỗi request đ�
 
 ## 🏛️ 6. Bản Đồ Tham Chiếu File Mã Nguồn (Implementation References)
 
-- **Route Handler / Connect Endpoint**: [connect.rs](../../notification-service/src/handler/connect.rs).
-- **Notification Shared Redis Bus**: [shared_redis.rs](../../notification-service/src/infra/shared_redis.rs).
-- **User/Admin Verification Service**: [user.rs](../../notification-service/src/service/auth/user.rs), [admin.rs](../../notification-service/src/service/auth/admin.rs).
+- **HTTP Connect Adapter**: [connect.rs](../../notification-service/src/inbound/connect.rs).
+- **Connect Authorization Use Case**: [auth.rs](../../notification-service/src/application/auth.rs).
+- **Notification Shared Redis Auth Bus**: [auth_bus.rs](../../notification-service/src/infra/redis/auth_bus.rs).
+- **User/Admin Verification Contract**: [trinity.rs](../../notification-service/src/contract/trinity.rs).
 - **ACR Shared Redis Router**: [redis.rs](../../acr/src/transport/redis.rs).
 - **ACR Session Validator**: [verify.rs](../../acr/src/user/verify.rs), [verify.rs](../../acr/src/sre/verify.rs).
 - **Cấu hình Router**: [router.rs](../../notification-service/src/app/router.rs) - Cấu hình đường dẫn `/api/v1/realtime/connect`.

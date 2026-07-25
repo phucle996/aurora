@@ -1,81 +1,64 @@
-use crate::observability::logger::Logger;
+use crate::application::ports::{AppError, RealtimePublisher};
+use crate::config::CentrifugoConfig;
+use crate::observability::{logger::Logger, metrics::MetricsManager, tracing::OtelTracer};
+use futures_util::future::BoxFuture;
 use opentelemetry::trace::FutureExt;
 use reqwest::Client;
 use serde::Serialize;
 
-// Định nghĩa cấu trúc máy khách kết nối đến Centrifugo API Gateway
 #[derive(Clone)]
-pub struct CentrifugoClient {
-    client: Client,  // HTTP Client có sẵn connection pooling và timeout
-    api_url: String, // Địa chỉ base API URL của Centrifugo
-    api_key: String, // Mã khóa API Key dùng để ký/xác thực request
+pub struct CentrifugoPublisher {
+    client: Client,
+    publish_url: String,
+    api_key: String,
 }
 
-// Cấu trúc payload gửi tin đến Centrifugo theo đặc tả HTTP API
 #[derive(Serialize)]
 struct PublishRequest {
-    channel: String,         // Kênh đích nhận thông tin (ví dụ: personal:user_id)
-    data: serde_json::Value, // Nội dung JSON thực tế hiển thị cho Client
+    channel: String,
+    data: serde_json::Value,
 }
 
-impl CentrifugoClient {
-    // Khởi tạo mới một CentrifugoClient
-    pub fn new(api_url: String, api_key: String) -> Self {
-        // [ignoring loop detection]
-        // Xây dựng HTTP Client với timeout 5 giây để tránh treo request nếu network chập chờn
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+impl CentrifugoPublisher {
+    pub fn new(config: &CentrifugoConfig) -> Result<Self, reqwest::Error> {
+        let client = Client::builder().timeout(config.request_timeout).build()?;
+        let publish_url = if config.api_url.ends_with("/publish") {
+            config.api_url.clone()
+        } else {
+            format!("{}/publish", config.api_url.trim_end_matches('/'))
+        };
 
-        Self {
+        Ok(Self {
             client,
-            api_url,
-            api_key,
-        }
+            publish_url,
+            api_key: config.api_key.clone(),
+        })
     }
 
-    // Đẩy thông điệp JSON tới Centrifugo API để truyền xuống Websocket client
-    pub async fn publish(
+    async fn publish_json(
         &self,
         channel: &str,
         data: serde_json::Value,
     ) -> Result<(), reqwest::Error> {
-        // [ignoring loop detection]
-        Logger::sys_info(
-            "centrifugo.publish",
-            &format!("Publishing event to channel: {}", channel),
-        );
-
-        // Chuẩn hóa endpoint URL, tự động thêm hậu tố /publish nếu chưa có
-        let url = if self.api_url.ends_with("/publish") {
-            self.api_url.clone()
-        } else {
-            format!("{}/publish", self.api_url)
-        };
-
-        // Đóng gói thông điệp gửi đi
         let payload = PublishRequest {
-            channel: channel.to_string(),
+            channel: channel.to_owned(),
             data,
         };
-
-        let trace_context = crate::observability::otel::OtelTracer::start_current_span(
-            "POST centrifugo.publish",
+        let trace_context = OtelTracer::start_current_span(
+            "centrifugo.publish",
             opentelemetry::trace::SpanKind::Client,
             vec![
                 opentelemetry::KeyValue::new("http.request.method", "POST"),
                 opentelemetry::KeyValue::new("server.address", "centrifugo"),
             ],
         );
-        let propagation = crate::observability::otel::OtelTracer::inject_context(&trace_context);
+        let propagation = OtelTracer::inject_context(&trace_context);
         let mut request = self
             .client
-            .post(&url)
-            .header("X-API-Key", &self.api_key) // Gửi API Key qua Header chuẩn của Centrifugo
-            .header("Authorization", format!("apikey {}", self.api_key)) // Dự phòng Authorization header cho các phiên bản cũ hơn
+            .post(&self.publish_url)
+            .header("X-API-Key", &self.api_key)
+            .header("Authorization", format!("apikey {}", self.api_key))
             .json(&payload);
-
         if !propagation.traceparent.is_empty() {
             request = request.header("traceparent", propagation.traceparent);
         }
@@ -89,10 +72,36 @@ impl CentrifugoClient {
             .await
             .and_then(reqwest::Response::error_for_status)
             .map(|_| ());
-        crate::observability::otel::OtelTracer::finish_span(
+        OtelTracer::finish_span(
             &trace_context,
             result.as_ref().err().map(|_| "CENTRIFUGO_PUBLISH_FAILED"),
         );
         result
+    }
+}
+
+impl RealtimePublisher for CentrifugoPublisher {
+    fn publish<'a>(
+        &'a self,
+        channel: &'a str,
+        data: serde_json::Value,
+    ) -> BoxFuture<'a, Result<(), AppError>> {
+        Box::pin(async move {
+            match self.publish_json(channel, data).await {
+                Ok(()) => {
+                    MetricsManager::record_centrifugo_publish("success");
+                    Ok(())
+                }
+                Err(error) => {
+                    MetricsManager::record_centrifugo_publish("failed");
+                    Logger::sys_error(
+                        "centrifugo.publish",
+                        "Centrifugo publish failed",
+                        &error.to_string(),
+                    );
+                    Err(Box::new(error) as AppError)
+                }
+            }
+        })
     }
 }

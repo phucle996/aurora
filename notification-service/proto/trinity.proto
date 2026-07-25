@@ -1,7 +1,7 @@
 syntax = "proto3";
 package trinity.rpc;
 
-// Request/Response xác thực cho Admin/SRE quản trị hệ thống qua NATS
+// Request/Response xác thực cho Admin/SRE quản trị hệ thống qua Shared Redis
 message VerifyAdminTrinityTokenRequest {
   string access_token = 1;
   string access_key = 2;
@@ -13,7 +13,7 @@ message VerifyAdminTrinityTokenResponse {
   string admin_id = 2;
 }
 
-// Request/Response xác thực cho End-User thông thường qua NATS
+// Request/Response xác thực cho End-User thông thường qua Shared Redis
 message VerifyUserTrinityTokenRequest {
   string access_token = 1;
   string access_key = 2;

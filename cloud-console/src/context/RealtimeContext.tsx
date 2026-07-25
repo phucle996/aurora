@@ -1,26 +1,47 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Centrifuge } from "centrifuge";
 import { useUserSession } from "@/hooks/useUserSession";
 
-// Định nghĩa kiểu dữ liệu callback nhận payload của event
-type RealtimeCallback = (payload: any) => void;
+export type RealtimeStream = "job" | "runtime";
+type RealtimePayload = Record<string, unknown>;
+type RealtimeCallback = (payload: unknown) => void;
 
 interface RealtimeContextType {
   centrifuge: Centrifuge | null;
   isConnected: boolean;
-  // [COMMENT]: Hàm global đăng ký lắng nghe sự kiện cụ thể qua eventType, trả về hàm hủy đăng ký (cleanup)
-  subscribeToEvent: (eventType: string, callback: RealtimeCallback) => () => void;
+  subscribeToStream: <T = RealtimePayload>(
+    stream: RealtimeStream,
+    eventType: string,
+    callback: (payload: T) => void,
+  ) => () => void;
+}
+
+function noopSubscribe<T>(
+  _stream: RealtimeStream,
+  _eventType: string,
+  _callback: (payload: T) => void,
+): () => void {
+  void _stream;
+  void _eventType;
+  void _callback;
+  return () => {};
 }
 
 const RealtimeContext = createContext<RealtimeContextType>({
   centrifuge: null,
   isConnected: false,
-  subscribeToEvent: () => () => {},
+  subscribeToStream: noopSubscribe,
 });
 
 export const useRealtime = () => useContext(RealtimeContext);
+
+function streamForChannel(channel: string | undefined): RealtimeStream | null {
+  if (channel?.startsWith("jobs:")) return "job";
+  if (channel?.startsWith("runtime:")) return "runtime";
+  return null;
+}
 
 export const RealtimeProvider: React.FC<{
   children: React.ReactNode;
@@ -28,123 +49,103 @@ export const RealtimeProvider: React.FC<{
 }> = ({ children, userId }) => {
   const [centrifuge, setCentrifuge] = useState<Centrifuge | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-
-  // [COMMENT]: Lưu trữ danh sách listeners đăng ký theo từng eventType dưới dạng Set để đảm bảo không trùng lặp
   const listenersRef = useRef<Record<string, Set<RealtimeCallback>>>({});
 
-  // [COMMENT]: Định nghĩa hàm đăng ký sự kiện, sử dụng useCallback để tránh tạo lại hàm khi re-render
-  const subscribeToEvent = useCallback((eventType: string, callback: RealtimeCallback) => {
-    if (!listenersRef.current[eventType]) {
-      listenersRef.current[eventType] = new Set();
-    }
-    listenersRef.current[eventType].add(callback);
-
-    // Trả về hàm dọn dẹp (cleanup) để xóa listener khi component unmount
-    return () => {
-      const eventListeners = listenersRef.current[eventType];
-      if (eventListeners) {
-        eventListeners.delete(callback);
-        if (eventListeners.size === 0) {
-          delete listenersRef.current[eventType];
-        }
+  const subscribeToStream = useCallback(
+    <T = RealtimePayload,>(
+      stream: RealtimeStream,
+      eventType: string,
+      callback: (payload: T) => void,
+    ) => {
+      void userId;
+      const key = `${stream}:${eventType}`;
+      if (!listenersRef.current[key]) {
+        listenersRef.current[key] = new Set();
       }
-    };
-  }, []);
+      const listener = callback as unknown as RealtimeCallback;
+      listenersRef.current[key].add(listener);
+
+      return () => {
+        const listeners = listenersRef.current[key];
+        if (!listeners) return;
+        listeners.delete(listener);
+        if (listeners.size === 0) delete listenersRef.current[key];
+      };
+    },
+    // A listener is scoped to the authenticated principal. Recreating this
+    // function on identity changes forces consumers to unregister old-user
+    // callbacks before the next user's channel can deliver a publication.
+    [userId],
+  );
 
   useEffect(() => {
-    // Chỉ chạy ở môi trường trình duyệt (Client-side) và khi có userId của phiên đăng nhập
     if (typeof window === "undefined" || !userId) {
-      setIsConnected(false);
-      setCentrifuge(null);
       return;
     }
 
     const wsUrl = process.env.NEXT_PUBLIC_CENTRIFUGO_WS_URL;
     if (!wsUrl) {
-      console.warn("🔌 NEXT_PUBLIC_CENTRIFUGO_WS_URL is not set, skipping connection");
+      console.warn("NEXT_PUBLIC_CENTRIFUGO_WS_URL is not set, skipping connection");
       return;
     }
 
-    console.log("🔌 Initializing Centrifugo connection to:", wsUrl);
-
-    // Khởi tạo Centrifuge client không có token để bắt buộc dùng connect proxy qua cookie auth
     const client = new Centrifuge(wsUrl);
-
     client.on("connected", () => {
-      console.log("🔌 Realtime connection established successfully");
+      setCentrifuge(client);
       setIsConnected(true);
     });
-
     client.on("disconnected", () => {
-      console.log("🔌 Realtime connection disconnected");
+      setCentrifuge(null);
       setIsConnected(false);
     });
 
-    // [COMMENT]: Vì Connect Proxy ở Backend (connect.rs) tự động trả về kênh `personal:${userId}`
-    // trong danh sách channels kết nối, Centrifugo sẽ tự động đăng ký (Server-side subscribe) kênh này.
-    // Client-side không được gọi `newSubscription` nữa để tránh trùng lặp và báo lỗi 'already subscribed'.
-    // Thay vào đó, lắng nghe sự kiện `publication` trực tiếp trên client instance.
     client.on("publication", (ctx) => {
-      const isSensitive = ctx.data && (ctx.data.event_type === "storage.object.sts" || ctx.data.operation === "storage.object.sts");
-      if (!isSensitive) {
-        console.log("📥 Global Realtime publication received (Server-side sub):", ctx);
-      } else {
-        console.log("📥 Sensitive realtime publication received (STS token payload redacted)");
-      }
-      
-      if (ctx.data && ctx.data.event_type) {
-        const eventType: string = ctx.data.event_type;
-        // [COMMENT]: Lấy payload chính từ ctx.data
-        const eventData = ctx.data.data !== undefined ? ctx.data.data : ctx.data;
+      const stream = streamForChannel(ctx.channel);
+      if (!stream || !ctx.data || typeof ctx.data !== "object") return;
+      const data = ctx.data as RealtimePayload;
 
-        // [COMMENT]: Helper fire callbacks — tránh lặp code
-        const fireCallbacks = (key: string) => {
-          const cbs = listenersRef.current[key];
-          if (cbs) {
-            cbs.forEach((cb) => {
-              try {
-                cb(eventData);
-              } catch (err) {
-                console.error(`Error executing realtime callback [${key}] for event ${eventType}:`, err);
-              }
-            });
+      const eventType =
+        typeof data.event_type === "string" ? data.event_type : undefined;
+      if (!eventType) return;
+
+      // Channel is the authoritative stream boundary; the payload marker is
+      // diagnostic and cannot move a runtime event into the durable job queue.
+      if (data.stream && data.stream !== stream) return;
+      const eventData = data.data !== undefined ? data.data : data;
+
+      const fire = (key: string) => {
+        listenersRef.current[`${stream}:${key}`]?.forEach((callback) => {
+          try {
+            callback(eventData);
+          } catch (error) {
+            console.error(`Error executing realtime callback [${stream}:${key}]`, error);
           }
-        };
+        });
+      };
 
-        // [COMMENT]: 1. Fire listener cụ thể theo event_type chính xác (e.g. "storage.bucket.sizes.sync")
-        fireCallbacks(eventType);
-
-        // [COMMENT]: 2. Fire namespace wildcard theo prefix — "storage.*" bắt tất cả storage events,
-        // "mail.*" bắt tất cả mail events, v.v.
-        const dotIdx = eventType.indexOf(".");
-        if (dotIdx !== -1) {
-          const namespaceWildcard = eventType.substring(0, dotIdx) + ".*";
-          fireCallbacks(namespaceWildcard);
-        }
-
-        // [COMMENT]: 3. Fire global wildcard "job.notification" để NotificationsDrawer bắt được TẤT CẢ job events
-        // bất kể namespace nào (storage.*, mail.*, iam.*, v.v.)
-        fireCallbacks("job.notification");
+      fire(eventType);
+      const dotIndex = eventType.indexOf(".");
+      if (dotIndex !== -1) {
+        fire(`${eventType.substring(0, dotIndex)}.*`);
       }
     });
 
     client.connect();
-    setCentrifuge(client);
 
     return () => {
-      console.log("🔌 Cleaning up Centrifugo connection");
       client.disconnect();
+      setCentrifuge(null);
+      setIsConnected(false);
     };
   }, [userId]);
 
   return (
-    <RealtimeContext.Provider value={{ centrifuge, isConnected, subscribeToEvent }}>
+    <RealtimeContext.Provider value={{ centrifuge, isConnected, subscribeToStream }}>
       {children}
     </RealtimeContext.Provider>
   );
 };
 
-// [COMMENT]: Wrapper giúp nạp userId từ Session Context và truyền vào RealtimeProvider ở phía client
 export const RealtimeProviderWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { profile } = useUserSession();
   return <RealtimeProvider userId={profile?.user_id}>{children}</RealtimeProvider>;

@@ -26,7 +26,7 @@ function errorMessage(error: unknown): string {
 }
 export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelete }: TemplatesTabProps) {
   const queryClient = useQueryClient();
-  const { subscribeToEvent } = useRealtime();
+  const { subscribeToStream } = useRealtime();
   const listKey = ["mail", scopeKey, "templates"] as const;
   const [search, setSearch] = useState("");
   const [selectedID, setSelectedID] = useState<string | null>(null);
@@ -49,7 +49,7 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
   useEffect(() => {
     // [COMMENT]: Screen không poll operation; terminal Centrifugo signal merge lại list/detail/version read model.
-    return subscribeToEvent("job.notification", (payload: MailTemplateJobNotification) => {
+    return subscribeToStream("job", "job.notification", (payload: MailTemplateJobNotification) => {
       if (typeof payload?.operation !== "string" || !payload.operation.startsWith("mail.template.") || !payload.resource_id || typeof payload.status !== "string" || !["SUCCESS", "FAILED"].includes(payload.status)) return;
       void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "templates"] });
       if (selectedID === payload.resource_id) {
@@ -58,7 +58,7 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         if (payload.operation === "mail.template.deleted" && payload.status === "SUCCESS") setSelectedID(null);
       }
     });
-  }, [queryClient, scopeKey, selectedID, subscribeToEvent]);
+  }, [queryClient, scopeKey, selectedID, subscribeToStream]);
 
   const save = useMutation({
     mutationFn: async () => {

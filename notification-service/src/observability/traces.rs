@@ -1,10 +1,7 @@
 use opentelemetry::propagation::{Extractor, Injector};
-use opentelemetry::trace::{
-    SpanId, SpanKind, Status, TraceContextExt, TraceFlags, TraceId, TraceState, Tracer,
-};
+use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
 use opentelemetry::{global, Context, KeyValue};
 use std::borrow::Cow;
-use tokio::task_local;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 const MAX_TRACEPARENT_BYTES: usize = 128;
@@ -50,96 +47,6 @@ impl Extractor for BorrowedPropagationContext<'_> {
             (true, true) => Vec::new(),
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct TraceContext {
-    pub trace_id: String,
-    pub span_id: String,
-    sampled: bool,
-}
-
-impl TraceContext {
-    pub fn parse(traceparent: &str) -> Option<Self> {
-        if traceparent.len() > MAX_TRACEPARENT_BYTES {
-            return None;
-        }
-
-        if traceparent.len() == 32 {
-            let trace_id = TraceId::from_hex(traceparent).ok()?;
-            if trace_id == TraceId::INVALID {
-                return None;
-            }
-            return Some(Self {
-                trace_id: trace_id.to_string(),
-                span_id: random_span_id().to_string(),
-                sampled: true,
-            });
-        }
-
-        let mut parts = traceparent.split('-');
-        let version = parts.next()?;
-        let trace_id = parts.next()?;
-        let span_id = parts.next()?;
-        let flags = parts.next()?;
-        if parts.next().is_some()
-            || version != "00"
-            || trace_id.len() != 32
-            || span_id.len() != 16
-            || flags.len() != 2
-        {
-            return None;
-        }
-        let trace_id = TraceId::from_hex(trace_id).ok()?;
-        let span_id = SpanId::from_hex(span_id).ok()?;
-        let flags = u8::from_str_radix(flags, 16).ok()?;
-        if trace_id == TraceId::INVALID || span_id == SpanId::INVALID {
-            return None;
-        }
-
-        Some(Self {
-            trace_id: trace_id.to_string(),
-            span_id: span_id.to_string(),
-            sampled: flags & TraceFlags::SAMPLED.to_u8() != 0,
-        })
-    }
-
-    pub fn new_random() -> Self {
-        Self {
-            trace_id: random_trace_id().to_string(),
-            span_id: random_span_id().to_string(),
-            sampled: true,
-        }
-    }
-
-    pub fn get_otel_context(&self) -> Context {
-        let (Ok(trace_id), Ok(span_id)) = (
-            TraceId::from_hex(&self.trace_id),
-            SpanId::from_hex(&self.span_id),
-        ) else {
-            return Context::new();
-        };
-        if trace_id == TraceId::INVALID || span_id == SpanId::INVALID {
-            return Context::new();
-        }
-
-        let flags = if self.sampled {
-            TraceFlags::SAMPLED
-        } else {
-            TraceFlags::default()
-        };
-        Context::new().with_remote_span_context(opentelemetry::trace::SpanContext::new(
-            trace_id,
-            span_id,
-            flags,
-            true,
-            TraceState::default(),
-        ))
-    }
-}
-
-task_local! {
-    pub static CURRENT_TRACE: TraceContext;
 }
 
 pub struct OtelTracer;
@@ -213,10 +120,6 @@ impl OtelTracer {
         });
         carrier
     }
-
-    pub fn get_current_trace() -> Option<TraceContext> {
-        CURRENT_TRACE.try_with(Clone::clone).ok()
-    }
 }
 
 pub(crate) fn current_span_identifiers() -> (Option<String>, Option<String>) {
@@ -230,9 +133,7 @@ pub(crate) fn current_span_identifiers() -> (Option<String>, Option<String>) {
         return (Some(ids.0), Some(ids.1));
     }
 
-    CURRENT_TRACE
-        .try_with(|value| (Some(value.trace_id.clone()), Some(value.span_id.clone())))
-        .unwrap_or((None, None))
+    (None, None)
 }
 
 fn identifiers_from_context(context: &Context) -> Option<(String, String)> {
@@ -255,9 +156,7 @@ fn current_parent_context() -> Context {
     if tracing_context.span().span_context().is_valid() {
         return tracing_context;
     }
-    CURRENT_TRACE
-        .try_with(TraceContext::get_otel_context)
-        .unwrap_or_else(|_| Context::new())
+    Context::new()
 }
 
 fn bounded_span_name(name: Cow<'static, str>) -> Cow<'static, str> {
@@ -271,18 +170,6 @@ fn bounded_span_name(name: Cow<'static, str>) -> Cow<'static, str> {
     Cow::Owned(name[..end].to_owned())
 }
 
-fn random_trace_id() -> TraceId {
-    let bytes = *uuid::Uuid::new_v4().as_bytes();
-    TraceId::from_bytes(bytes)
-}
-
-fn random_span_id() -> SpanId {
-    let uuid = uuid::Uuid::new_v4();
-    let mut bytes = [0_u8; 8];
-    bytes.copy_from_slice(&uuid.as_bytes()[..8]);
-    SpanId::from_bytes(bytes)
-}
-
 pub fn get_node_hostname() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| {
         hostname::get()
@@ -293,31 +180,31 @@ pub fn get_node_hostname() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{OtelTracer, TraceContext};
+    use super::OtelTracer;
     use opentelemetry::trace::TraceContextExt;
 
     #[test]
     fn rejects_malformed_or_zero_w3c_context() {
-        assert!(
-            TraceContext::parse("00-00000000000000000000000000000000-0000000000000000-01")
-                .is_none()
-        );
-        assert!(TraceContext::parse("00-not-hex-0000000000000001-01").is_none());
         assert!(!OtelTracer::is_valid_propagation_context(
             "00-00000000000000000000000000000000-0000000000000000-01",
-            ""
+            "",
+        ));
+        assert!(!OtelTracer::is_valid_propagation_context(
+            "00-not-hex-0000000000000001-01",
+            "",
+        ));
+        assert!(!OtelTracer::is_valid_propagation_context(
+            "00-00000000000000000000000000000000-0000000000000000-01",
+            "",
         ));
     }
 
     #[test]
     fn preserves_sample_flag() {
-        let context =
-            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
-                .expect("valid traceparent");
-        assert!(!context
-            .get_otel_context()
-            .span()
-            .span_context()
-            .is_sampled());
+        let context = OtelTracer::extract_context(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+            "",
+        );
+        assert!(!context.span().span_context().is_sampled());
     }
 }

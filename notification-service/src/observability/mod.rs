@@ -19,13 +19,11 @@ mod logs;
 pub mod metrics;
 mod traces;
 
-// Compatibility facades keep this refactor independent from the upcoming
-// handler/transport callsite cleanup.
 pub mod logger {
     pub use super::logs::*;
 }
 
-pub mod otel {
+pub mod tracing {
     pub use super::traces::*;
 }
 
@@ -275,7 +273,7 @@ fn build_tracer(
         .with_resource(resource);
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
-        .with_endpoint(&config.otel_exporter_otlp_endpoint)
+        .with_endpoint(&config.otel.exporter_endpoint)
         .with_timeout(export_timeout);
 
     opentelemetry_otlp::new_pipeline()
@@ -293,7 +291,7 @@ fn build_meter_provider(
 ) -> Result<SdkMeterProvider, opentelemetry::metrics::MetricsError> {
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
-        .with_endpoint(&config.otel_exporter_otlp_endpoint)
+        .with_endpoint(&config.otel.exporter_endpoint)
         .with_timeout(export_timeout)
         .build_metrics_exporter(
             Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),

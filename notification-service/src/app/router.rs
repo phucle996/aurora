@@ -1,13 +1,15 @@
-use crate::handler::connect::{handle_connect, AppState};
-use axum::{routing::post, Router};
+use crate::app::state::AppState;
+use crate::inbound::connect::handle_connect;
+use axum::{extract::DefaultBodyLimit, routing::post, Router};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
-// Xây dựng router chính của Axum và cấu hình middleware trace cho các request HTTP
-pub fn build_router(app_state: Arc<AppState>) -> Router {
-    // [ignoring loop detection]
+pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/realtime/connect", post(handle_connect))
+        // Centrifugo connect payloads are small; this prevents an attacker from
+        // allocating an oversized JSON body before schema validation runs.
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(TraceLayer::new_for_http())
-        .with_state(app_state)
+        .with_state(state)
 }

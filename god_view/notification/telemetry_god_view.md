@@ -55,13 +55,10 @@ nhận durable completion, cấp quyền hoặc tính tiền.
 
 ## Known implementation debt ngoài telemetry core
 
-- `handler/connect.rs` hiện còn log raw payload khi deserialize thất bại, trái
-  security invariant ở trên. Callsite này phải được redaction trong lượt refactor
-  handler; không được coi hành vi AS-IS là contract.
-- Connect handler còn task-local trace compatibility, và một số success callsite
-  vẫn tạo `format!` trước khi gọi logger. Core giữ facade tương thích để không trộn
-  refactor handler/transport vào thay đổi này; lượt callsite tiếp theo phải chuyển
-  sang typed span/event để loại allocation còn lại.
+- Connect input hiện được parse bằng bounded Axum JSON extraction trong
+  `inbound/connect.rs`; payload/cookie/token không được ghi raw ra log.
+- Connect, Redis Stream, Redis Pub/Sub và Centrifugo đều dùng OTel `Context`
+  chuẩn; không còn task-local trace compatibility state trên hot path.
 
 ## Environment contract
 

@@ -53,7 +53,7 @@ function errorMessage(error: unknown): string {
 
 export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelete }: ConsumersTabProps) {
   const queryClient = useQueryClient();
-  const { subscribeToEvent } = useRealtime();
+  const { subscribeToStream } = useRealtime();
   const queryKey = ["mail", scopeKey, "consumers"] as const;
   const [search, setSearch] = useState("");
   const [formOpen, setFormOpen] = useState(false);
@@ -93,7 +93,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
   useEffect(() => {
     // [COMMENT]: Không poll status URL và không lưu audit ở UI; terminal Centrifugo signal chỉ merge lại read model liên quan.
-    return subscribeToEvent("job.notification", (payload: MailConsumerJobNotification) => {
+    return subscribeToStream("job", "job.notification", (payload: MailConsumerJobNotification) => {
       if (typeof payload?.operation !== "string" || !payload.operation.startsWith("mail.consumer.") || !payload.resource_id || typeof payload.status !== "string" || !["SUCCESS", "FAILED"].includes(payload.status)) return;
       void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumers"] });
       if (detailConsumerID === payload.resource_id) {
@@ -103,10 +103,10 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         void queryClient.invalidateQueries({ queryKey: runtimeWatchKey });
       }
     });
-  }, [detailConsumerID, queryClient, runtimeWatchKey, scopeKey, subscribeToEvent]);
+  }, [detailConsumerID, queryClient, runtimeWatchKey, scopeKey, subscribeToStream]);
 
   useEffect(() => {
-    return subscribeToEvent("mail.consumer.runtime.changed", (payload: MailConsumerRuntimeNotification) => {
+    return subscribeToStream("runtime", "mail.consumer.runtime.changed", (payload: MailConsumerRuntimeNotification) => {
       if (
         !detailConsumerID ||
         payload.consumer_id !== detailConsumerID ||
@@ -154,7 +154,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         };
       });
     });
-  }, [detailConsumerID, queryClient, runtimeWatchKey, subscribeToEvent]);
+  }, [detailConsumerID, queryClient, runtimeWatchKey, subscribeToStream]);
 
   const save = useMutation({
     mutationFn: async () => {

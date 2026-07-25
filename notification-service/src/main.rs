@@ -1,11 +1,10 @@
-// Khai báo các module cấu trúc của dịch vụ Notification Service
 mod app;
+mod application;
 mod config;
-mod handler;
+mod contract;
+mod inbound;
 mod infra;
-mod listener;
 mod observability;
-mod service;
 
 use config::Config;
 use observability::logger::Logger;
@@ -19,8 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
     }
 
-    // Nạp cấu hình biến môi trường từ environment trước khi khởi tạo các dịch vụ khác
-    let cfg = Config::from_env();
+    let cfg = Config::from_env()?;
     // Guard owns the bounded log writer and OTel providers. Keeping it in main
     // prevents early worker shutdown and guarantees final flush on SIGTERM.
     let _telemetry_guard = TelemetryRuntime::init(&cfg)?;
@@ -30,19 +28,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     Logger::sys_info("system.startup", "Starting Notification Service");
 
-    // Khởi tạo toàn bộ kết nối hạ tầng từ folder app/
-    let app_state = app::init::init_infrastructure(&cfg).await;
-
-    // Xây dựng router định tuyến HTTP Axum từ folder app/
-    let app = app::router::build_router(app_state);
+    let runtime = app::bootstrap::Runtime::build(&cfg).await?;
+    let app = app::router::build_router(runtime.state());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.app_port));
     Logger::sys_info("system.web", &format!("Web server listening on {}", addr));
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            runtime.shutdown().await;
+            return Err(error.into());
+        }
+    };
+    let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .await;
+    runtime.shutdown().await;
+    serve_result?;
 
     Ok(())
 }

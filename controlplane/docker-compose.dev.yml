@@ -917,8 +917,6 @@ services:
       - APP_PORT=8083
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
-      # [COMMENT]: NATS Core chỉ phục vụ soft-state/runtime; job notification dùng Shared Redis.
-      - NATS_ADDR=nats://nats:4222
       - SHARED_REDIS_URL=redis://controlplane-cp-redis:6379/0
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317

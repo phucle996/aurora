@@ -12,7 +12,6 @@ interface UploadModalProps {
   onClose: () => void;
   bucket: BucketItem;
   currentPath: string[];
-  subscribeToEvent: (eventType: string, callback: (payload: any) => void) => () => void;
   fetchListObjects: () => void;
   getS3Client: () => Promise<S3Client>;
 }

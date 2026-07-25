@@ -5,6 +5,18 @@ import { Bell, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRealtime } from "@/context/RealtimeContext";
 
+type JobNotificationPayload = {
+  connect?: unknown;
+  client?: unknown;
+  subs?: unknown;
+  ping?: unknown;
+  operation?: string;
+  title?: string;
+  message?: string;
+  status?: string;
+  transaction_id?: string;
+};
+
 interface NotificationItem {
   id: string;
   title: string;
@@ -28,7 +40,7 @@ export function NotificationsDrawer() {
   const [activeToasts, setActiveToasts] = useState<ToastItem[]>([]);
   const notifRef = useRef<HTMLDivElement>(null);
 
-  const { subscribeToEvent } = useRealtime();
+  const { subscribeToStream } = useRealtime();
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -87,7 +99,7 @@ export function NotificationsDrawer() {
     window.addEventListener("local-notification:update", handleLocalNotificationUpdate);
 
     // [COMMENT]: Lắng nghe WebSocket kết quả của các Job không silent từ Centrifugo
-    const unsubscribe = subscribeToEvent("job.notification", (payload: any) => {
+    const unsubscribe = subscribeToStream("job", "job.notification", (payload: JobNotificationPayload) => {
       if (payload && payload.operation !== "storage.object.sts") {
         console.log("🔔 Realtime notification received in drawer component:", payload);
       } else if (payload) {
@@ -116,7 +128,7 @@ export function NotificationsDrawer() {
         "PROCESSING": "processing",
       };
 
-      const statusType = typeMap[payload.status] || "info";
+      const statusType = typeMap[payload.status ?? ""] || "info";
       const notifId = payload.transaction_id || Math.random().toString();
       const notifTitle = payload.title || "System Event";
       const notifMsg = payload.message || "";
@@ -155,7 +167,7 @@ export function NotificationsDrawer() {
       window.removeEventListener("local-notification:update", handleLocalNotificationUpdate);
       unsubscribe();
     };
-  }, [subscribeToEvent]);
+  }, [subscribeToStream]);
 
   return (
     <>
