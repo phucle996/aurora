@@ -70,7 +70,7 @@ impl JobNotifier {
                 if length >= tonumber(ARGV[1]) then
                     return redis.error_reply('JOB_NOTIFICATION_STREAM_CAPACITY_REACHED')
                 end
-                return redis.call('XADD', KEYS[1], '*', 'data', ARGV[2])
+                return redis.call('XADD', KEYS[1], '*', 'payload', ARGV[2])
                 "#,
             )
             .key(JOB_NOTIFICATION_STREAM)

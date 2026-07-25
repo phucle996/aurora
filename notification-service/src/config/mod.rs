@@ -3,12 +3,16 @@ mod environment;
 mod otel;
 mod redis;
 mod runtime;
+mod scylla;
+mod timeline;
 
 pub use centrifugo::CentrifugoConfig;
 pub use environment::{ConfigError, Environment};
 pub use otel::OtelConfig;
 pub use redis::RedisConfig;
 pub use runtime::RuntimeConfig;
+pub use scylla::{ScyllaConfig, ScyllaTlsMode};
+pub use timeline::TimelineConfig;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -17,6 +21,8 @@ pub struct Config {
     pub centrifugo: CentrifugoConfig,
     pub otel: OtelConfig,
     pub runtime: RuntimeConfig,
+    pub scylla: ScyllaConfig,
+    pub timeline: TimelineConfig,
 }
 
 impl Config {
@@ -45,6 +51,8 @@ impl Config {
             centrifugo: CentrifugoConfig::from_env(&environment)?,
             otel: OtelConfig::from_env(&environment)?,
             runtime: RuntimeConfig::from_env(&environment)?,
+            scylla: ScyllaConfig::from_env(&environment)?,
+            timeline: TimelineConfig::from_env(&environment)?,
         })
     }
 }

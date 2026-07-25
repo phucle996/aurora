@@ -4,6 +4,13 @@ import React, { useState, useEffect, useRef } from "react";
 import { Bell, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRealtime } from "@/context/RealtimeContext";
+import {
+  listTimelineActivities,
+  listTimelineNotifications,
+  markAllTimelineNotificationsRead,
+  type TimelineActivity,
+  type TimelineNotification,
+} from "@/lib/api/timeline";
 
 type JobNotificationPayload = {
   connect?: unknown;
@@ -15,6 +22,8 @@ type JobNotificationPayload = {
   message?: string;
   status?: string;
   transaction_id?: string;
+  notification_id?: string;
+  created_at?: string;
 };
 
 interface NotificationItem {
@@ -24,6 +33,7 @@ interface NotificationItem {
   type: "success" | "error" | "info" | "warning" | "processing";
   time: string;
   read: boolean;
+  createdAt?: string;
 }
 
 interface ToastItem {
@@ -34,13 +44,51 @@ interface ToastItem {
   time: string;
 }
 
+function normalizeType(value: string): NotificationItem["type"] {
+  if (value === "success" || value === "error" || value === "processing") return value;
+  return "info";
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return date.toLocaleString();
+}
+
 export function NotificationsDrawer() {
   const [notifOpen, setNotifOpen] = useState(false);
+  const [view, setView] = useState<"notifications" | "activity">("notifications");
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [activities, setActivities] = useState<TimelineActivity[]>([]);
   const [activeToasts, setActiveToasts] = useState<ToastItem[]>([]);
   const notifRef = useRef<HTMLDivElement>(null);
 
   const { subscribeToStream } = useRealtime();
+
+  const hydrateNotifications = async () => {
+    try {
+      const page = await listTimelineNotifications();
+      setNotifications((current) => {
+        const live = new Map(current.map((item) => [item.id, item]));
+        return page.items.map((item: TimelineNotification) => {
+          const existing = live.get(item.notification_id);
+          return {
+            id: item.notification_id,
+            title: item.title,
+            message: item.message,
+            type: normalizeType(item.severity),
+            time: formatTime(item.created_at),
+            read: existing?.read ?? Boolean(item.read_at),
+            createdAt: item.created_at,
+          };
+        });
+      });
+    } catch (error) {
+      // History is diagnostic/user convenience; realtime remains independently
+      // usable when Scylla is temporarily unavailable.
+      console.warn("Unable to load notification history", error);
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -99,7 +147,7 @@ export function NotificationsDrawer() {
     window.addEventListener("local-notification:update", handleLocalNotificationUpdate);
 
     // [COMMENT]: Lắng nghe WebSocket kết quả của các Job không silent từ Centrifugo
-    const unsubscribe = subscribeToStream("job", "job.notification", (payload: JobNotificationPayload) => {
+    const unsubscribe = subscribeToStream("notification", "job.notification", (payload: JobNotificationPayload) => {
       if (payload && payload.operation !== "storage.object.sts") {
         console.log("🔔 Realtime notification received in drawer component:", payload);
       } else if (payload) {
@@ -129,7 +177,8 @@ export function NotificationsDrawer() {
       };
 
       const statusType = typeMap[payload.status ?? ""] || "info";
-      const notifId = payload.transaction_id || Math.random().toString();
+      const notifId = payload.notification_id || payload.transaction_id;
+      if (!notifId) return;
       const notifTitle = payload.title || "System Event";
       const notifMsg = payload.message || "";
 
@@ -139,14 +188,15 @@ export function NotificationsDrawer() {
           // [COMMENT]: Ghi đè thông báo có cùng transaction_id để tránh spam nhiều dòng
           return prev.map((n) =>
             n.id === notifId
-              ? {
+            ? {
                   ...n,
                   title: notifTitle,
                   message: notifMsg,
                   type: statusType,
                   time: "Just now",
+                  createdAt: payload.created_at ?? n.createdAt,
                 }
-              : n
+              : n,
           );
         }
         // Thêm mới lên đầu danh sách nếu chưa có
@@ -157,6 +207,7 @@ export function NotificationsDrawer() {
           type: statusType,
           time: "Just now",
           read: false,
+          createdAt: payload.created_at,
         };
         return [newNotif, ...prev].slice(0, 10);
       });
@@ -177,7 +228,14 @@ export function NotificationsDrawer() {
           onClick={() => {
             setNotifOpen(!notifOpen);
             if (!notifOpen) {
+              void hydrateNotifications();
+              void listTimelineActivities()
+                .then((page) => setActivities(page.items))
+                .catch((error) => console.warn("Unable to load activity history", error));
               setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+              void markAllTimelineNotificationsRead().catch((error) =>
+                console.warn("Unable to mark notification history read", error),
+              );
             }
           }}
           className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-sidebar-console-hover text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer transition-colors relative"
@@ -249,7 +307,7 @@ export function NotificationsDrawer() {
               <div className="flex items-center gap-2">
                 <Bell className="h-4 w-4 text-slate-700 dark:text-slate-300" />
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">
-                  Notifications
+                  {view === "notifications" ? "Notifications" : "Activity history"}
                 </h3>
               </div>
               <button
@@ -260,8 +318,63 @@ export function NotificationsDrawer() {
               </button>
             </div>
 
+            <div className="flex gap-1 px-4 py-2 border-b border-slate-100 dark:border-slate-800">
+              <button
+                className={cn(
+                  "flex-1 py-1.5 text-xs font-semibold",
+                  view === "notifications"
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800",
+                )}
+                onClick={() => setView("notifications")}
+              >
+                Notifications
+              </button>
+              <button
+                className={cn(
+                  "flex-1 py-1.5 text-xs font-semibold",
+                  view === "activity"
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800",
+                )}
+                onClick={() => setView("activity")}
+              >
+                Activity
+              </button>
+            </div>
+
             <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 select-text">
-              {notifications.length === 0 ? (
+              {view === "activity" ? (
+                activities.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-500 gap-2">
+                    <Bell className="h-8 w-8 stroke-1 text-slate-300 dark:text-slate-700" />
+                    <span className="text-xs">No activity yet</span>
+                  </div>
+                ) : (
+                  activities.map((activity) => (
+                    <div
+                      key={activity.event_id}
+                      className="p-3 border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/40 relative flex flex-col gap-1"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs font-bold text-slate-700 dark:text-slate-200 leading-tight">
+                          {activity.title}
+                        </p>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                          {activity.category}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                        {activity.summary}
+                      </p>
+                      <div className="flex justify-between items-center text-[9px] text-slate-400 font-mono mt-1 pt-1 border-t border-slate-100/50 dark:border-slate-800/40">
+                        <span>{activity.action}</span>
+                        <span>{formatTime(activity.occurred_at)}</span>
+                      </div>
+                    </div>
+                  ))
+                )
+              ) : notifications.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-500 gap-2">
                   <Bell className="h-8 w-8 stroke-1 text-slate-300 dark:text-slate-700" />
                   <span className="text-xs">No notifications yet</span>
@@ -300,13 +413,18 @@ export function NotificationsDrawer() {
               )}
             </div>
 
-            {notifications.length > 0 && (
+            {view === "notifications" && notifications.length > 0 && (
               <div className="p-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 shrink-0">
                 <button
-                  onClick={() => setNotifications([])}
+                  onClick={() => {
+                    setNotifications((prev) => prev.map((item) => ({ ...item, read: true })));
+                    void markAllTimelineNotificationsRead().catch((error) =>
+                      console.warn("Unable to mark notification history read", error),
+                    );
+                  }}
                   className="w-full py-2 text-center text-xs font-bold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900 transition-colors cursor-pointer"
                 >
-                  Clear All
+                  Mark all as read
                 </button>
               </div>
             )}

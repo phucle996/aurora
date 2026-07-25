@@ -918,6 +918,19 @@ services:
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       - SHARED_REDIS_URL=redis://controlplane-cp-redis:6379/0
+      # Scylla owns only the user timeline/history bounded context.
+      - SCYLLA_CONTACT_POINTS=scylla:9042
+      - SCYLLA_LOCAL_DC=datacenter1
+      - SCYLLA_KEYSPACE=aurora_timeline
+      - SCYLLA_USERNAME=timeline_service
+      - SCYLLA_PASSWORD=timeline-dev-password
+      - SCYLLA_TLS_MODE=disabled
+      - SCYLLA_REPLICATION_FACTOR=1
+      - SCYLLA_AUTO_SCHEMA=true
+      - TIMELINE_ACTIVITY_RETENTION_DAYS=365
+      - TIMELINE_INBOX_RETENTION_DAYS=180
+      - TIMELINE_MAX_PAGE_SIZE=50
+      - TIMELINE_MAX_MONTH_SCAN=24
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
     depends_on:
@@ -925,8 +938,33 @@ services:
         condition: service_started
       cp-redis:
         condition: service_healthy
+      scylla:
+        condition: service_healthy
       otel-collector:
         condition: service_started
+    restart: unless-stopped
+
+  scylla:
+    image: scylladb/scylla:2026.2.1
+    container_name: aurora-timeline-scylla
+    command:
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --overprovisioned
+      - "1"
+      - --developer-mode
+      - "1"
+    ports:
+      - "9042:9042"
+    volumes:
+      - controlplane_timeline_scylla_data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh --no-color -e 'SELECT now() FROM system.local' 127.0.0.1 9042 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     restart: unless-stopped
 
   vault:
@@ -998,6 +1036,7 @@ volumes:
   controlplane_vlogs_data: # Bộ đệm dữ liệu logs của VictoriaLogs
   controlplane_otel_file_storage: # Checkpoint offset/fingerprint của OTel filelog receiver
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
+  controlplane_timeline_scylla_data:
   admin_ui_node_modules:
   controlplane_kafka_1_data:
   controlplane_kafka_2_data:

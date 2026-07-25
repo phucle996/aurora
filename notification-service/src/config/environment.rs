@@ -74,12 +74,21 @@ impl Environment {
         }
         Ok(value)
     }
+
+    pub fn required_bool(&self, key: &'static str) -> Result<bool, ConfigError> {
+        match self.required(key)?.as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err(ConfigError::InvalidValue(key)),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum ConfigError {
     Missing(&'static str),
     InvalidNumber(&'static str),
+    InvalidValue(&'static str),
     OutOfRange {
         key: &'static str,
         min: u64,
@@ -95,6 +104,9 @@ impl std::fmt::Display for ConfigError {
             }
             Self::InvalidNumber(key) => {
                 write!(formatter, "environment variable {key} is not a number")
+            }
+            Self::InvalidValue(key) => {
+                write!(formatter, "environment variable {key} has an invalid value")
             }
             Self::OutOfRange { key, min, max } => {
                 write!(

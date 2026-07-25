@@ -16,6 +16,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tonic = { version = "0.10", features = ["tls", "tls-roots"] }
 prost = "0.12"
 futures-util = "0.3"
+base64 = "0.22"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 tracing = "0.1"
@@ -23,6 +24,9 @@ tracing-appender = "0.2"
 tracing-opentelemetry = "0.24"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1.8", features = ["v4", "v5", "serde"] }
+scylla = { version = "1.7", features = ["chrono-04", "rustls-023"] }
+rustls = "0.23"
+rustls-pemfile = "2"
 opentelemetry = { version = "0.23", features = ["trace", "metrics"] }
 opentelemetry_sdk = { version = "0.23", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.16.0", features = ["grpc-tonic", "metrics"] }

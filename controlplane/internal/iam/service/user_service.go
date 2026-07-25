@@ -11,6 +11,8 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	"controlplane/internal/observability"
 	"controlplane/internal/security"
+	"controlplane/internal/useractivity"
+	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -98,6 +100,26 @@ func (s *UserService) ResetUserPassword(ctx context.Context, callerLevel uint8, 
 	observability.CurrentMetrics().ObserveDependency("db", "iam.users.reset_password", time.Since(start), err)
 	if err != nil {
 		return err
+	}
+	if s.sharedRedis != nil {
+		if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
+			EventID:     uuid.New().String(),
+			UserID:      targetUserID.String(),
+			Category:    "security",
+			Action:      "user.password.reset",
+			ActorType:   "admin",
+			Outcome:     "succeeded",
+			Source:      "controlplane",
+			OperationID: uuid.New().String(),
+			Title:       "Password changed",
+			Summary:     "An administrator changed the account password",
+			OccurredAt:  time.Now().UTC(),
+			Metadata:    map[string]any{"caller_level": callerLevel},
+		}); activityErr != nil {
+			// The IAM transaction has already committed; history enqueue is
+			// best-effort and must not make a successful password change retry.
+			logger.SysError("iam.user_activity.password_reset", activityErr.Error())
+		}
 	}
 
 	return nil

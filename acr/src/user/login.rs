@@ -338,6 +338,7 @@ pub async fn handle_login(
         .cloned()
         .or_else(|| _client_headers.get("User-Agent").cloned())
         .unwrap_or_default();
+    let activity_device_type = payload.device_type.clone().unwrap_or_default();
     let cp_req = VerifyUserCredentialsRequest {
         username: username.clone(),
         password,
@@ -478,6 +479,42 @@ pub async fn handle_login(
             ))));
         }
     };
+
+    let activity_id = Uuid::now_v7();
+    let activity = crate::activity_proto::UserActivityEvent {
+        event_id: activity_id.to_string(),
+        user_id: cp_res.user_id.clone(),
+        category: "security".to_string(),
+        action: "session.login".to_string(),
+        actor_type: "self".to_string(),
+        actor_id: cp_res.user_id.clone(),
+        outcome: "succeeded".to_string(),
+        source_service: "acr".to_string(),
+        resource_type: "session".to_string(),
+        resource_id: res_val.client_device_id.clone(),
+        operation_id: activity_id.to_string(),
+        title: "Signed in".to_string(),
+        summary: "A new session was created".to_string(),
+        occurred_at: chrono::Utc::now().timestamp(),
+        metadata_json: serde_json::json!({
+            "device_type": activity_device_type,
+            "zone_code": zone_code,
+            "remember_device": trust_device,
+        })
+        .to_string(),
+        schema_version: 1,
+        trace_parent: String::new(),
+        trace_state: String::new(),
+    };
+    // History is a separate durable stream. A Redis outage must not turn an
+    // already-issued authentication session into a false login failure.
+    if let Err(error) = shared_redis.append_user_activity(activity).await {
+        Logger::sys_error(
+            "user.login.activity",
+            "Failed to enqueue self activity after successful login",
+            &error,
+        );
+    }
 
     let domain_str = if config.app_public_domain.trim().is_empty() {
         "".to_string()

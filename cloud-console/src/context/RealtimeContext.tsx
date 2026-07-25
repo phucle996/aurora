@@ -4,7 +4,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Centrifuge } from "centrifuge";
 import { useUserSession } from "@/hooks/useUserSession";
 
-export type RealtimeStream = "job" | "runtime";
+export type RealtimeStream = "notification" | "runtime";
 type RealtimePayload = Record<string, unknown>;
 type RealtimeCallback = (payload: unknown) => void;
 
@@ -38,7 +38,7 @@ const RealtimeContext = createContext<RealtimeContextType>({
 export const useRealtime = () => useContext(RealtimeContext);
 
 function streamForChannel(channel: string | undefined): RealtimeStream | null {
-  if (channel?.startsWith("jobs:")) return "job";
+  if (channel?.startsWith("notifications:")) return "notification";
   if (channel?.startsWith("runtime:")) return "runtime";
   return null;
 }

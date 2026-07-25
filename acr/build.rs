@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/zone.proto",
             "proto/trinity.proto",
             "proto/device_presence.proto",
+            "proto/user_activity.proto",
         ],
         &["proto"],
     )?;

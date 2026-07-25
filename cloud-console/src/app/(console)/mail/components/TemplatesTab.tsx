@@ -49,7 +49,7 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
   useEffect(() => {
     // [COMMENT]: Screen không poll operation; terminal Centrifugo signal merge lại list/detail/version read model.
-    return subscribeToStream("job", "job.notification", (payload: MailTemplateJobNotification) => {
+    return subscribeToStream("notification", "job.notification", (payload: MailTemplateJobNotification) => {
       if (typeof payload?.operation !== "string" || !payload.operation.startsWith("mail.template.") || !payload.resource_id || typeof payload.status !== "string" || !["SUCCESS", "FAILED"].includes(payload.status)) return;
       void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "templates"] });
       if (selectedID === payload.resource_id) {

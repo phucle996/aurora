@@ -151,7 +151,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
           reject(new Error("Không nhận được phản hồi từ cổng bảo mật (Timeout)."));
         }, 20000);
 
-        const unsubscribe = subscribeToStream("job", "job.notification", (eventData: any) => {
+        const unsubscribe = subscribeToStream("notification", "job.notification", (eventData: any) => {
           if (eventData.transaction_id === event_id) {
             clearTimeout(timeout);
             unsubscribe();

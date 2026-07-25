@@ -84,7 +84,7 @@ impl MetricsManager {
         REDIS_STREAM_EVENTS.get_or_init(|| {
             Self::meter()
                 .u64_counter("notification_shared_redis_stream_events_total")
-                .with_description("Shared Redis job notification stream outcomes")
+                .with_description("Shared Redis durable stream outcomes")
                 .init()
         })
     }
@@ -145,8 +145,14 @@ impl MetricsManager {
         Self::redis_duration().record(duration.as_secs_f64(), &attrs);
     }
 
-    pub fn record_redis_stream_event(status: &'static str) {
-        Self::redis_stream_events().add(1, &[KeyValue::new("outcome", stream_outcome(status))]);
+    pub fn record_redis_stream_event(stream: &'static str, status: &'static str) {
+        Self::redis_stream_events().add(
+            1,
+            &[
+                KeyValue::new("stream.kind", stream_kind(stream)),
+                KeyValue::new("outcome", stream_outcome(status)),
+            ],
+        );
     }
 
     pub fn record_centrifugo_publish(status: &str) {
@@ -197,6 +203,10 @@ impl MetricsManager {
 fn normalized_route(path: &str) -> &'static str {
     match path {
         "/api/v1/realtime/connect" => "/api/v1/realtime/connect",
+        "/api/v1/me/activities" => "/api/v1/me/activities",
+        "/api/v1/me/notifications" => "/api/v1/me/notifications",
+        "/api/v1/me/notifications/:id/read" => "/api/v1/me/notifications/:id/read",
+        "/api/v1/me/notifications/read-all" => "/api/v1/me/notifications/read-all",
         _ => "other",
     }
 }
@@ -243,6 +253,14 @@ fn stream_outcome(status: &str) -> &'static str {
         "delivery_failed" => "delivery_failed",
         "invalid_envelope" => "invalid_envelope",
         "invalid_contract" => "invalid_contract",
+        _ => "other",
+    }
+}
+
+fn stream_kind(stream: &str) -> &'static str {
+    match stream {
+        "job_notification" => "job_notification",
+        "user_activity" => "user_activity",
         _ => "other",
     }
 }

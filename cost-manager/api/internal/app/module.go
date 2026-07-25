@@ -76,7 +76,7 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize AccountRepository: instance is nil")
 	}
 
-	accountService := service.NewAccountService(accountRepo)
+	accountService := service.NewAccountService(accountRepo, redisClient)
 	if accountService == nil {
 		return nil, fmt.Errorf("failed to initialize AccountService: instance is nil")
 	}

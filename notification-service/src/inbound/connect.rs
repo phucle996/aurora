@@ -1,7 +1,7 @@
 use crate::app::state::AppState;
 use crate::application::auth::ConnectAuthError;
 use crate::contract::connect::{ConnectRequest, ConnectResponse, ConnectResult};
-use crate::contract::realtime::{job_channel, runtime_channel};
+use crate::contract::realtime::{notification_channel, runtime_channel};
 use crate::observability::{logger::Logger, metrics::MetricsManager, tracing::OtelTracer};
 use axum::{
     extract::{Json, State},
@@ -68,7 +68,10 @@ pub async fn handle_connect(
                     axum::Json(ConnectResponse {
                         result: ConnectResult {
                             user: user_id.clone(),
-                            channels: vec![job_channel(&user_id), runtime_channel(&user_id)],
+                            channels: vec![
+                                notification_channel(&user_id),
+                                runtime_channel(&user_id),
+                            ],
                         },
                     }),
                 )

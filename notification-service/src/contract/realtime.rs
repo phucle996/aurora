@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 pub const REALTIME_CHANNEL: &str = "aurora:realtime:notifications";
 pub const MAX_ENVELOPE_BYTES: usize = 256 * 1024;
-pub const JOB_CHANNEL_PREFIX: &str = "jobs";
+pub const JOB_CHANNEL_PREFIX: &str = "notifications";
 pub const RUNTIME_CHANNEL_PREFIX: &str = "runtime";
 
 #[derive(Debug, Deserialize)]
@@ -45,7 +45,7 @@ impl RealtimeEnvelope {
     }
 }
 
-pub fn job_channel(user_id: &str) -> String {
+pub fn notification_channel(user_id: &str) -> String {
     format!("{JOB_CHANNEL_PREFIX}:{user_id}")
 }
 

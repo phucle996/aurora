@@ -1,18 +1,17 @@
 pub const JOB_NOTIFICATION_STREAM: &str = "stream:{job_notifications}";
-pub const CONSUMER_GROUP: &str = "notification-service-v1";
-
-const NOTIFICATION_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-    0x43, 0xa7, 0xde, 0x2c, 0x59, 0x85, 0x50, 0x67, 0xa0, 0x16, 0x0b, 0x63, 0x8d, 0xd8, 0xe9, 0x71,
-]);
+pub const JOB_NOTIFICATION_DLQ: &str = "stream:{job_notifications_quarantine}";
+pub const JOB_NOTIFICATION_CONSUMER_GROUP: &str = "notification-job-v1";
 
 pub mod proto {
     tonic::include_proto!("job");
 }
 
 pub fn valid_event(event: &proto::JobNotificationEvent) -> bool {
-    (event.notification_id.is_empty() || uuid::Uuid::parse_str(&event.notification_id).is_ok())
+    (uuid::Uuid::parse_str(&event.notification_id).is_ok())
         && uuid::Uuid::parse_str(&event.job_id).is_ok()
         && uuid::Uuid::parse_str(&event.user_id).is_ok()
+        && chrono::DateTime::from_timestamp(event.created_at, 0)
+            .is_some_and(|value| value <= chrono::Utc::now() + chrono::Duration::minutes(5))
         && matches!(event.status.as_str(), "PROCESSING" | "SUCCESS" | "FAILED")
         && !event.event_type.is_empty()
         && event.event_type.len() <= 128
@@ -25,21 +24,8 @@ pub fn valid_event(event: &proto::JobNotificationEvent) -> bool {
         )
 }
 
-pub fn effective_notification_id(
-    event: &proto::JobNotificationEvent,
-) -> Result<String, uuid::Error> {
-    if !event.notification_id.is_empty() {
-        return uuid::Uuid::parse_str(&event.notification_id).map(|value| value.to_string());
-    }
-
-    // Old JO producers may omit field 13. Deriving the identity from the
-    // immutable status tuple preserves idempotency during rolling upgrades.
-    let job_id = uuid::Uuid::parse_str(&event.job_id)?;
-    let identity = format!(
-        "{}:{}:{}:{}",
-        job_id, event.job_version, event.attempt, event.status
-    );
-    Ok(uuid::Uuid::new_v5(&NOTIFICATION_NAMESPACE, identity.as_bytes()).to_string())
+pub fn parse_notification_id(event: &proto::JobNotificationEvent) -> Result<String, uuid::Error> {
+    uuid::Uuid::parse_str(&event.notification_id).map(|value| value.to_string())
 }
 
 #[cfg(test)]
@@ -70,13 +56,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_notification_id_gets_a_stable_fallback() {
+    fn missing_notification_id_is_rejected() {
         let mut candidate = event();
         candidate.notification_id.clear();
-        let first = effective_notification_id(&candidate).unwrap();
-        let replay = effective_notification_id(&candidate).unwrap();
-        assert_eq!(first, replay);
-        assert!(valid_event(&candidate));
+        assert!(!valid_event(&candidate));
+        assert!(parse_notification_id(&candidate).is_err());
     }
 
     #[test]

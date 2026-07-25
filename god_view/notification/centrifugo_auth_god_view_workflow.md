@@ -53,7 +53,7 @@ graph TD
     acr -- "5. Kiểm tra session & Secret Hash" --> AuthRedis
     acr -- "6. PUBLISH request-scoped reply" --> SharedRedis
     SharedRedis -- "7. Return verify result" --> Notification
-    Notification -- "8. Response 200 OK + jobs:<user_id> + runtime:<user_id>" --> Centrifugo
+    Notification -- "8. Response 200 OK + notifications:<user_id> + runtime:<user_id>" --> Centrifugo
     Centrifugo -- "9. Thiết lập kết nối thành công" --> Client
 ```
 
@@ -88,7 +88,7 @@ sequenceDiagram
         alt Xác thực hợp lệ
             acr-->>SharedRedis: Reply request-scoped (valid = true, admin_id)
             SharedRedis-->>NS: Nhận response
-            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["jobs:<user_id>", "runtime:<user_id>"])
+            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["notifications:<user_id>", "runtime:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
             acr-->>SharedRedis: Reply request-scoped (valid = false)
@@ -108,7 +108,7 @@ sequenceDiagram
         alt Xác thực hợp lệ
             acr-->>SharedRedis: Trả request-scoped response (valid = true, user_id)
             SharedRedis-->>NS: Nhận response
-            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["jobs:<user_id>", "runtime:<user_id>"])
+            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["notifications:<user_id>", "runtime:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
             acr-->>SharedRedis: Trả request-scoped response (valid = false)

@@ -93,7 +93,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
   useEffect(() => {
     // [COMMENT]: Không poll status URL và không lưu audit ở UI; terminal Centrifugo signal chỉ merge lại read model liên quan.
-    return subscribeToStream("job", "job.notification", (payload: MailConsumerJobNotification) => {
+    return subscribeToStream("notification", "job.notification", (payload: MailConsumerJobNotification) => {
       if (typeof payload?.operation !== "string" || !payload.operation.startsWith("mail.consumer.") || !payload.resource_id || typeof payload.status !== "string" || !["SUCCESS", "FAILED"].includes(payload.status)) return;
       void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumers"] });
       if (detailConsumerID === payload.resource_id) {

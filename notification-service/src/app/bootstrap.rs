@@ -4,11 +4,16 @@ use crate::application::job_notifications::JobNotificationService;
 use crate::application::ports::{AppError, AuthVerifier, RealtimePublisher};
 use crate::application::runtime_updates::RuntimeUpdateService;
 use crate::config::Config;
+use crate::inbound::activity_stream::ActivityStreamConsumer;
 use crate::inbound::job_stream::JobStreamConsumer;
 use crate::inbound::realtime_pubsub::RealtimePubSubConsumer;
 use crate::infra::centrifugo::CentrifugoPublisher;
 use crate::infra::redis::RedisAuthBus;
+use crate::infra::scylla::{connect as connect_scylla, ScyllaTimelineStore};
 use crate::observability::logger::Logger;
+use crate::timeline::activity::ActivityService;
+use crate::timeline::inbox::InboxService;
+use crate::timeline::store::TimelineStore;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -29,8 +34,25 @@ impl Runtime {
         let auth_bus = RedisAuthBus::connect(&config.redis).await?;
         let publisher: Arc<dyn RealtimePublisher> =
             Arc::new(CentrifugoPublisher::new(&config.centrifugo)?);
+        let scylla = connect_scylla(&config.scylla).await?;
+        let timeline_store: Arc<dyn TimelineStore> =
+            Arc::new(ScyllaTimelineStore::new(scylla, &config.timeline)?);
+        let activities = Arc::new(ActivityService::new(
+            timeline_store.clone(),
+            config.timeline.max_page_size,
+            config.timeline.max_month_scan,
+        ));
+        let inbox = Arc::new(InboxService::new(
+            timeline_store,
+            config.timeline.max_page_size,
+            config.timeline.max_month_scan,
+        ));
         let reply_router = auth_bus.spawn_reply_router(shutdown_rx.clone());
-        let job_notifications = Arc::new(JobNotificationService::new(publisher.clone()));
+        let job_notifications = Arc::new(JobNotificationService::new(
+            publisher.clone(),
+            activities.clone(),
+            inbox.clone(),
+        ));
         let runtime_updates = Arc::new(RuntimeUpdateService::new(publisher));
         let verifier: Arc<dyn AuthVerifier> = auth_bus.clone();
         let authorizer = Arc::new(ConnectAuthorizer::new(verifier));
@@ -50,15 +72,27 @@ impl Runtime {
             config.redis.connect_timeout,
             shutdown_rx,
         );
+        let activity_consumer = ActivityStreamConsumer::new(
+            auth_bus.client(),
+            activities.clone(),
+            config.runtime.clone(),
+            config.redis.connect_timeout,
+            shutdown.subscribe(),
+        );
 
         let job_task = tokio::spawn(job_consumer.run());
         let realtime_task = tokio::spawn(realtime_consumer.run());
-        let state = Arc::new(AppState { authorizer });
+        let activity_task = tokio::spawn(activity_consumer.run());
+        let state = Arc::new(AppState {
+            authorizer,
+            activities,
+            inbox,
+        });
 
         Ok(Self {
             state,
             shutdown,
-            tasks: vec![reply_router, job_task, realtime_task],
+            tasks: vec![reply_router, job_task, activity_task, realtime_task],
             shutdown_timeout: config.runtime.shutdown_timeout,
         })
     }

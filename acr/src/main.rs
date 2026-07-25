@@ -17,6 +17,10 @@ mod token;
 mod transport;
 mod user;
 
+pub mod activity_proto {
+    tonic::include_proto!("activity");
+}
+
 use crate::config::Config;
 use crate::gateway::ext_authz::ExtAuthzService;
 use crate::infra::redis::SessionManager;

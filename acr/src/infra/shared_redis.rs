@@ -100,6 +100,34 @@ impl SharedRedisBus {
             .map_err(|error| format!("append Shared Redis Stream event: {error}"))
     }
 
+    pub async fn append_user_activity(
+        &self,
+        event: crate::activity_proto::UserActivityEvent,
+    ) -> Result<String, String> {
+        let mut payload = Vec::new();
+        prost::Message::encode(&event, &mut payload)
+            .map_err(|error| format!("encode user activity event: {error}"))?;
+        let mut connection = self
+            .client
+            .get_multiplexed_tokio_connection()
+            .await
+            .map_err(|error| format!("open Shared Redis activity connection: {error}"))?;
+        redis::Script::new(
+            r#"
+            if redis.call('XLEN', KEYS[1]) >= tonumber(ARGV[1]) then
+                return redis.error_reply('USER_ACTIVITY_STREAM_CAPACITY_REACHED')
+            end
+            return redis.call('XADD', KEYS[1], '*', 'payload', ARGV[2])
+            "#,
+        )
+        .key("stream:{user_activity}")
+        .arg(100_000)
+        .arg(payload)
+        .invoke_async(&mut connection)
+        .await
+        .map_err(|error| format!("append Shared Redis user activity: {error}"))
+    }
+
     pub async fn request(
         &self,
         request_channel: &str,
