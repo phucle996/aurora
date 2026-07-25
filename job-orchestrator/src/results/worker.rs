@@ -6,7 +6,6 @@ use crate::outbox::SharedStreamPublisher;
 use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_postgres::NoTls;
 
 pub struct ResultWorker {
     config: Config,
@@ -31,18 +30,10 @@ impl ResultWorker {
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut notification_redis = self.shared_redis.get_connection_manager().await?;
-        let (mut client, connection) =
-            tokio_postgres::connect(&self.config.database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                Logger::sys_error(
-                    "results.postgres",
-                    "Result worker PostgreSQL connection failed",
-                    &error.to_string(),
-                );
-            }
-        });
+        let mut notification_redis =
+            crate::infra::redis::manager(&self.shared_redis, &self.config.shared_redis).await?;
+        let mut client =
+            crate::infra::postgres::connect(&self.config.postgres, "results.postgres").await?;
 
         let topic = self.kafka.result_topic();
         let consumer = self

@@ -4,7 +4,6 @@ use crate::observability::logger::Logger;
 use chrono::{Duration as ChronoDuration, Utc};
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use tokio_postgres::NoTls;
 use uuid::Uuid;
 
 const CONSUMER_REPORT_STREAM: &str = "mail:consumer:reports";
@@ -45,23 +44,8 @@ pub async fn run_consumer_report_listener(
     config: &Config,
     redis_client: &redis::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (pg_client, pg_connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(error) = pg_connection.await {
-            Logger::sys_error(
-                "mail.consumer_report.postgres",
-                "Mail consumer report PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
-    pg_client
-        .batch_execute(
-            "SET statement_timeout = '5s'; \
-             SET lock_timeout = '1s'; \
-             SET idle_in_transaction_session_timeout = '5s'",
-        )
-        .await?;
+    let pg_client =
+        crate::infra::postgres::connect(&config.postgres, "mail.consumer_report.postgres").await?;
     let resolve_consumer_scope = pg_client
         .prepare(
             "WITH targets AS ( \
@@ -85,7 +69,8 @@ pub async fn run_consumer_report_listener(
         )
         .await?;
 
-    let mut redis_conn = redis_client.get_multiplexed_tokio_connection().await?;
+    let mut redis_conn =
+        crate::infra::redis::multiplexed(redis_client, &config.shared_redis).await?;
     let _: redis::RedisResult<()> = redis::cmd("XGROUP")
         .arg("CREATE")
         .arg(CONSUMER_REPORT_STREAM)
@@ -115,7 +100,7 @@ pub async fn run_consumer_report_listener(
             .arg(CONSUMER_REPORT_STREAM)
             .arg(CONSUMER_REPORT_GROUP)
             .arg(&listener_id)
-            .arg(config.mail_runtime_report_claim_idle_ms)
+            .arg(config.workflows.mail.runtime_report_claim_idle_ms)
             .arg(&claim_cursor)
             .arg("COUNT")
             .arg(50)
@@ -325,7 +310,9 @@ pub async fn run_consumer_report_listener(
                         }
 
                         let ttl_ms = config
-                            .mail_runtime_report_ttl_secs
+                            .workflows
+                            .mail
+                            .runtime_report_ttl_secs
                             .saturating_mul(1_000)
                             .min(i64::MAX as u64);
                         let expires_at = occurred_at

@@ -9,33 +9,26 @@ mod service;
 
 use config::Config;
 use observability::logger::Logger;
-use observability::metrics::MetricsManager;
-use observability::otel::OtelTracer;
+use observability::TelemetryRuntime;
 use std::net::SocketAddr;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
     if std::env::var("TZ").is_err() {
         std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
     }
 
-    // [ignoring loop detection]
-    // Khởi tạo Logger đầu tiên để phục vụ ghi log hệ thống
-    Logger::init();
-
     // Nạp cấu hình biến môi trường từ environment trước khi khởi tạo các dịch vụ khác
     let cfg = Config::from_env();
+    // Guard owns the bounded log writer and OTel providers. Keeping it in main
+    // prevents early worker shutdown and guarantees final flush on SIGTERM.
+    let _telemetry_guard = TelemetryRuntime::init(&cfg)?;
     Logger::sys_info(
         "system.config",
-        &format!("Loaded configuration successfully: {:?}", cfg),
+        "Configuration loaded with secrets redacted",
     );
-
-    Logger::sys_info("system.startup", "Starting Notification Service (Rust)...");
-
-    // Khởi tạo các thành phần thuộc hệ thống giám sát Observability đồng bộ với Dataplane sử dụng thông tin cấu hình
-    OtelTracer::init(&cfg);
-    MetricsManager::init();
+    Logger::sys_info("system.startup", "Starting Notification Service");
 
     // Khởi tạo toàn bộ kết nối hạ tầng từ folder app/
     let app_state = app::init::init_infrastructure(&cfg).await;
@@ -47,7 +40,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info("system.web", &format!("Web server listening on {}", addr));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            Logger::sys_error(
+                "system.shutdown_signal",
+                "Failed to install Ctrl+C signal handler",
+                &error.to_string(),
+            );
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => Logger::sys_error(
+                "system.shutdown_signal",
+                "Failed to install SIGTERM signal handler",
+                &error.to_string(),
+            ),
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+    Logger::sys_info(
+        "system.shutdown_signal",
+        "Shutdown signal received; draining HTTP requests",
+    );
 }

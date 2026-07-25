@@ -6,30 +6,16 @@ use crate::infra::kafka::KafkaTransport;
 use prost::Message;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_postgres::NoTls;
 
 /// [COMMENT]: Query consumer thay Redis PubSub reply-channel; response vào compacted per-Zone topic.
 pub async fn run_metadata_query_listener(
     config: &Config,
     kafka: Arc<KafkaTransport>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (pg_client, pg_connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(error) = pg_connection.await {
-            crate::observability::logger::Logger::sys_error(
-                "zone_metadata.postgres",
-                "Zone metadata PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
+    let pg_client =
+        crate::infra::postgres::connect(&config.postgres, "zone_metadata.postgres").await?;
     pg_client
-        .batch_execute(
-            "SET default_transaction_read_only = on; \
-             SET statement_timeout = '5s'; \
-             SET lock_timeout = '1s'; \
-             SET idle_in_transaction_session_timeout = '5s'",
-        )
+        .batch_execute("SET default_transaction_read_only = on")
         .await?;
     let topic = kafka.metadata_query_topic();
     let consumer = kafka

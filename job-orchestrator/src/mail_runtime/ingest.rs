@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::contracts::mail::MailConsumerRuntimeReportBatchV1;
 use crate::observability::logger::Logger;
 use futures_util::StreamExt;
@@ -11,13 +12,15 @@ const REPORT_STREAM: &str = "mail:consumer:reports";
 /// [COMMENT]: NATS Core report là at-most-once soft state. JO ghi ngay vào Shared Redis Stream
 /// để các replica aggregate/fence bằng consumer group; lỗi Redis chỉ mất sample hiện tại.
 pub async fn run_runtime_report_nats_bridge(
+    config: &Config,
     redis_client: &redis::Client,
     nats_client: &async_nats::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut subscription = nats_client
         .queue_subscribe(REPORT_SUBJECT.to_string(), REPORT_QUEUE.to_string())
         .await?;
-    let mut redis_conn = redis_client.get_multiplexed_tokio_connection().await?;
+    let mut redis_conn =
+        crate::infra::redis::multiplexed(redis_client, &config.shared_redis).await?;
     Logger::sys_info(
         "mail.runtime_report_bridge",
         &format!("Listening on NATS Core subject {REPORT_SUBJECT}"),
@@ -61,7 +64,8 @@ pub async fn run_runtime_report_nats_bridge(
                 "Shared Redis rejected runtime sample; next NATS heartbeat will recover",
                 &error.to_string(),
             );
-            redis_conn = redis_client.get_multiplexed_tokio_connection().await?;
+            redis_conn =
+                crate::infra::redis::multiplexed(redis_client, &config.shared_redis).await?;
         }
     }
     Err("NATS Core runtime report subscription ended".into())

@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use std::time::Duration;
-use tokio_postgres::NoTls;
 
 #[derive(Debug)]
 pub struct BootstrapError(pub String);
@@ -17,7 +16,7 @@ impl std::error::Error for BootstrapError {}
 /// Runtime owns no DDL credential. Publication, membership and replication slot
 /// are provisioned by migrations/operators; every replica only verifies them.
 pub async fn verify(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let max_attempts = config.changefeed_bootstrap_attempts.max(1);
+    let max_attempts = config.workflows.changefeed.setup_attempts.max(1);
     for attempt in 1..=max_attempts {
         match verify_once(config).await {
             Ok(()) => {
@@ -56,32 +55,23 @@ pub async fn verify(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn verify_once(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let (client, connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            Logger::sys_error(
-                "changefeed.postgres",
-                "Bootstrap PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
+    let client = crate::infra::postgres::connect(&config.postgres, "changefeed.postgres").await?;
 
     let publication_exists: bool = client
         .query_one(
             "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)",
-            &[&config.publication_name],
+            &[&config.workflows.changefeed.publication_name],
         )
         .await?
         .get(0);
     if !publication_exists {
         return Err(Box::new(BootstrapError(format!(
             "publication '{}' is not provisioned",
-            config.publication_name
+            config.workflows.changefeed.publication_name
         ))));
     }
 
-    for source in &config.changefeed_sources {
+    for source in &config.workflows.changefeed.sources {
         let (schema, table) = split_source(source)?;
         let exists: bool = client
             .query_one(
@@ -104,14 +94,18 @@ async fn verify_once(config: &Config) -> Result<(), Box<dyn std::error::Error>> 
                      SELECT 1 FROM pg_publication_tables \
                      WHERE pubname = $1 AND schemaname = $2 AND tablename = $3 \
                  )",
-                &[&config.publication_name, &schema, &table],
+                &[
+                    &config.workflows.changefeed.publication_name,
+                    &schema,
+                    &table,
+                ],
             )
             .await?
             .get(0);
         if !published {
             return Err(Box::new(BootstrapError(format!(
                 "source {schema}.{table} is not a member of publication '{}'",
-                config.publication_name
+                config.workflows.changefeed.publication_name
             ))));
         }
     }
@@ -120,13 +114,13 @@ async fn verify_once(config: &Config) -> Result<(), Box<dyn std::error::Error>> 
         .query_opt(
             "SELECT plugin, slot_type, database \
              FROM pg_replication_slots WHERE slot_name = $1",
-            &[&config.slot_name],
+            &[&config.workflows.changefeed.slot_name],
         )
         .await?;
     let Some(slot) = slot else {
         return Err(Box::new(BootstrapError(format!(
             "replication slot '{}' is not provisioned",
-            config.slot_name
+            config.workflows.changefeed.slot_name
         ))));
     };
     let plugin: String = slot.get(0);
@@ -142,7 +136,7 @@ async fn verify_once(config: &Config) -> Result<(), Box<dyn std::error::Error>> 
     {
         return Err(Box::new(BootstrapError(format!(
             "replication slot '{}' has an incompatible plugin/type/database",
-            config.slot_name
+            config.workflows.changefeed.slot_name
         ))));
     }
     Ok(())

@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{OwnershipWorkflowConfig, SharedRedisConfig};
 use redis::aio::ConnectionManager;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -18,14 +18,15 @@ pub struct SharedStreamPublisher {
 impl SharedStreamPublisher {
     pub async fn connect(
         client: &redis::Client,
-        config: &Config,
+        redis_config: &SharedRedisConfig,
+        ownership_config: &OwnershipWorkflowConfig,
     ) -> Result<Arc<Self>, redis::RedisError> {
-        let connection = client.get_connection_manager().await?;
+        let connection = crate::infra::redis::manager(client, redis_config).await?;
         Ok(Arc::new(Self {
             connection: Mutex::new(connection),
-            stream_capacity: config.ownership_stream_capacity,
-            replica_acks: config.shared_redis_aof_replica_acks,
-            wait_timeout_ms: config.shared_redis_aof_timeout_ms,
+            stream_capacity: ownership_config.stream_capacity,
+            replica_acks: redis_config.aof_replica_acks,
+            wait_timeout_ms: redis_config.aof_timeout_ms,
         }))
     }
 

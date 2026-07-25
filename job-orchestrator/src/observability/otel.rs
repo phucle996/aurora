@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{OtelConfig, TlsTrustSource};
 use crate::observability::logger::Logger;
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
 use opentelemetry::{global, Context, KeyValue};
@@ -11,9 +11,12 @@ use opentelemetry_sdk::{
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fs;
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
+use tonic::transport::{Certificate, ClientTlsConfig, Identity};
 
 const MAX_TRACEPARENT_BYTES: usize = 128;
 const MAX_TRACESTATE_BYTES: usize = 512;
@@ -32,7 +35,7 @@ pub struct PropagationContext {
 pub struct OtelTracer;
 
 impl OtelTracer {
-    pub fn init(config: &Config) {
+    pub fn init(config: &OtelConfig) {
         if OTEL_INITIALIZED.set(()).is_err() {
             Logger::sys_warn(
                 "observability.init",
@@ -43,6 +46,13 @@ impl OtelTracer {
         }
 
         global::set_text_map_propagator(TraceContextPropagator::new());
+        if config.exporter.is_none() {
+            Logger::sys_info(
+                "observability.init",
+                "OpenTelemetry exporter is explicitly disabled",
+            );
+            return;
+        }
         Self::init_tracer(config);
         Self::init_metrics(config);
     }
@@ -65,21 +75,34 @@ impl OtelTracer {
         ])
     }
 
-    fn init_tracer(config: &Config) {
-        let export_timeout = Duration::from_secs(config.otel_export_timeout_secs);
-        let exporter = opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(&config.otel_exporter_otlp_endpoint)
-            .with_timeout(export_timeout);
+    fn init_tracer(config: &OtelConfig) {
+        let exporter = match otlp_exporter(config) {
+            Ok(exporter) => exporter,
+            Err(error) => {
+                Logger::sys_error(
+                    "tracing.init",
+                    &format!("Failed to load OTel TLS identity: {error}"),
+                    "OTEL_TLS_CONFIG_ERROR",
+                );
+                return;
+            }
+        };
 
         match opentelemetry_otlp::new_pipeline()
             .tracing()
             .with_exporter(exporter)
-            .with_batch_config(BatchConfigBuilder::default().build())
+            .with_batch_config(
+                BatchConfigBuilder::default()
+                    .with_max_queue_size(config.batch_max_queue_size)
+                    .with_max_export_batch_size(config.batch_max_export_size)
+                    .with_scheduled_delay(Duration::from_millis(config.batch_schedule_delay_ms))
+                    .with_max_export_timeout(Duration::from_millis(config.batch_export_timeout_ms))
+                    .build(),
+            )
             .with_trace_config(
                 trace::Config::default()
                     .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
-                        config.otel_trace_sample_ratio,
+                        config.trace_sample_ratio,
                     ))))
                     .with_max_attributes_per_span(32)
                     .with_max_events_per_span(32)
@@ -94,7 +117,7 @@ impl OtelTracer {
                 "tracing.init",
                 &format!(
                     "OTel tracer initialized; root_sample_ratio={}, export_timeout_secs={}",
-                    config.otel_trace_sample_ratio, config.otel_export_timeout_secs
+                    config.trace_sample_ratio, config.export_timeout_secs
                 ),
             ),
             Err(error) => Logger::sys_error(
@@ -105,15 +128,15 @@ impl OtelTracer {
         }
     }
 
-    fn init_metrics(config: &Config) {
-        let exporter = match opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(&config.otel_exporter_otlp_endpoint)
-            .with_timeout(Duration::from_secs(config.otel_export_timeout_secs))
-            .build_metrics_exporter(
-                Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),
-                Box::new(opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector::new()),
-            ) {
+    fn init_metrics(config: &OtelConfig) {
+        let exporter = match otlp_exporter(config).and_then(|exporter| {
+            exporter
+                .build_metrics_exporter(
+                    Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),
+                    Box::new(opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector::new()),
+                )
+                .map_err(io::Error::other)
+        }) {
             Ok(exporter) => exporter,
             Err(error) => {
                 Logger::sys_error(
@@ -126,8 +149,8 @@ impl OtelTracer {
         };
 
         let reader = PeriodicReader::builder(exporter, opentelemetry_sdk::runtime::Tokio)
-            .with_interval(Duration::from_secs(config.otel_metric_export_interval_secs))
-            .with_timeout(Duration::from_secs(config.otel_export_timeout_secs))
+            .with_interval(Duration::from_secs(config.metric_export_interval_secs))
+            .with_timeout(Duration::from_secs(config.export_timeout_secs))
             .build();
         let provider = SdkMeterProvider::builder()
             .with_reader(reader)
@@ -147,7 +170,7 @@ impl OtelTracer {
             "metrics.init",
             &format!(
                 "OTel metrics pipeline initialized; interval_secs={}, export_timeout_secs={}",
-                config.otel_metric_export_interval_secs, config.otel_export_timeout_secs
+                config.metric_export_interval_secs, config.export_timeout_secs
             ),
         );
     }
@@ -263,6 +286,55 @@ impl OtelTracer {
             .is_valid()
             .then(|| span_context.span_id().to_string())
     }
+}
+
+fn otlp_exporter(config: &OtelConfig) -> io::Result<opentelemetry_otlp::TonicExporterBuilder> {
+    let exporter_config = config.exporter.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OTel exporter is explicitly disabled",
+        )
+    })?;
+    let mut exporter = opentelemetry_otlp::new_exporter()
+        .tonic()
+        .with_endpoint(&exporter_config.endpoint)
+        .with_timeout(Duration::from_secs(config.export_timeout_secs));
+    let Some(tls_config) = &exporter_config.tls else {
+        return Ok(exporter);
+    };
+
+    let mut tls = ClientTlsConfig::new();
+    if let Some(server_name) = &exporter_config.tls_server_name {
+        tls = tls.domain_name(server_name);
+    }
+    if tls_config.trust_source == TlsTrustSource::File {
+        let ca_path = tls_config.ca_cert.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OTel file trust requires OTEL_EXPORTER_OTLP_CERTIFICATE",
+            )
+        })?;
+        tls = tls.ca_certificate(Certificate::from_pem(fs::read(ca_path)?));
+    }
+    match (&tls_config.client_cert, &tls_config.client_key) {
+        (Some(cert_path), Some(key_path)) => {
+            // The private key crosses only the tonic security boundary and is
+            // never copied into Config diagnostics or structured log fields.
+            tls = tls.identity(Identity::from_pem(
+                fs::read(cert_path)?,
+                fs::read(key_path)?,
+            ));
+        }
+        (None, None) => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OTel client certificate and key must be configured together",
+            ))
+        }
+    }
+    exporter = exporter.with_tls_config(tls);
+    Ok(exporter)
 }
 
 fn bounded_span_name(name: Cow<'static, str>) -> Cow<'static, str> {

@@ -15,7 +15,8 @@ pub async fn run_runtime_watch_bridge(
     redis_client: &redis::Client,
     nats_client: &async_nats::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut redis_conn = redis_client.get_multiplexed_tokio_connection().await?;
+    let mut redis_conn =
+        crate::infra::redis::multiplexed(redis_client, &config.shared_redis).await?;
     let _: redis::RedisResult<()> = redis::cmd("XGROUP")
         .arg("CREATE")
         .arg(WATCH_STREAM)
@@ -36,7 +37,7 @@ pub async fn run_runtime_watch_bridge(
             .arg(WATCH_STREAM)
             .arg(WATCH_GROUP)
             .arg(&listener_id)
-            .arg(config.mail_runtime_report_claim_idle_ms)
+            .arg(config.workflows.mail.runtime_report_claim_idle_ms)
             .arg(&claim_cursor)
             .arg("COUNT")
             .arg(100)

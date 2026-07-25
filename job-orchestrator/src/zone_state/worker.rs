@@ -1,34 +1,17 @@
 use crate::config::Config;
 use crate::infra::kafka::transport_proto::DeadLetterRecordV1;
 use crate::infra::kafka::KafkaTransport;
-use crate::observability::logger::Logger;
 use prost::Message;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio_postgres::NoTls;
 
 /// [COMMENT]: Kafka group phân phối mỗi Zone report cho đúng một JO replica; offset commit sau processor.
 pub async fn run_backpressure_listener(
     config: &Config,
     kafka: Arc<KafkaTransport>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (pg_client, pg_connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(error) = pg_connection.await {
-            Logger::sys_error(
-                "zone_state.postgres",
-                "Zone state PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
-    pg_client
-        .batch_execute(
-            "SET statement_timeout = '5s'; \
-             SET lock_timeout = '1s'; \
-             SET idle_in_transaction_session_timeout = '5s'",
-        )
-        .await?;
+    let pg_client =
+        crate::infra::postgres::connect(&config.postgres, "zone_state.postgres").await?;
     let topic = kafka.zone_report_topic();
     let consumer = kafka
         .consumer("aurora-job-orchestrator-zone-reports-v1", &topic)

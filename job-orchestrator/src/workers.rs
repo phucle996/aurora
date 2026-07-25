@@ -118,12 +118,14 @@ impl RuntimeWorkers {
             }
         };
 
+        let ingest_config = self.config.clone();
         let ingest_redis = self.cache_redis.clone();
         let ingest_nats = self.nats_client.clone();
         let ingest_worker = async move {
             let mut failures = 0_u32;
             loop {
                 if let Err(error) = mail_runtime::ingest::run_runtime_report_nats_bridge(
+                    &ingest_config,
                     &ingest_redis,
                     &ingest_nats,
                 )

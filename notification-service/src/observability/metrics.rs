@@ -1,14 +1,8 @@
+use opentelemetry::metrics::Unit;
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{global, KeyValue};
 use std::sync::OnceLock;
 use std::time::Duration;
-
-// ============================================================================
-// 📂 MODULE: observability/metrics.rs - Native OTel Metrics for Notification
-// ============================================================================
-// Quản lý và khai báo các OTel Metric Instruments trực tiếp.
-// Định dạng push-based truyền trực tiếp sang OTel Collector.
-// ============================================================================
 
 static HTTP_REQUESTS: OnceLock<Counter<u64>> = OnceLock::new();
 static HTTP_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
@@ -17,12 +11,12 @@ static REDIS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static REDIS_STREAM_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static CENTRIFUGO_PUBLISHES: OnceLock<Counter<u64>> = OnceLock::new();
-static DELIVERED_EVENT_LAG: OnceLock<Histogram<f64>> = OnceLock::new();
+static EVENT_AGE_AT_PUBLISH: OnceLock<Histogram<f64>> = OnceLock::new();
+static TELEMETRY_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 
 pub struct MetricsManager;
 
 impl MetricsManager {
-    /// Khởi tạo các OTel metrics tĩnh khi khởi động để sẵn sàng ghi nhận.
     pub fn init() {
         let _ = Self::http_requests();
         let _ = Self::http_duration();
@@ -31,30 +25,36 @@ impl MetricsManager {
         let _ = Self::redis_duration();
         let _ = Self::redis_stream_events();
         let _ = Self::centrifugo_publishes();
-        let _ = Self::delivered_event_lag();
+        let _ = Self::event_age_at_publish();
+        let _ = Self::telemetry_events();
+    }
+
+    fn meter() -> opentelemetry::metrics::Meter {
+        global::meter(super::SERVICE_NAME)
     }
 
     fn http_requests() -> &'static Counter<u64> {
         HTTP_REQUESTS.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .u64_counter("notification_http_requests_total")
-                .with_description("Tong so luong request connect proxy tu Centrifugo")
+                .with_description("Centrifugo connect proxy requests")
                 .init()
         })
     }
 
     fn http_duration() -> &'static Histogram<f64> {
         HTTP_DURATION.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .f64_histogram("notification_http_request_duration_seconds")
-                .with_description("Do tre xu ly connect proxy (seconds)")
+                .with_description("Centrifugo connect proxy latency")
+                .with_unit(Unit::new("s"))
                 .init()
         })
     }
 
     fn redis_realtime_events() -> &'static Counter<u64> {
         REDIS_REALTIME_EVENTS.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .u64_counter("notification_shared_redis_realtime_events_total")
                 .with_description("Shared Redis realtime PubSub outcomes")
                 .init()
@@ -63,7 +63,7 @@ impl MetricsManager {
 
     fn redis_calls() -> &'static Counter<u64> {
         REDIS_CALLS.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .u64_counter("notification_shared_redis_calls_total")
                 .with_description("Central auth request-reply calls through Shared Redis")
                 .init()
@@ -72,16 +72,17 @@ impl MetricsManager {
 
     fn redis_duration() -> &'static Histogram<f64> {
         REDIS_DURATION.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .f64_histogram("notification_shared_redis_call_duration_seconds")
                 .with_description("Shared Redis auth request-reply latency")
+                .with_unit(Unit::new("s"))
                 .init()
         })
     }
 
     fn redis_stream_events() -> &'static Counter<u64> {
         REDIS_STREAM_EVENTS.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .u64_counter("notification_shared_redis_stream_events_total")
                 .with_description("Shared Redis job notification stream outcomes")
                 .init()
@@ -90,58 +91,180 @@ impl MetricsManager {
 
     fn centrifugo_publishes() -> &'static Counter<u64> {
         CENTRIFUGO_PUBLISHES.get_or_init(|| {
-            global::meter("aurora-notification-service")
+            Self::meter()
                 .u64_counter("notification_centrifugo_publishes_total")
-                .with_description("Tong so tin nhan day sang Centrifugo API")
+                .with_description("Centrifugo API publish outcomes")
                 .init()
         })
     }
 
-    fn delivered_event_lag() -> &'static Histogram<f64> {
-        DELIVERED_EVENT_LAG.get_or_init(|| {
-            global::meter("aurora-notification-service")
-                .f64_histogram("notification_delivered_event_lag_seconds")
-                .with_description("Do tre tu luc tao job den luc Centrifugo publish (seconds)")
+    fn event_age_at_publish() -> &'static Histogram<f64> {
+        EVENT_AGE_AT_PUBLISH.get_or_init(|| {
+            Self::meter()
+                .f64_histogram("notification_event_age_at_centrifugo_publish_seconds")
+                .with_description(
+                    "Event age when Centrifugo acknowledges publish; not browser delivery latency",
+                )
+                .with_unit(Unit::new("s"))
                 .init()
         })
     }
 
-    /// Ghi nhận chỉ số request HTTP connect proxy
+    fn telemetry_events() -> &'static Counter<u64> {
+        TELEMETRY_EVENTS.get_or_init(|| {
+            Self::meter()
+                .u64_counter("notification_telemetry_events_total")
+                .with_description("Bounded telemetry pipeline attempts, drops, and suppression")
+                .init()
+        })
+    }
+
     pub fn record_http_request(path: &str, status: &str, duration: Duration) {
         let attrs = [
-            KeyValue::new("path", path.to_string()),
-            KeyValue::new("status", status.to_string()),
+            KeyValue::new("http.route", normalized_route(path)),
+            KeyValue::new("http.response.status_class", status_class(status)),
         ];
         Self::http_requests().add(1, &attrs);
         Self::http_duration().record(duration.as_secs_f64(), &attrs);
     }
 
     pub fn record_redis_realtime(kind: &'static str, status: &'static str) {
-        let attrs = [KeyValue::new("kind", kind), KeyValue::new("status", status)];
+        let attrs = [
+            KeyValue::new("event.kind", realtime_kind(kind)),
+            KeyValue::new("outcome", realtime_outcome(status)),
+        ];
         Self::redis_realtime_events().add(1, &attrs);
     }
 
     pub fn record_redis_call(channel: &str, status: &str, duration: Duration) {
         let attrs = [
-            KeyValue::new("channel", channel.to_string()),
-            KeyValue::new("status", status.to_string()),
+            KeyValue::new("rpc.operation", redis_operation(channel)),
+            KeyValue::new("outcome", generic_outcome(status)),
         ];
         Self::redis_calls().add(1, &attrs);
         Self::redis_duration().record(duration.as_secs_f64(), &attrs);
     }
 
     pub fn record_redis_stream_event(status: &'static str) {
-        Self::redis_stream_events().add(1, &[KeyValue::new("status", status)]);
+        Self::redis_stream_events().add(1, &[KeyValue::new("outcome", stream_outcome(status))]);
     }
 
-    /// Ghi nhận chỉ số đẩy thông báo sang Centrifugo
     pub fn record_centrifugo_publish(status: &str) {
-        Self::centrifugo_publishes().add(1, &[KeyValue::new("status", status.to_string())]);
+        Self::centrifugo_publishes().add(1, &[KeyValue::new("outcome", generic_outcome(status))]);
     }
 
-    /// Ghi nhận độ trễ xử lý thông báo E2E (Postgres -> WebSocket Client)
+    /// Compatibility name: this measures age at Centrifugo HTTP ACK, not
+    /// delivery to a browser or durable business completion.
     pub fn record_delivered_lag(status: &str, duration: Duration) {
-        let attrs = [KeyValue::new("status", status.to_string())];
-        Self::delivered_event_lag().record(duration.as_secs_f64(), &attrs);
+        Self::event_age_at_publish().record(
+            duration.as_secs_f64(),
+            &[KeyValue::new("outcome", generic_outcome(status))],
+        );
+    }
+
+    pub(crate) fn record_log_pipeline(attempted: u64, dropped: u64, suppressed: u64) {
+        let counter = Self::telemetry_events();
+        if attempted > 0 {
+            counter.add(
+                attempted,
+                &[
+                    KeyValue::new("signal", "log"),
+                    KeyValue::new("outcome", "attempted"),
+                ],
+            );
+        }
+        if dropped > 0 {
+            counter.add(
+                dropped,
+                &[
+                    KeyValue::new("signal", "log"),
+                    KeyValue::new("outcome", "dropped"),
+                ],
+            );
+        }
+        if suppressed > 0 {
+            counter.add(
+                suppressed,
+                &[
+                    KeyValue::new("signal", "log"),
+                    KeyValue::new("outcome", "suppressed"),
+                ],
+            );
+        }
+    }
+}
+
+fn normalized_route(path: &str) -> &'static str {
+    match path {
+        "/api/v1/realtime/connect" => "/api/v1/realtime/connect",
+        _ => "other",
+    }
+}
+
+fn status_class(status: &str) -> &'static str {
+    match status.as_bytes().first() {
+        Some(b'2') => "2xx",
+        Some(b'3') => "3xx",
+        Some(b'4') => "4xx",
+        Some(b'5') => "5xx",
+        _ => "other",
+    }
+}
+
+fn redis_operation(channel: &str) -> &'static str {
+    match channel {
+        "verify_user_trinity_token" => "verify_user_trinity",
+        "verify_admin_trinity_token" => "verify_admin_trinity",
+        _ => "other",
+    }
+}
+
+fn realtime_kind(kind: &str) -> &'static str {
+    match kind {
+        "storage" => "storage",
+        "mail_runtime" => "mail_runtime",
+        _ => "other",
+    }
+}
+
+fn realtime_outcome(status: &str) -> &'static str {
+    match status {
+        "success" => "success",
+        "delivery_failed" => "delivery_failed",
+        "oversized" => "oversized",
+        "invalid" => "invalid",
+        _ => "other",
+    }
+}
+
+fn stream_outcome(status: &str) -> &'static str {
+    match status {
+        "delivered" => "delivered",
+        "delivery_failed" => "delivery_failed",
+        "invalid_envelope" => "invalid_envelope",
+        "invalid_contract" => "invalid_contract",
+        _ => "other",
+    }
+}
+
+fn generic_outcome(status: &str) -> &'static str {
+    match status {
+        "ok" | "success" | "delivered" => "success",
+        "timeout" => "timeout",
+        "failed" | "error" | "delivery_failed" => "failure",
+        "invalid" | "invalid_contract" | "invalid_envelope" => "invalid",
+        _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generic_outcome, normalized_route, status_class};
+
+    #[test]
+    fn dynamic_metric_values_are_bounded() {
+        assert_eq!(normalized_route("/tenant/attacker-controlled"), "other");
+        assert_eq!(status_class("503"), "5xx");
+        assert_eq!(generic_outcome("attacker-controlled"), "other");
     }
 }

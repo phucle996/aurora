@@ -825,35 +825,10 @@ services:
     init: true
     volumes:
       - ./dev/tls:/etc/job-orchestrator/tls:ro
-    environment:
-      DATABASE_URL: "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
-      SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
-      # Dev is single-node Redis. Production must require at least one AOF replica ACK.
-      SHARED_REDIS_AOF_REPLICA_ACKS: "0"
-      OWNERSHIP_STREAM_CAPACITY: "100000"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      REPLICATION_SLOT_NAME: "outbox_slot"
-      PUBLICATION_NAME: "outbox_pub"
-      # [COMMENT]: Shared Redis chỉ là Central watch/snapshot bridge; Dataplane không có Redis credential.
-      MAIL_RUNTIME_REPORT_TTL_SECS: "180"
-      MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
-      APP_LOG_LEVEL: "debug"
-      APP_LOG_BUFFERED_LINES: "16384"
-      APP_LOG_MAX_FIELD_BYTES: "16384"
-      APP_LOG_RATE_LIMIT_MS: "5000"
-      TZ: "Asia/Ho_Chi_Minh"
-      CDC_SOURCES: "mail.mail_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
-      # [COMMENT]: JO bridge Shared Redis ↔ NATS Core cho runtime soft state.
-      NATS_URL: "nats://controlplane-nats:4222"
-      # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
-      OTEL_TRACE_SAMPLE_RATIO: "0.25"
-      OTEL_METRIC_EXPORT_INTERVAL_SECS: "15"
-      OTEL_EXPORT_TIMEOUT_SECS: "5"
-      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
-      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
-      OTEL_BSP_SCHEDULE_DELAY: "1000"
-      OTEL_BSP_EXPORT_TIMEOUT: "5000"
+    # One reviewed development profile keeps Compose readable. Production
+    # injects the same contract from ConfigMap/Secret plus mounted TLS identity.
+    env_file:
+      - ../job-orchestrator/.env
     depends_on:
       psql:
         condition: service_healthy

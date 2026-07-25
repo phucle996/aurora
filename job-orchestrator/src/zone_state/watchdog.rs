@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use std::time::Duration;
-use tokio_postgres::NoTls;
 
 const LEASE_KEY: &str = "leader:{zone-health-watchdog}";
 const LEASE_TTL_MS: u64 = 10_000;
@@ -16,24 +15,9 @@ pub async fn run(
     config: Config,
     redis_client: redis::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (pg_client, pg_connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(error) = pg_connection.await {
-            Logger::sys_error(
-                "zone_watchdog.postgres",
-                "Zone watchdog PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
-    pg_client
-        .batch_execute(
-            "SET statement_timeout = '5s'; \
-             SET lock_timeout = '1s'; \
-             SET idle_in_transaction_session_timeout = '5s'",
-        )
-        .await?;
-    let mut redis = redis_client.get_multiplexed_tokio_connection().await?;
+    let pg_client =
+        crate::infra::postgres::connect(&config.postgres, "zone_watchdog.postgres").await?;
+    let mut redis = crate::infra::redis::multiplexed(&redis_client, &config.shared_redis).await?;
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 

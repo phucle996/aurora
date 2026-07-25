@@ -1,3 +1,4 @@
+use crate::config::{KafkaConfig, KafkaSecurityProtocol, TlsTrustSource};
 use ahash::AHashMap;
 use krafka::auth::{AuthConfig, TlsConfig};
 use krafka::consumer::{AutoOffsetReset, Consumer, OffsetAndMetadata, TopicPartition};
@@ -16,69 +17,65 @@ pub struct KafkaTransport {
     bootstrap_servers: String,
     auth: Option<AuthConfig>,
     topic_prefix: String,
+    client_id: String,
+    request_timeout: Duration,
+    metadata_max_age: Duration,
+    consumer_max_poll_records: i32,
+    consumer_session_timeout: Duration,
+    consumer_heartbeat_interval: Duration,
+    publish_attempts: u32,
+    publish_retry_delay: Duration,
 }
 
 impl KafkaTransport {
-    pub async fn connect(config: &crate::config::Config) -> Result<Arc<Self>, String> {
-        let auth = match config.kafka_security_protocol.as_str() {
-            "plaintext" => None,
-            "ssl" => {
-                let mut tls = TlsConfig::new().with_native_roots();
-                if let Some(ca_path) = &config.kafka_ca_cert {
-                    tls = tls.with_ca_cert(ca_path);
-                }
-                Some(AuthConfig::ssl(tls))
-            }
-            "sasl_plaintext" => Some(
+    pub async fn connect(config: &KafkaConfig) -> Result<Arc<Self>, String> {
+        let auth = match config.security_protocol {
+            KafkaSecurityProtocol::Plaintext => None,
+            KafkaSecurityProtocol::Ssl => Some(AuthConfig::ssl(kafka_tls(config)?)),
+            KafkaSecurityProtocol::SaslPlaintext => Some(
                 AuthConfig::sasl_plain(
                     config
-                        .kafka_username
+                        .username
                         .as_deref()
                         .ok_or("KAFKA_USERNAME is required")?,
                     config
-                        .kafka_password
+                        .password
                         .as_deref()
                         .ok_or("KAFKA_PASSWORD is required")?,
                 )
                 .map_err(|error| format!("invalid Kafka SASL config: {error}"))?,
             ),
-            "sasl_plain_ssl" => {
-                let mut tls = TlsConfig::new().with_native_roots();
-                if let Some(ca_path) = &config.kafka_ca_cert {
-                    tls = tls.with_ca_cert(ca_path);
-                }
-                Some(
-                    AuthConfig::sasl_plain_ssl(
-                        config
-                            .kafka_username
-                            .as_deref()
-                            .ok_or("KAFKA_USERNAME is required")?,
-                        config
-                            .kafka_password
-                            .as_deref()
-                            .ok_or("KAFKA_PASSWORD is required")?,
-                        tls,
-                    )
-                    .map_err(|error| format!("invalid Kafka SASL config: {error}"))?,
+            KafkaSecurityProtocol::SaslPlainSsl => Some(
+                AuthConfig::sasl_plain_ssl(
+                    config
+                        .username
+                        .as_deref()
+                        .ok_or("KAFKA_USERNAME is required")?,
+                    config
+                        .password
+                        .as_deref()
+                        .ok_or("KAFKA_PASSWORD is required")?,
+                    kafka_tls(config)?,
                 )
-            }
-            value => return Err(format!("unsupported KAFKA_SECURITY_PROTOCOL: {value}")),
+                .map_err(|error| format!("invalid Kafka SASL config: {error}"))?,
+            ),
         };
 
         let mut builder = Producer::builder()
-            .bootstrap_servers(config.kafka_bootstrap_servers.clone())
-            .client_id("aurora-job-orchestrator")
+            .bootstrap_servers(config.bootstrap_servers.clone())
+            .client_id(&config.client_id)
             .acks(Acks::All)
             .compression(Compression::Zstd)
             .idempotent(true)
-            .max_in_flight(5)
-            .batch_size(65_536)
-            .linger(Duration::from_millis(5))
-            .request_timeout(Duration::from_secs(10))
-            .delivery_timeout(Duration::from_secs(60))
-            .retries(10)
-            // [COMMENT]: Làm tươi metadata mỗi 5s để cập nhật nhanh danh sách các zone command topic mới tạo.
-            .metadata_max_age(Duration::from_secs(5));
+            .max_in_flight(config.max_in_flight)
+            .batch_size(config.producer_batch_bytes)
+            .linger(Duration::from_millis(config.producer_linger_ms))
+            .request_timeout(Duration::from_millis(config.request_timeout_ms))
+            .delivery_timeout(Duration::from_millis(config.delivery_timeout_ms))
+            .retries(config.producer_retries)
+            // Metadata refresh remains bounded so newly provisioned per-Zone
+            // topics are discovered without a reconnect storm.
+            .metadata_max_age(Duration::from_millis(config.metadata_max_age_ms));
         if let Some(auth) = auth.clone() {
             builder = builder.auth(auth);
         }
@@ -88,9 +85,19 @@ impl KafkaTransport {
             .map_err(|error| format!("initialize Kafka producer failed: {error}"))?;
         Ok(Arc::new(Self {
             producer: Arc::new(producer),
-            bootstrap_servers: config.kafka_bootstrap_servers.clone(),
+            bootstrap_servers: config.bootstrap_servers.clone(),
             auth,
-            topic_prefix: config.kafka_topic_prefix.trim_end_matches('.').to_string(),
+            topic_prefix: config.topic_prefix.trim_end_matches('.').to_string(),
+            client_id: config.client_id.clone(),
+            request_timeout: Duration::from_millis(config.request_timeout_ms),
+            metadata_max_age: Duration::from_millis(config.metadata_max_age_ms),
+            consumer_max_poll_records: config.consumer_max_poll_records,
+            consumer_session_timeout: Duration::from_millis(config.consumer_session_timeout_ms),
+            consumer_heartbeat_interval: Duration::from_millis(
+                config.consumer_heartbeat_interval_ms,
+            ),
+            publish_attempts: config.publish_attempts,
+            publish_retry_delay: Duration::from_millis(config.publish_retry_delay_ms),
         }))
     }
 
@@ -98,11 +105,14 @@ impl KafkaTransport {
         let mut builder = Consumer::builder()
             .bootstrap_servers(self.bootstrap_servers.clone())
             .group_id(group_id)
-            .client_id("aurora-job-orchestrator")
+            .client_id(&self.client_id)
             .auto_offset_reset(AutoOffsetReset::Earliest)
             .enable_auto_commit(false)
-            .max_poll_records(32)
-            .request_timeout(Duration::from_secs(10));
+            .max_poll_records(self.consumer_max_poll_records)
+            .request_timeout(self.request_timeout)
+            .session_timeout(self.consumer_session_timeout)
+            .heartbeat_interval(self.consumer_heartbeat_interval)
+            .metadata_max_age(self.metadata_max_age);
         if let Some(auth) = self.auth.clone() {
             builder = builder.auth(auth);
         }
@@ -150,7 +160,7 @@ impl KafkaTransport {
                 }
                 Err(error) => {
                     attempts += 1;
-                    if attempts >= 5 {
+                    if attempts >= self.publish_attempts {
                         crate::observability::metrics::MetricsManager::record_kafka_operation(
                             "publish",
                             "failed",
@@ -158,7 +168,7 @@ impl KafkaTransport {
                         );
                         return Err(format!("Kafka publish to {topic} failed: {error}"));
                     }
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    tokio::time::sleep(self.publish_retry_delay).await;
                 }
             }
         }
@@ -214,4 +224,40 @@ impl KafkaTransport {
     pub fn dead_letter_topic(&self) -> String {
         format!("{}.jobs.dlq.v1", self.topic_prefix)
     }
+}
+
+fn kafka_tls(config: &KafkaConfig) -> Result<TlsConfig, String> {
+    let tls_config = config
+        .tls
+        .as_ref()
+        .ok_or("Kafka TLS protocol requires an explicit TLS configuration")?;
+    let mut tls = TlsConfig::new();
+    match tls_config.trust_source {
+        TlsTrustSource::System => {
+            tls = tls.with_native_roots();
+        }
+        TlsTrustSource::File => {
+            let ca_path = tls_config
+                .ca_cert
+                .as_ref()
+                .ok_or("Kafka file trust requires KAFKA_TLS_CA_CERT")?;
+            tls = tls.with_ca_cert(ca_path.to_string_lossy());
+        }
+    }
+    if let Some(server_name) = &config.tls_server_name {
+        tls = tls.with_sni_hostname(server_name);
+    }
+    match (&tls_config.client_cert, &tls_config.client_key) {
+        (Some(cert), Some(key)) => {
+            tls = tls.with_client_cert(cert.to_string_lossy(), key.to_string_lossy());
+        }
+        (None, None) => {}
+        _ => {
+            return Err(
+                "KAFKA_TLS_CLIENT_CERT and KAFKA_TLS_CLIENT_KEY must be configured together"
+                    .to_owned(),
+            )
+        }
+    }
+    Ok(tls)
 }

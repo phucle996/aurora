@@ -9,7 +9,6 @@ use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationE
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_postgres::NoTls;
 
 use super::connection::parse_pg_config;
 use super::pgoutput::{
@@ -49,24 +48,11 @@ impl ChangefeedWorker {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // [COMMENT]: Bootstrap snapshot từ DB để khởi tạo cache trước khi nhận WAL events.
         // Tránh publish false-positive khi JO restart và WAL replay các event cũ.
-        let (metadata_client, metadata_connection) =
-            tokio_postgres::connect(&config.database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = metadata_connection.await {
-                Logger::sys_error(
-                    "changefeed.metadata_postgres",
-                    "Changefeed metadata PostgreSQL connection stopped",
-                    &error.to_string(),
-                );
-            }
-        });
+        let metadata_client =
+            crate::infra::postgres::connect(&config.postgres, "changefeed.metadata_postgres")
+                .await?;
         metadata_client
-            .batch_execute(
-                "SET default_transaction_read_only = on; \
-                 SET statement_timeout = '5s'; \
-                 SET lock_timeout = '1s'; \
-                 SET idle_in_transaction_session_timeout = '5s'",
-            )
+            .batch_execute("SET default_transaction_read_only = on")
             .await?;
         let metadata_client = Arc::new(metadata_client);
         let snapshot =
@@ -129,7 +115,7 @@ impl ChangefeedWorker {
     /// Kết nối và chạy stream logical replication cho một phiên kết nối cụ thể.
     async fn run_replication_stream(&self) -> Result<(), Box<dyn std::error::Error>> {
         let (pg_host, pg_port, pg_user, pg_password, pg_db) =
-            parse_pg_config(&self.config.database_url)
+            parse_pg_config(&self.config.postgres.database_url)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
         Logger::sys_info(
@@ -143,20 +129,38 @@ impl ChangefeedWorker {
             user: pg_user,
             password: pg_password,
             database: pg_db,
-            slot: self.config.slot_name.clone(),
-            publication: self.config.publication_name.clone(),
+            slot: self.config.workflows.changefeed.slot_name.clone(),
+            publication: self.config.workflows.changefeed.publication_name.clone(),
             start_lsn: Lsn::ZERO,
+            tls: self.config.postgres.replication_tls(),
+            status_interval: std::time::Duration::from_millis(
+                self.config.workflows.changefeed.status_interval_ms,
+            ),
+            idle_wakeup_interval: std::time::Duration::from_secs(
+                self.config.workflows.changefeed.idle_wakeup_secs,
+            ),
+            buffer_events: self.config.workflows.changefeed.buffer_events,
             ..Default::default()
         };
 
-        let mut client = ReplicationClient::connect(config).await?;
+        let mut client = tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.postgres.connect_timeout_secs),
+            ReplicationClient::connect(config),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "PostgreSQL logical replication connect timed out",
+            )
+        })??;
         let mut relation_map: HashMap<u32, PgOutputRelation> = HashMap::new();
 
         Logger::sys_info(
             "changefeed.run",
             &format!(
                 "Listening on logical replication slot {}",
-                self.config.slot_name
+                self.config.workflows.changefeed.slot_name
             ),
         );
 
@@ -169,86 +173,89 @@ impl ChangefeedWorker {
                     }
 
                     let tag = data[0];
-                    let outcome: Result<(), Box<dyn std::error::Error>> = async {
-                        match tag {
-                            b'R' => {
-                                let rel =
-                                    parse_relation_message(&data).map_err(PermanentChangeError)?;
-                                Logger::sys_info(
-                                    "changefeed.relation",
-                                    &format!(
-                                        "Schema table {}.{} (ID: {}) được cập nhật: {} columns",
-                                        rel.schema_name,
-                                        rel.relation_name,
-                                        rel.relation_id,
-                                        rel.columns.len()
-                                    ),
-                                );
-                                relation_map.insert(rel.relation_id, rel);
-                                Ok(())
-                            }
-                            b'I' | b'U' => {
-                                let mut offset = 1;
-                                let relation_id =
-                                    read_u32(&data, &mut offset).map_err(PermanentChangeError)?;
-                                let rel = relation_map.get(&relation_id).ok_or_else(|| {
-                                    std::io::Error::other(format!(
+                    let outcome: Result<(), Box<dyn std::error::Error>> =
+                        async {
+                            match tag {
+                                b'R' => {
+                                    let rel = parse_relation_message(&data)
+                                        .map_err(PermanentChangeError)?;
+                                    Logger::sys_info(
+                                        "changefeed.relation",
+                                        &format!(
+                                            "Schema table {}.{} (ID: {}) được cập nhật: {} columns",
+                                            rel.schema_name,
+                                            rel.relation_name,
+                                            rel.relation_id,
+                                            rel.columns.len()
+                                        ),
+                                    );
+                                    relation_map.insert(rel.relation_id, rel);
+                                    Ok(())
+                                }
+                                b'I' | b'U' => {
+                                    let mut offset = 1;
+                                    let relation_id = read_u32(&data, &mut offset)
+                                        .map_err(PermanentChangeError)?;
+                                    let rel = relation_map.get(&relation_id).ok_or_else(|| {
+                                        std::io::Error::other(format!(
                                         "relation {relation_id} is unknown; reconnect before ACK"
                                     ))
-                                })?;
-                                // [COMMENT]: Match đủ schema.table; không nhận nhầm outbox cùng tên ở domain khác.
-                                let is_monitored =
-                                    self.config.changefeed_sources.iter().any(|source| {
-                                        if let Some((schema_name, table_name)) =
-                                            source.split_once('.')
-                                        {
-                                            rel.schema_name == schema_name
-                                                && rel.relation_name == table_name
+                                    })?;
+                                    // [COMMENT]: Match đủ schema.table; không nhận nhầm outbox cùng tên ở domain khác.
+                                    let is_monitored =
+                                        self.config.workflows.changefeed.sources.iter().any(
+                                            |source| {
+                                                if let Some((schema_name, table_name)) =
+                                                    source.split_once('.')
+                                                {
+                                                    rel.schema_name == schema_name
+                                                        && rel.relation_name == table_name
+                                                } else {
+                                                    rel.relation_name == source.as_str()
+                                                }
+                                            },
+                                        );
+
+                                    if is_monitored {
+                                        let fields_res = if tag == b'I' {
+                                            parse_insert_message(&data, &rel.columns)
                                         } else {
-                                            rel.relation_name == source.as_str()
-                                        }
-                                    });
+                                            parse_update_message(&data, &rel.columns)
+                                        };
 
-                                if is_monitored {
-                                    let fields_res = if tag == b'I' {
-                                        parse_insert_message(&data, &rel.columns)
-                                    } else {
-                                        parse_update_message(&data, &rel.columns)
-                                    };
-
-                                    match fields_res {
-                                        Ok(fields) => {
-                                            if rel.relation_name == "zones"
-                                                || rel.relation_name == "zone_services"
-                                            {
-                                                // [COMMENT]: Bỏ tham số tag — so sánh bằng cache thay vì heuristic.
-                                                self.process_zone_config_change(
-                                                    &fields,
-                                                    &rel.relation_name,
-                                                )
-                                                .await?;
-                                            } else if tag == b'I' {
-                                                // Source schema is authoritative routing metadata;
-                                                // never infer the owner domain from job_topic.
-                                                self.process_insert(&fields, &rel.schema_name)
+                                        match fields_res {
+                                            Ok(fields) => {
+                                                if rel.relation_name == "zones"
+                                                    || rel.relation_name == "zone_services"
+                                                {
+                                                    // [COMMENT]: Bỏ tham số tag — so sánh bằng cache thay vì heuristic.
+                                                    self.process_zone_config_change(
+                                                        &fields,
+                                                        &rel.relation_name,
+                                                    )
                                                     .await?;
+                                                } else if tag == b'I' {
+                                                    // Source schema is authoritative routing metadata;
+                                                    // never infer the owner domain from job_topic.
+                                                    self.process_insert(&fields, &rel.schema_name)
+                                                        .await?;
+                                                }
+                                            }
+                                            Err(err) => {
+                                                return Err(PermanentChangeError(format!(
+                                                    "pgoutput {} parse failed for {}.{}: {err}",
+                                                    tag as char, rel.schema_name, rel.relation_name
+                                                ))
+                                                .into());
                                             }
                                         }
-                                        Err(err) => {
-                                            return Err(PermanentChangeError(format!(
-                                                "pgoutput {} parse failed for {}.{}: {err}",
-                                                tag as char, rel.schema_name, rel.relation_name
-                                            ))
-                                            .into());
-                                        }
                                     }
+                                    Ok(())
                                 }
-                                Ok(())
+                                _ => Ok(()),
                             }
-                            _ => Ok(()),
                         }
-                    }
-                    .await;
+                        .await;
 
                     match outcome {
                         Ok(()) => {}

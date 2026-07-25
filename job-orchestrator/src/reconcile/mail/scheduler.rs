@@ -21,7 +21,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::MissedTickBehavior;
-use tokio_postgres::NoTls;
 use uuid::Uuid;
 
 pub async fn run_periodic_mail_reconciliation(
@@ -29,17 +28,18 @@ pub async fn run_periodic_mail_reconciliation(
     redis_client: redis::Client,
     kafka: Arc<KafkaTransport>,
 ) {
+    let mail_config = &config.workflows.mail;
     // [COMMENT]: Một jitter cấp instance làm các JO replica không thức và tranh toàn bộ Zone cùng thời điểm.
     let instance_id = crate::config::get_node_hostname();
     let mut initial_hasher = std::collections::hash_map::DefaultHasher::new();
     instance_id.hash(&mut initial_hasher);
     "mail-periodic-reconciliation".hash(&mut initial_hasher);
-    let initial_jitter_ms = initial_hasher.finish() % config.mail_reconcile_jitter_max_ms;
+    let initial_jitter_ms = initial_hasher.finish() % mail_config.reconcile_jitter_max_ms;
     tokio::time::sleep(Duration::from_millis(initial_jitter_ms)).await;
 
-    let (pg_client, pg_connection) =
-        match tokio_postgres::connect(&config.database_url, NoTls).await {
-            Ok(connection) => connection,
+    let pg_client =
+        match crate::infra::postgres::connect(&config.postgres, "mail.reconcile.postgres").await {
+            Ok(client) => client,
             Err(error) => {
                 Logger::sys_error(
                     "mail.reconcile",
@@ -49,22 +49,8 @@ pub async fn run_periodic_mail_reconciliation(
                 return;
             }
         };
-    tokio::spawn(async move {
-        if let Err(error) = pg_connection.await {
-            Logger::sys_error(
-                "mail.reconcile.postgres",
-                "Mail reconciliation PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
     if let Err(error) = pg_client
-        .batch_execute(
-            "SET default_transaction_read_only = on; \
-             SET statement_timeout = '5s'; \
-             SET lock_timeout = '1s'; \
-             SET idle_in_transaction_session_timeout = '5s'",
-        )
+        .batch_execute("SET default_transaction_read_only = on")
         .await
     {
         Logger::sys_error(
@@ -76,7 +62,7 @@ pub async fn run_periodic_mail_reconciliation(
     }
 
     let mut interval = tokio::time::interval(Duration::from_secs(
-        config.mail_reconcile_scheduler_tick_secs,
+        mail_config.reconcile_scheduler_tick_secs,
     ));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -106,17 +92,18 @@ pub async fn run_periodic_mail_reconciliation(
         for zone_row in zones {
             let zone_id: Uuid = zone_row.get(0);
 
-            let mut redis_conn = match redis_client.get_multiplexed_tokio_connection().await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    Logger::sys_error(
-                        "mail.reconcile.redis",
-                        "Không thể kết nối Cache Redis",
-                        &error.to_string(),
-                    );
-                    break;
-                }
-            };
+            let mut redis_conn =
+                match crate::infra::redis::multiplexed(&redis_client, &config.shared_redis).await {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        Logger::sys_error(
+                            "mail.reconcile.redis",
+                            "Không thể kết nối Cache Redis",
+                            &error.to_string(),
+                        );
+                        break;
+                    }
+                };
             // One zone is the atomic/fencing unit, so every Lua key must share
             // its Redis Cluster hash tag.
             let lock_key = format!("mail:reconcile:{{{zone_id}}}:lock");
@@ -141,8 +128,8 @@ return token
             .key(&generation_key)
             .key(&next_due_key)
             .arg(now_ms)
-            .arg(config.mail_reconcile_interval_secs * 1_000)
-            .arg(config.mail_reconcile_lock_ttl_secs * 1_000)
+            .arg(mail_config.reconcile_interval_secs * 1_000)
+            .arg(mail_config.reconcile_lock_ttl_secs * 1_000)
             .invoke_async(&mut redis_conn)
             .await
             {
@@ -178,8 +165,8 @@ return token
             let started = Instant::now();
             let mut completed_cycle = false;
 
-            for _ in 0..config.mail_reconcile_max_pages_per_run {
-                if started.elapsed() >= Duration::from_secs(config.mail_reconcile_work_budget_secs)
+            for _ in 0..mail_config.reconcile_max_pages_per_run {
+                if started.elapsed() >= Duration::from_secs(mail_config.reconcile_work_budget_secs)
                 {
                     break;
                 }
@@ -193,7 +180,7 @@ return token
                             zone_id,
                             &cursor_id,
                             cursor_version,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -206,7 +193,7 @@ return token
                             zone_id,
                             &cursor_id,
                             cursor_version,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -218,7 +205,7 @@ return token
                             &kafka,
                             zone_id,
                             &cursor_id,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -230,7 +217,7 @@ return token
                             &kafka,
                             zone_id,
                             &cursor_id,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -242,7 +229,7 @@ return token
                             &kafka,
                             zone_id,
                             &cursor_id,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -254,7 +241,7 @@ return token
                             &kafka,
                             zone_id,
                             &cursor_id,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -266,7 +253,7 @@ return token
                             &kafka,
                             zone_id,
                             &cursor_id,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -278,7 +265,7 @@ return token
                             &kafka,
                             zone_id,
                             &cursor_id,
-                            config.mail_reconcile_page_size,
+                            mail_config.reconcile_page_size,
                             generation as u64,
                         )
                         .await
@@ -298,7 +285,7 @@ return token
                     }
                 };
 
-                if count == config.mail_reconcile_page_size as usize {
+                if count == mail_config.reconcile_page_size as usize {
                     cursor_id = last_id;
                     cursor_version = last_version;
                 } else {
@@ -384,7 +371,7 @@ return 1
                 .unwrap_or_default()
                 .as_millis() as u64
                 + if completed_cycle {
-                    config.mail_reconcile_interval_secs * 1_000
+                    mail_config.reconcile_interval_secs * 1_000
                 } else {
                     5_000
                 };

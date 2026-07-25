@@ -8,7 +8,6 @@ use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_postgres::NoTls;
 
 const REALTIME_CHANNEL: &str = "aurora:realtime:notifications";
 
@@ -18,24 +17,10 @@ pub async fn run_bucket_sizes_listener(
     kafka: Arc<KafkaTransport>,
     redis_client: &redis::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (pg_client, pg_connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(error) = pg_connection.await {
-            Logger::sys_error(
-                "storage_usage.postgres",
-                "Storage usage PostgreSQL connection stopped",
-                &error.to_string(),
-            );
-        }
-    });
-    pg_client
-        .batch_execute(
-            "SET statement_timeout = '5s'; \
-             SET lock_timeout = '1s'; \
-             SET idle_in_transaction_session_timeout = '5s'",
-        )
-        .await?;
-    let mut redis_conn = redis_client.get_multiplexed_tokio_connection().await?;
+    let pg_client =
+        crate::infra::postgres::connect(&config.postgres, "storage_usage.postgres").await?;
+    let mut redis_conn =
+        crate::infra::redis::multiplexed(redis_client, &config.shared_redis).await?;
     let topic = kafka.storage_sizes_topic();
     let consumer = kafka
         .consumer("aurora-job-orchestrator-storage-sizes-v1", &topic)

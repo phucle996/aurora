@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _logger_guard = Logger::init();
 
     // 1. Nạp cấu hình từ biến môi trường đầu tiên để phục vụ khởi tạo Observability
-    let config = match Config::from_env() {
+    let config = match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
             Logger::sys_error("main.init", "Lỗi cấu hình biến môi trường", &err);
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Khởi tạo logger có cấu trúc, OpenTelemetry Tracer & Metrics (Push model)
-    OtelTracer::init(&config);
+    OtelTracer::init(&config.otel);
     let _otel_shutdown_guard = OtelShutdownGuard;
     MetricsManager::init();
     Logger::sys_info(
@@ -61,10 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "main.init",
         &format!(
             "Cấu hình được nạp thành công: PG Slot={}, PG Publication={}, Kafka security={}, topic prefix={}",
-            config.slot_name,
-            config.publication_name,
-            config.kafka_security_protocol,
-            config.kafka_topic_prefix
+            config.workflows.changefeed.slot_name,
+            config.workflows.changefeed.publication_name,
+            config.kafka.security_protocol,
+            config.kafka.topic_prefix
         ),
     );
 
@@ -73,15 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // [COMMENT]: Shared Redis không còn chở Zone Job; chỉ giữ Central
     // reconciler/runtime bridge, bounded stream và lock/checkpoint.
-    let cache_redis = redis::Client::open(config.shared_redis_url.clone())?;
-    let kafka = infra::kafka::KafkaTransport::connect(&config)
+    let cache_redis = infra::redis::client(&config.shared_redis)?;
+    let kafka = infra::kafka::KafkaTransport::connect(&config.kafka)
         .await
         .map_err(std::io::Error::other)?;
     Logger::sys_info("main.init", "Đã khởi tạo Kafka transport và Shared Redis.");
 
-    let nats_client = async_nats::connect(&config.env_nats_url).await?;
+    let nats_client = infra::nats::connect(&config.nats_core).await?;
     Logger::sys_info("main.init", "Đã kết nối thành công tới NATS Core.");
-    let ownership_publisher = outbox::SharedStreamPublisher::connect(&cache_redis, &config).await?;
+    let ownership_publisher = outbox::SharedStreamPublisher::connect(
+        &cache_redis,
+        &config.shared_redis,
+        &config.workflows.ownership,
+    )
+    .await?;
 
     // ChangefeedWorker bootstraps its desired-state cache before WAL replay.
     let changefeed_worker = ChangefeedWorker::new(config.clone(), kafka.clone())

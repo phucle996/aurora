@@ -67,3 +67,36 @@ và ownership projection; Kafka/NATS/Shared Redis notification không là billin
 - Không log/publish customer broker credential, rendered mail, recipient hoặc plaintext secret.
 - Zone lifecycle/owner/routing lấy từ trusted Kafka envelope và PostgreSQL; client field không
   trở thành authority.
+
+## Downstream connection contract
+
+`src/config/` là contract typed duy nhất cho bootstrap connection và được chia theo ownership:
+`postgres.rs`, `shared_redis.rs`, `kafka.rs`, `nats_core.rs`, `otel.rs` và `workflows.rs`.
+Cả SQL connection và logical replication dùng cùng `PostgresConfig`/TLS identity; không được
+để WAL path quay về `NoTls` khi query path đã bật TLS. Connection factory chỉ nhận config của
+đúng downstream, không nhận toàn bộ secret-bearing JO `Config`.
+
+| Downstream | Development | Production invariant |
+|---|---|---|
+| PostgreSQL | explicit `POSTGRES_TLS_MODE=disable` trong private Compose network | explicit `verify_full`, trust source `system\|file`, client auth `none\|mutual`; SNI/hostname phải được verify |
+| Shared L2 Redis | `redis://`, single-node nên AOF replica ACK bằng `0` | `rediss://`, TLS/mTLS khi ACL yêu cầu; connect/response timeout và reconnect backoff bị chặn biên |
+| Kafka | `plaintext` cho local broker | `ssl` hoặc `sasl_plain_ssl`; CA/mTLS/SNI; producer luôn idempotent, `acks=all`, bounded retry |
+| NATS Core | anonymous `nats://` local | auth mode chỉ được chọn một trong token, user/password hoặc credentials file; TLS/mTLS không fallback xuống plaintext |
+| OTel Collector | explicit `OTEL_ENABLED=true` và `http://` local | explicit enablement; `https://` với trust/client-auth rõ ràng; lỗi exporter chỉ làm mất diagnostic data, không đổi business outcome |
+
+Các path private key chỉ được đọc tại connection factory và `Config` cố ý không implement
+`Debug`, tránh vô tình serialize DSN/password/token. File
+`controlplane/dev/job-orchestrator.env` là profile development được Compose nạp bằng
+`env_file`; production phải inject cùng contract qua ConfigMap/Secret và volume certificate,
+không dùng hoặc copy credential development.
+
+JO chụp process environment đúng một lần trước khi spawn task và không tự đọc `.env`.
+Endpoint, TLS/security/auth mode, routing identity, replication slot/publication/CDC sources
+và Redis AOF replica ACK không có default. TLS-enabled downstream bắt buộc khai báo
+`*_TLS_TRUST_SOURCE=system|file` và `*_TLS_CLIENT_AUTH=none|mutual`; mode `file` bắt buộc CA,
+mode `mutual` bắt buộc cert/key. Alias environment cũ và first-wins resolution bị cấm.
+
+Chỉ timeout/retry/backoff/buffer/batch/sampling/reconcile interval có bounded default.
+Startup fail-fast với protocol/scheme không khớp, TLS material mâu thuẫn, auth chồng lấn hoặc
+Kafka heartbeat không đủ khoảng an toàn so với session timeout; không có silent TLS downgrade,
+trust-store fallback hoặc broker/endpoint fallback.

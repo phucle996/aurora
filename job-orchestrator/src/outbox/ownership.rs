@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use prost::Message;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_postgres::{Client, NoTls, Row};
+use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
 pub mod ownership_proto {
@@ -59,24 +59,15 @@ impl OwnershipRelay {
     }
 
     async fn run_session(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let (client, connection) =
-            tokio_postgres::connect(&self.config.database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                Logger::sys_error(
-                    "ownership.postgres",
-                    "Ownership relay PostgreSQL connection stopped",
-                    &error.to_string(),
-                );
-            }
-        });
+        let client =
+            crate::infra::postgres::connect(&self.config.postgres, "ownership.postgres").await?;
 
         loop {
             let claimed = claim_pending(
                 &client,
                 &self.worker_id,
-                self.config.ownership_reconcile_batch_size,
-                self.config.ownership_lease_secs,
+                self.config.workflows.ownership.reconcile_batch_size,
+                self.config.workflows.ownership.lease_secs,
             )
             .await?;
             for (job_id, job_topic) in &claimed {
@@ -87,13 +78,15 @@ impl OwnershipRelay {
                 }
             }
 
-            let delay = if claimed.len() == self.config.ownership_reconcile_batch_size as usize {
-                Duration::from_millis(25)
-            } else {
-                Duration::from_secs(
-                    self.config.ownership_reconcile_interval_secs + self.worker_jitter_secs(),
-                )
-            };
+            let delay =
+                if claimed.len() == self.config.workflows.ownership.reconcile_batch_size as usize {
+                    Duration::from_millis(25)
+                } else {
+                    Duration::from_secs(
+                        self.config.workflows.ownership.reconcile_interval_secs
+                            + self.worker_jitter_secs(),
+                    )
+                };
             tokio::time::sleep(delay).await;
         }
     }
