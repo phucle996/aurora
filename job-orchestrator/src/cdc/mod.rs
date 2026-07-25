@@ -6,7 +6,7 @@ use crate::infra::kafka::transport_proto::{
     JobCommandV1, ZoneMetadataSnapshotV1, ZoneServiceDesiredStateV1,
 };
 use crate::infra::kafka::KafkaTransport;
-use crate::observability::logger::Logger;
+use crate::observability::logger::{LogFields, Logger};
 use crate::observability::otel::OtelTracer;
 use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent};
 use std::collections::HashMap;
@@ -273,6 +273,7 @@ impl CdcStreamer {
 
         if event_id.is_empty() || route_missing || job_topic.is_empty() || source_domain.is_empty()
         {
+            crate::observability::metrics::MetricsManager::record_wal_rejected();
             Logger::sys_warn(
                 "cdc.insert",
                 "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng",
@@ -281,14 +282,22 @@ impl CdcStreamer {
             return Ok(());
         }
 
-        crate::observability::metrics::MetricsManager::inc_wal_records_read();
+        crate::observability::metrics::MetricsManager::inc_wal_records_accepted();
 
-        Logger::job_log(
+        Logger::job_log_with_fields(
             &event_id,
             &job_topic,
             0,
             "cdc.recv_wal",
+            "WAL_OUTBOX_ACCEPTED",
             "CdcStreamer: Nhận được sự kiện WAL từ Postgres",
+            LogFields {
+                event_id: Some(&event_id),
+                source_domain: Some(&source_domain),
+                job_version: job_version_str.parse::<u64>().ok(),
+                outcome: Some("accepted"),
+                ..LogFields::default()
+            },
         );
 
         let event_id_clone = event_id.clone();
@@ -376,14 +385,23 @@ impl CdcStreamer {
                 .await
             {
                 Ok(()) => {
-                    Logger::job_log(
+                    Logger::job_log_with_fields(
                         &event_id_clone,
                         &job_topic_clone,
                         0,
                         "cdc.push_success",
+                        "KAFKA_COMMAND_PUBLISHED",
                         &format!("CdcStreamer: Đã publish job Protobuf vào Kafka {topic}"),
+                        LogFields {
+                            event_id: Some(&event_id_clone),
+                            source_domain: Some(&source_domain_clone),
+                            job_version: Some(u64::from(job_version)),
+                            kafka_topic: Some(&topic),
+                            outcome: Some("published"),
+                            ..LogFields::default()
+                        },
                     );
-                    crate::observability::metrics::MetricsManager::inc_stream_jobs_pushed();
+                    crate::observability::metrics::MetricsManager::inc_kafka_commands_published();
                 }
                 Err(error) => {
                     return Err(std::io::Error::other(error).into());

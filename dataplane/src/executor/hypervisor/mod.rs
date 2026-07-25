@@ -2,9 +2,9 @@ pub mod core;
 pub mod vps;
 
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
+use std::sync::Arc;
 
 /// ============================================================================
 /// 📂 MODULE: executor/hypervisor/mod.rs - BỘ ĐỊNH TUYẾN NỘI BỘ CHO WORKLOAD VPS
@@ -16,7 +16,7 @@ use crate::observability::logger::Logger;
 ///
 pub async fn dispatch_vps_job(
     action: &str,
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
 ) -> Result<ExecutionResult, ExecutorError> {
     Logger::sys_info(
         "executor.vps.router",

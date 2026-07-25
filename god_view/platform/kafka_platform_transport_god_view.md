@@ -130,13 +130,16 @@ publish Kafka với cùng version/hash. Lock không làm Kafka exactly-once; gen
 Mỗi DP consumer group dùng manual commit và rebalance epoch:
 
 1. Register `(epoch, topic, partition, offset)` trước khi dispatch.
-2. Validate command. Poison command → durable DLQ → terminal settle.
+2. Validate size/schema/version/Zone/W3C/workload-owner route. Poison command → durable DLQ chỉ mang
+   sanitized diagnostic + payload byte length/SHA-256, không mang raw command → terminal settle.
 3. Acquire `lease.job.<sha256(job_id)>` trong Zone Coordination KV.
 4. Nếu lease đang do replica khác giữ, republish cùng command/key bằng `acks=all`, rồi settle original.
-5. Execute workload; watchdog renew lease bằng owner + fencing token.
+5. Watchdog giữ lease trong phase `Preparing`; sau khi PROCESSING publish resolve mới bắt deadline
+   `Executing`, rồi chuyển `Completing` khi external executor kết thúc.
 6. Thành công/thất bại terminal: publish `JobExecutionResultProto` durable.
 7. Transient retry: publish command mới với `attempt+1`, bounded backoff/jitter, rồi settle original.
-8. Offset chỉ commit đến highest contiguous terminal offset trong cùng assignment epoch.
+8. Offset serialize/commit theo partition đến highest contiguous terminal record trong cùng assignment
+   epoch. Sparse Kafka offset được hỗ trợ; intake dừng fetch khi cửa sổ unsettled đạt `4 × Ready workers`.
 
 Completion từ assignment cũ không được commit assignment mới. Rebalance listener tăng epoch khi
 partition assigned/revoked/lost; stale completion giữ source offset uncommitted.
@@ -219,6 +222,7 @@ Registration identity commit xảy ra trước publish; publish là best-effort,
 | Mất một broker dev/prod 3 node | RF=3, min ISR=2, `acks=all` | Durable publish tiếp tục nếu còn ISR quorum |
 | Mất quorum | Producer không nhận ACK | Không settle source/không advance LSN |
 | Poison Protobuf | Strict validation + DLQ | Không chạy side effect; source commit sau DLQ ACK |
+| Command/payload quá lớn | DP giới hạn 1 MiB/1,000,000 bytes; DLQ bỏ raw payload và giữ length/SHA-256 | Không memory/secret-amplify poison record; source chỉ settle sau DLQ ACK |
 | Record thấp transient fail | Listener fail/restart | Không commit record cao hơn |
 | Consumer rebalance khi task đang chạy | Assignment epoch fence | Completion cũ không commit owner mới |
 | Zone command cross-wire | Topic + `target_zone_id` + ACL | DLQ/fail-close |
@@ -251,6 +255,9 @@ Production:
 - Topic/ACL/retention là declarative infrastructure, không để application tự tạo.
 - Alert theo under-replicated partitions, offline partitions, ISR shrink, produce error/latency,
   consumer lag/staleness, DLQ rate và oldest unprocessed age.
+- JO dùng `job_orchestrator_kafka_operations_total{operation,outcome}` và
+  `job_orchestrator_kafka_operation_duration_seconds{operation}` cho mọi logical publish/commit;
+  metric không gắn raw topic per-Zone, Zone UUID hoặc job ID.
 - Không dùng resource ID, email, workspace hoặc Zone UUID làm metric label có cardinality không giới hạn.
 
 ## 11. Code map
@@ -264,7 +271,7 @@ Production:
 | JO WAL publisher | `job-orchestrator/src/cdc/mod.rs` |
 | JO result consumer | `job-orchestrator/src/job_result/consumer.rs` |
 | DP transport/settlement | `dataplane/src/infra/kafka.rs` |
-| DP command intake | `dataplane/src/job_lifecycle/consumer.rs` |
-| DP result/retry | `dataplane/src/job_lifecycle/{runner,result}.rs` |
+| DP command intake | `dataplane/src/job_runtime/intake.rs` |
+| DP result/retry | `dataplane/src/job_runtime/{execution,completion}.rs` |
 | Shared contracts | `dataplane/proto/platform_transport.proto`, `job-orchestrator/proto/platform_transport.proto` |
 | Dev topology | `controlplane/docker-compose.dev.yml` |

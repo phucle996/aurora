@@ -1,4 +1,4 @@
-use crate::observability::logger::Logger;
+use crate::observability::logger::{LogFields, Logger};
 use prost::Message;
 
 const JOB_NOTIFICATION_STREAM: &str = "stream:{job_notifications}";
@@ -49,7 +49,7 @@ impl JobNotifier {
 
         // The stream itself is never trimmed because MAXLEN may delete pending
         // entries. At capacity, fail the Kafka result so replay applies backpressure.
-        let stream_id: String = redis::Script::new(
+        let stream_result: Result<String, redis::RedisError> = redis::Script::new(
             r#"
             local length = redis.call('XLEN', KEYS[1])
             if length >= tonumber(ARGV[1]) then
@@ -62,18 +62,32 @@ impl JobNotifier {
         .arg(JOB_NOTIFICATION_STREAM_CAPACITY)
         .arg(payload)
         .invoke_async(redis_connection)
-        .await?;
+        .await;
+        let stream_id = match stream_result {
+            Ok(stream_id) => stream_id,
+            Err(error) => {
+                crate::observability::metrics::MetricsManager::record_notification_failed();
+                return Err(error.into());
+            }
+        };
 
-        crate::observability::metrics::MetricsManager::inc_notifications_sent();
-        Logger::job_log(
+        crate::observability::metrics::MetricsManager::inc_notifications_enqueued();
+        Logger::job_log_with_fields(
             job_id,
-            user_id,
+            job_topic,
             attempt,
             "job_result.notify_sent",
+            "JOB_NOTIFICATION_ENQUEUED",
             &format!(
                 "Queued job notification in Shared Redis stream at entry {}",
                 stream_id
             ),
+            LogFields {
+                event_id: Some(job_id),
+                job_version: Some(u64::from(job_version)),
+                outcome: Some("enqueued"),
+                ..LogFields::default()
+            },
         );
         Ok(())
     }

@@ -5,7 +5,7 @@ use krafka::producer::{Acks, Producer};
 use krafka::protocol::Compression;
 use prost::Message;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub mod transport_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.transport.v1.rs"));
@@ -125,19 +125,37 @@ impl KafkaTransport {
         key: &[u8],
         message: &M,
     ) -> Result<(), String> {
+        let started_at = Instant::now();
         let mut payload = Vec::with_capacity(message.encoded_len());
-        message
-            .encode(&mut payload)
-            .map_err(|error| format!("encode Kafka Protobuf failed: {error}"))?;
+        if let Err(error) = message.encode(&mut payload) {
+            crate::observability::metrics::MetricsManager::record_kafka_operation(
+                "publish",
+                "failed",
+                started_at.elapsed(),
+            );
+            return Err(format!("encode Kafka Protobuf failed: {error}"));
+        }
 
         // [COMMENT]: Retry loop ngắn hỗ trợ nạp metadata khi tin nhắn đầu tiên gửi tới topic mới vừa khởi tạo.
         let mut attempts = 0u32;
         loop {
             match self.producer.send(topic, Some(key), &payload).await {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    crate::observability::metrics::MetricsManager::record_kafka_operation(
+                        "publish",
+                        "succeeded",
+                        started_at.elapsed(),
+                    );
+                    return Ok(());
+                }
                 Err(error) => {
                     attempts += 1;
                     if attempts >= 5 {
+                        crate::observability::metrics::MetricsManager::record_kafka_operation(
+                            "publish",
+                            "failed",
+                            started_at.elapsed(),
+                        );
                         return Err(format!("Kafka publish to {topic} failed: {error}"));
                     }
                     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -153,15 +171,26 @@ impl KafkaTransport {
         partition: i32,
         next_offset: i64,
     ) -> Result<(), String> {
+        let started_at = Instant::now();
         let mut offsets = AHashMap::new();
         offsets.insert(
             TopicPartition::new(topic, partition),
             OffsetAndMetadata::with_metadata(next_offset, "aurora-db-transaction-committed"),
         );
-        consumer
+        let result = consumer
             .commit_with_metadata(offsets)
             .await
-            .map_err(|error| format!("Kafka offset commit failed: {error}"))
+            .map_err(|error| format!("Kafka offset commit failed: {error}"));
+        crate::observability::metrics::MetricsManager::record_kafka_operation(
+            "commit",
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            started_at.elapsed(),
+        );
+        result
     }
 
     pub fn zone_command_topic(&self, zone_id: &str) -> String {

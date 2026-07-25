@@ -1,7 +1,7 @@
-# Dataplane Telemetry — Logs, Metrics và Distributed Tracing God View
+# Runtime Telemetry — Dataplane và Job Orchestrator God View
 
 > [!IMPORTANT]
-> Đây là Source of Truth duy nhất cho telemetry lifecycle của Aurora Dataplane.
+> Đây là Source of Truth duy nhất cho telemetry lifecycle của Aurora Dataplane và Job Orchestrator.
 > Logs, metrics và traces là diagnostic data; chúng không thay thế Kafka result/DLQ,
 > PostgreSQL transaction, Zone Health KV hoặc broker settlement durability boundary.
 
@@ -25,10 +25,11 @@ flowchart LR
     DROP --> METRIC
 ```
 
-- Dataplane emit log qua đúng một `tracing` subscriber và một stdout stream.
+- Mỗi process Dataplane/JO emit log qua đúng một `tracing` subscriber và một stdout stream.
 - `tracing-subscriber` sở hữu JSON serialization; callsite không tự ghép JSON string.
 - `tracing-appender` tách stdout write khỏi Tokio executor bằng bounded queue.
-- Queue đầy thì log bị drop và tăng `dataplane_logs_dropped_total`; job executor không bị block.
+- Queue đầy thì log bị drop và tăng `{dataplane,job_orchestrator}_logs_dropped_total`;
+  job executor/CDC/result consumer không bị block.
 - Filelog dùng persistent fingerprint/offset checkpoint, chỉ tail canonical Docker JSON log path.
 - Không bật thêm OTLP Logs cho cùng stdout record, tránh dual-ingestion.
 - OTel runtime metrics được ghi từ `NodeRuntimeSample` trong RAM. Admission và leader không
@@ -41,7 +42,8 @@ Mọi telemetry record nên mang các field chung:
 
 | Nhóm | Field |
 |---|---|
-| Process | `service_name`, `service_version`, `deployment_environment`, `zone_id`, `node_id`, `boot_id`, `pid` |
+| Process | `service_name`, `service_version`, `deployment_environment`, `component_scope`, `node_id`, `boot_id`, `pid` |
+| Routing | Dataplane có `zone_id`; JO chỉ gắn Zone lên event/span của workload cụ thể |
 | Ordering | `process_sequence`, `timestamp` |
 | Event | `log_type`, `level`, `op`, `event_code`, `outcome`, `message`, `error` |
 | Correlation | `trace_id`, `span_id`, `event_id`, `operation_id` |
@@ -53,9 +55,15 @@ Không suy luận global ordering chỉ từ timestamp giữa các node.
 
 `event_id` là logical identity ổn định qua retry/failover. DLQ event ID được derive xác định từ
 `source topic + partition + offset + error code`; publish-before-settle replay vẫn giữ cùng ID.
+Dataplane job DLQ không mang raw command chưa validation; diagnostic chỉ giữ bounded/redacted error,
+payload byte length và SHA-256 fingerprint.
 
 `trace_id + span_id` được đọc từ active OpenTelemetry `Context`. Logger không giữ task-local
 correlation string riêng có thể lệch khỏi span thực tế.
+
+JO là process Central đa-Zone: OTel Resource mang `aurora.component.scope=central`, không mang
+`aurora.zone.id`. `service.instance.id` của log, metric và trace cùng dùng một `boot_id`; Zone chỉ
+được gắn trên command/report span tương ứng để không biến một pod JO thành resource thuộc một Zone giả.
 
 ## 3. Structured logging
 
@@ -67,8 +75,10 @@ correlation string riêng có thể lệch khỏi span thực tế.
 - Error raw chỉ được bounded; không ghi raw payload, encrypted envelope, credential, Authorization
   header, customer secret hoặc message body.
 - `Config` chứa secret không được derive/log `Debug`.
-- `APP_LOG_MAX_FIELD_BYTES` giới hạn `message`/`error` trước serialization; UTF-8 không bị cắt giữa
-  code point.
+- `APP_LOG_MAX_FIELD_BYTES` giới hạn mọi string field trước serialization; UTF-8 không bị cắt giữa
+  code point. `APP_LOG_BUFFERED_LINES` và `APP_LOG_RATE_LIMIT_MS` đều bị clamp.
+- JO không log raw Kafka/NATS/Redis/PostgreSQL/OTLP endpoint; `Config` chứa secret không derive
+  `Debug`. URL có user-info, Authorization/bearer/password/secret/token marker bị redact trước queue.
 - Collector đánh dấu `app_json_parse_error=true` nếu input-looking JSON không parse được.
 
 ### 3.2 Coverage và volume
@@ -107,10 +117,32 @@ flowchart LR
 - `sample_valid=false`, timestamp tương lai hoặc age quá 15 giây là stale; leader giữ target scale
   trước đó thay vì scale mù.
 - OTel gauges gồm CPU, memory, throttled ratio, working set, active workers, Kafka lag, sample age
-  và sample validity.
+  và sample validity. Job runtime bổ sung `dataplane_kafka_unsettled_records`,
+  `dataplane_watchdog_completion_queue_depth`, retry queue depth và bounded watchdog event counters.
 - OTel là export/diagnostic path. Collector outage không được làm admission hoặc scale loop dừng.
 
 Metrics job execution vẫn tách riêng: latency histogram và processed counter không sở hữu node sampler.
+
+### 4.1 Job Orchestrator transport metrics
+
+JO export push metric qua cùng OTLP MeterProvider; không mở `METRICS_PORT`/Prometheus listener và
+không dùng metric để ACK Kafka, advance LSN hoặc quyết định business state:
+
+| Metric | Semantics |
+|---|---|
+| `job_orchestrator_wal_records_accepted_total` | Outbox WAL record đã strict-validate và được nhận để publish |
+| `job_orchestrator_kafka_commands_published_total` | Zone command đã nhận Kafka ACK |
+| `job_orchestrator_results_received_total` | Result đã decode và strict-validate |
+| `job_orchestrator_notifications_enqueued_total` | Notification đã `XADD` thành công vào bounded Shared Redis Stream |
+| `job_orchestrator_record_outcomes_total` | Bounded `record_type + outcome` cho WAL/result/DLQ/notification |
+| `job_orchestrator_kafka_operations_total` | Logical `publish/commit` terminal outcome sau bounded retry |
+| `job_orchestrator_kafka_operation_duration_seconds` | Latency logical publish/commit, gồm retry/backoff |
+| `job_orchestrator_worker_terminations_total` | Critical worker thoát ngoài shutdown signal |
+| `job_orchestrator_logs_{emitted,suppressed,dropped}_total` | Sức khỏe bounded log pipeline |
+
+Label metric chỉ dùng taxonomy do code sở hữu; không dùng Zone UUID, topic per-Zone, event/job/user ID
+hoặc raw error. Hai gauge Redis `job_proxy_queue_len`/`job_proxy_pending_len` không bao giờ record và
+metric `job_proxy_stream_jobs_pushed_total` sai transport đã bị retire thay vì tiếp tục phát số liệu giả.
 
 ## 5. Distributed tracing — per-Zone job
 
@@ -190,6 +222,9 @@ sequenceDiagram
 - Upstream W3C sampled flag chỉ được giữ khi context hợp lệ; không cưỡng ép sampled.
 - Root ratio do `OTEL_TRACE_SAMPLE_RATIO` điều khiển; Docker development đặt `0.25`.
 - SDK batch queue dùng `OTEL_BSP_*`; queue đầy được phép drop trace thay vì block job.
+- JO clamp `OTEL_METRIC_EXPORT_INTERVAL_SECS` trong `5..300s` và
+  `OTEL_EXPORT_TIMEOUT_SECS` trong `1..30s` không vượt interval. Span name tối đa 128 bytes và
+  `error.type` chỉ dùng taxonomy ổn định.
 - Kafka redelivery tạo processing span mới vì đó là execution attempt thật.
 - Không deduplicate trace bằng message text hoặc trace ID; phân biệt replay bằng job ID/version/attempt
   và Kafka topic/partition/offset.
@@ -212,6 +247,8 @@ sequenceDiagram
 | Process abort/SIGKILL | Tail telemetry có thể mất; Kafka/PostgreSQL/Zone KV durability không đổi |
 | Leader cũ resume sau TTL | Owner check + fencing chặn probe/publish stale |
 | Runtime sampler stale | Admission fail-closed; leader giữ scale target trước |
+| Critical intake/retry/completion/watchdog exit | Active execution bị cancel/fence, process graceful-stop rồi exit lỗi để container restart |
+| JO CDC/result/reverse-provider/reconciler exit | Tăng worker termination metric, trả lỗi để container restart; offset chưa durable không commit |
 
 Deployment phải đặt termination grace period đủ cho worker drain, OTel provider shutdown và logger
 queue flush. Telemetry không được trở thành command path hoặc business source of truth.
@@ -231,18 +268,28 @@ queue flush. Telemetry không được trở thành command path hoặc business
 - `dataplane/src/observability/metrics.rs`: cgroup/proc sampler, RAM snapshot, admitted jobs,
   worker slot states, bounded-cardinality job, watchdog và worker-scale OTel instruments.
 - `dataplane/src/observability/otel.rs`: W3C propagation, tracer/meter provider và shutdown.
-- `dataplane/src/job_lifecycle/runner.rs`, `result.rs`: job spans và durable completion boundary.
-- `dataplane/src/job_lifecycle/lease.rs`: execution-boundary lease và retry metrics.
-- `dataplane/src/job_lifecycle/timeout_reporter.rs`: timeout result durable trước source settlement.
+- `dataplane/src/job_runtime/execution.rs`: job consumer span và executor boundary.
+- `dataplane/src/job_runtime/completion.rs`: result/retry/DLQ spans và durable settlement boundary.
+- `dataplane/src/job_runtime/coordination/`: execution lease/deadline, renew watchdog và timeout queue metrics.
 - `dataplane/src/executor/mail/processor/batcher.rs`: mail batch context propagation.
 - `dataplane/src/leader/`: fencing và Zone-wide singleton telemetry.
 
 ### JO/Notification/Collector
 
-- `job-orchestrator/src/cdc/mod.rs`
-- `job-orchestrator/src/job_result/consumer.rs`
-- `job-orchestrator/src/job_result/l1_dispatcher.rs`
-- `job-orchestrator/src/job_result/notifier.rs`
+- `job-orchestrator/src/observability/logger.rs`: NDJSON queue, identity, redaction, rate limit,
+  field bound và pipeline loss counters.
+- `job-orchestrator/src/observability/metrics.rs`: bounded-cardinality transport/outcome metrics
+  và logger health sampler.
+- `job-orchestrator/src/observability/otel.rs`: Central resource identity, W3C propagation,
+  batch exporter bounds và shutdown.
+- `job-orchestrator/src/cdc/mod.rs`: WAL acceptance và command producer span.
+- `job-orchestrator/src/infra/kafka.rs`: logical publish/commit latency và outcome.
+- `job-orchestrator/src/job_result/consumer.rs`: validation, DLQ, consumer/settlement spans.
+- `job-orchestrator/src/job_result/l1_dispatcher.rs`: PostgreSQL transaction span.
+- `job-orchestrator/src/job_result/notifier.rs`: Shared Redis notification outcome.
+- `controlplane/dev/grafana/provisioning/dashboards/job-runtime.json`: JO throughput,
+  Kafka latency/failure, DLQ, worker-exit và log-loss panels.
+- `controlplane/dev/grafana/provisioning/dashboards/job-logs.json`: cross-service job/trace log search.
 - `notification-service/src/infra/redis.rs`
 - `notification-service/src/infra/centrifugo.rs`
 - `controlplane/dev/otel/otel-collector.yml`

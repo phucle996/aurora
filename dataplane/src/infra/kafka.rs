@@ -43,14 +43,44 @@ impl ConsumerRebalanceListener for KafkaRebalanceFence {
 }
 
 struct PartitionSettlement {
-    next_offset: i64,
+    registered_offsets: BTreeSet<i64>,
     terminal_offsets: BTreeSet<i64>,
+    commit_lock: Arc<Mutex<()>>,
+}
+
+impl PartitionSettlement {
+    fn new(offset: i64) -> Self {
+        Self {
+            registered_offsets: BTreeSet::from([offset]),
+            terminal_offsets: BTreeSet::new(),
+            commit_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn register(&mut self, offset: i64) {
+        self.registered_offsets.insert(offset);
+    }
+
+    fn mark_terminal(&mut self, offset: i64) -> Option<i64> {
+        self.registered_offsets.insert(offset);
+        self.terminal_offsets.insert(offset);
+        let mut commit_next = None;
+        while let Some(next_offset) = self.registered_offsets.first().copied() {
+            if !self.terminal_offsets.remove(&next_offset) {
+                break;
+            }
+            self.registered_offsets.remove(&next_offset);
+            commit_next = Some(next_offset.saturating_add(1));
+        }
+        commit_next
+    }
 }
 
 pub struct KafkaSettlement {
     consumer: Arc<Consumer>,
     fence: Arc<KafkaRebalanceFence>,
     partitions: Mutex<HashMap<(u64, String, i32), PartitionSettlement>>,
+    active_epoch: AtomicU64,
 }
 
 impl KafkaSettlement {
@@ -59,18 +89,44 @@ impl KafkaSettlement {
             consumer,
             fence,
             partitions: Mutex::new(HashMap::new()),
+            active_epoch: AtomicU64::new(0),
         })
     }
 
-    pub async fn register(&self, epoch: u64, topic: &str, partition: i32, offset: i64) {
+    pub async fn register(
+        &self,
+        epoch: u64,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> Result<(), String> {
+        if self.fence.epoch() != epoch {
+            return Err("Kafka assignment changed before offset registration".into());
+        }
+        self.active_epoch.fetch_max(epoch, Ordering::AcqRel);
         let mut partitions = self.partitions.lock().await;
+        if self.active_epoch.load(Ordering::Acquire) != epoch || self.fence.epoch() != epoch {
+            return Err("Kafka assignment changed during offset registration".into());
+        }
+        // Rebalance epochs are mutually exclusive. Purging the prior epoch
+        // prevents per-partition settlement state from growing across churn.
+        partitions.retain(|(registered_epoch, _, _), _| *registered_epoch == epoch);
         partitions
             .entry((epoch, topic.to_string(), partition))
-            .and_modify(|state| state.next_offset = state.next_offset.min(offset))
-            .or_insert_with(|| PartitionSettlement {
-                next_offset: offset,
-                terminal_offsets: BTreeSet::new(),
-            });
+            .and_modify(|state| state.register(offset))
+            .or_insert_with(|| PartitionSettlement::new(offset));
+        Ok(())
+    }
+
+    pub async fn pending_records(&self) -> usize {
+        let active_epoch = self.active_epoch.load(Ordering::Acquire);
+        self.partitions
+            .lock()
+            .await
+            .iter()
+            .filter(|((epoch, _, _), _)| *epoch == active_epoch)
+            .map(|(_, state)| state.registered_offsets.len())
+            .sum()
     }
 
     pub async fn settle(
@@ -79,11 +135,28 @@ impl KafkaSettlement {
         topic: &str,
         partition: i32,
         offset: i64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         // [COMMENT]: Completion của assignment cũ tuyệt đối không được commit offset của owner mới.
-        if self.fence.epoch() != epoch {
+        if self.fence.epoch() != epoch || self.active_epoch.load(Ordering::Acquire) != epoch {
             return Err(
                 "Kafka assignment changed before completion; offset left uncommitted".into(),
+            );
+        }
+
+        let commit_lock = {
+            let mut partitions = self.partitions.lock().await;
+            partitions
+                .entry((epoch, topic.to_string(), partition))
+                .or_insert_with(|| PartitionSettlement::new(offset))
+                .commit_lock
+                .clone()
+        };
+        // Kafka accepts lower offset commits. Serialize each partition's state
+        // transition and broker commit so an older completion cannot regress it.
+        let _commit_guard = commit_lock.lock().await;
+        if self.fence.epoch() != epoch || self.active_epoch.load(Ordering::Acquire) != epoch {
+            return Err(
+                "Kafka assignment changed while waiting to settle; offset left uncommitted".into(),
             );
         }
 
@@ -91,15 +164,13 @@ impl KafkaSettlement {
             let mut partitions = self.partitions.lock().await;
             let state = partitions
                 .entry((epoch, topic.to_string(), partition))
-                .or_insert_with(|| PartitionSettlement {
-                    next_offset: offset,
-                    terminal_offsets: BTreeSet::new(),
-                });
-            state.terminal_offsets.insert(offset);
-            while state.terminal_offsets.remove(&state.next_offset) {
-                state.next_offset += 1;
-            }
-            state.next_offset
+                .or_insert_with(|| PartitionSettlement::new(offset));
+            state.mark_terminal(offset)
+        };
+        let Some(commit_next) = commit_next else {
+            // A lower offset is still non-terminal. Its eventual settlement
+            // will atomically advance through this already-durable record.
+            return Ok(false);
         };
 
         let mut offsets = AHashMap::new();
@@ -110,6 +181,7 @@ impl KafkaSettlement {
         self.consumer
             .commit_with_metadata(offsets)
             .await
+            .map(|_| true)
             .map_err(|error| format!("commit Kafka offset failed: {error}"))
     }
 }
@@ -152,7 +224,7 @@ impl KafkaDelivery {
         }
     }
 
-    pub async fn settle(&self) -> Result<(), String> {
+    pub async fn settle(&self) -> Result<bool, String> {
         self.settlement
             .settle(
                 self.assignment_epoch,
@@ -359,5 +431,28 @@ impl KafkaTransport {
             self.observed_job_lag_stale.load(Ordering::Acquire),
             self.observed_job_lag_at_ms.load(Ordering::Acquire),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PartitionSettlement;
+
+    #[test]
+    fn settlement_waits_for_lower_registered_offset() {
+        let mut state = PartitionSettlement::new(10);
+        state.register(11);
+        assert_eq!(state.mark_terminal(11), None);
+        assert_eq!(state.registered_offsets.len(), 2);
+        assert_eq!(state.mark_terminal(10), Some(12));
+        assert!(state.registered_offsets.is_empty());
+    }
+
+    #[test]
+    fn settlement_advances_across_sparse_kafka_offsets() {
+        let mut state = PartitionSettlement::new(10);
+        state.register(12);
+        assert_eq!(state.mark_terminal(10), Some(11));
+        assert_eq!(state.mark_terminal(12), Some(13));
     }
 }

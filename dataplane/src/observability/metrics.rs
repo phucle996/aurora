@@ -34,9 +34,11 @@ static JOB_EXECUTION_LATENCY: OnceLock<Histogram<f64>> = OnceLock::new();
 static JOB_ATTEMPTS_COMPLETED: OnceLock<Counter<u64>> = OnceLock::new();
 static WATCHDOG_ACTIVE_LOCKS: OnceLock<Gauge<f64>> = OnceLock::new();
 static WATCHDOG_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
+static WATCHDOG_COMPLETION_QUEUE_DEPTH: OnceLock<Gauge<f64>> = OnceLock::new();
 static WORKER_SCALE_TARGET: OnceLock<Gauge<f64>> = OnceLock::new();
-static JOB_EXECUTION_LEASE_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
-static JOB_EXECUTION_LEASE_RETRY_QUEUE_DEPTH: OnceLock<Gauge<f64>> = OnceLock::new();
+static JOB_RUNTIME_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
+static JOB_RETRY_QUEUE_DEPTH: OnceLock<Gauge<f64>> = OnceLock::new();
+static KAFKA_UNSETTLED_RECORDS: OnceLock<Gauge<f64>> = OnceLock::new();
 
 /// One coherent observation fan-outs to admission control, OTel and Zone KV.
 ///
@@ -345,9 +347,11 @@ impl WorkerControlMetrics {
     pub fn init_registry() {
         let _ = watchdog_active_locks();
         let _ = watchdog_events();
+        let _ = watchdog_completion_queue_depth();
         let _ = worker_scale_target();
-        let _ = job_execution_lease_events();
-        let _ = job_execution_lease_retry_queue_depth();
+        let _ = job_runtime_events();
+        let _ = job_retry_queue_depth();
+        let _ = kafka_unsettled_records();
     }
 
     pub fn record_watchdog_scan(zone_id: &str, active_locks: usize) {
@@ -367,6 +371,13 @@ impl WorkerControlMetrics {
         );
     }
 
+    pub fn record_watchdog_completion_queue_depth(zone_id: &str, depth: usize) {
+        watchdog_completion_queue_depth().record(
+            depth as f64,
+            &[KeyValue::new("zone_id", zone_id.to_string())],
+        );
+    }
+
     pub fn record_scale_target(zone_id: &str, source: &'static str, target: usize) {
         worker_scale_target().record(
             target as f64,
@@ -377,8 +388,8 @@ impl WorkerControlMetrics {
         );
     }
 
-    pub fn record_job_execution_lease_event(zone_id: &str, event: &'static str) {
-        job_execution_lease_events().add(
+    pub fn record_job_runtime_event(zone_id: &str, event: &'static str) {
+        job_runtime_events().add(
             1,
             &[
                 KeyValue::new("zone_id", zone_id.to_string()),
@@ -387,9 +398,16 @@ impl WorkerControlMetrics {
         );
     }
 
-    pub fn record_job_execution_lease_retry_queue_depth(zone_id: &str, depth: usize) {
-        job_execution_lease_retry_queue_depth().record(
+    pub fn record_job_retry_queue_depth(zone_id: &str, depth: usize) {
+        job_retry_queue_depth().record(
             depth as f64,
+            &[KeyValue::new("zone_id", zone_id.to_string())],
+        );
+    }
+
+    pub fn record_kafka_unsettled_records(zone_id: &str, records: usize) {
+        kafka_unsettled_records().record(
+            records as f64,
             &[KeyValue::new("zone_id", zone_id.to_string())],
         );
     }
@@ -431,6 +449,17 @@ fn watchdog_events() -> &'static Counter<u64> {
     })
 }
 
+fn watchdog_completion_queue_depth() -> &'static Gauge<f64> {
+    WATCHDOG_COMPLETION_QUEUE_DEPTH.get_or_init(|| {
+        global::meter("aurora-dataplane")
+            .f64_gauge("dataplane_watchdog_completion_queue_depth")
+            .with_description(
+                "Timeout completions retained while the Kafka result reporter is busy",
+            )
+            .init()
+    })
+}
+
 fn worker_scale_target() -> &'static Gauge<f64> {
     WORKER_SCALE_TARGET.get_or_init(|| {
         global::meter("aurora-dataplane")
@@ -440,20 +469,29 @@ fn worker_scale_target() -> &'static Gauge<f64> {
     })
 }
 
-fn job_execution_lease_events() -> &'static Counter<u64> {
-    JOB_EXECUTION_LEASE_EVENTS.get_or_init(|| {
+fn job_runtime_events() -> &'static Counter<u64> {
+    JOB_RUNTIME_EVENTS.get_or_init(|| {
         global::meter("aurora-dataplane")
-            .u64_counter("dataplane_job_execution_lease_events_total")
-            .with_description("Bounded job execution lease acquisition and retry outcomes")
+            .u64_counter("dataplane_job_runtime_events_total")
+            .with_description("Bounded job lease, retry scheduling and retry publication outcomes")
             .init()
     })
 }
 
-fn job_execution_lease_retry_queue_depth() -> &'static Gauge<f64> {
-    JOB_EXECUTION_LEASE_RETRY_QUEUE_DEPTH.get_or_init(|| {
+fn job_retry_queue_depth() -> &'static Gauge<f64> {
+    JOB_RETRY_QUEUE_DEPTH.get_or_init(|| {
         global::meter("aurora-dataplane")
-            .f64_gauge("dataplane_job_execution_lease_retry_queue_depth")
-            .with_description("Pending delayed retries after execution lease contention or outage")
+            .f64_gauge("dataplane_job_retry_queue_depth")
+            .with_description("Pending delayed retries from lease contention or executor backoff")
+            .init()
+    })
+}
+
+fn kafka_unsettled_records() -> &'static Gauge<f64> {
+    KAFKA_UNSETTLED_RECORDS.get_or_init(|| {
+        global::meter("aurora-dataplane")
+            .f64_gauge("dataplane_kafka_unsettled_records")
+            .with_description("Fetched Kafka jobs still waiting for contiguous terminal settlement")
             .init()
     })
 }

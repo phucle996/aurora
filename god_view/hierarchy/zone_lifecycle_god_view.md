@@ -81,10 +81,10 @@ stateDiagram-v2
 
 | Trạng thái | Ý nghĩa | Code / Reference quan trọng |
 |:---|:---|:---|
-| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80). Zone leader vẫn probe JMAP và xuất OTel/Grafana trước khi activate: [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs). |
-| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ command topic của đúng Zone: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103). Zone leader tổng hợp queue pressure, JMAP và Stalwart health vào Zone KV/OTel: [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs). |
-| **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L29). |
-| **`maintenance`** | Zone bảo trì | Chặn kéo Job mới, chạy nốt worker pool: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Cho phép SRE update service toggle desired_state: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L434). |
+| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs). Zone leader vẫn probe JMAP và xuất OTel/Grafana trước khi activate: [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs). |
+| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ command topic của đúng Zone: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs). Zone leader tổng hợp queue pressure, JMAP và Stalwart health vào Zone KV/OTel: [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs). |
+| **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L29). |
+| **`maintenance`** | Zone bảo trì | Chặn kéo Job mới, chạy nốt worker pool: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs).<br/>Cho phép SRE update service toggle desired_state: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L434). |
 | **`disabled`** | Vô hiệu hóa hoàn toàn | Dataplane không kéo job mới; health observer vẫn xuất OTel nhưng fenced `zone.service.mail` quảng cáo `down/0`. Dead-man không tự đổi lifecycle hoặc `desired_state`.<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
 
 **Ràng buộc & Kiểm tra chuyển đổi:**
@@ -288,7 +288,7 @@ Sau khi CSDL được cập nhật, Dataplane khởi động (hoặc đang chạ
 sequenceDiagram
     autonumber
     participant App as 💻 DP app.rs (Bootstrap)
-    participant Consumer as 💻 consumer.rs (JobConsumer)
+    participant Consumer as 💻 intake.rs (ZoneJobIntake)
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
     participant KV as 🗄️ NATS Zone KV
     participant SW as 📧 Stalwart JMAP
@@ -312,7 +312,7 @@ sequenceDiagram
 ```
 
 1. **Khởi chạy container**: Tiến trình Dataplane bootstrap tại [`app.rs#AppContainer::start()`](../../dataplane/src/app.rs#L55).
-2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) đọc `zone.metadata` từ `AURORA_ZONE_CONFIG`. Vì trạng thái là `planned`, consumer ngắt kéo Job mới và sleep 1s. Metadata thiếu/hỏng hoặc KV unavailable cũng dừng ingestion theo fail-closed.
+2. **Zone Job Intake**: [`intake.rs#run_zone_job_intake()`](../../dataplane/src/job_runtime/intake.rs) đọc cached `zone.metadata` từ `AURORA_ZONE_CONFIG`. Vì trạng thái là `planned`, intake ngắt kéo Job mới. Metadata thiếu/hỏng hoặc KV unavailable cũng dừng intake theo fail-closed.
 3. **Mail Health Observation**:
    * [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs) dùng JMAP health cùng local pending/in-flight batch pressure cho Zone KV và OTel/Grafana; không có CP infrastructure projection.
    * Node Resource Monitor ghi snapshot từng pod vào `AURORA_ZONE_HEALTH/zone.node.<node_id>`; Gateway bỏ snapshot cũ hơn 15 giây.
@@ -481,7 +481,7 @@ sequenceDiagram
     participant L1 as ⚡ Kafka metadata topic
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant KV as 🗄️ NATS Zone Config KV
-    participant Consumer as 💻 consumer.rs (JobConsumer)
+    participant Consumer as 💻 intake.rs (ZoneJobIntake)
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
 
     DB->>JO_CDC: WAL b'U' (zones status updated)
@@ -504,7 +504,7 @@ sequenceDiagram
 1. **CDC Snapshot**: Sự kiện update bảng `zones` được stream từ WAL tới JO; JO đọc/publish full aggregate vào Kafka compacted topic riêng Zone.
 2. **Dataplane KV Sync**: DP leader [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) validate Zone rồi CAS-apply full `AURORA_ZONE_CONFIG/zone.metadata`.
 3. **State Machine Reaction**:
-   * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
+   * **Zone Job Intake**: [`intake.rs#run_zone_job_intake()`](../../dataplane/src/job_runtime/intake.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
    * **Mail Health Observer**: [`leader/infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs) tiếp tục ghi fenced Zone health và OTel metrics; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
 
 ---

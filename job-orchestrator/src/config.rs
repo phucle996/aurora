@@ -1,7 +1,9 @@
 use std::env;
 
 /// Config lưu giữ các tham số cấu hình kết nối của job-proxy.
-#[derive(Clone, Debug)]
+// Config contains database, Redis, Kafka and NATS credentials. Deliberately do not derive Debug:
+// an accidental `{:?}` during bootstrap must never serialize the complete secret-bearing struct.
+#[derive(Clone)]
 pub struct Config {
     /// Chuỗi kết nối Postgres (phải bật wal_level = logical)
     pub database_url: String,
@@ -29,8 +31,8 @@ pub struct Config {
     pub otel_exporter_otlp_endpoint: String,
     /// Root trace ratio; incoming W3C parent decisions remain authoritative.
     pub otel_trace_sample_ratio: f64,
-    /// Định danh vùng (zone_id) để đánh nhãn metrics/traces
-    pub zone_id: String,
+    pub otel_metric_export_interval_secs: u64,
+    pub otel_export_timeout_secs: u64,
     /// Danh sách các bảng outbox cần theo dõi CDC (ví dụ: mail.mail_outbox_records)
     pub cdc_sources: Vec<String>,
     /// Số lần thử lại tối đa khi thiết lập hạ tầng Logical Replication trước khi tắt ứng dụng
@@ -94,9 +96,17 @@ impl Config {
         } else {
             1.0
         };
-
-        // Đọc zone_id từ biến môi trường (mặc định là unknown)
-        let zone_id = env::var("ZONE_ID").unwrap_or_else(|_| "unknown".to_string());
+        let otel_metric_export_interval_secs = env::var("OTEL_METRIC_EXPORT_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(15)
+            .clamp(5, 300);
+        let otel_export_timeout_secs = env::var("OTEL_EXPORT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(10)
+            .clamp(1, 30)
+            .min(otel_metric_export_interval_secs);
 
         // Đọc danh sách các bảng CDC phân cách bởi dấu phẩy
         let cdc_sources_raw = env::var("CDC_SOURCES")
@@ -172,7 +182,8 @@ impl Config {
             env_nats_url,
             otel_exporter_otlp_endpoint,
             otel_trace_sample_ratio,
-            zone_id,
+            otel_metric_export_interval_secs,
+            otel_export_timeout_secs,
             cdc_sources,
             max_setup_retries,
             mail_reconcile_interval_secs,

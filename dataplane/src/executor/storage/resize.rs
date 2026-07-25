@@ -1,9 +1,10 @@
 use crate::executor::storage::core::MinioAdminClient;
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
 use async_trait::async_trait;
 use prost::Message;
+use std::sync::Arc;
 
 use super::storage_proto;
 
@@ -12,7 +13,7 @@ pub struct BucketResizeExecutor;
 
 #[async_trait]
 impl Executor for BucketResizeExecutor {
-    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
+    async fn execute(&self, payload: Arc<ValidatedJob>) -> Result<ExecutionResult, ExecutorError> {
         let op = "storage.bucket.resize";
 
         // [COMMENT]: 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct BucketResizeSync

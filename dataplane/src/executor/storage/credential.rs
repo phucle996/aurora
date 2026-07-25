@@ -1,9 +1,10 @@
 use crate::executor::storage::core::MinioAdminClient;
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
 use async_trait::async_trait;
 use prost::Message;
+use std::sync::Arc;
 
 // [COMMENT]: Sử dụng Struct được tự động sinh ra bởi prost_build từ parent module storage_proto
 use super::storage_proto;
@@ -13,7 +14,7 @@ pub struct CredentialCreateExecutor;
 
 #[async_trait]
 impl Executor for CredentialCreateExecutor {
-    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
+    async fn execute(&self, payload: Arc<ValidatedJob>) -> Result<ExecutionResult, ExecutorError> {
         let op = "storage.credential.create";
 
         // 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct CredentialSync
@@ -111,7 +112,7 @@ pub struct CredentialDeleteExecutor;
 
 #[async_trait]
 impl Executor for CredentialDeleteExecutor {
-    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
+    async fn execute(&self, payload: Arc<ValidatedJob>) -> Result<ExecutionResult, ExecutorError> {
         let op = "storage.credential.delete";
 
         // 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct CredentialSync

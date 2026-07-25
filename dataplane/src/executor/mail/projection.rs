@@ -6,7 +6,7 @@ use super::runtime_proto::{
 };
 use crate::executor::{ExecutionResult, ExecutorError};
 use crate::infra::zone_kv::{ConsumerConfigHead, TemplateConfigHead, ZoneKvStore};
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use bytes::Bytes;
 use prost::Message;
 use serde::Serialize;
@@ -87,7 +87,7 @@ async fn ensure_immutable_snapshot(
 }
 
 fn event_id(
-    payload: &JobPayload,
+    payload: &Arc<ValidatedJob>,
     metadata: &super::runtime_proto::MailEventMetadataV1,
 ) -> Result<String, ExecutorError> {
     let job_uuid = uuid::Uuid::parse_str(&payload.job_id)
@@ -101,7 +101,7 @@ fn event_id(
 }
 
 pub async fn apply_mail_consumer_upsert(
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
     zone_kv: Arc<ZoneKvStore>,
     stream_zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
@@ -332,7 +332,7 @@ pub async fn apply_mail_consumer_upsert(
 }
 
 pub async fn apply_mail_consumer_delete(
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
     zone_kv: Arc<ZoneKvStore>,
     stream_zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
@@ -417,7 +417,7 @@ pub async fn apply_mail_consumer_delete(
 }
 
 pub async fn apply_mail_template_version_published(
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
     zone_kv: Arc<ZoneKvStore>,
     stream_zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
@@ -565,7 +565,7 @@ pub async fn apply_mail_template_version_published(
 }
 
 pub async fn apply_mail_template_deleted(
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
     zone_kv: Arc<ZoneKvStore>,
     stream_zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
@@ -648,7 +648,7 @@ pub async fn apply_mail_template_deleted(
 }
 
 pub async fn apply_mail_reconcile_completed(
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
     zone_kv: Arc<ZoneKvStore>,
     stream_zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {

@@ -32,9 +32,6 @@ pub async fn dispatch_result(
         .map(|u| u.to_string())
         .unwrap_or_default();
 
-    // Tăng chỉ số metrics số kết quả nhận được từ Dataplane
-    crate::observability::metrics::MetricsManager::inc_results_consumed();
-
     Logger::job_log(
         &job_id,
         &result.job_topic,

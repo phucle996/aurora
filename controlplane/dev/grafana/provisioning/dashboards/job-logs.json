@@ -21,7 +21,7 @@
         "y": 0
       },
       "id": 1,
-      "title": "Job Pipeline Flow (Controlplane -> Job Proxy -> Dataplane -> Notification)",
+      "title": "Job Pipeline Flow (Controlplane -> Job Orchestrator -> Dataplane -> Notification)",
       "type": "logs",
       "targets": [
         {
@@ -30,7 +30,7 @@
             "uid": "victorialogs"
           },
           "editorMode": "code",
-          "expr": "container_name:~\"controlplane-dev.*|aurora-job-proxy.*|dataplane.*|aurora-notification-service.*\" \"${job_id}\"",
+          "expr": "container_name:~\"controlplane-dev.*|aurora-job-orchestrator.*|dataplane.*|aurora-notification-service.*\" \"${job_id}\"",
           "queryType": "range",
           "refId": "A"
         }

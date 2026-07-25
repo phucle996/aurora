@@ -1,12 +1,9 @@
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use crate::config::Config;
 use crate::infra::zone_kv::ZoneKvStore;
-use crate::job_lifecycle::lease::JobExecutionLeaseRetry;
-use crate::job_lifecycle::message::JobPayload;
-use crate::job_lifecycle::runner::JobRunnerContext;
-use crate::workerpool::lease_watchdog::JobExecutionLeaseRegistry;
+use crate::job_runtime::execution::JobExecutionRuntime;
+use crate::job_runtime::model::QueuedJob;
 
 /// Immutable wiring shared by every dynamically created worker slot.
 ///
@@ -15,36 +12,24 @@ use crate::workerpool::lease_watchdog::JobExecutionLeaseRegistry;
 /// counter than the rest of the pod.
 pub struct WorkerJobRuntime {
     config: Arc<Config>,
-    job_runner_context: Arc<JobRunnerContext>,
-    job_receiver: async_channel::Receiver<JobPayload>,
+    execution_runtime: Arc<JobExecutionRuntime>,
+    job_receiver: async_channel::Receiver<QueuedJob>,
 }
 
 impl WorkerJobRuntime {
     pub fn new(
         config: Arc<Config>,
-        kafka: Arc<crate::infra::kafka::KafkaTransport>,
-        zone_kv: Arc<ZoneKvStore>,
-        job_execution_lease_registry: Arc<JobExecutionLeaseRegistry>,
-        job_receiver: async_channel::Receiver<JobPayload>,
-        admitted_jobs: Arc<AtomicUsize>,
-        job_execution_lease_retry_tx: tokio::sync::mpsc::Sender<JobExecutionLeaseRetry>,
+        execution_runtime: Arc<JobExecutionRuntime>,
+        job_receiver: async_channel::Receiver<QueuedJob>,
     ) -> Self {
-        let job_runner_context = Arc::new(JobRunnerContext::new(
-            kafka,
-            zone_kv,
-            job_execution_lease_registry,
-            admitted_jobs,
-            job_execution_lease_retry_tx,
-            config.zone_id.clone(),
-        ));
         Self {
             config,
-            job_runner_context,
+            execution_runtime,
             job_receiver,
         }
     }
 
-    pub async fn receive_job(&self) -> Option<JobPayload> {
+    pub async fn receive_job(&self) -> Option<QueuedJob> {
         self.job_receiver.recv().await.ok()
     }
 
@@ -53,10 +38,10 @@ impl WorkerJobRuntime {
     }
 
     pub fn zone_kv(&self) -> &Arc<ZoneKvStore> {
-        self.job_runner_context.zone_kv()
+        self.execution_runtime.zone_kv()
     }
 
-    pub fn job_runner_context(&self) -> &Arc<JobRunnerContext> {
-        &self.job_runner_context
+    pub fn execution_runtime(&self) -> &Arc<JobExecutionRuntime> {
+        &self.execution_runtime
     }
 }

@@ -158,8 +158,8 @@ Không query Controlplane DB trong charging path. Event chỉ được publish s
 
 - `controlplane/internal/storage/`: handler/service/repository/outbox.
 - `job-orchestrator/src/cdc/mod.rs`: WAL → Kafka command.
-- `dataplane/src/job_lifecycle/consumer.rs`: command intake/Zone validation/lease.
+- `dataplane/src/job_runtime/intake.rs`: command intake và Zone validation.
 - `dataplane/src/executor/storage/bucket.rs`: physical executor.
-- `dataplane/src/job_lifecycle/runner.rs`: retry/result/settlement.
+- `dataplane/src/job_runtime/execution.rs` + `completion.rs`: lease, retry/result/settlement.
 - `job-orchestrator/src/job_result/consumer.rs`: result manual consumer.
 - `job-orchestrator/src/reverse_provider/storage/`: terminal transaction/lifecycle relay.

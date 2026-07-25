@@ -22,6 +22,9 @@ opentelemetry_sdk = { version = "0.23", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.16.0", features = ["grpc-tonic", "metrics"] }
 hostname = "0.4"
 tonic = { version = "0.11", features = ["tls"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 async-nats = "0.33"
 krafka = { version = "0.11.0", default-features = false, features = ["zstd", "native-tls-roots", "ring"] }
 bytes = "1.7"

@@ -8,7 +8,7 @@ use crate::workerpool::runtime::WorkerJobRuntime;
 
 /// Owns execution-aware Tokio worker slots and the graceful-shutdown barrier.
 ///
-/// One slot awaits exactly one `JobRunner` at a time. Scale-down transitions a
+/// One slot awaits exactly one job execution at a time. Scale-down transitions a
 /// slot to `Draining`, stops further receives, and lets the current execution
 /// reach its fenced durability boundary before the slot ID can be reused.
 pub struct WorkerLifecycleManager {
@@ -143,12 +143,7 @@ impl WorkerLifecycleManager {
                         // The worker owns the execution await. This makes the
                         // target worker count an actual concurrency bound instead
                         // of a count of detached receiver tasks.
-                        crate::job_lifecycle::runner::JobRunner::run_job(
-                            payload,
-                            self_clone.clone(),
-                            runtime.job_runner_context().clone(),
-                        )
-                        .await;
+                        runtime.execution_runtime().execute_job(payload).await;
                     }
                     None => {
                         break; // Channel closed
@@ -241,6 +236,25 @@ impl WorkerLifecycleManager {
             "worker.lifecycle",
             "Worker Pool: All workers and execution tasks have gracefully terminated.",
         );
+    }
+}
+
+impl crate::job_runtime::admission::ExecutionCapacity for WorkerLifecycleManager {
+    fn ready_workers(&self) -> usize {
+        self.worker_state_counts().ready
+    }
+}
+
+impl crate::job_runtime::execution::CleanupTaskSpawner for TaskTracker {
+    fn spawn_tracked(
+        &self,
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ) {
+        let guard = self.track();
+        tokio::spawn(async move {
+            let _guard = guard;
+            future.await;
+        });
     }
 }
 

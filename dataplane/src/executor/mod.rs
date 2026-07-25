@@ -2,9 +2,9 @@ pub mod hypervisor;
 pub mod mail;
 pub mod storage;
 
-// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// ============================================================================
 /// 📂 MODULE: executor/mod.rs - Giao Diện & Bộ Khung Thực Thi Nghiệp Vụ
@@ -18,12 +18,12 @@ use async_trait::async_trait;
 ///   - Định nghĩa hợp đồng nghiệp vụ (Interface Contract) duy nhất của toàn bộ hệ thống thực thi.
 ///
 /// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
-///   - Trait `Executor` chỉ tiếp nhận `JobPayload` chứa các thông số hạ tầng cấp thấp (non-tenant).
+///   - Trait `Executor` chỉ nhận command đã qua validation tại Kafka trust boundary.
 ///   - Tuyệt đối phân tách luồng xử lý và dữ liệu của các workload khác nhau (Hypervisor độc lập với Mail).
 ///
 /// 🔄 CALLSITE FLOW:
 ///   - Được kế thừa bởi toàn bộ các module nghiệp vụ cụ thể nằm trong `/hypervisor/` hoặc `/mail/`.
-///   - Được gọi bởi `job-receiver/consumer.rs` sau khi giải mã và định tuyến job thành công.
+///   - Được gọi bởi `job_runtime/execution.rs` sau khi acquire fenced Zone lease.
 ///
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
 ///   - Mọi Executor khi triển khai bắt buộc phải tuân thủ nghiêm ngặt hai quy tắc:
@@ -59,5 +59,5 @@ pub trait Executor {
     /// # Ràng buộc (Contract Invariants):
     ///   - Trả về `Result<ExecutionResult, ExecutorError>` rõ ràng.
     ///   - Không được phép để xảy ra tình trạng crash thô (panic) làm sập hệ thống Dataplane.
-    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError>;
+    async fn execute(&self, payload: Arc<ValidatedJob>) -> Result<ExecutionResult, ExecutorError>;
 }

@@ -64,9 +64,27 @@ pub(crate) async fn run_zone_metadata_kafka_listener(
             }
             let epoch = fence.epoch();
             for record in records {
-                settlement
+                if let Err(error) = settlement
                     .register(epoch, &record.topic, record.partition, record.offset)
-                    .await;
+                    .await
+                {
+                    Logger::sys_warn_with_fields(
+                        "leader.zone_metadata_kafka_listener",
+                        "KAFKA_METADATA_ASSIGNMENT_STALE",
+                        "Metadata record skipped because Kafka assignment changed after poll",
+                        &error,
+                        LogFields {
+                            leader_fencing_token: Some(session.fencing_token()),
+                            kafka_topic: Some(&record.topic),
+                            kafka_partition: Some(record.partition),
+                            kafka_offset: Some(record.offset),
+                            assignment_epoch: Some(epoch),
+                            outcome: Some("unsettled"),
+                            ..LogFields::default()
+                        },
+                    );
+                    continue;
+                }
                 let delivery = KafkaDelivery::new(
                     record.topic.clone(),
                     record.partition,
@@ -272,7 +290,7 @@ async fn quarantine_metadata_record(
         .await
     {
         Ok(()) => match delivery.settle().await {
-            Ok(()) => Logger::sys_warn_with_fields(
+            Ok(_) => Logger::sys_warn_with_fields(
                 "leader.zone_metadata_kafka_listener",
                 &dlq.error_code,
                 "Invalid Zone metadata record was durably quarantined before source settlement",

@@ -1,20 +1,18 @@
 use crate::executor::{ExecutionResult, ExecutorError};
-use crate::job_lifecycle::message::JobPayload;
-use crate::workerpool::pool::WorkerLifecycleManager;
+use crate::job_runtime::model::ValidatedJob;
 use std::sync::Arc;
 
 pub async fn dispatch_mail_job(
     action: &str,
-    payload: JobPayload,
-    worker_pool: Arc<WorkerLifecycleManager>,
+    payload: Arc<ValidatedJob>,
+    mail_runtime: Arc<super::MailRuntime>,
     _zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
     // [COMMENT]: Projection là control path riêng; delivery payload chỉ được broker runtime xử lý.
     if action == "consumer.upsert" {
         return super::projection::apply_mail_consumer_upsert(
             payload,
-            worker_pool
-                .mail_runtime
+            mail_runtime
                 .configuration
                 .zone_kv()
                 .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
@@ -25,8 +23,7 @@ pub async fn dispatch_mail_job(
     if action == "consumer.delete" {
         return super::projection::apply_mail_consumer_delete(
             payload,
-            worker_pool
-                .mail_runtime
+            mail_runtime
                 .configuration
                 .zone_kv()
                 .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
@@ -37,8 +34,7 @@ pub async fn dispatch_mail_job(
     if action == "template.version_published" {
         return super::projection::apply_mail_template_version_published(
             payload,
-            worker_pool
-                .mail_runtime
+            mail_runtime
                 .configuration
                 .zone_kv()
                 .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
@@ -49,8 +45,7 @@ pub async fn dispatch_mail_job(
     if action == "template.deleted" {
         return super::projection::apply_mail_template_deleted(
             payload,
-            worker_pool
-                .mail_runtime
+            mail_runtime
                 .configuration
                 .zone_kv()
                 .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
@@ -61,8 +56,7 @@ pub async fn dispatch_mail_job(
     if action == "projection.reconcile_completed" {
         return super::projection::apply_mail_reconcile_completed(
             payload,
-            worker_pool
-                .mail_runtime
+            mail_runtime
                 .configuration
                 .zone_kv()
                 .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,

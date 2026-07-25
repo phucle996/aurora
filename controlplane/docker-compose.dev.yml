@@ -809,8 +809,6 @@ services:
         LOCAL_GID: 1000
     container_name: aurora-job-orchestrator
     init: true
-    ports:
-      - "9102:9102"
     volumes:
       - ./dev/tls:/etc/job-orchestrator/tls:ro
     environment:
@@ -823,14 +821,18 @@ services:
       MAIL_RUNTIME_REPORT_TTL_SECS: "180"
       MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
       APP_LOG_LEVEL: "debug"
+      APP_LOG_BUFFERED_LINES: "16384"
+      APP_LOG_MAX_FIELD_BYTES: "16384"
+      APP_LOG_RATE_LIMIT_MS: "5000"
       TZ: "Asia/Ho_Chi_Minh"
-      METRICS_PORT: "9102"
       CDC_SOURCES: "mail.mail_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
       # [COMMENT]: JO bridge Shared Redis ↔ NATS Core cho runtime soft state.
       NATS_URL: "nats://controlplane-nats:4222"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       OTEL_TRACE_SAMPLE_RATIO: "0.25"
+      OTEL_METRIC_EXPORT_INTERVAL_SECS: "15"
+      OTEL_EXPORT_TIMEOUT_SECS: "5"
       OTEL_BSP_MAX_QUEUE_SIZE: "8192"
       OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
       OTEL_BSP_SCHEDULE_DELAY: "1000"

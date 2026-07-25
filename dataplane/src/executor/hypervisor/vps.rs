@@ -1,7 +1,7 @@
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// ============================================================================
 /// 📂 MODULE: executor/hypervisor/vps.rs - Bộ Thực Thi Nghiệp Vụ Ảo Hóa VPS
@@ -19,7 +19,7 @@ use async_trait::async_trait;
 ///   - TUYỆT ĐỐI KHÔNG biết và không xử lý bất kỳ thông tin nào liên quan đến chủ sở hữu VPS (Tenant).
 ///
 /// 🔄 CALLSITE FLOW:
-///   - Được khởi tạo và kích hoạt bởi `job-receiver/consumer.rs` khi định tuyến topic "vps.*".
+///   - Được gọi bởi `job_runtime/execution.rs` khi định tuyến topic "vps.*".
 ///
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
 ///   - Các tác vụ ảo hóa thường rất nặng và kéo dài (10s - 3m).
@@ -38,7 +38,7 @@ impl Executor for VpsExecutor {
     ///   2. Đọc cấu hình phần cứng từ `payload.payload_json`.
     ///   3. Gửi lệnh API vật lý tới Libvirt/KVM tạo VPS.
     ///   4. Nếu thành công -> Ghi nhận SQLite và trả về `ExecutionResult`.
-    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
+    async fn execute(&self, payload: Arc<ValidatedJob>) -> Result<ExecutionResult, ExecutorError> {
         crate::observability::logger::Logger::sys_info(
             "executor.vps",
             &format!(

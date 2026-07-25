@@ -1,5 +1,9 @@
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures_util::FutureExt as _;
 
 use crate::bootstrap::BootstrapResult;
 use crate::config::Config;
@@ -31,7 +35,8 @@ pub struct AppContainer {
     // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub job_execution_lease_registry:
-        Arc<crate::workerpool::lease_watchdog::JobExecutionLeaseRegistry>,
+        Arc<crate::job_runtime::coordination::watchdog::JobExecutionLeaseRegistry>,
+    fatal_shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl AppContainer {
@@ -44,9 +49,59 @@ impl AppContainer {
             zone_kv: boot.zone_kv,
             worker_pool: boot.worker_pool,
             job_execution_lease_registry: Arc::new(
-                crate::workerpool::lease_watchdog::JobExecutionLeaseRegistry::new(),
+                crate::job_runtime::coordination::watchdog::JobExecutionLeaseRegistry::new(),
             ),
+            fatal_shutdown: tokio_util::sync::CancellationToken::new(),
         }
+    }
+
+    pub fn fatal_shutdown_token(&self) -> tokio_util::sync::CancellationToken {
+        self.fatal_shutdown.clone()
+    }
+
+    pub fn fence_jobs_for_process_restart(&self) {
+        let cancelled = self
+            .job_execution_lease_registry
+            .cancel_all_for_process_restart();
+        Logger::sys_error(
+            "system.critical_task",
+            &format!("Cancelled {cancelled} active job executions before critical-process restart"),
+            "DATAPLANE_ACTIVE_JOBS_FENCED_FOR_RESTART",
+        );
+    }
+
+    fn spawn_critical_task<F>(
+        &self,
+        task_name: &'static str,
+        guard: crate::workerpool::pool::TaskGuard,
+        future: F,
+    ) where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let normal_shutdown = self.worker_pool.cancel_token();
+        let fatal_shutdown = self.fatal_shutdown.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            let outcome = AssertUnwindSafe(future).catch_unwind().await;
+            if normal_shutdown.is_cancelled() {
+                return;
+            }
+            Logger::sys_error(
+                "system.critical_task",
+                &format!(
+                    "Critical task {task_name} {} before process shutdown",
+                    if outcome.is_err() {
+                        "panicked"
+                    } else {
+                        "exited"
+                    }
+                ),
+                "DATAPLANE_CRITICAL_TASK_EXITED",
+            );
+            // Main observes this token and runs the same graceful shutdown path
+            // before returning an error for the container supervisor to restart.
+            fatal_shutdown.cancel();
+        });
     }
 
     /// Kích hoạt các luồng giám sát và tác vụ ngầm hoạt động (Watcher, Event loop).
@@ -111,62 +166,70 @@ impl AppContainer {
         let zone_kv_watchdog = self.zone_kv.clone();
         let watchdog_shutdown = self.worker_pool.cancel_token();
         let watchdog_task_guard = self.worker_pool.track_task();
-        let timeout_report_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
-        let (timeout_report_tx, timeout_report_rx) =
-            tokio::sync::mpsc::channel(timeout_report_capacity);
-        let timeout_reporter_kafka = self.kafka.clone();
-        let timeout_reporter_shutdown = self.worker_pool.cancel_token();
-        let timeout_reporter_guard = self.worker_pool.track_task();
-        tokio::spawn(async move {
-            let _timeout_reporter_guard = timeout_reporter_guard;
-            crate::job_lifecycle::timeout_reporter::run_execution_timeout_reporter(
-                timeout_report_rx,
-                timeout_reporter_kafka,
-                timeout_reporter_shutdown,
+        let completion_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(completion_capacity);
+        let completion_kafka = self.kafka.clone();
+        let completion_shutdown = self.worker_pool.cancel_token();
+        let completion_guard = self.worker_pool.track_task();
+        self.spawn_critical_task("job_completion_reporter", completion_guard, async move {
+            crate::job_runtime::completion::run_completion_reporter(
+                completion_rx,
+                completion_kafka,
+                completion_shutdown,
             )
             .await;
         });
-        tokio::spawn(async move {
-            let _watchdog_task_guard = watchdog_task_guard;
-            crate::workerpool::lease_watchdog::run_job_execution_lease_watchdog(
+        self.spawn_critical_task("job_execution_watchdog", watchdog_task_guard, async move {
+            crate::job_runtime::coordination::watchdog::run_execution_watchdog(
                 registry,
                 zone_kv_watchdog,
-                crate::job_lifecycle::lease::JOB_EXECUTION_LEASE_TTL_SECS,
+                crate::job_runtime::coordination::lease::JOB_EXECUTION_LEASE_TTL_SECS,
                 Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
                 watchdog_shutdown,
-                timeout_report_tx,
+                completion_tx,
+                // Covers the 4x-ready settlement window plus one final poll
+                // batch while the Kafka result reporter is backpressured.
+                completion_capacity.saturating_add(32),
             )
             .await;
         });
 
-        let lease_retry_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
-        let (job_execution_lease_retry_tx, job_execution_lease_retry_rx) =
-            tokio::sync::mpsc::channel(lease_retry_capacity);
-        let lease_retry_kafka = self.kafka.clone();
-        let lease_retry_shutdown = self.worker_pool.cancel_token();
-        let lease_retry_task_guard = self.worker_pool.track_task();
-        tokio::spawn(async move {
-            let _lease_retry_task_guard = lease_retry_task_guard;
-            crate::job_lifecycle::lease::run_job_execution_lease_retry_publisher(
-                job_execution_lease_retry_rx,
-                lease_retry_kafka,
-                lease_retry_shutdown,
+        let retry_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
+        let (retry_tx, retry_rx) = tokio::sync::mpsc::channel(retry_capacity);
+        let retry_kafka = self.kafka.clone();
+        let retry_shutdown = self.worker_pool.cancel_token();
+        let retry_task_guard = self.worker_pool.track_task();
+        self.spawn_critical_task("job_retry_scheduler", retry_task_guard, async move {
+            crate::job_runtime::completion::run_retry_scheduler(
+                retry_rx,
+                retry_kafka,
+                retry_shutdown,
             )
             .await;
         });
 
         // 0b. Khởi tạo bounded job channel và admitted_jobs counter dùng chung.
-        let (tx, rx) = async_channel::bounded::<crate::job_lifecycle::message::JobPayload>(
+        let (tx, rx) = async_channel::bounded::<crate::job_runtime::model::QueuedJob>(
             self.config.job_queue_capacity,
         );
+        let job_execution_runtime =
+            Arc::new(crate::job_runtime::execution::JobExecutionRuntime::new(
+                crate::job_runtime::execution::JobExecutionDependencies {
+                    kafka: self.kafka.clone(),
+                    zone_kv: self.zone_kv.clone(),
+                    registry: self.job_execution_lease_registry.clone(),
+                    admitted_jobs: admitted_jobs.clone(),
+                    retry_tx,
+                    zone_id: self.config.zone_id.clone(),
+                    mail_runtime: self.worker_pool.mail_runtime.clone(),
+                    cleanup_spawner: self.worker_pool.task_tracker(),
+                    shutdown: self.worker_pool.cancel_token(),
+                },
+            ));
         let worker_runtime = Arc::new(WorkerJobRuntime::new(
             self.config.clone(),
-            self.kafka.clone(),
-            self.zone_kv.clone(),
-            self.job_execution_lease_registry.clone(),
+            job_execution_runtime,
             rx,
-            admitted_jobs.clone(),
-            job_execution_lease_retry_tx,
         ));
 
         // [COMMENT]: Mỗi Dataplane chỉ consume command topic của đúng Zone.
@@ -176,18 +239,19 @@ impl AppContainer {
         let zone_kv_ingest_zone = self.zone_kv.clone();
         let tx_ingest_zone = tx;
         let admitted_jobs_ingest_zone = admitted_jobs.clone();
+        let execution_capacity = self.worker_pool.clone();
         let cancel_token_zone = self.worker_pool.cancel_token();
         let zone_ingestion_guard = self.worker_pool.track_task();
 
-        tokio::spawn(async move {
-            let _zone_ingestion_guard = zone_ingestion_guard;
-            crate::job_lifecycle::consumer::JobConsumer::start_zone_ingestion(
+        self.spawn_critical_task("zone_job_intake", zone_ingestion_guard, async move {
+            crate::job_runtime::intake::run_zone_job_intake(
                 config_ingest_zone,
                 kafka_ingest_zone,
                 zone_kv_ingest_zone,
                 tx_ingest_zone,
                 cancel_token_zone,
                 admitted_jobs_ingest_zone,
+                execution_capacity,
             )
             .await;
         });

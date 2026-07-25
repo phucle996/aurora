@@ -409,7 +409,9 @@ impl Config {
 }
 
 fn parse_worker_limit(name: &str, default: usize) -> usize {
-    const MAX_WORKER_LIMIT: usize = 4_096;
+    // Each active worker owns one independently renewed Zone KV fence. Keep the
+    // configured ceiling inside the watchdog's bounded renewal safety window.
+    const MAX_WORKER_LIMIT: usize = 512;
     let raw = env::var(name).unwrap_or_else(|_| default.to_string());
     match raw.parse::<usize>() {
         Ok(value) if (1..=MAX_WORKER_LIMIT).contains(&value) => value,

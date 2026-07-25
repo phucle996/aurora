@@ -3,8 +3,9 @@ use prost::Message;
 
 use crate::executor::storage::core::{MinioAdminClient, MinioClient};
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
+use std::sync::Arc;
 
 // [COMMENT]: Sử dụng Struct được tự động sinh ra bởi prost_build từ parent module storage_proto
 use super::storage_proto;
@@ -20,7 +21,7 @@ pub struct BucketCreateExecutor;
 
 #[async_trait]
 impl Executor for BucketCreateExecutor {
-    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
+    async fn execute(&self, payload: Arc<ValidatedJob>) -> Result<ExecutionResult, ExecutorError> {
         let op = "storage.bucket.create";
 
         // 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct BucketCreateSync

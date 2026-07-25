@@ -5,7 +5,7 @@ mod bootstrap;
 mod config;
 mod executor;
 mod infra;
-mod job_lifecycle;
+mod job_runtime;
 mod leader;
 mod observability;
 mod workerpool;
@@ -52,18 +52,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
     use tokio::signal::unix::{signal, SignalKind};
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
+    let fatal_shutdown = app.fatal_shutdown_token();
 
-    tokio::select! {
-        _ = sigint.recv()  => { Logger::sys_info("system.signal", "Received SIGINT. Initiating graceful shutdown..."); }
-        _ = sigterm.recv() => { Logger::sys_info("system.signal", "Received SIGTERM. Initiating graceful shutdown..."); }
-    }
+    let fatal_exit = tokio::select! {
+        _ = sigint.recv()  => {
+            Logger::sys_info("system.signal", "Received SIGINT. Initiating graceful shutdown...");
+            false
+        }
+        _ = sigterm.recv() => {
+            Logger::sys_info("system.signal", "Received SIGTERM. Initiating graceful shutdown...");
+            false
+        }
+        _ = fatal_shutdown.cancelled() => {
+            Logger::sys_error(
+                "system.signal",
+                "A critical runtime task exited; initiating fail-safe shutdown",
+                "DATAPLANE_CRITICAL_TASK_EXITED",
+            );
+            true
+        }
+    };
 
     // 5. Gracefully shutdown the container & release resources
+    if fatal_exit {
+        app.fence_jobs_for_process_restart();
+    }
     app.stop().await;
     Logger::sys_info(
         "system.shutdown",
         "Shutdown process completed. Exiting Dataplane process safely.",
     );
+
+    if fatal_exit {
+        return Err(std::io::Error::other("critical Dataplane task exited").into());
+    }
 
     Ok(())
 }

@@ -301,7 +301,7 @@ Code shape:
 | WAL decode/publish | `job-orchestrator/src/cdc/mod.rs` |
 | Reconciler | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
 | Kafka transport JO | `job-orchestrator/src/infra/kafka.rs` |
-| Kafka command intake | `dataplane/src/job_lifecycle/consumer.rs` |
+| Kafka command intake | `dataplane/src/job_runtime/intake.rs` |
 | Mail projector | `dataplane/src/executor/mail/executor.rs` |
 | Zone KV apply/L1 | `dataplane/src/executor/mail/{projection,configuration}.rs` |
 | Result transaction | `job-orchestrator/src/reverse_provider/mail/` |

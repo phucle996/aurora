@@ -1,7 +1,7 @@
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
-use crate::job_lifecycle::message::JobPayload;
+use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
+use std::sync::Arc;
 
 /// ============================================================================
 /// 📂 MODULE: executor/storage/delivery.rs - BỘ ĐỊNH TUYẾN / PHÂN PHỐI WORKLOAD STORAGE
@@ -13,7 +13,7 @@ use crate::observability::logger::Logger;
 ///
 pub async fn dispatch_storage_job(
     action: &str,
-    payload: JobPayload,
+    payload: Arc<ValidatedJob>,
 ) -> Result<ExecutionResult, ExecutorError> {
     Logger::sys_info(
         "executor.storage.router",

@@ -35,7 +35,7 @@ flowchart LR
     JOQ --> PG
     JOQ -->|ZoneMetadataSnapshotV1| KT
 
-    CFG --> JC[JobConsumer]
+    CFG --> JC[ZoneJobIntake]
     CFG --> MM[Mail runtime]
     CFG --> SM[Storage runtime]
     CFG --> HM[Hypervisor runtime]
@@ -189,6 +189,6 @@ Nếu lag stale, Decision Engine giữ state hiện tại thay vì tự động 
 - `dataplane/src/leader/leadership.rs`: Zone leader election/failover và fenced session.
 - `dataplane/src/leader/zone_metadata.rs`: compacted snapshot listener/projector và repair query publisher.
 - `dataplane/src/leader/zone_report.rs`: Zone report aggregation.
-- `dataplane/src/job_lifecycle/consumer.rs`: fail-closed state reaction.
+- `dataplane/src/job_runtime/intake.rs`: fail-closed state reaction.
 - `dataplane/src/infra/zone_kv.rs`: KV CAS and fencing.
 - `dataplane/src/infra/kafka.rs`: manual consumer and contiguous settlement.

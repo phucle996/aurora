@@ -600,6 +600,26 @@ fn protected_field(value: &str) -> Cow<'_, str> {
     }
 }
 
+pub(crate) fn sanitize_for_durable_event(value: &str, max_bytes: usize) -> String {
+    if contains_sensitive_marker(value) {
+        return "[REDACTED_SENSITIVE_EVENT_FIELD]".to_string();
+    }
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    const SUFFIX: &str = "...[truncated]";
+    if max_bytes <= SUFFIX.len() {
+        return SUFFIX[..max_bytes].to_string();
+    }
+    let content_limit = max_bytes.saturating_sub(SUFFIX.len());
+    let mut boundary = content_limit.min(value.len());
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    format!("{}{SUFFIX}", &value[..boundary])
+}
+
 fn contains_sensitive_marker(value: &str) -> bool {
     const MARKERS: &[&[u8]] = &[
         b"authorization:",
@@ -727,7 +747,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_field, is_stable_error_code, protected_field, LogFields, Logger};
+    use super::{
+        bounded_field, is_stable_error_code, protected_field, sanitize_for_durable_event,
+        LogFields, Logger,
+    };
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::fmt::MakeWriter;
@@ -834,6 +857,17 @@ mod tests {
             protected_field("leader fencing_token=42"),
             "leader fencing_token=42"
         );
+    }
+
+    #[test]
+    fn durable_event_fields_are_redacted_and_utf8_bounded() {
+        assert_eq!(
+            sanitize_for_durable_event("upstream password=do-not-publish", 4_096),
+            "[REDACTED_SENSITIVE_EVENT_FIELD]"
+        );
+        let bounded = sanitize_for_durable_event(&"ế".repeat(4_096), 128);
+        assert!(bounded.len() <= 128);
+        assert!(bounded.ends_with("...[truncated]"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::config::{get_node_hostname, Config};
+use crate::config::Config;
 use crate::observability::logger::Logger;
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
 use opentelemetry::{global, Context, KeyValue};
@@ -13,13 +13,14 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 const MAX_TRACEPARENT_BYTES: usize = 128;
 const MAX_TRACESTATE_BYTES: usize = 512;
+const MAX_SPAN_NAME_BYTES: usize = 128;
 
 static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
 static OTEL_INITIALIZED: OnceLock<()> = OnceLock::new();
-static SERVICE_INSTANCE_ID: OnceLock<String> = OnceLock::new();
 static OTEL_STOPPED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -46,30 +47,30 @@ impl OtelTracer {
         Self::init_metrics(config);
     }
 
-    fn resource(config: &Config) -> Resource {
-        let environment =
-            std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
+    fn resource() -> Resource {
         Resource::new(vec![
             KeyValue::new("service.namespace", "aurora"),
             KeyValue::new("service.name", "aurora-job-orchestrator"),
             KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new("service.instance.id", Logger::boot_id().to_string()),
             KeyValue::new(
-                "service.instance.id",
-                SERVICE_INSTANCE_ID
-                    .get_or_init(|| uuid::Uuid::new_v4().to_string())
-                    .clone(),
+                "deployment.environment.name",
+                Logger::deployment_environment().to_string(),
             ),
-            KeyValue::new("deployment.environment.name", environment),
-            KeyValue::new("aurora.zone.id", config.zone_id.clone()),
-            KeyValue::new("host.name", get_node_hostname()),
+            // Job Orchestrator is a Central multi-Zone process. Zone belongs on a job span,
+            // never on its Resource, otherwise one pod reports a false global Zone identity.
+            KeyValue::new("aurora.component.scope", "central"),
+            KeyValue::new("host.name", Logger::node_id().to_string()),
+            KeyValue::new("process.pid", i64::from(std::process::id())),
         ])
     }
 
     fn init_tracer(config: &Config) {
-        let endpoint = &config.otel_exporter_otlp_endpoint;
+        let export_timeout = Duration::from_secs(config.otel_export_timeout_secs);
         let exporter = opentelemetry_otlp::new_exporter()
             .tonic()
-            .with_endpoint(endpoint);
+            .with_endpoint(&config.otel_exporter_otlp_endpoint)
+            .with_timeout(export_timeout);
 
         match opentelemetry_otlp::new_pipeline()
             .tracing()
@@ -85,15 +86,15 @@ impl OtelTracer {
                     .with_max_links_per_span(32)
                     .with_max_attributes_per_event(16)
                     .with_max_attributes_per_link(8)
-                    .with_resource(Self::resource(config)),
+                    .with_resource(Self::resource()),
             )
             .install_batch(opentelemetry_sdk::runtime::Tokio)
         {
             Ok(_) => Logger::sys_info(
                 "tracing.init",
                 &format!(
-                    "OTel tracer initialized; endpoint={}, root_sample_ratio={}",
-                    endpoint, config.otel_trace_sample_ratio
+                    "OTel tracer initialized; root_sample_ratio={}, export_timeout_secs={}",
+                    config.otel_trace_sample_ratio, config.otel_export_timeout_secs
                 ),
             ),
             Err(error) => Logger::sys_error(
@@ -105,10 +106,10 @@ impl OtelTracer {
     }
 
     fn init_metrics(config: &Config) {
-        let endpoint = &config.otel_exporter_otlp_endpoint;
         let exporter = match opentelemetry_otlp::new_exporter()
             .tonic()
-            .with_endpoint(endpoint)
+            .with_endpoint(&config.otel_exporter_otlp_endpoint)
+            .with_timeout(Duration::from_secs(config.otel_export_timeout_secs))
             .build_metrics_exporter(
                 Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),
                 Box::new(opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector::new()),
@@ -125,15 +126,15 @@ impl OtelTracer {
         };
 
         let reader = PeriodicReader::builder(exporter, opentelemetry_sdk::runtime::Tokio)
-            .with_interval(std::time::Duration::from_secs(15))
+            .with_interval(Duration::from_secs(config.otel_metric_export_interval_secs))
+            .with_timeout(Duration::from_secs(config.otel_export_timeout_secs))
             .build();
         let provider = SdkMeterProvider::builder()
             .with_reader(reader)
-            .with_resource(Self::resource(config))
+            .with_resource(Self::resource())
             .build();
 
-        global::set_meter_provider(provider.clone());
-        if METER_PROVIDER.set(provider).is_err() {
+        if METER_PROVIDER.set(provider.clone()).is_err() {
             Logger::sys_error(
                 "metrics.init",
                 "Meter provider ownership was already installed",
@@ -141,9 +142,13 @@ impl OtelTracer {
             );
             return;
         }
+        global::set_meter_provider(provider);
         Logger::sys_info(
             "metrics.init",
-            &format!("OTel metrics pipeline initialized; endpoint={endpoint}"),
+            &format!(
+                "OTel metrics pipeline initialized; interval_secs={}, export_timeout_secs={}",
+                config.otel_metric_export_interval_secs, config.otel_export_timeout_secs
+            ),
         );
     }
 
@@ -214,7 +219,7 @@ impl OtelTracer {
     ) -> Context {
         let tracer = global::tracer("aurora-job-orchestrator");
         let span = tracer
-            .span_builder(name)
+            .span_builder(bounded_span_name(name.into()))
             .with_kind(kind)
             .with_attributes(attributes)
             .start_with_context(&tracer, parent);
@@ -232,8 +237,9 @@ impl OtelTracer {
     pub fn finish_span(context: &Context, error_code: Option<&str>) {
         let span = context.span();
         if let Some(error_code) = error_code {
-            span.set_attribute(KeyValue::new("error.type", error_code.to_string()));
-            span.set_status(Status::error(error_code.to_string()));
+            let error_code = stable_error_code(error_code);
+            span.set_attribute(KeyValue::new("error.type", error_code));
+            span.set_status(Status::error(error_code));
         } else {
             span.set_status(Status::Ok);
         }
@@ -256,6 +262,41 @@ impl OtelTracer {
         span_context
             .is_valid()
             .then(|| span_context.span_id().to_string())
+    }
+}
+
+fn bounded_span_name(name: Cow<'static, str>) -> Cow<'static, str> {
+    if name.len() <= MAX_SPAN_NAME_BYTES {
+        return name;
+    }
+    const SUFFIX: &str = "...[truncated]";
+    let mut boundary = MAX_SPAN_NAME_BYTES.saturating_sub(SUFFIX.len());
+    while boundary > 0 && !name.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    Cow::Owned(format!("{}{SUFFIX}", &name[..boundary]))
+}
+
+fn stable_error_code(value: &str) -> &'static str {
+    if !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        // Callers currently pass static taxonomy values. Returning a static fallback for any
+        // future raw error prevents unbounded error.type cardinality.
+        match value {
+            "KAFKA_COMMAND_PUBLISH_FAILED" => "KAFKA_COMMAND_PUBLISH_FAILED",
+            "KAFKA_RECONCILE_PUBLISH_FAILED" => "KAFKA_RECONCILE_PUBLISH_FAILED",
+            "KAFKA_RESULT_SETTLEMENT_FAILED" => "KAFKA_RESULT_SETTLEMENT_FAILED",
+            "JOB_RESULT_PROCESS_FAILED" => "JOB_RESULT_PROCESS_FAILED",
+            "POSTGRES_JOB_RESULT_UPDATE_FAILED" => "POSTGRES_JOB_RESULT_UPDATE_FAILED",
+            "REDIS_NOTIFICATION_XADD_FAILED" => "REDIS_NOTIFICATION_XADD_FAILED",
+            _ => "UNCLASSIFIED_ERROR",
+        }
+    } else {
+        "UNCLASSIFIED_ERROR"
     }
 }
 
@@ -298,5 +339,16 @@ mod tests {
             "vendor=value"
         ));
         assert!(!OtelTracer::is_valid_propagation_context("00-invalid", ""));
+    }
+
+    #[test]
+    fn span_names_and_error_taxonomy_are_bounded() {
+        let name = bounded_span_name(Cow::Owned("ế".repeat(256)));
+        assert!(name.len() <= MAX_SPAN_NAME_BYTES);
+        assert!(name.ends_with("...[truncated]"));
+        assert_eq!(
+            stable_error_code("raw error with customer id"),
+            "UNCLASSIFIED_ERROR"
+        );
     }
 }
