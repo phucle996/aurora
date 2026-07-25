@@ -17,6 +17,7 @@ pub async fn handle_job_notification(
         "message": payload.get("message").cloned().unwrap_or(serde_json::Value::Null),
         "created_at": payload.get("created_at").cloned().unwrap_or(serde_json::Value::Null),
         "transaction_id": payload.get("job_id").cloned().unwrap_or(serde_json::Value::Null),
+        "notification_id": payload.get("notification_id").cloned().unwrap_or(serde_json::Value::Null),
         // [COMMENT]: operation cho phép client phân biệt loại job để quyết định silent hay hiển thị notification
         "operation": payload.get("operation").cloned().unwrap_or(serde_json::Value::Null),
         "resource_id": payload.get("resource_id").cloned().unwrap_or(serde_json::Value::Null),

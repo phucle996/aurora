@@ -88,8 +88,6 @@ spec:
                 secretKeyRef:
                   name: cost-manager-secrets
                   key: cache-redis-url
-            - name: NATS_URL
-              value: "nats://controlplane-nats.controlplane.svc.cluster.local:4222"
           resources:
             requests:
               cpu: 150m

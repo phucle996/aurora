@@ -91,6 +91,8 @@ Validation trước side effect:
 - report key và payload `zone_id` phải trùng.
 - timestamp/deadline phải nằm trong cửa sổ cho phép.
 - payload size phải bị chặn tại producer/consumer/broker.
+- JO result consumer đối chiếu `event_id + source_domain + job_topic + job_version` với authoritative
+  Controlplane outbox trước mutation; mismatch được sanitized-quarantine, không retry vô hạn.
 
 ## 4. Command path: PostgreSQL WAL → JO → Kafka
 
@@ -99,7 +101,7 @@ sequenceDiagram
     autonumber
     participant API as Controlplane API
     participant PG as PostgreSQL + Outbox
-    participant JO as JO CDC
+    participant JO as JO changefeed
     participant K as Kafka
     participant DP as Dataplane
     participant KV as Zone KV
@@ -120,7 +122,7 @@ Crash windows:
 
 - JO chết trước broker ACK: LSN chưa advance, WAL replay.
 - JO chết sau ACK trước LSN advance: duplicate `JobCommandV1`; stable `job_id` và executor idempotency xử lý.
-- Kafka ACK không thay PostgreSQL commit. Outbox được tạo cùng business transaction trước CDC.
+- Kafka ACK không thay PostgreSQL commit. Outbox được tạo cùng business transaction trước changefeed.
 
 Reconciler JO vẫn dùng Cache Redis cho bounded lock/generation/checkpoint. Sau lock, từng small batch được
 publish Kafka với cùng version/hash. Lock không làm Kafka exactly-once; generation/version fence mới chặn stale apply.
@@ -176,7 +178,7 @@ sequenceDiagram
 
 Zone metadata:
 
-- JO CDC hoặc query listener đọc full authoritative Zone aggregate.
+- JO changefeed hoặc query listener đọc full authoritative Zone aggregate.
 - JO publish `ZoneMetadataSnapshotV1` vào compacted per-Zone topic với key `zone_id`.
 - DP cold start/reconciler publish `ZoneMetadataQueryV1` khi cần repair.
 - DP validate Zone binding, project full snapshot vào `AURORA_ZONE_CONFIG`, rồi commit Kafka offset.
@@ -268,8 +270,9 @@ Production:
 | IAM outbound port | `controlplane/internal/iam/domain/service/auth_service.go` |
 | IAM Kafka adapter | `controlplane/internal/iam/transport/pubsub/account_verification_publisher.go` |
 | JO transport | `job-orchestrator/src/infra/kafka.rs` |
-| JO WAL publisher | `job-orchestrator/src/cdc/mod.rs` |
-| JO result consumer | `job-orchestrator/src/job_result/consumer.rs` |
+| JO command/result route registry | `job-orchestrator/src/job_topics.rs` |
+| JO WAL publisher | `job-orchestrator/src/changefeed/worker.rs` |
+| JO result consumer | `job-orchestrator/src/results/worker.rs` |
 | DP transport/settlement | `dataplane/src/infra/kafka.rs` |
 | DP command intake | `dataplane/src/job_runtime/intake.rs` |
 | DP result/retry | `dataplane/src/job_runtime/{execution,completion}.rs` |

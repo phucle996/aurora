@@ -1,311 +1,194 @@
-# Resource Ownership Event Pipeline — God View
+# Resource ownership — Central Shared Redis God View
 
-> [!IMPORTANT]
-> Tài liệu này là **Source of Truth (SoT) duy nhất** cho toàn bộ pipeline ownership event từ bucket create/delete trong Controlplane cho đến ownership projection trong Billing.
-> Mọi thay đổi liên quan đến: resource lifecycle outbox, JetStream relay, billing inbox, ownership consumer, state machines đều phải tham chiếu và cập nhật file này trước.
+> Source of Truth cho ownership lifecycle từ Storage Controlplane tới Cost Manager.
+> Ownership là luồng Central↔Central: không dùng Kafka, NATS Core hay Zone JetStream KV.
 
----
-
-## Mục Lục
-
-1. [Nguyên tắc kiến trúc](#1-nguyên-tắc-kiến-trúc)
-2. [Hai Reliability Boundary](#2-hai-reliability-boundary)
-3. [Contract Protobuf ResourceOwnershipChangedV1](#3-contract-protobuf-resourceownershipchangedv1)
-4. [State Machines](#4-state-machines)
-5. [Luồng End-to-End](#5-luồng-end-to-end)
-6. [Race Condition và Crash Recovery](#6-race-condition-và-crash-recovery)
-7. [JetStream Configuration](#7-jetstream-configuration)
-8. [Source Map](#8-source-map)
-
----
-
-## 1. Nguyên tắc kiến trúc
-
-- Bucket không có `status` — tồn tại trong DB là đủ để xác định active.
-- Billing không truy cập trực tiếp DB Controlplane (zero cross-DB query ở hot path).
-- Mọi bucket create/delete thành công đều phát **durable ownership event** vào JetStream.
-- Resource tạo rồi xóa sau 10 phút vẫn phải giữ đủ hai event và lịch sử ledger.
-- Owner lấy từ immutable outbox snapshot `owner_id/owner_type`; resource name decode từ job payload và zone lấy từ `routing_scope`. Job Orchestrator không query ngược resource tables.
-- Tuyệt đối không có secret key/policy trong lifecycle payload.
-
----
-
-## 2. Hai Reliability Boundary
+## 1. Topology và ownership
 
 ```mermaid
-flowchart TD
-    CP[(Controlplane DB)]
-
-    subgraph "Boundary 1: Provisioning Job Outbox"
-        direction LR
-        JOB_OUT["storage.storage_outbox_records\nPENDING → PROCESSING → SUCCEEDED | FAILED"]
-    end
-
-    subgraph "Boundary 2: Resource Lifecycle Outbox"
-        direction LR
-        LC_OUT["storage.resource_lifecycle_events\nUNPUBLISHED → PUBLISHED | DEAD"]
-    end
-
-    CP --> JOB_OUT
-    JOB_OUT -->|"Trong cùng TX SUCCEEDED"| LC_OUT
-
-    subgraph "JetStream"
-        JS["Stream: CONTROLPLANE_DOMAIN_EVENTS\nSubject: billing.ownership.resource.changed.v1"]
-    end
-
-    subgraph "Billing Inbox"
-        INBOX["billing.ownership_event_inbox\nRECEIVED → APPLIED | DEAD"]
-        HEAD["billing.resource_ownership_head\n(tombstone/out-of-order guard)"]
-        PROJ["billing.resource_ownership_projection\n(effective-dated SCD Type 2)"]
-    end
-
-    LC_OUT -->|"Lifecycle Relay (JO)"| JS
-    JS -->|"JetStream Consumer cost-ownership-v1"| INBOX
-    INBOX --> HEAD
-    INBOX --> PROJ
+flowchart LR
+    DP[Dataplane đúng Zone] -->|Kafka JobExecutionResultProto| JO[Job Orchestrator results]
+    JO -->|transaction| OUT[(storage.storage_outbox_records)]
+    OUT -->|OwnershipIntent deterministic| PUB[JO ownership publisher]
+    PUB -->|XADD + WAITAOF| RS[(Shared Redis Stream)]
+    RS -->|XREADGROUP / XAUTOCLAIM| COST[Cost ownership consumer]
+    COST -->|transaction| INBOX[(billing.ownership_event_inbox)]
+    INBOX --> HEAD[(billing.resource_ownership_head)]
+    INBOX --> PROJ[(billing.resource_ownership_projection)]
+    COST -->|after DB commit| ACK[XACK + XDEL]
 ```
 
-**Boundary 1 — Provisioning Job Outbox**: Controlplane → Dataplane. Outbox record giữ 30 ngày sau terminal để audit. Không bao giờ DELETE record khi job SUCCEEDED.
+Các boundary:
 
-**Boundary 2 — Resource Lifecycle Outbox**: Controlplane → Billing. Ghi trong cùng transaction với Boundary 1 SUCCEEDED. Không gọi NATS trong transaction.
+- Dataplane chỉ báo `job_id/version/status/topic`; không quyết định owner.
+- JO resolve `resource_id`, owner và Zone từ authoritative Storage outbox.
+- Shared Redis là durable at-least-once transport nội vùng Central.
+- Cost là service duy nhất ghi Billing inbox/projection/head.
+- Billing inbox là idempotency fence; Redis không phải business SoT.
 
----
+## 2. Storage outbox tối giản
 
-## 3. Contract Protobuf ResourceOwnershipChangedV1
+Không tạo lifecycle outbox thứ hai. Chính `storage.storage_outbox_records` đã giữ:
 
-```protobuf
-syntax = "proto3";
-package billing.ownership.v1;
+- `event_id`, `job_topic`, `job_version`;
+- `resource_id`, `owner_id`, `owner_type`;
+- immutable payload và `routing_scope`;
+- terminal status và `completed_at`.
 
-message ResourceOwnershipChangedV1 {
-  bytes  event_id        = 1;  // UUID bytes (16 bytes), deterministic từ source_job_id + event_type
-  string event_type      = 2;  // "RESOURCE_CREATED" | "RESOURCE_DELETED"
-  int32  schema_version  = 3;  // Luôn = 1 cho schema này
-  bytes  resource_id     = 4;  // UUID bytes của bucket
-  string resource_type   = 5;  // "STORAGE_BUCKET"
-  string resource_name   = 6;  // Tên vật lý bucket (e.g. ws-abc123)
-  bytes  owner_id        = 7;  // UUID bytes của owner (personal_workspaces.owner_id hoặc tenant_id)
-  string owner_type      = 8;  // "PERSONAL" | "TENANT"
-  bytes  zone_id         = 9;  // UUID bytes của zone
-  int64  source_version  = 10; // Ownership version tăng dần; CREATED=1, mỗi change tăng thêm
-  string effective_at    = 11; // RFC3339 UTC — thời điểm ownership event có hiệu lực
-  bytes  source_job_id   = 12; // UUID bytes của job tạo ra event này
-  string traceparent     = 13; // W3C traceparent để distributed tracing
-}
+Ownership delivery chỉ bổ sung:
+
+```text
+ownership_published_at
+ownership_attempt_count
+ownership_last_error
+ownership_locked_by
+ownership_locked_until
 ```
 
-**Quy tắc bất biến của payload**:
-- `event_id` PHẢI deterministic: `UUID_v5(lifecycle_namespace, source_job_id_bytes || event_type_bytes)`.
-- Không có secret key, policy JSON, hay bất kỳ credential nào trong payload.
-- Provisioning outbox giữ hai identity độc lập: `owner_id/owner_type` là payer của Billing;
-  `actor_user_id` là người thực hiện request để notification/audit. Tenant ID không bao giờ được dùng
-  thay user ID trên notification subject.
-- `owner_id` phải được derive hoặc kiểm chứng lại từ DB ngay tại thời điểm xử lý kết quả; Billing chỉ
-  nhận cặp `(owner_id, owner_type)` và không dùng `actor_user_id` để chọn wallet.
-- `source_version` cho `RESOURCE_CREATED` bắt đầu từ 1; mỗi lần ownership change tăng 1.
+`status` vẫn chỉ là job lifecycle. Ownership pending được xác định bằng:
 
----
-
-## 4. State Machines
-
-### 4.1 Provisioning Job Outbox
-
-```
-PENDING
-  │
-  ▼ (Dataplane nhận job)
-PROCESSING
-  │
-  ├──[Thành công]──► SUCCEEDED  (completed_at được set; record giữ 30 ngày)
-  │
-  └──[Thất bại]───► FAILED      (completed_at + error_code + error_message được set)
+```sql
+status = 'SUCCEEDED'
+AND job_topic IN ('storage.bucket.create', 'storage.bucket.delete')
+AND ownership_published_at IS NULL
 ```
 
-- `SUCCEEDED`: UPDATE outbox, set `completed_at`. Đồng thời trong cùng TX: insert ownership event.
-- `FAILED` (create): UPDATE outbox + DELETE bucket record khỏi DB (clean rollback cho retry).
-- `FAILED` (delete/resize): UPDATE outbox, giữ nguyên resource.
-- Retry `SUCCEEDED`: no-op (guard `WHERE status IN ('PENDING', 'PROCESSING')`).
-- **Không bao giờ DELETE outbox record khi SUCCEEDED.**
+Retention không được xóa row thỏa điều kiện này.
 
-### 4.2 Resource Lifecycle Outbox
+## 3. Contract deterministic
 
-```
-UNPUBLISHED
-  │
-  ▼ (Lifecycle relay claim lease + publish JetStream)
-  ├──[PubAck nhận được]──► PUBLISHED   (published_at được set)
-  │
-  └──[Max retry exceeded]─► DEAD       (cần manual intervention hoặc DLQ)
-```
+`ResourceOwnershipChangedV1` không chứa secret/policy/credential.
 
-- Relay chỉ UPDATE `published_at` / `status = PUBLISHED` SAU KHI nhận `PubAck`.
-- Nếu relay crash sau DB commit nhưng trước PubAck: relay polling `UNPUBLISHED` sẽ retry.
-- `locked_by` + `locked_until`: claim lease theo batch để nhiều relay instance không tranh nhau.
-- Không bao giờ xóa `UNPUBLISHED` records (chưa có bằng chứng publish).
-
-### 4.3 Billing Inbox
-
-```
-RECEIVED
-  │
-  ▼ (Consumer xử lý event trong transaction)
-  ├──[Thành công]──────────► APPLIED   (processed_at được set)
-  │
-  ├──[Duplicate event]──────► ACK idempotently (không insert lại)
-  │
-  ├──[Transient error]──────► NAK với backoff (JetStream redeliver)
-  │
-  └──[Permanent error]──────► DEAD     (push DLQ + TERM message gốc)
-```
-
----
-
-## 5. Luồng End-to-End
-
-### 5.1 Bucket Create Succeeded
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant DP as Dataplane
-    participant Redis as Kafka aurora.jobs.results.v1
-    participant JO as Job Orchestrator (ResultConsumer)
-    participant CPDB as Controlplane DB
-    participant Relay as Lifecycle Relay (JO)
-    participant JS as JetStream
-    participant CM as Cost Manager (LifecycleConsumer)
-    participant BDB as Billing DB
-
-    DP->>Redis: PRODUCE Protobuf {job_id, SUCCEEDED}, acks=all
-    JO->>Redis: manual poll
-    Redis-->>JO: job result record
-
-    Note over JO,CPDB: Single atomic transaction
-    JO->>CPDB: BEGIN TX
-    JO->>CPDB: UPDATE storage_outbox_records SET status='SUCCEEDED', completed_at=NOW()
-    JO->>CPDB: SELECT owner_id FROM personal_workspaces/tenant_buckets (derive owner)
-    JO->>CPDB: INSERT storage.resource_lifecycle_events (status='UNPUBLISHED', payload=Protobuf)
-    JO->>CPDB: COMMIT TX
-
-    JO->>Redis: COMMIT offset after DB transaction
-    JO-->>JO: wakeRelay(event_id) [optional fast path]
-
-    Note over Relay,JS: Relay runs separately (background task)
-    Relay->>CPDB: SELECT batch WHERE status='UNPUBLISHED' FOR UPDATE SKIP LOCKED
-    Relay->>JS: Publish Protobuf, Nats-Msg-Id=event_id
-    JS-->>Relay: PubAck
-    Relay->>CPDB: UPDATE status='PUBLISHED', published_at=NOW()
-
-    Note over CM,BDB: Single atomic transaction per event
-    CM->>JS: Consume (Explicit ACK consumer)
-    JS-->>CM: ResourceOwnershipChangedV1
-    CM->>BDB: BEGIN TX
-    CM->>BDB: INSERT ownership_event_inbox (conflict → ACK idempotent)
-    CM->>BDB: INSERT resource_ownership_projection (effective-dated)
-    CM->>BDB: INSERT credential_bindings (access keys)
-    CM->>BDB: UPSERT resource_ownership_head (source_version)
-    CM->>BDB: COMMIT TX
-    CM->>JS: ACK
-```
-
-### 5.2 Bucket Delete Succeeded
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant JO as Job Orchestrator
-    participant CPDB as Controlplane DB
-
-    JO->>CPDB: BEGIN TX
-    JO->>CPDB: SELECT resource_name, owner_id, zone_id FROM bucket (TRƯỚC KHI DELETE)
-    JO->>CPDB: DELETE personal_credentials / tenant_credentials
-    JO->>CPDB: DELETE personal_buckets / tenant_buckets
-    JO->>CPDB: UPDATE storage_outbox_records SET status='SUCCEEDED', completed_at=NOW()
-    JO->>CPDB: INSERT storage.resource_lifecycle_events (RESOURCE_DELETED, UNPUBLISHED)
-    JO->>CPDB: COMMIT TX
-```
-
-### 5.3 Out-of-Order: DELETE đến trước CREATE
-
-```
-Event RESOURCE_DELETED (source_version=2) đến trước RESOURCE_CREATED (source_version=1)
-
-Xử lý DELETE:
-  → INSERT inbox (event_id = delete_event_id)
-  → UPSERT resource_ownership_head: {resource_id, last_source_version=2, resource_state=DELETED}
-  → Close ownership projection nếu đang mở (effective_to = effective_at)
-  → ACK
-
-Sau đó RESOURCE_CREATED (source_version=1) đến:
-  → INSERT inbox → conflict nếu cùng event_id (không thể xảy ra — event_id khác)
-  → Đọc resource_ownership_head: resource_state=DELETED, last_source_version=2
-  → CREATE có source_version <= last (và state=DELETED) → BỎ QUA, ACK idempotently
-  → Không resurrect resource
-```
-
----
-
-## 6. Race Condition và Crash Recovery
-
-| Tình huống | Xử lý |
+| Field | Nguồn |
 |---|---|
-| Relay crash sau INSERT ownership event nhưng trước PubAck | Relay polling `UNPUBLISHED` retry; `Nats-Msg-Id=event_id` JetStream dedup |
-| JetStream publish nhưng relay chưa UPDATE DB | Relay nhận PubAck và cập nhật; duplicate publish được dedup bởi JetStream |
-| Billing nhận duplicate event (restart trước ACK) | `ownership_event_inbox` PK conflict → rollback → ACK idempotently |
-| Payload hash mismatch | Security incident; TERM message gốc, push DLQ, alert |
-| Two relay instances tranh nhau | `locked_by` + `locked_until` claim lease; `FOR UPDATE SKIP LOCKED` |
-| Resource create/delete giữa hai lần reconcile gRPC (Phase 7) | Lifecycle events đã capture đủ hai event trong Boundary 2 |
-| Bucket tồn tại trong DB nhưng chưa có ownership projection | Billing consumer xử lý sẽ insert; gRPC reconciler (Phase 7) backup |
+| `event_id` | UUIDv5(`source_job_id + event_type`) |
+| `event_type` | create success → `RESOURCE_CREATED`; delete success → `RESOURCE_DELETED` |
+| `resource_id` | Storage outbox |
+| `owner_id`, `owner_type` | Storage outbox do Controlplane đóng dấu |
+| `zone_id` | `routing_scope=zone:<uuid>` |
+| `resource_name` | decode immutable Storage command payload trong JO memory |
+| `source_version` | lifecycle version do platform sở hữu; create=1/delete=2 hiện tại |
+| `effective_at` | durable `completed_at`, không lấy clock của lần retry |
+| `source_job_id` | Storage outbox `event_id` |
 
----
+Nếu result tương lai mang `resource_id`, field đó chỉ được dùng để correlation và phải khớp
+Controlplane outbox. Không nhận owner/tenant/workspace từ Dataplane.
 
-## 7. JetStream Configuration
+## 4. Producer state machine
 
-### Dev (single node)
-
-```hcl
-# nats-server.conf
-jetstream {
-  store_dir: "/data/nats"
-  max_memory_store: 256MB
-  max_file_store: 4GB
-}
+```text
+PENDING
+  ├─ XADD + WAITAOF đạt policy ──> PUBLISHED
+  └─ transient failure ──────────> PENDING + last_error
 ```
 
-**Stream**: `CONTROLPLANE_DOMAIN_EVENTS`
-- Subject filter: `billing.ownership.resource.changed.v1`
-- Storage: `File`
-- Retention: `Limits`
-- Max age: `72h` (dev) / `168h` (staging)
-- Replicas: `1` (dev) / `3` (prod)
+Fast path chạy ngay sau result DB commit. Failure không chặn Kafka result offset vì durable
+Storage row vẫn pending. Recovery relay:
 
-**Consumer**: `cost-ownership-v1` (Cost Manager)
-- Delivery: `Push` hoặc `Pull` explicit ACK
-- Ack policy: `Explicit`
-- Ack wait: `30s`
-- Max deliver: `10` (sau đó TERM → DLQ)
+- startup drain ngay;
+- batch nhỏ với `FOR UPDATE SKIP LOCKED`;
+- lease có `locked_by/locked_until`;
+- scan fallback 30 giây + jitter;
+- không hot-poll và không giữ DB transaction qua Redis network call.
 
-**Headers bắt buộc khi publish**:
-- `Nats-Msg-Id: {event_id}` — JetStream idempotent publish dedup
-- `Content-Type: application/protobuf`
-- `Schema-Version: 1`
-- `traceparent: {w3c_traceparent}`
+`XADD` và `WAITAOF` phải chạy tuần tự trên cùng dedicated Redis connection. Production yêu cầu
+local AOF, ít nhất một replica AOF ACK và eviction policy không xóa pending Stream entry.
+`XLEN` capacity guard và `XADD` nằm trong cùng Lua script; stream đầy thì JO giữ intent ở
+PostgreSQL thay vì tăng RAM Shared Redis vô hạn.
 
----
+Crash sau `XADD` nhưng trước `ownership_published_at` tạo duplicate hợp lệ. Cost inbox so sánh
+`event_id + payload_hash`; cùng ID khác hash là integrity incident.
 
-## 8. Source Map
+## 5. Cost consumer
+
+```text
+NEW ──XREADGROUP──> PEL
+PEL ──Billing TX commit──> XACK + XDEL
+PEL ──pod chết/idle 30s──> XAUTOCLAIM bởi pod khác
+invalid contract ──> atomic DLQ + XACK + XDEL
+DB/transient failure ──> giữ PEL, không ACK
+```
+
+Billing transaction:
+
+1. insert `billing.ownership_event_inbox`;
+2. cùng `event_id + hash` → retry idempotent;
+3. cùng `event_id`, khác hash hoặc cùng `resource_id + source_version` nhưng khác event → fail closed;
+4. advisory transaction lock theo `resource_id`;
+5. ignore version không cao hơn head; version cao hơn phải đúng `head + 1`, nếu có gap thì rollback
+   và giữ Redis entry pending để CREATE không bị DELETE ở replica khác vượt qua;
+6. update effective-dated projection và ownership head;
+7. mark inbox `APPLIED`;
+8. commit;
+9. sau đó mới `XACK + XDEL`.
+
+Ordering chỉ theo resource/source version; không có global ordering.
+
+## 6. Failure semantics
+
+| Failure | Recovery |
+|---|---|
+| JO chết trước result DB commit | Kafka result replay |
+| DB commit, chết trước Redis | Kafka replay hoặc ownership recovery scan |
+| Redis accepted, chưa mark published | duplicate; Cost inbox dedupe |
+| Shared Redis outage | Storage row giữ pending; result pipeline tiếp tục |
+| Cost chết trong Billing TX | DB rollback; Redis entry ở PEL |
+| Cost commit, chết trước ACK | redelivery; inbox dedupe |
+| Contract poison hoặc cùng `event_id` khác hash | Bounded Redis DLQ chỉ giữ length/hash rồi atomic ACK/delete; không copy raw poison payload |
+| Source row invalid | giữ pending + alert; không giả vờ published |
+| Out-of-order delete/create | `resource_ownership_head.source_version` fence |
+
+Không tuyên bố exactly-once. External/storage side effect và Central delivery đều at-least-once.
+
+## 7. Notification không thuộc ownership durability
+
+Job notification được JO `XADD` trực tiếp vào `stream:{job_notifications}` sau business DB commit.
+Notification là realtime UI hint:
+
+- short bounded retry;
+- failure ghi metric/log nhưng không rollback result;
+- deterministic `notification_id` cho exact delivery và stable `transaction_id=job_id` để UI merge progression;
+- UI query Controlplane API để lấy terminal state authoritative.
+
+Không có PostgreSQL notification outbox.
+
+## 8. Security và ACL
+
+- JO credential: chỉ `XADD/WAITAOF` ownership stream.
+- Cost credential: chỉ group/read/claim/ack/delete ownership stream và XADD DLQ.
+- Ownership/DLQ keys dùng cùng Redis Cluster hash tag `{billing}`.
+- Không log payload, owner UUID hoặc resource UUID làm metric label.
+- Không có JO credential tới Billing DB.
+- Không có Cost credential tới Controlplane DB.
+
+## 9. Source map
 
 | Concern | Source |
 |---|---|
-| Provisioning job outbox schema | `controlplane/internal/storage/migrations/000002_storage_outbox.up.sql` |
-| Resource lifecycle outbox schema | `controlplane/internal/storage/migrations/000004_lifecycle_outbox.up.sql` |
-| Cleanup index + scheduler (terminal jobs) | `controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql`, `k8s/outbox-retention-cronjob.yaml`; CronJob batch 200/phút, JO không chạy cleaner |
-| Proto contract | `job-orchestrator/proto/resource_ownership.proto` |
-| Lifecycle event insert (Rust) | `job-orchestrator/src/reverse_provider/storage/db/lifecycle.rs` |
-| Resolve create/delete + insert event | `job-orchestrator/src/reverse_provider/storage/db/bucket.rs` |
-| Lifecycle relay | `job-orchestrator/src/lifecycle_relay/relay.rs` |
-| JetStream dev config | `controlplane/dev/nats/jetstream.conf` |
+| Storage outbox schema | `controlplane/internal/storage/migrations/000002_storage_outbox.up.sql` |
+| Ownership delivery fields | `controlplane/internal/storage/migrations/000006_ownership_delivery.up.sql` |
+| JO publisher/recovery | `job-orchestrator/src/outbox/ownership.rs` |
+| Shared Redis durability fence | `job-orchestrator/src/outbox/redis.rs` |
+| Result apply | `job-orchestrator/src/results/apply.rs` |
+| Ownership protobuf | `job-orchestrator/proto/resource_ownership.proto` |
+| Cost Redis consumer | `cost-manager/api/internal/transport/redis/handler/resource_ownership_handler.go` |
+| Billing inbox/projection transaction | `cost-manager/api/internal/repository/resource_ownership_repo.go` |
+| Ownership version uniqueness | `cost-manager/api/migrations/000007_ownership_integrity.up.sql` |
+| Notification transport | `job-orchestrator/src/results/notify.rs` |
+| Shared L2 HA persistence/eviction | `k8s/infra/redis-operator.yaml` |
 
-| Billing inbox schema | `cost-manager/api/migrations/000002_tables.up.sql` (billing.ownership_event_inbox & resource_ownership_head) |
-| Billing lifecycle consumer | `cost-manager/api/internal/service/lifecycle_consumer.go` |
-| Ownership projection schema | `cost-manager/api/migrations/000002_tables.up.sql` (billing.resource_ownership_projection) |
+`storage.resource_lifecycle_events` và JetStream ownership path là rollback-only legacy. Runtime mới
+không ghi/đọc chúng; table chỉ được drop bằng migration riêng sau rollout verification window.
+
+## 10. Rolling deployment
+
+Thứ tự bắt buộc để không tạo transport gap:
+
+1. apply migration `000006`;
+2. rollout toàn bộ JO mới — Redis Stream có thể tích lũy an toàn trong lúc Cost cũ vẫn consume
+   lifecycle path cũ từ các JO cũ còn lại;
+3. rollout Cost mới để drain Redis Stream;
+4. kiểm tra pending age/count, DLQ và Billing reconciliation;
+5. chỉ sau verification window mới drop legacy table/credential.
+
+Rollback phải đảo theo cặp JO + Cost; không rollback riêng JO về legacy sau khi Cost đã bỏ consumer cũ.

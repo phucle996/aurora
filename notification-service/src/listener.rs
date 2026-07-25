@@ -122,7 +122,7 @@ impl NatsListener {
             let subject_str = message.subject.as_str();
 
             // [COMMENT]: Trích xuất user_id từ hậu tố của NATS subject
-            let user_id = match subject_str.split('.').last() {
+            let user_id = match subject_str.split('.').next_back() {
                 Some(id) if !id.is_empty() => id.to_string(),
                 _ => {
                     Logger::sys_warn(

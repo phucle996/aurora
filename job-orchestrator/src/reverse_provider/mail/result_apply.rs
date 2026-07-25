@@ -1,8 +1,8 @@
 use super::service::{consumer_result, template_result};
 
-/// [COMMENT]: L2 chỉ định tuyến theo Mail job topic đã được đóng dấu trong outbox.
+/// Định tuyến kết quả Mail theo topic đã được đóng dấu trong authoritative outbox.
 /// SQL/lifecycle nằm trọn trong từng service để dispatcher không che transaction boundary.
-pub async fn dispatch_mail_result(
+pub async fn apply_mail_result(
     pg_client: &mut tokio_postgres::Client,
     event_id: uuid::Uuid,
     job_topic: &str,

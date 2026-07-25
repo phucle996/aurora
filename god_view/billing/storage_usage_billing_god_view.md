@@ -5,7 +5,7 @@
 Controlplane là Source of Truth của bucket/credential ownership. Billing DB chỉ giữ
 projection effective-dated để Cost Engine không query chéo database theo từng usage row.
 
-Ownership projection được cập nhật qua **JetStream lifecycle event consumer** thay vì polling cross-DB.
+Ownership projection được cập nhật qua **Shared Redis Stream consumer** thay vì polling cross-DB.
 Billing DB không bao giờ kết nối trực tiếp vào Controlplane DB.
 
 ```mermaid
@@ -13,9 +13,9 @@ flowchart LR
     SDK[S3 SDK SigV4 or STS] --> ENV[Storage Envoy]
     ENV --> MINIO[MinIO authenticates]
     ENV --> CH[(ClickHouse hourly usage)]
-    CP[(Controlplane DB)] --> JO[Job Orchestrator LifecycleRelay]
-    JO --> JS[(NATS JetStream)]
-    JS --> CONSUMER[Cost Manager LifecycleConsumer]
+    CP[(Controlplane Storage Outbox)] --> JO[Job Orchestrator Ownership Publisher]
+    JO --> RS[(Shared Redis Stream)]
+    RS --> CONSUMER[Cost Manager Ownership Consumer]
     CONSUMER --> PROJ[(billing resource ownership projection)]
     CH --> ENG[Cost Engine]
     PROJ --> ENG
@@ -41,8 +41,9 @@ owner is `personal_workspaces.owner_id`; for tenant buckets it is `tenant_bucket
 - Projection rows use `[effective_from,effective_to)` and old ownership is never overwritten.
 - Static credentials are reconciled into `billing.credential_bindings`; STS usage can still resolve by
   bucket ownership when the temporary access key is not retained in Controlplane.
-- **Ownership events được deliver qua JetStream** (stream `CONTROLPLANE_DOMAIN_EVENTS`, subject `billing.ownership.resource.changed.v1`).
-- Consumer `cost-ownership-v1` dùng **Explicit ACK** — at-least-once, idempotent qua `billing.ownership_event_inbox`.
+- Ownership events được deliver qua `stream:{billing}:resource_ownership`.
+- Consumer group `cost-resource-ownership-v1` dùng `XREADGROUP/XAUTOCLAIM` — at-least-once,
+  idempotent qua `billing.ownership_event_inbox`.
 - ACK chỉ được gửi sau khi transaction commit thành công trong Billing DB.
 - Billing resolves ownership at the metering hour. Unknown ownership is persisted in `unrated_usage` and
   does not silently disappear when the billing checkpoint advances.
@@ -62,11 +63,11 @@ private so a caller cannot bypass the trusted ingress and metering path.
 | Concern | Source |
 |---|---|
 | Storage ownership SoT | `controlplane/internal/storage/migrations/000001_storage_tables.up.sql` |
-| Resource lifecycle outbox | `controlplane/internal/storage/migrations/000004_lifecycle_outbox.up.sql` |
-| JetStream relay | `job-orchestrator/src/lifecycle_relay/relay.rs` |
-| Proto contract | `job-orchestrator/proto/resource_lifecycle.proto` |
-| Billing inbox schema | `cost-manager/api/migrations/000007_ownership_inbox.up.sql` |
-| Lifecycle consumer | `cost-manager/api/internal/service/lifecycle_consumer.go` |
+| Minimal ownership marker | `controlplane/internal/storage/migrations/000006_ownership_delivery.up.sql` |
+| Shared Redis publisher | `job-orchestrator/src/outbox/ownership.rs` |
+| Proto contract | `job-orchestrator/proto/resource_ownership.proto` |
+| Billing inbox schema | `cost-manager/api/migrations/000002_tables.up.sql` |
+| Ownership consumer | `cost-manager/api/internal/transport/redis/handler/resource_ownership_handler.go` |
 | Billing projection schema | `cost-manager/api/migrations/000002_tables.up.sql` |
 | Storage ingress metering identity | `controlplane/dev/envoy/envoy-storage.yaml` |
 | Hourly usage schema | `controlplane/dev/clickhouse/init.sql` |

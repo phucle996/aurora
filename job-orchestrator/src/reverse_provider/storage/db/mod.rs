@@ -1,6 +1,5 @@
 pub mod bucket;
 pub mod credential;
-pub mod lifecycle;
 pub mod object;
 
 #[allow(unused_imports)]

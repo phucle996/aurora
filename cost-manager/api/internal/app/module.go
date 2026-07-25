@@ -19,12 +19,10 @@ import (
 	"cost-manager/api/internal/repository"
 	"cost-manager/api/internal/service"
 	"cost-manager/api/internal/transport/http/handler"
-	natsHandler "cost-manager/api/internal/transport/nats/handler"
 	redisHandler "cost-manager/api/internal/transport/redis/handler"
 	"cost-manager/api/internal/transport/rpc"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -47,9 +45,9 @@ type Module struct {
 	ReconcilerService service.ReconcilerService
 	ReconcilerWorker  *rpc.StorageOwnershipReconcilerWorker
 
-	ResourceOwnershipRepo       billingRepoInterface.ResourceOwnershipRepository
-	ResourceOwnershipService    service.ResourceOwnershipService
-	ResourceOwnershipSubscriber *natsHandler.ResourceOwnershipSubscriber
+	ResourceOwnershipRepo     billingRepoInterface.ResourceOwnershipRepository
+	ResourceOwnershipService  service.ResourceOwnershipService
+	ResourceOwnershipConsumer *redisHandler.ResourceOwnershipConsumer
 
 	PricingOutboxRepo  billingRepoInterface.PricingOutboxRepository
 	PricingOutboxRelay *service.PricingOutboxRelay
@@ -60,7 +58,6 @@ type Module struct {
 // [COMMENT]: NewModule khởi tạo Module và thực hiện Dependency Injection kèm nil check đầy đủ sau mỗi bước.
 func NewModule(
 	dbPool *pgxpool.Pool,
-	natsConn *nats.Conn,
 	redisClient *redis.Client,
 	authRedisClient *redis.Client,
 ) (*Module, error) {
@@ -72,9 +69,6 @@ func NewModule(
 	}
 	if authRedisClient == nil {
 		return nil, fmt.Errorf("authRedisClient infrastructure connection cannot be nil")
-	}
-	if natsConn == nil {
-		return nil, fmt.Errorf("natsConn infrastructure connection cannot be nil")
 	}
 	// 1. Account Domain DI
 	accountRepo := repository.NewAccountRepository(dbPool)
@@ -155,7 +149,7 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize ReconcilerWorker: instance is nil")
 	}
 
-	// 6. Resource ownership subscriber DI (NATS JetStream)
+	// 6. Resource ownership consumer DI (Shared Redis Stream, Central-internal)
 	ownershipRepo := repository.NewResourceOwnershipRepository(dbPool)
 	if ownershipRepo == nil {
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipRepository: instance is nil")
@@ -166,11 +160,15 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipService: instance is nil")
 	}
 
-	ownershipSubscriber, err := natsHandler.NewResourceOwnershipSubscriber(natsConn, ownershipService)
-	if err != nil || ownershipSubscriber == nil {
-		return nil, fmt.Errorf("failed to initialize ResourceOwnershipSubscriber: %w", err)
+	ownershipConsumer, err := redisHandler.NewResourceOwnershipConsumer(redisClient, ownershipService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize ResourceOwnershipConsumer: %w", err)
 	}
-	// [COMMENT]: Tạo subscriber authorization sau cùng để init lỗi trước đó không làm rò NATS subscription.
+	if ownershipConsumer == nil {
+		return nil, fmt.Errorf("failed to initialize ResourceOwnershipConsumer: instance is nil")
+	}
+	// Initialize authorization after transport consumers so a partial module
+	// construction cannot expose HTTP with an incomplete security resolver.
 	authorizationResolver, err := service.NewAuthorizationResolver(authRedisClient, redisClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize AuthorizationResolver: %w", err)
@@ -192,7 +190,7 @@ func NewModule(
 		ReconcilerWorker:                reconcilerWorker,
 		ResourceOwnershipRepo:           ownershipRepo,
 		ResourceOwnershipService:        ownershipService,
-		ResourceOwnershipSubscriber:     ownershipSubscriber,
+		ResourceOwnershipConsumer:       ownershipConsumer,
 		PricingOutboxRepo:               pricingOutboxRepo,
 		PricingOutboxRelay:              pricingOutboxRelay,
 		AuthorizationResolver:           authorizationResolver,

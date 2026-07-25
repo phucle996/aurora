@@ -1,15 +1,17 @@
+# syntax=docker/dockerfile:1.7
+
 # ============================================================================
-# 🐳 STAGE 1: BUILDER - BIÊN DỊCH VÀ XÂY DỰNG ỨNG DỤNG NEXT.JS
+# 🏗️ STAGE 1: BUILDER - BIÊN DỊCH VÀ XÂY DỰNG ỨNG DỤNG NEXT.JS
 # ============================================================================
+# [COMMENT]: Môi trường Node.js 20 Alpine phục vụ cài đặt dependencies và đóng gói Next.js bundle
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# [COMMENT]: Khai báo ARG nhận các biến môi trường build-time cho Next.js Client-side.
-# Các biến NEXT_PUBLIC_ là công khai nên truyền qua ARG là hoàn toàn an toàn (không chứa dữ liệu nhạy cảm).
+# [COMMENT]: Khai báo ARG nhận các biến môi trường build-time cho Next.js Client-side
 ARG NEXT_PUBLIC_ENVOY_URL
 ARG NEXT_PUBLIC_CENTRIFUGO_WS_URL
 
-# [COMMENT]: Xuất các ARG thành ENV để trình biên dịch 'next build' có thể nhúng cứng vào JS bundle.
+# [COMMENT]: Xuất các ARG thành ENV để trình biên dịch 'next build' nhúng trực tiếp vào JS bundle client
 ENV NEXT_PUBLIC_ENVOY_URL=$NEXT_PUBLIC_ENVOY_URL
 ENV NEXT_PUBLIC_CENTRIFUGO_WS_URL=$NEXT_PUBLIC_CENTRIFUGO_WS_URL
 
@@ -19,23 +21,25 @@ COPY . .
 RUN npm run build
 
 # ============================================================================
-# 🐳 STAGE 2: RUNNER - CONTAINER VẬN HÀNH THỰC TẾ SIÊU NHẸ
+# 🚀 STAGE 2: RUNNER - DISTROLESS NODEJS 20 DEBIAN 12 (NON-ROOT)
 # ============================================================================
-FROM node:20-alpine AS runner
+# [COMMENT]: Chuyển sang Google Distroless Node.js 20 Debian 12 Non-root
+# Loại bỏ toàn bộ Shell, npm package manager và OS utilities khỏi runtime container để đảm bảo an toàn tuyệt đối.
+FROM gcr.io/distroless/nodejs20-debian12:nonroot AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Sao chép các tệp node_modules đã cài đặt từ builder
+# [COMMENT]: Sao chép node_modules và build assets từ Stage Builder
 COPY --from=builder /app/node_modules ./node_modules
-# Sao chép file package.json để chạy lệnh script start
 COPY --from=builder /app/package*.json ./
-# Sao chép thư mục build của Next.js (.next)
 COPY --from=builder /app/.next ./.next
-# Sao chép các assets tĩnh trong thư mục public
 COPY --from=builder /app/public ./public
 
-# Expose port 3000 phục vụ truy cập
+# [COMMENT]: Chạy dưới phân quyền nonroot user (UID 65532:65532)
+USER 65532:65532
+
+# [COMMENT]: Expose port 3000 cho Next.js Web Console
 EXPOSE 3000
 
-# Khởi chạy Next.js Server ở chế độ production
-CMD ["npm", "run", "start"]
+# [COMMENT]: Khởi chạy trực tiếp Next.js CLI qua Node binary (không qua npm shell wrapper)
+CMD ["node_modules/next/dist/bin/next", "start"]

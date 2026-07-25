@@ -1,33 +1,57 @@
+# syntax=docker/dockerfile:1.7
+
+# ============================================================================
+# 🏗️ STAGE 1: RUST ENGINE BUILDER
+# ============================================================================
+# [COMMENT]: Môi trường biên dịch Rust Engine chuyên tính toán chi phí và định giá
 FROM rust:latest AS rust-builder
 WORKDIR /app/engine
 
-# Cài đặt protobuf-compiler phục vụ biên dịch Protobuf schema
+# [COMMENT]: Cài đặt protobuf-compiler phục vụ biên dịch Protobuf schema giữa Go và Rust Engine
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 COPY engine/Cargo.toml engine/Cargo.lock* ./
 COPY engine/build.rs* ./
 COPY engine/proto* ./proto/
-# Tạo src giả lập để cargo compile cached dependencies trước
+
+# [COMMENT]: Tạo src giả lập để Cargo compile cached dependencies trước
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release
-# Copy code thực tế và build
 COPY engine/src ./src
 RUN touch src/main.rs && cargo build --release
 
-# Stage 2: Môi trường chạy Go và Rust Engine
-FROM golang:1.26-bookworm
+# ============================================================================
+# 🏗️ STAGE 2: GO API BUILDER
+# ============================================================================
+# [COMMENT]: Biên dịch tĩnh Go REST/gRPC API wrapper với CGO_ENABLED=0
+FROM golang:1.26-bookworm AS go-builder
 WORKDIR /app/api
 
-# Copy Rust Engine binary vào PATH hệ thống
-COPY --from=rust-builder /app/engine/target/release/cost-manager-engine /usr/local/bin/cost-manager-engine
-
-# Copy Go API code
 COPY api/go.mod api/go.sum ./
 RUN go mod download
 
 COPY api/ .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags='-s -w' -o /out/cost-manager-api ./main.go
 
-# Expose ports
+# ============================================================================
+# 🚀 STAGE 3: RUNNER - DISTROLESS CC DEBIAN 12 (NON-ROOT)
+# ============================================================================
+# [COMMENT]: Chuyển sang gcr.io/distroless/cc-debian12:nonroot
+# Image tối giản vừa đảm bảo C runtime cho Rust Engine vừa hỗ trợ non-root user không có Shell.
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+WORKDIR /app
+
+# [COMMENT]: Sao chép Rust Engine binary vào PATH hệ thống để Go API có thể spawn trực tiếp
+COPY --from=rust-builder /app/engine/target/release/cost-manager-engine /usr/local/bin/cost-manager-engine
+
+# [COMMENT]: Sao chép Go REST/gRPC API binary từ Stage 2
+COPY --from=go-builder /out/cost-manager-api /usr/local/bin/cost-manager-api
+
+# [COMMENT]: Thiết lập phân quyền chạy bằng user nonroot (UID 65532:65532)
+USER 65532:65532
+
+# [COMMENT]: Expose cổng REST API (8084) và gRPC (9094)
 EXPOSE 8084 9094
 
-# Chạy Go API (API sẽ tự động spawn Rust Engine chạy ngầm)
-CMD ["go", "run", "main.go"]
+# [COMMENT]: Khởi chạy Go API (API sẽ tự động spawn Rust Engine ngầm)
+ENTRYPOINT ["/usr/local/bin/cost-manager-api"]

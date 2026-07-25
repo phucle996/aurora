@@ -38,7 +38,7 @@ Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zon
 [acr] → TOTP verify → [Vault]
 [Envoy] → forward → [Controlplane REST]
 [Controlplane] → INSERT/UPDATE → [PostgreSQL SoT]
-[PostgreSQL WAL] → Logical Replication → [Job Orchestrator CdcStreamer]
+[PostgreSQL WAL] → Logical Replication → [Job Orchestrator ChangefeedWorker]
 [JO] → PRODUCE full ZoneMetadataSnapshotV1 → [Kafka compacted per-Zone topic]
 [Kafka] → manual consume → [Dataplane start_metadata_event_listener()]
 [Dataplane] → CAS zone.metadata → [NATS Zone Config KV]
@@ -327,7 +327,7 @@ Hệ thống đồng bộ cấu hình desired state xuống và kéo chỉ số 
 sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
-    participant JO_CDC as ⚙️ JO (CdcStreamer)
+    participant JO_CDC as ⚙️ JO (ChangefeedWorker)
     participant L1 as ⚡ Central Kafka
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant KV as 🗄️ NATS Zone KV
@@ -362,7 +362,7 @@ sequenceDiagram
 ```
 
 1. **CDC Metadata Event**:
-   * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs).
+   * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`ChangefeedWorker`](../../job-orchestrator/src/changefeed/worker.rs).
    * JO đọc full aggregate và publish `ZoneMetadataSnapshotV1` vào Kafka compacted topic riêng Zone.
    * DP leader [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
 2. **Telemetry Pack & Report**:
@@ -477,7 +477,7 @@ Trạng thái mới lan truyền xuống Dataplane qua CDC và định hình l�
 sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
-    participant JO_CDC as ⚙️ JO (CdcStreamer)
+    participant JO_CDC as ⚙️ JO (ChangefeedWorker)
     participant L1 as ⚡ Kafka metadata topic
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant KV as 🗄️ NATS Zone Config KV
@@ -600,7 +600,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
-    participant JO_CDC as ⚙️ JO (CdcStreamer)
+    participant JO_CDC as ⚙️ JO (ChangefeedWorker)
     participant JO_RAM as 🧠 JO (EnabledServicesMap — In-Memory)
     participant L1 as ⚡ Kafka metadata topic
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
@@ -624,7 +624,7 @@ sequenceDiagram
     end
 ```
 
-1. **CDC Snapshot**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services`, đọc full aggregate và publish Kafka bằng Zone ID key.
+1. **Changefeed Snapshot**: JO [`ChangefeedWorker`](../../job-orchestrator/src/changefeed/worker.rs) phát hiện update trên `zone_services`, đọc full aggregate và publish Kafka bằng Zone ID key.
 2. **DP Listener**: [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) consume full snapshot và CAS-apply `AURORA_ZONE_CONFIG/zone.metadata`.
 3. **Monitor Reaction**: Mail/storage/hypervisor monitor đọc `services[type]`. Nếu `false`, monitor không gọi backend nhưng ghi current snapshot `down/0` hoặc empty/down để xóa trạng thái khỏe cũ; DecisionEngine filter service disabled trước khi đánh giá. Nếu `true`, monitor thực hiện health check đầy đủ.
 4. **Fallback khi miss RAM**: Nếu `EnabledServicesMap` trong JO không có entry cho zone_id+service (ví dụ sau khi JO restart), JO **đọc trực tiếp từ PostgreSQL** (`zone_services` table) để lấy `desired_state` hiện tại và nạp lại vào RAM trước khi ra quyết định.
@@ -723,7 +723,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
-    participant JO_CDC as ⚙️ JO (CdcStreamer)
+    participant JO_CDC as ⚙️ JO (ChangefeedWorker)
     participant L1 as ⚡ Redis L1
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant JO_Back as ⚙️ JO (BackpressureListener)

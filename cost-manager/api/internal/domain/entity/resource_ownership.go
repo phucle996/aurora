@@ -10,10 +10,13 @@ CONTRACT:
 package entity
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrResourceOwnershipIntegrity = errors.New("resource ownership integrity violation")
 
 // [COMMENT]: ResourceOwnershipEventType định nghĩa loại thay đổi ảnh hưởng ownership projection.
 type ResourceOwnershipEventType string

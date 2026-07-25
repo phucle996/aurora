@@ -1,19 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
-# syntax=docker/dockerfile:1.7
-
 # ============================================================================
-# Stage 1: Builder - Sửa lỗi Read-only bằng cách tách biệt thư mục mount
+# 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST AURORA-JOB-ORCHESTRATOR
 # ============================================================================
+# [COMMENT]: Môi trường biên dịch Rust chính thức dựa trên Debian Bookworm
 FROM rust:bookworm AS builder
 WORKDIR /workspace
 
-# Cài đặt protobuf-compiler
+# [COMMENT]: Cài đặt protobuf-compiler để biên dịch schema mã hóa thông điệp CDC & Job Result
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
-# 1. Bind code vào thư mục `/src` (Read-only)
-# 2. Định nghĩa thư mục làm việc hiện tại là `/workspace`
-# 3. Trỏ CARGO_TARGET_DIR ra một thư mục độc lập khác ngoài `/src` để ghi cache tự do
+# [COMMENT]: Sử dụng BuildKit cache mount để tách biệt CARGO_TARGET_DIR và tăng tốc thời gian biên dịch
 RUN --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/workspace/target/ \
     --mount=type=bind,source=.,target=/src \
@@ -22,25 +19,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry/ \
     cp /workspace/target/release/aurora-job-orchestrator /usr/local/bin/aurora-job-orchestrator
 
 # ============================================================================
-# Stage 2: Runtime - debian slim tối giản, non-root user
+# 🚀 STAGE 2: RUNNER - CONTAINER DISTROLESS CC DEBIAN 12 (NON-ROOT)
 # ============================================================================
-FROM debian:bookworm-slim AS runtime
-ARG LOCAL_USER=phucle
-ARG LOCAL_UID=1000
-ARG LOCAL_GID=1000
+# [COMMENT]: Chuyển sang Google Distroless CC Debian 12 Non-root
+# Image tối giản chỉ chứa glibc runtime, libssl và CA certs, không chứa bất kỳ Shell hoặc OS utilities nào.
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata libssl-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
-    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --home-dir /var/lib/job-proxy --shell /bin/bash ${LOCAL_USER} \
-    && mkdir -p /var/lib/job-proxy /var/log/job-proxy /etc/job-proxy \
-    && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/job-proxy /var/log/job-proxy /etc/job-proxy
-
-# Lấy binary từ đường dẫn ngoài đã copy ở stage trước
+# [COMMENT]: Sao chép binary aurora-job-orchestrator đã biên dịch từ Stage 1
 COPY --from=builder /usr/local/bin/aurora-job-orchestrator /usr/local/bin/aurora-job-orchestrator
 
+# [COMMENT]: Thiết lập thư mục làm việc tiêu chuẩn cho Job Orchestrator
 WORKDIR /var/lib/job-proxy
-USER ${LOCAL_USER}:${LOCAL_USER}
 
+# [COMMENT]: Chạy ứng dụng bằng user phi quản trị nonroot (UID 65532:65532)
+USER 65532:65532
+
+# [COMMENT]: Khởi chạy trực tiếp binary ứng dụng
 ENTRYPOINT ["/usr/local/bin/aurora-job-orchestrator"]

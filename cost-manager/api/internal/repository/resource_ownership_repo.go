@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,12 +63,27 @@ func (r *resourceOwnershipRepository) ApplyResourceOwnershipEvent(ctx context.Co
 			return fmt.Errorf("lifecycle repo: read duplicate inbox failed: %w", hashErr)
 		}
 		if storedHash != event.PayloadHashHex {
-			return fmt.Errorf("lifecycle repo: event_id %s reused with a different payload", event.EventID)
+			return fmt.Errorf(
+				"%w: event_id %s reused with a different payload",
+				entity.ErrResourceOwnershipIntegrity,
+				event.EventID,
+			)
 		}
 		// Conflict + cùng hash -> retry hợp lệ, có thể ACK idempotently.
 		log.Printf("[ResourceOwnershipRepo] Event %s đã tồn tại trong inbox. Bỏ qua xử lý trùng lặp.", event.EventID)
 		return nil
 	} else if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) &&
+			pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "uq_ownership_inbox_resource_version" {
+			return fmt.Errorf(
+				"%w: resource %s source version %d is already bound to another event",
+				entity.ErrResourceOwnershipIntegrity,
+				event.ResourceID,
+				event.SourceVersion,
+			)
+		}
 		return fmt.Errorf("lifecycle repo: insert inbox failed: %w", err)
 	}
 
@@ -87,15 +103,31 @@ func (r *resourceOwnershipRepository) ApplyResourceOwnershipEvent(ctx context.Co
 	).Scan(&lastVersion, &currentState)
 
 	if err == nil {
-		// Out-of-order check: Nếu event mới có sourceVersion <= lastVersion, bỏ qua để không ghi đè dữ liệu mới hơn
+		// A late older event cannot overwrite the current head.
 		if event.SourceVersion <= lastVersion {
 			log.Printf("[ResourceOwnershipRepo] Bỏ qua out-of-order event. Resource %s current head version=%d, event version=%d", event.ResourceID, lastVersion, event.SourceVersion)
 			// Cập nhật status inbox sang APPLIED
 			_, _ = tx.Exec(ctx, `UPDATE billing.ownership_event_inbox SET status = 'APPLIED', processed_at = NOW() WHERE event_id = $1`, event.EventID)
 			return tx.Commit(ctx)
 		}
+		// Redis consumer groups distribute adjacent entries across replicas.
+		// Reject a gap so DELETE cannot overtake CREATE and erase ownership history.
+		if event.SourceVersion != lastVersion+1 {
+			return fmt.Errorf(
+				"lifecycle repo: source version gap for resource %s: head=%d event=%d",
+				event.ResourceID,
+				lastVersion,
+				event.SourceVersion,
+			)
+		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("lifecycle repo: query lifecycle head failed: %w", err)
+	} else if event.SourceVersion != 1 {
+		return fmt.Errorf(
+			"lifecycle repo: initial source version for resource %s must be 1, got %d",
+			event.ResourceID,
+			event.SourceVersion,
+		)
 	}
 
 	// 4. Xử lý cập nhật Projection theo loại Event

@@ -1,7 +1,7 @@
 # [COMMENT]: Redis Operator Manifest cho 2 Cụm Redis Cluster HA độc lập (Argo CD Sync Wave "-5")
 # OT-Container-Kit Redis Operator (redis.redis.opstreelabs.in/v1beta1)
 # Cụm 1: redis-session (ACR Security-State / Session Store — Persistence AOF)
-# Cụm 2: redis-l2 (Controlplane & Billing L2 Business Cache — LRU Eviction)
+# Cụm 2: redis-l2 (Shared L2 cache + bounded Central Streams — AOF/PVC)
 
 # ==============================================================================
 # 1. Cụm Redis 1: redis-session (Session & Security-State Store cho ACR Gateway)
@@ -45,8 +45,8 @@ spec:
 
 ---
 # ==============================================================================
-# 2. Cụm Redis 2: redis-l2 (L2 Business Cache cho Controlplane & Cost Manager)
-# Sync Wave: "-5" (3 Cluster Nodes HA, Maxmemory 256MB, Eviction Policy allkeys-lru)
+# 2. Cụm Redis 2: redis-l2 (Shared L2 cho Central services)
+# Sync Wave: "-5" (3 Cluster Nodes HA, AOF/PVC, volatile-only eviction)
 # ==============================================================================
 apiVersion: redis.redis.opstreelabs.in/v1beta1
 kind: RedisCluster
@@ -60,7 +60,8 @@ metadata:
     app.kubernetes.io/component: l2-business-cache
     app.kubernetes.io/part-of: aurora-infrastructure
 spec:
-  # [COMMENT]: 3 Nút Cluster HA cho tầng Cache
+  # Streams carry bounded pending deliveries, so Shared L2 needs persistence
+  # and may evict only TTL cache keys—not consumer-group entries.
   clusterSize: 3
   kubernetesConfig:
     image: redis:8.8.0-alpine
@@ -72,7 +73,16 @@ spec:
       limits:
         cpu: 500m
         memory: 384Mi
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
   redisConfig:
     additionalRedisConfig: |
+      appendonly yes
+      appendfsync everysec
       maxmemory 256mb
-      maxmemory-policy allkeys-lru
+      maxmemory-policy volatile-lru

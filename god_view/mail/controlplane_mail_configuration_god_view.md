@@ -150,7 +150,8 @@ stateDiagram-v2
 - `personal_mail_consumers` và `tenant_mail_consumers` là hai aggregate vật lý độc lập; candidate
   và projection tombstone cũng tách theo cùng scope để mọi FK đều typed. Runtime là Redis soft
   state theo watch lease, không có bảng PostgreSQL.
-- Personal row/candidate không lưu `created_by` hoặc `updated_by`: actor chỉ dùng cho authorization và notification outbox.
+- Personal row/candidate không lưu `created_by` hoặc `updated_by`: actor chỉ dùng cho authorization và
+  best-effort realtime notification sau khi business transaction đã commit.
   Tenant vẫn lưu actor audit vì nhiều membership có thể mutation cùng resource.
 - Hai bảng Consumer không có `deleted_at` hoặc desired state `DELETED`. Durable projection tombstone nằm ở bảng riêng
   để reconciler không hồi sinh Zone KV sau khi outbox hết retention.
@@ -274,7 +275,7 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Delete result cũ đến sau mutation mới | Không có mutation mới khi delete live; DP fence lấy từ `next_*` để vượt mọi allocated candidate và JO khóa outbox + aggregate |
 | Result đến sau terminal FAILED | Mọi FAILED là terminal cho operation ID; create/update/publish cleanup candidate, còn delete giữ aggregate và retry bằng operation ID mới |
 | PROCESSING/FAILED của attempt cũ đến sai thứ tự | `mail_outbox_records.result_attempt` fence theo attempt; `FAILED` và `SUCCEEDED` đều terminal cho operation ID, retry business operation phải dùng event ID mới |
-| JO commit business transaction nhưng Shared Redis notification enqueue lỗi | Kafka result không commit; cùng terminal result được redeliver chỉ trả notification metadata, không chạy lại promote/cleanup/delete; `transaction_id` giữ nguyên nên UI overwrite |
+| JO commit business transaction nhưng Shared Redis notification enqueue lỗi | Business result vẫn durable và Kafka result được commit; notification bị drop có metric/log, UI recover qua authoritative API. Không tạo notification outbox để tránh biến realtime UX thành completion boundary |
 | Runtime report từ pod cũ | Ephemeral Redis slot + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Authorized context mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |

@@ -5,7 +5,7 @@ MAP: COST MANAGER API CONFIGURATION
 CONTRACT:
 1. Định nghĩa cấu trúc dữ liệu và khởi tạo centralized config từ OS env.
 2. Đảm bảo tính Immutable trong suốt process lifecycle.
-3. Cung cấp đầy đủ cấu hình kết nối PostgreSQL, NATS JetStream, Redis và TLS/mTLS.
+3. Cung cấp đầy đủ cấu hình kết nối PostgreSQL, Shared/Auth Redis và TLS/mTLS.
 
 SOT: file này là Source of Truth cho toàn bộ cấu hình tĩnh của Cost Manager API.
 ============================================================================
@@ -19,7 +19,6 @@ type Config struct {
 	Psql      PsqlCfg
 	Redis     RedisCfg
 	AuthRedis RedisCfg
-	NATS      NATSCfg
 	GRPC      GRPCCfg
 }
 
@@ -64,17 +63,6 @@ type RedisCfg struct {
 	KeyPath     string
 	DialTimeout string
 	PoolSize    int
-}
-
-// [COMMENT]: NATSCfg chứa thông số kết nối NATS Core / JetStream hỗ trợ TLS/mTLS.
-type NATSCfg struct {
-	Addr          string
-	TLSEnabled    bool
-	CACertPath    string
-	CertPath      string
-	KeyPath       string
-	MaxRetries    int
-	RetryInterval string
 }
 
 // [COMMENT]: GRPCCfg lưu thông số kết nối của gRPC Reconciler / Server và cấu hình TLS.
@@ -139,15 +127,6 @@ func LoadConfig() *Config {
 			KeyPath:     getEnv("AUTH_REDIS_KEY_PATH", ""),
 			DialTimeout: getEnv("AUTH_REDIS_DIAL_TIMEOUT", "5s"),
 			PoolSize:    getEnvAsInt("AUTH_REDIS_POOL_SIZE", 20),
-		},
-		NATS: NATSCfg{
-			Addr:          getEnv("NATS_URL", "nats://controlplane-nats:4222"),
-			TLSEnabled:    getEnvAsBool("NATS_TLS_ENABLED", false),
-			CACertPath:    getEnv("NATS_CA_CERT_PATH", ""),
-			CertPath:      getEnv("NATS_CERT_PATH", ""),
-			KeyPath:       getEnv("NATS_KEY_PATH", ""),
-			MaxRetries:    getEnvAsInt("NATS_MAX_RETRIES", 5),
-			RetryInterval: getEnv("NATS_RETRY_INTERVAL", "2s"),
 		},
 		GRPC: GRPCCfg{
 			Port:             getEnv("GRPC_PORT", "9094"),

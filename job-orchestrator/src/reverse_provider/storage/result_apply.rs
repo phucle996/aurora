@@ -1,11 +1,10 @@
 use super::db;
 use crate::observability::logger::Logger;
 
-// [COMMENT]: L2 Dispatcher phân phối kết quả của Storage Jobs cho đúng hàm xử lý DB tương ứng.
-// Với create và delete bucket, dispatcher bắt đầu transaction để đảm bảo:
-//   UPDATE job outbox + INSERT lifecycle event xảy ra trong cùng một atomic transaction.
-// Các job type khác (resize, credential) vẫn dùng client thẳng.
-pub async fn dispatch_storage_result(
+// Phân phối kết quả Storage job tới đúng transaction owner.
+// Với create và delete bucket, transaction khép durable job state trước khi
+// ownership fast path được phép đọc lại authoritative outbox row.
+pub async fn apply_storage_result(
     pg_client: &mut tokio_postgres::Client,
     job_uuid: uuid::Uuid,
     job_topic: &str,
@@ -14,8 +13,8 @@ pub async fn dispatch_storage_result(
     error_message: Option<&str>,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
     Logger::sys_info(
-        "storage.l2_dispatcher",
-        &format!("Storage L2 Dispatcher: Nhận job_topic='{}'", job_topic),
+        "storage.result_apply",
+        &format!("Applying Storage result for job_topic='{job_topic}'"),
     );
 
     // [COMMENT]: Gọi giả lập để compiler biết các Struct và Hàm được sử dụng, triệt tiêu warnings
@@ -25,8 +24,8 @@ pub async fn dispatch_storage_result(
 
     match job_topic {
         "storage.bucket.create" => {
-            // [COMMENT]: Bắt đầu transaction để đảm bảo UPDATE outbox + INSERT lifecycle event là atomic.
-            // Nếu lifecycle insert thất bại, toàn bộ transaction rollback — không có SUCCEEDED mà không có event.
+            // Ownership is derived only after this transaction commits. A Redis
+            // outage leaves ownership_published_at NULL for the recovery relay.
             let tx = pg_client.transaction().await?;
             let row_opt = db::bucket::resolve_bucket_creation_tx(
                 &tx,
@@ -71,8 +70,8 @@ pub async fn dispatch_storage_result(
         .await
         .map_err(Into::into),
         "storage.bucket.delete" => {
-            // [COMMENT]: Delete cũng cần transaction: capture owner → DELETE resource → UPDATE outbox → INSERT RESOURCE_DELETED
-            // Thứ tự quan trọng: phải capture owner/name/zone TRƯỚC khi DELETE bucket record.
+            // Delete captures owner/name/Zone on the outbox before the resource
+            // disappears; that row is the only ownership recovery source.
             let tx = pg_client.transaction().await?;
             let row_opt = db::bucket::resolve_bucket_deletion_tx(
                 &tx,
@@ -99,7 +98,7 @@ pub async fn dispatch_storage_result(
 
         _ => {
             Logger::sys_warn(
-                "storage.l2_dispatcher",
+                "storage.result_apply",
                 &format!(
                     "Không tìm thấy handler phù hợp cho Storage Job Topic: {}",
                     job_topic

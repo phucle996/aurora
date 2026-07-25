@@ -135,6 +135,7 @@ không dùng metric để ACK Kafka, advance LSN hoặc quyết định business
 | `job_orchestrator_results_received_total` | Result đã decode và strict-validate |
 | `job_orchestrator_notifications_enqueued_total` | Notification đã `XADD` thành công vào bounded Shared Redis Stream |
 | `job_orchestrator_record_outcomes_total` | Bounded `record_type + outcome` cho WAL/result/DLQ/notification |
+| `job_orchestrator_record_outcomes_total{record_type="resource_ownership"}` | Ownership Redis fast-path/recovery outcome, không mang resource ID |
 | `job_orchestrator_kafka_operations_total` | Logical `publish/commit` terminal outcome sau bounded retry |
 | `job_orchestrator_kafka_operation_duration_seconds` | Latency logical publish/commit, gồm retry/backoff |
 | `job_orchestrator_worker_terminations_total` | Critical worker thoát ngoài shutdown signal |
@@ -182,6 +183,9 @@ sequenceDiagram
 - PROCESSING, terminal result và retry record inject context của đúng producer span.
 - Job notification nội vùng Central dùng Redis Stream `stream:{job_notifications}`; NATS Core chỉ
   chở soft-state realtime, không nằm trên job-result/notification path.
+- Notification là best-effort wake-up sau business DB commit; enqueue failure không giữ Kafka
+  result offset. UI phục hồi terminal state qua authoritative API, merge progression bằng
+  `transaction_id=job_id` và có `notification_id` ổn định cho từng exact status delivery.
 - `XACK + XDEL` chỉ sau Centrifugo HTTP `2xx`; crash ở giữa giữ PEL và có thể tạo duplicate.
 
 ## 6. Distributed tracing — mail runtime
@@ -206,6 +210,7 @@ sequenceDiagram
 | Kafka settlement | `CLIENT` | `commit <topic>` |
 | PostgreSQL result update | `CLIENT` | `UPDATE controlplane job result` |
 | Shared Redis notification | `PRODUCER` / `CONSUMER` | `send/process stream:{job_notifications}` |
+| Shared Redis ownership | `PRODUCER` | `send stream:{billing}:resource_ownership` |
 | Centrifugo publish | `CLIENT` | `POST centrifugo.publish` |
 | Zone KV | `CLIENT` | `KV GetZoneMetadata`, `KV AcquireLease`, `KV ReleaseLease` |
 | Proxmox/JMAP | `CLIENT` | method + stable service operation |
@@ -282,11 +287,11 @@ queue flush. Telemetry không được trở thành command path hoặc business
   và logger health sampler.
 - `job-orchestrator/src/observability/otel.rs`: Central resource identity, W3C propagation,
   batch exporter bounds và shutdown.
-- `job-orchestrator/src/cdc/mod.rs`: WAL acceptance và command producer span.
+- `job-orchestrator/src/changefeed/worker.rs`: WAL acceptance và command producer span.
 - `job-orchestrator/src/infra/kafka.rs`: logical publish/commit latency và outcome.
-- `job-orchestrator/src/job_result/consumer.rs`: validation, DLQ, consumer/settlement spans.
-- `job-orchestrator/src/job_result/l1_dispatcher.rs`: PostgreSQL transaction span.
-- `job-orchestrator/src/job_result/notifier.rs`: Shared Redis notification outcome.
+- `job-orchestrator/src/results/worker.rs`: validation, quarantine, consumer/settlement spans.
+- `job-orchestrator/src/results/apply.rs`: PostgreSQL transaction và ownership fast path.
+- `job-orchestrator/src/results/notify.rs`: best-effort Shared Redis notification outcome.
 - `controlplane/dev/grafana/provisioning/dashboards/job-runtime.json`: JO throughput,
   Kafka latency/failure, DLQ, worker-exit và log-loss panels.
 - `controlplane/dev/grafana/provisioning/dashboards/job-logs.json`: cross-service job/trace log search.

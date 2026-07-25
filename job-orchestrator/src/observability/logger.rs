@@ -370,18 +370,6 @@ impl Logger {
         }
     }
 
-    pub fn job_log(job_id: &str, job_topic: &str, attempt: u32, op: &str, message: &str) {
-        Self::job_log_with_fields(
-            job_id,
-            job_topic,
-            attempt,
-            op,
-            "JOB_LIFECYCLE_EVENT",
-            message,
-            LogFields::default(),
-        );
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn job_log_with_fields<'a>(
         job_id: &'a str,

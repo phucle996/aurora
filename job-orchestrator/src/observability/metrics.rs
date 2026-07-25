@@ -165,6 +165,14 @@ impl MetricsManager {
         Self::record_outcome("notification", "failed");
     }
 
+    pub fn record_ownership_enqueued() {
+        Self::record_outcome("resource_ownership", "enqueued");
+    }
+
+    pub fn record_ownership_pending() {
+        Self::record_outcome("resource_ownership", "pending");
+    }
+
     pub fn record_kafka_operation(
         operation: &'static str,
         outcome: &'static str,

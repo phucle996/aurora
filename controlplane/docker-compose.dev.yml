@@ -239,6 +239,23 @@ services:
       retries: 10
     restart: unless-stopped
 
+  changefeed-init:
+    image: postgres:18
+    environment:
+      PGHOST: psql
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: controlplane
+      PUBLICATION_NAME: outbox_pub
+      REPLICATION_SLOT_NAME: outbox_slot
+    volumes:
+      - ./dev/postgres/provision-changefeed.sh:/usr/local/bin/provision-changefeed.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/provision-changefeed.sh"]
+    depends_on:
+      psql:
+        condition: service_healthy
+    restart: "no"
+
   billing-psql:
     image: postgres:18
     container_name: billing-psql
@@ -274,7 +291,6 @@ services:
       - REDIS_URL=redis://controlplane-cp-redis:6379/0
       # [COMMENT]: Cost chỉ thấy authz/proof namespace qua ACL, không thể đọc Trinity session của ACR.
       - AUTH_REDIS_URL=redis://cost:aurora-dev-cost-secret@controlplane-acr-redis:6379/0
-      - NATS_URL=nats://controlplane-nats:4222
     volumes:
       - ../cost-manager/api:/app/api
     depends_on:
@@ -283,8 +299,6 @@ services:
       cp-redis:
         condition: service_healthy
       acr-redis:
-        condition: service_healthy
-      nats:
         condition: service_healthy
       clickhouse:
         condition: service_started
@@ -400,7 +414,7 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: controlplane-nats
-    # [COMMENT]: Event/request-reply bus trung tâm tích hợp JetStream phục vụ Domain Events (billing ownership & lifecycle relay).
+    # [COMMENT]: NATS Core trung tâm chỉ chở realtime soft state; ownership nội vùng dùng Shared Redis.
     command: [ "-js", "-sd", "/data", "-m", "8222" ]
     ports:
       - "4222:4222" # Port client kết nối NATS
@@ -814,6 +828,9 @@ services:
     environment:
       DATABASE_URL: "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
       SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      # Dev is single-node Redis. Production must require at least one AOF replica ACK.
+      SHARED_REDIS_AOF_REPLICA_ACKS: "0"
+      OWNERSHIP_STREAM_CAPACITY: "100000"
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
       REPLICATION_SLOT_NAME: "outbox_slot"
       PUBLICATION_NAME: "outbox_pub"
@@ -840,6 +857,8 @@ services:
     depends_on:
       psql:
         condition: service_healthy
+      changefeed-init:
+        condition: service_completed_successfully
       cp-redis:
         condition: service_healthy
       kafka-init:

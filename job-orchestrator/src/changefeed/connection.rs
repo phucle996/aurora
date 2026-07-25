@@ -1,4 +1,4 @@
-/// Helper phân tích URL kết nối PostgreSQL chuẩn sử dụng thư viện tokio-postgres Config parser.
+/// Phân tích PostgreSQL DSN cho replication protocol mà không tự parse/escape secret.
 /// Điều này giúp trích xuất các trường thông tin kết nối đúng đắn kể cả khi mật khẩu có chứa các ký tự đặc biệt.
 pub fn parse_pg_config(url: &str) -> Result<(String, u16, String, String, String), String> {
     let pg_config = url
@@ -24,7 +24,12 @@ pub fn parse_pg_config(url: &str) -> Result<(String, u16, String, String, String
     // Lấy password (convert từ nhị phân sang string UTF-8)
     let password = pg_config
         .get_password()
-        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .map(|password| {
+            std::str::from_utf8(password)
+                .map(str::to_owned)
+                .map_err(|_| "Database password is not valid UTF-8".to_string())
+        })
+        .transpose()?
         .unwrap_or_default();
 
     // Lấy tên database

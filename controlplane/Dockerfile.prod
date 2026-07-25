@@ -1,50 +1,45 @@
 # syntax=docker/dockerfile:1.7
 
-# ----------------------------------------------------------------------------
-# Stage 1: Build binary (Tốc độ tối đa với Cache & Bind Mount)
-# ----------------------------------------------------------------------------
+# ============================================================================
+# 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST/GO TĨNH VỚI CACHE LAYER TỐI ƯU
+# ============================================================================
+# [COMMENT]: Sử dụng Go 1.26 Bookworm làm builder stage có đầy đủ công cụ biên dịch
 FROM golang:1.26-bookworm AS builder
 WORKDIR /src
 
-# Giữ lại cache download của Go modules giữa các lần build
+# [COMMENT]: Cache Go modules giữa các lượt build để tăng tốc tối đa thời gian biên dịch
 RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=bind,source=go.mod,target=go.mod \
     --mount=type=bind,source=go.sum,target=go.sum \
     go mod download
 
-# Giữ lại cache biên dịch (go-build cache) và cache modules - Sửa code build lại chỉ mất vài giây
+# [COMMENT]: Biên dịch tĩnh Go binary (CGO_ENABLED=0) loại bỏ hoàn toàn phụ thuộc C-library
+# Cắt bỏ symbol table (-s -w) giúp giảm kích thước binary và bảo mật
 RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,source=.,target=. \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags='-s -w' -o /out/controlplane ./cmd/server
 
-# ----------------------------------------------------------------------------
-# Stage 2: Runtime image (Giữ lại Debian, cài sẵn tool trace mạng)
-# ----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
-ARG LOCAL_USER=phucle
-ARG LOCAL_UID=1000
-ARG LOCAL_GID=1000
+# ============================================================================
+# 🚀 STAGE 2: RUNNER - CONTAINER DISTROLESS TỐI GIẢN (ZERO SHELL & NON-ROOT)
+# ============================================================================
+# [COMMENT]: Chuyển sang Google Distroless Static Debian 12 Non-Root
+# Image này không có shell (/bin/sh, /bin/bash), không package manager (apt/dpkg)
+# Giúp loại bỏ hoàn toàn attack surface của các lỗi CVE liên quan đến OS shell & utilities.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
-# Cài thêm curl, iputils-ping (lệnh ping), và net-tools (netstat) để debug mạng khi cần
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    tzdata \
-    curl \
-    iputils-ping \
-    net-tools \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
-    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --home-dir /var/lib/controlplane --shell /bin/bash ${LOCAL_USER} \
-    && mkdir -p /var/lib/controlplane /var/log/controlplane /etc/controlplane \
-    && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/controlplane /var/log/controlplane /etc/controlplane
-
+# [COMMENT]: Sao chép Go binary đã biên dịch tĩnh từ stage builder sang runtime path
 COPY --from=builder /out/controlplane /usr/local/bin/controlplane
 
+# [COMMENT]: Đặt thư mục làm việc tiêu chuẩn cho controlplane
 WORKDIR /var/lib/controlplane
-USER ${LOCAL_USER}:${LOCAL_USER}
 
+# [COMMENT]: Sử dụng user nonroot có sẵn trong distroless (UID 65532:65532) tuân thủ chuẩn Cloud-Native Security
+USER 65532:65532
+
+# [COMMENT]: Expose các cổng dịch vụ gRPC, HTTP API Gateway và TLS Management
 EXPOSE 8080 9090 9443
 
+# [COMMENT]: Khởi chạy ứng dụng trực tiếp không qua shell wrapper
 ENTRYPOINT ["/usr/local/bin/controlplane"]

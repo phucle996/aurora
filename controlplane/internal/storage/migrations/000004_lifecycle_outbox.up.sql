@@ -2,11 +2,11 @@
 -- MIGRATION: 000004_lifecycle_outbox.up.sql
 -- Storage Module — Resource Lifecycle Event Outbox (Billing Domain Outbox)
 -- ============================================================================
--- [COMMENT]: Bảng durable outbox cho lifecycle events của resource.
+-- LEGACY/ROLLBACK WINDOW: bảng lifecycle outbox cũ của resource.
 -- Được ghi trong cùng transaction với job outbox SUCCEEDED để đảm bảo
 -- không bao giờ có resource commit mà không có durable lifecycle event.
--- Relay đọc UNPUBLISHED records và publish lên JetStream; chỉ sau PubAck
--- mới update status thành PUBLISHED.
+-- Runtime mới không ghi bảng này; storage_outbox_records là ownership source
+-- tối giản. Giữ table trong một rollback window rồi drop bằng migration riêng.
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS storage.resource_lifecycle_events (

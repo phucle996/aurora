@@ -1,6 +1,6 @@
 #[test]
 fn mail_result_topics_remain_explicit() {
-    let source = include_str!("../l2_dispatcher.rs");
+    let source = include_str!("../result_apply.rs");
     for topic in [
         "mail.consumer.upsert",
         "mail.consumer.delete",

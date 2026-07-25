@@ -33,10 +33,10 @@ pub struct Config {
     pub otel_trace_sample_ratio: f64,
     pub otel_metric_export_interval_secs: u64,
     pub otel_export_timeout_secs: u64,
-    /// Danh sách các bảng outbox cần theo dõi CDC (ví dụ: mail.mail_outbox_records)
-    pub cdc_sources: Vec<String>,
+    /// Danh sách schema.table mà logical changefeed theo dõi.
+    pub changefeed_sources: Vec<String>,
     /// Số lần thử lại tối đa khi thiết lập hạ tầng Logical Replication trước khi tắt ứng dụng
-    pub max_setup_retries: u32,
+    pub changefeed_bootstrap_attempts: u32,
 
     /// [COMMENT]: Central mail reconciler chạy batch nhỏ; không tạo ticker riêng cho từng Zone.
     pub mail_reconcile_interval_secs: u64,
@@ -51,6 +51,15 @@ pub struct Config {
     /// consumer reclaim entry thật sự bị pod khác bỏ lại và không polling PostgreSQL theo chu kỳ.
     pub mail_runtime_report_ttl_secs: u64,
     pub mail_runtime_report_claim_idle_ms: u64,
+
+    /// [COMMENT]: Ownership là durable Central-internal delivery. PostgreSQL
+    /// storage outbox giữ recovery marker; Shared Redis chỉ là bounded transport.
+    pub ownership_reconcile_interval_secs: u64,
+    pub ownership_reconcile_batch_size: i64,
+    pub ownership_lease_secs: u64,
+    pub ownership_stream_capacity: usize,
+    pub shared_redis_aof_replica_acks: i64,
+    pub shared_redis_aof_timeout_ms: u64,
 }
 
 impl Config {
@@ -108,17 +117,17 @@ impl Config {
             .clamp(1, 30)
             .min(otel_metric_export_interval_secs);
 
-        // Đọc danh sách các bảng CDC phân cách bởi dấu phẩy
-        let cdc_sources_raw = env::var("CDC_SOURCES")
+        // Keep CDC_SOURCES as a rolling-compatible environment alias.
+        let changefeed_sources_raw = env::var("CDC_SOURCES")
             .unwrap_or_else(|_| "mail.mail_outbox_records,storage.storage_outbox_records,hierarchy.zones,hierarchy.zone_services".to_string());
-        let cdc_sources = cdc_sources_raw
+        let changefeed_sources = changefeed_sources_raw
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect::<Vec<String>>();
 
         // Đọc giới hạn số lần retry khi setup hạ tầng replication
-        let max_setup_retries = env::var("MAX_SETUP_RETRIES")
+        let changefeed_bootstrap_attempts = env::var("MAX_SETUP_RETRIES")
             .unwrap_or_else(|_| "10".to_string())
             .parse::<u32>()
             .unwrap_or(10);
@@ -168,6 +177,44 @@ impl Config {
             .parse::<u64>()
             .unwrap_or(30_000)
             .clamp(5_000, 300_000);
+        let ownership_reconcile_interval_secs = env::var("OWNERSHIP_RECONCILE_INTERVAL_SECS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<u64>()
+            .unwrap_or(30)
+            .clamp(5, 300);
+        let ownership_reconcile_batch_size = env::var("OWNERSHIP_RECONCILE_BATCH_SIZE")
+            .unwrap_or_else(|_| "50".to_string())
+            .parse::<i64>()
+            .unwrap_or(50)
+            .clamp(1, 500);
+        let ownership_lease_secs = env::var("OWNERSHIP_LEASE_SECS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<u64>()
+            .unwrap_or(30)
+            .clamp(10, 300);
+        let ownership_stream_capacity = env::var("OWNERSHIP_STREAM_CAPACITY")
+            .unwrap_or_else(|_| "100000".to_string())
+            .parse::<usize>()
+            .map_err(|_| "OWNERSHIP_STREAM_CAPACITY must be an integer".to_string())?;
+        if !(1_000..=10_000_000).contains(&ownership_stream_capacity) {
+            return Err("OWNERSHIP_STREAM_CAPACITY must be between 1000 and 10000000".to_string());
+        }
+        // Production defaults to one replica durability ACK. Docker/single-node
+        // must explicitly override to 0 rather than silently weakening prod.
+        let shared_redis_aof_replica_acks = env::var("SHARED_REDIS_AOF_REPLICA_ACKS")
+            .unwrap_or_else(|_| "1".to_string())
+            .parse::<i64>()
+            .map_err(|_| "SHARED_REDIS_AOF_REPLICA_ACKS must be an integer".to_string())?;
+        if !(0..=5).contains(&shared_redis_aof_replica_acks) {
+            return Err("SHARED_REDIS_AOF_REPLICA_ACKS must be between 0 and 5".to_string());
+        }
+        let shared_redis_aof_timeout_ms = env::var("SHARED_REDIS_AOF_TIMEOUT_MS")
+            .unwrap_or_else(|_| "2000".to_string())
+            .parse::<u64>()
+            .map_err(|_| "SHARED_REDIS_AOF_TIMEOUT_MS must be an integer".to_string())?;
+        if !(100..=10_000).contains(&shared_redis_aof_timeout_ms) {
+            return Err("SHARED_REDIS_AOF_TIMEOUT_MS must be between 100 and 10000".to_string());
+        }
         Ok(Self {
             database_url,
             shared_redis_url,
@@ -184,8 +231,8 @@ impl Config {
             otel_trace_sample_ratio,
             otel_metric_export_interval_secs,
             otel_export_timeout_secs,
-            cdc_sources,
-            max_setup_retries,
+            changefeed_sources,
+            changefeed_bootstrap_attempts,
             mail_reconcile_interval_secs,
             mail_reconcile_scheduler_tick_secs,
             mail_reconcile_jitter_max_ms,
@@ -195,6 +242,12 @@ impl Config {
             mail_reconcile_work_budget_secs,
             mail_runtime_report_ttl_secs,
             mail_runtime_report_claim_idle_ms,
+            ownership_reconcile_interval_secs,
+            ownership_reconcile_batch_size,
+            ownership_lease_secs,
+            ownership_stream_capacity,
+            shared_redis_aof_replica_acks,
+            shared_redis_aof_timeout_ms,
         })
     }
 }

@@ -1,24 +1,35 @@
-pub mod parser;
-pub mod setup;
-pub mod utils;
 use crate::config::Config;
 use crate::infra::kafka::transport_proto::{
-    JobCommandV1, ZoneMetadataSnapshotV1, ZoneServiceDesiredStateV1,
+    DeadLetterRecordV1, JobCommandV1, ZoneMetadataSnapshotV1, ZoneServiceDesiredStateV1,
 };
 use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::{LogFields, Logger};
 use crate::observability::otel::OtelTracer;
 use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parser::{
-    parse_insert_message, parse_relation_message, parse_update_message, read_u32, PgOutputRelation,
+use super::connection::parse_pg_config;
+use super::pgoutput::{
+    parse_insert_message, parse_relation_message, parse_update_message, read_u32, DecodedRow,
+    PgOutputRelation,
 };
-use utils::parse_pg_config;
 
-/// CdcStreamer chịu trách nhiệm kết nối và duy trì luồng stream logical replication từ PostgreSQL.
-pub struct CdcStreamer {
+#[derive(Debug)]
+struct PermanentChangeError(String);
+
+impl std::fmt::Display for PermanentChangeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PermanentChangeError {}
+
+/// ChangefeedWorker duy trì logical replication và chỉ advance LSN sau durable
+/// Kafka publication hoặc một terminal outcome đã được phân loại rõ.
+pub struct ChangefeedWorker {
     config: Config,
     kafka: Arc<KafkaTransport>,
     /// [COMMENT]: Cache desired_state của từng (zone_id, service_type) — dùng để phát hiện thay đổi thực sự.
@@ -27,9 +38,9 @@ pub struct CdcStreamer {
     desired_state_cache: std::sync::Mutex<HashMap<(String, String), bool>>,
 }
 
-impl CdcStreamer {
-    /// Khởi tạo một CdcStreamer mới, bootstrap desired_state_cache từ DB.
-    /// Đảm bảo CDC không publish spurious events cho các service đã ở trạng thái đúng khi startup.
+impl ChangefeedWorker {
+    /// Khởi tạo worker và bootstrap desired_state_cache từ DB.
+    /// Tránh publish spurious Zone snapshots khi replay changefeed sau restart.
     pub async fn new(
         config: Config,
         kafka: Arc<KafkaTransport>,
@@ -51,9 +62,9 @@ impl CdcStreamer {
         }
 
         Logger::sys_info(
-            "cdc.cache_bootstrap",
+            "changefeed.cache_bootstrap",
             &format!(
-                "CdcStreamer: Bootstrap desired_state_cache thành công — {} entries.",
+                "ChangefeedWorker: Bootstrap desired_state_cache thành công — {} entries.",
                 cache.len()
             ),
         );
@@ -68,24 +79,28 @@ impl CdcStreamer {
     /// Khởi chạy luồng stream nhận và phân phối sự kiện từ WAL theo giao thức push-based.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         Logger::sys_info(
-            "cdc.run",
-            "CdcStreamer: Khởi chạy luồng giám sát CDC Outbox với cơ chế tự động reconnect...",
+            "changefeed.run",
+            "ChangefeedWorker: Khởi chạy logical changefeed với cơ chế tự động reconnect...",
         );
 
+        let mut retry_delay = 1_u64;
         loop {
             if let Err(e) = self.run_replication_stream().await {
+                let jitter = crate::config::get_node_hostname()
+                    .bytes()
+                    .fold(0_u64, |sum, value| sum.wrapping_add(u64::from(value)))
+                    % 3;
                 Logger::sys_error(
-                    "cdc.run",
-                    "CdcStreamer: Gặp lỗi trong luồng replication stream. Tiến hành reconnect sau 5 giây...",
-                    &e.to_string()
+                    "changefeed.run",
+                    "Changefeed session failed; reconnecting with bounded jitter",
+                    &e.to_string(),
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(retry_delay + jitter)).await;
+                retry_delay = (retry_delay * 2).min(30);
             } else {
-                Logger::sys_info(
-                    "cdc.run",
-                    "CdcStreamer: Luồng replication kết thúc bình thường. Tiến hành reconnect...",
-                );
+                Logger::sys_info("changefeed.run", "Changefeed session ended; reconnecting");
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                retry_delay = 1;
             }
         }
     }
@@ -97,8 +112,8 @@ impl CdcStreamer {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
         Logger::sys_info(
-            "cdc.run",
-            "CdcStreamer: Tiến hành kết nối stream logical replication...",
+            "changefeed.run",
+            "Connecting PostgreSQL logical replication stream",
         );
 
         let config = ReplicationConfig {
@@ -117,9 +132,9 @@ impl CdcStreamer {
         let mut relation_map: HashMap<u32, PgOutputRelation> = HashMap::new();
 
         Logger::sys_info(
-            "cdc.run",
+            "changefeed.run",
             &format!(
-                "CdcStreamer: Đang lắng nghe thay đổi từ logical slot: {}...",
+                "Listening on logical replication slot {}",
                 self.config.slot_name
             ),
         );
@@ -133,11 +148,13 @@ impl CdcStreamer {
                     }
 
                     let tag = data[0];
-                    match tag {
-                        b'R' => match parse_relation_message(&data) {
-                            Ok(rel) => {
+                    let outcome: Result<(), Box<dyn std::error::Error>> = async {
+                        match tag {
+                            b'R' => {
+                                let rel =
+                                    parse_relation_message(&data).map_err(PermanentChangeError)?;
                                 Logger::sys_info(
-                                    "cdc.relation",
+                                    "changefeed.relation",
                                     &format!(
                                         "Schema table {}.{} (ID: {}) được cập nhật: {} columns",
                                         rel.schema_name,
@@ -147,86 +164,91 @@ impl CdcStreamer {
                                     ),
                                 );
                                 relation_map.insert(rel.relation_id, rel);
+                                Ok(())
                             }
-                            Err(err) => {
-                                Logger::sys_error(
-                                    "cdc.relation",
-                                    "Lỗi phân tích Relation message",
-                                    &err,
-                                );
-                            }
-                        },
-                        b'I' | b'U' => {
-                            let mut offset = 1;
-                            if let Ok(relation_id) = read_u32(&data, &mut offset) {
-                                if let Some(rel) = relation_map.get(&relation_id) {
-                                    // [COMMENT]: Match đủ schema.table; không nhận nhầm outbox cùng tên ở domain khác.
-                                    let is_monitored =
-                                        self.config.cdc_sources.iter().any(|source| {
-                                            if let Some((schema_name, table_name)) =
-                                                source.split_once('.')
-                                            {
-                                                rel.schema_name == schema_name
-                                                    && rel.relation_name == table_name
-                                            } else {
-                                                rel.relation_name == source.as_str()
-                                            }
-                                        });
-
-                                    if is_monitored {
-                                        let fields_res = if tag == b'I' {
-                                            parse_insert_message(&data, &rel.columns)
+                            b'I' | b'U' => {
+                                let mut offset = 1;
+                                let relation_id =
+                                    read_u32(&data, &mut offset).map_err(PermanentChangeError)?;
+                                let rel = relation_map.get(&relation_id).ok_or_else(|| {
+                                    std::io::Error::other(format!(
+                                        "relation {relation_id} is unknown; reconnect before ACK"
+                                    ))
+                                })?;
+                                // [COMMENT]: Match đủ schema.table; không nhận nhầm outbox cùng tên ở domain khác.
+                                let is_monitored =
+                                    self.config.changefeed_sources.iter().any(|source| {
+                                        if let Some((schema_name, table_name)) =
+                                            source.split_once('.')
+                                        {
+                                            rel.schema_name == schema_name
+                                                && rel.relation_name == table_name
                                         } else {
-                                            parse_update_message(&data, &rel.columns)
-                                        };
+                                            rel.relation_name == source.as_str()
+                                        }
+                                    });
 
-                                        match fields_res {
-                                            Ok(fields) => {
-                                                if rel.relation_name == "zones"
-                                                    || rel.relation_name == "zone_services"
-                                                {
-                                                    // [COMMENT]: Bỏ tham số tag — so sánh bằng cache thay vì heuristic.
-                                                    self.process_zone_config_change(
-                                                        &fields,
-                                                        &rel.relation_name,
-                                                    )
+                                if is_monitored {
+                                    let fields_res = if tag == b'I' {
+                                        parse_insert_message(&data, &rel.columns)
+                                    } else {
+                                        parse_update_message(&data, &rel.columns)
+                                    };
+
+                                    match fields_res {
+                                        Ok(fields) => {
+                                            if rel.relation_name == "zones"
+                                                || rel.relation_name == "zone_services"
+                                            {
+                                                // [COMMENT]: Bỏ tham số tag — so sánh bằng cache thay vì heuristic.
+                                                self.process_zone_config_change(
+                                                    &fields,
+                                                    &rel.relation_name,
+                                                )
+                                                .await?;
+                                            } else if tag == b'I' {
+                                                // Source schema is authoritative routing metadata;
+                                                // never infer the owner domain from job_topic.
+                                                self.process_insert(&fields, &rel.schema_name)
                                                     .await?;
-                                                } else if tag == b'I' {
-                                                    // [COMMENT]: Source schema là CDC metadata; không suy diễn owner domain từ job_topic.
-                                                    self.process_insert(&fields, &rel.schema_name)
-                                                        .await?;
-                                                }
                                             }
-                                            Err(err) => {
-                                                Logger::sys_error(
-                                                    "cdc.parse_error",
-                                                    &format!("Lỗi phân tích message tag '{}' cho bảng {}", tag as char, rel.relation_name),
-                                                    &err,
-                                                );
-                                            }
+                                        }
+                                        Err(err) => {
+                                            return Err(PermanentChangeError(format!(
+                                                "pgoutput {} parse failed for {}.{}: {err}",
+                                                tag as char, rel.schema_name, rel.relation_name
+                                            ))
+                                            .into());
                                         }
                                     }
                                 }
+                                Ok(())
                             }
+                            _ => Ok(()),
                         }
-                        _ => {}
                     }
+                    .await;
 
+                    match outcome {
+                        Ok(()) => {}
+                        Err(error) if error.is::<PermanentChangeError>() => {
+                            self.quarantine_change(wal_end, tag, &data, &error.to_string())
+                                .await?;
+                        }
+                        // Transient PostgreSQL/Kafka errors retain the current LSN.
+                        Err(error) => return Err(error),
+                    }
                     client.update_applied_lsn(wal_end);
                 }
                 ReplicationEvent::KeepAlive {
                     wal_end,
-                    reply_requested,
+                    reply_requested: true,
                     ..
-                } => {
-                    if reply_requested {
-                        client.update_applied_lsn(wal_end);
-                    }
-                }
+                } => client.update_applied_lsn(wal_end),
                 ReplicationEvent::StoppedAt { reached } => {
                     Logger::sys_warn(
-                        "cdc.run",
-                        "CdcStreamer: Dừng stream WAL tại LSN",
+                        "changefeed.run",
+                        "Logical replication stopped at LSN",
                         &reached.to_string(),
                     );
                     break;
@@ -241,28 +263,37 @@ impl CdcStreamer {
     /// Xử lý sự kiện INSERT đã giải mã, định tuyến và publish Protobuf sang Kafka.
     async fn process_insert(
         &self,
-        fields: &HashMap<String, String>,
+        fields: &DecodedRow,
         source_domain: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let event_id = fields.get("event_id").cloned().unwrap_or_default();
+        let event_id = fields.text("event_id").unwrap_or_default().to_string();
         // [COMMENT]: Mail dùng UUID typed trực tiếp; Storage giữ routing_scope theo contract riêng của resource jobs.
-        let routing_scope = fields.get("routing_scope").cloned().unwrap_or_default();
-        let mail_zone_id = fields.get("zone_id").cloned().unwrap_or_default();
-        let job_topic = fields.get("job_topic").cloned().unwrap_or_default();
-        let payload_hex = fields.get("payload").cloned().unwrap_or_default();
-        let job_version_str = fields.get("job_version").cloned().unwrap_or_default();
-        let resource_id = fields.get("resource_id").cloned().unwrap_or_default();
+        let routing_scope = fields.text("routing_scope").unwrap_or_default().to_string();
+        let mail_zone_id = fields.text("zone_id").unwrap_or_default().to_string();
+        let job_topic = fields.text("job_topic").unwrap_or_default().to_string();
+        let payload_hex = fields.text("payload").unwrap_or_default().to_string();
+        let job_version_str = fields.text("job_version").unwrap_or_default().to_string();
+        let resource_id = fields.text("resource_id").unwrap_or_default().to_string();
         let payload_schema_version_str = fields
-            .get("payload_schema_version")
-            .cloned()
-            .unwrap_or_default();
-        let trace_id_raw = fields.get("trace_id").cloned().unwrap_or_default();
-        let trace_id_bytes = decode_pg_bytea(&trace_id_raw).unwrap_or_default();
+            .text("payload_schema_version")
+            .unwrap_or_default()
+            .to_string();
+        let trace_id_raw = fields.text("trace_id").unwrap_or_default().to_string();
+        let trace_id_bytes = decode_pg_bytea(&trace_id_raw).map_err(|error| {
+            Box::new(PermanentChangeError(format!(
+                "invalid outbox trace_id bytea: {error}"
+            ))) as Box<dyn std::error::Error>
+        })?;
+        if !trace_id_bytes.is_empty() && trace_id_bytes.len() != 16 {
+            return Err(Box::new(PermanentChangeError(
+                "outbox trace_id must be empty or 16 bytes".to_string(),
+            )));
+        }
         let trace_id_hex = trace_id_bytes
             .iter()
             .map(|b| format!("{:02x}", b))
             .collect::<String>();
-        let idle_str = fields.get("idle").cloned().unwrap_or_default();
+        let idle_str = fields.text("idle").unwrap_or_default().to_string();
         let source_domain = source_domain.trim().to_ascii_uppercase();
 
         let route_missing = if source_domain == "MAIL" {
@@ -273,13 +304,14 @@ impl CdcStreamer {
 
         if event_id.is_empty() || route_missing || job_topic.is_empty() || source_domain.is_empty()
         {
-            crate::observability::metrics::MetricsManager::record_wal_rejected();
-            Logger::sys_warn(
-                "cdc.insert",
-                "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng",
-                "Missing event_id/zone route/job_topic",
-            );
-            return Ok(());
+            return Err(Box::new(PermanentChangeError(
+                "monitored outbox row is missing event_id/zone route/job_topic".to_string(),
+            )));
+        }
+        if !crate::job_topics::is_registered(&source_domain, &job_topic) {
+            return Err(Box::new(PermanentChangeError(
+                "outbox source_domain and job_topic route is not registered".to_string(),
+            )));
         }
 
         crate::observability::metrics::MetricsManager::inc_wal_records_accepted();
@@ -288,9 +320,9 @@ impl CdcStreamer {
             &event_id,
             &job_topic,
             0,
-            "cdc.recv_wal",
+            "changefeed.recv_wal",
             "WAL_OUTBOX_ACCEPTED",
-            "CdcStreamer: Nhận được sự kiện WAL từ Postgres",
+            "Accepted PostgreSQL outbox WAL record",
             LogFields {
                 event_id: Some(&event_id),
                 source_domain: Some(&source_domain),
@@ -328,18 +360,38 @@ impl CdcStreamer {
 
         use opentelemetry::trace::FutureExt;
         let publish_result: Result<(), Box<dyn std::error::Error>> = async move {
-            let payload_bytes = match decode_pg_bytea(&payload_hex_clone) {
-                Ok(bytes) => bytes,
-                Err(error) => return Err(error),
-            };
+            let payload_bytes = decode_pg_bytea(&payload_hex_clone).map_err(|error| {
+                PermanentChangeError(format!("invalid outbox bytea payload: {error}"))
+            })?;
+            if payload_bytes.is_empty() {
+                return Err(PermanentChangeError("outbox payload is empty".to_string()).into());
+            }
 
-            let job_version = job_version_str_clone.parse::<u32>().unwrap_or(1);
-            let payload_schema_version =
-                payload_schema_version_str_clone.parse::<u32>().unwrap_or(1);
+            let job_version = job_version_str_clone
+                .parse::<u32>()
+                .map_err(|_| PermanentChangeError("invalid job_version".to_string()))?;
+            if job_version == 0 {
+                return Err(
+                    PermanentChangeError("job_version must be positive".to_string()).into(),
+                );
+            }
+            let payload_schema_version = payload_schema_version_str_clone
+                .parse::<u32>()
+                .map_err(|_| PermanentChangeError("invalid payload_schema_version".to_string()))?;
+            if payload_schema_version == 0 {
+                return Err(PermanentChangeError(
+                    "payload_schema_version must be positive".to_string(),
+                )
+                .into());
+            }
             let idle = if idle_str_clone.is_empty() {
                 None
             } else {
-                idle_str_clone.parse::<u32>().ok()
+                Some(
+                    idle_str_clone
+                        .parse::<u32>()
+                        .map_err(|_| PermanentChangeError("invalid idle seconds".to_string()))?,
+                )
             };
 
             // [COMMENT]: Durable runtime commands luôn thuộc đúng một Zone.
@@ -350,7 +402,7 @@ impl CdcStreamer {
                 &routing_scope_clone,
                 &mail_zone_id_clone,
             )
-            .map_err(std::io::Error::other)?;
+            .map_err(PermanentChangeError)?;
             let topic = self.kafka.zone_command_topic(&target_zone_id);
             {
                 use opentelemetry::trace::TraceContextExt;
@@ -359,8 +411,9 @@ impl CdcStreamer {
                 );
             }
 
-            let event_uuid = uuid::Uuid::parse_str(&event_id_clone)
-                .map_err(|error| format!("invalid outbox event_id: {error}"))?;
+            let event_uuid = uuid::Uuid::parse_str(&event_id_clone).map_err(|error| {
+                PermanentChangeError(format!("invalid outbox event_id: {error}"))
+            })?;
             let command = JobCommandV1 {
                 job_id: event_uuid.as_bytes().to_vec(),
                 job_version,
@@ -389,9 +442,9 @@ impl CdcStreamer {
                         &event_id_clone,
                         &job_topic_clone,
                         0,
-                        "cdc.push_success",
+                        "changefeed.push_success",
                         "KAFKA_COMMAND_PUBLISHED",
-                        &format!("CdcStreamer: Đã publish job Protobuf vào Kafka {topic}"),
+                        &format!("Published job command to Kafka topic {topic}"),
                         LogFields {
                             event_id: Some(&event_id_clone),
                             source_domain: Some(&source_domain_clone),
@@ -424,34 +477,91 @@ impl CdcStreamer {
         Ok(())
     }
 
-    /// Xử lý CDC thay đổi cấu hình từ bảng zones và zone_services.
+    async fn quarantine_change(
+        &self,
+        wal_end: Lsn,
+        tag: u8,
+        data: &[u8],
+        error: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let payload_hash = format!("{:x}", Sha256::digest(data));
+        let identity = format!("{}:{tag}:{payload_hash}", wal_end.0);
+        let event_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, identity.as_bytes());
+        let record = DeadLetterRecordV1 {
+            event_id: event_id.as_bytes().to_vec(),
+            source_topic: "postgres.logical_changefeed".to_string(),
+            source_partition: 0,
+            source_offset: i64::try_from(wal_end.0).unwrap_or(i64::MAX),
+            error_code: "CHANGEFEED_RECORD_INVALID".to_string(),
+            error_message: format!(
+                "lsn={} tag={} payload_len={} sha256={} error={}",
+                wal_end,
+                char::from(tag),
+                data.len(),
+                payload_hash,
+                bounded_utf8(error, 256)
+            ),
+            // WAL row payloads can contain encrypted envelopes or credentials.
+            // Quarantine keeps only a fingerprint, never a second raw copy.
+            original_payload: Vec::new(),
+            failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+            schema_version: 1,
+        };
+        self.kafka
+            .publish_message(
+                &self.kafka.dead_letter_topic(),
+                event_id.as_bytes(),
+                &record,
+            )
+            .await
+            .map_err(std::io::Error::other)?;
+        crate::observability::metrics::MetricsManager::record_wal_rejected();
+        crate::observability::metrics::MetricsManager::record_dlq_published();
+        let event_id_text = event_id.to_string();
+        Logger::sys_warn_with_fields(
+            "changefeed.quarantine",
+            "CHANGEFEED_RECORD_INVALID",
+            "Permanent WAL error was durably quarantined before LSN advance",
+            "",
+            LogFields {
+                event_id: Some(&event_id_text),
+                outcome: Some("quarantined"),
+                ..LogFields::default()
+            },
+        );
+        Ok(())
+    }
+
+    /// Xử lý changefeed cấu hình từ bảng zones và zone_services.
     /// Với zone_services: chỉ publish khi desired_state THỰC SỰ THAY ĐỔI so với cache.
     /// Cache được bootstrap từ DB lúc startup và cập nhật sau mỗi publish — tránh spurious events.
     async fn process_zone_config_change(
         &self,
-        fields: &HashMap<String, String>,
+        fields: &DecodedRow,
         table_name: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let zone_id = if table_name == "zones" {
-            fields.get("id").cloned().unwrap_or_default()
+            fields.text("id").unwrap_or_default().to_string()
         } else {
-            fields.get("zone_id").cloned().unwrap_or_default()
+            fields.text("zone_id").unwrap_or_default().to_string()
         };
         if uuid::Uuid::parse_str(&zone_id).is_err() {
-            return Ok(());
+            return Err(Box::new(PermanentChangeError(
+                "monitored Zone change has an invalid zone UUID".to_string(),
+            )));
         }
 
         let mut cache_update = None;
         if table_name == "zone_services" {
-            let service_type = fields.get("service_type").cloned().unwrap_or_default();
+            let service_type = fields.text("service_type").unwrap_or_default().to_string();
             let enabled = fields
-                .get("desired_state")
+                .text("desired_state")
                 .is_some_and(|value| value == "t" || value == "true");
             let key = (zone_id.clone(), service_type.clone());
             if self
                 .desired_state_cache
                 .lock()
-                .unwrap()
+                .map_err(|_| "desired-state cache lock poisoned")?
                 .get(&key)
                 .is_some_and(|cached| *cached == enabled)
             {
@@ -494,7 +604,7 @@ impl CdcStreamer {
         if let Some((key, enabled)) = cache_update {
             self.desired_state_cache
                 .lock()
-                .unwrap()
+                .map_err(|_| "desired-state cache lock poisoned")?
                 .insert(key, enabled);
         }
 
@@ -526,7 +636,7 @@ fn decode_pg_bytea(val: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         return Ok(val.as_bytes().to_vec());
     }
     let hex_part = &val[2..];
-    if hex_part.len() % 2 != 0 {
+    if !hex_part.len().is_multiple_of(2) {
         return Err("Invalid hex length for pg bytea".into());
     }
     let mut bytes = Vec::with_capacity(hex_part.len() / 2);
@@ -536,6 +646,17 @@ fn decode_pg_bytea(val: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         bytes.push(byte);
     }
     Ok(bytes)
+}
+
+fn bounded_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 #[cfg(test)]

@@ -298,7 +298,7 @@ Code shape:
 | Concern | File |
 |---|---|
 | Aggregate + outbox CTE | `controlplane/internal/mail/repository/` |
-| WAL decode/publish | `job-orchestrator/src/cdc/mod.rs` |
+| WAL decode/publish | `job-orchestrator/src/changefeed/worker.rs` |
 | Reconciler | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
 | Kafka transport JO | `job-orchestrator/src/infra/kafka.rs` |
 | Kafka command intake | `dataplane/src/job_runtime/intake.rs` |

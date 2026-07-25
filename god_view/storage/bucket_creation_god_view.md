@@ -123,12 +123,12 @@ Result consumer không commit offset cao hơn nếu record thấp hơn gặp tra
 Sau create/delete `SUCCEEDED`, JO transaction:
 
 1. lock exact result/outbox;
-2. resolve owner từ authoritative Personal/Tenant storage aggregate;
+2. resolve owner/resource/Zone từ authoritative `storage_outbox_records`;
 3. update operation terminal state;
-4. insert durable storage lifecycle event/outbox with `owner_id + owner_type`;
-5. commit;
-6. relay Protobuf lên Central NATS/JetStream;
-7. Cost Manager idempotently project ownership.
+4. commit; chính storage outbox row với `ownership_published_at=NULL` là recovery marker;
+5. fast-path `XADD + WAITAOF` vào Shared Redis ownership stream;
+6. mark `ownership_published_at`, hoặc để recovery worker retry nếu Redis lỗi;
+7. Cost Manager consumer group ghi Billing inbox/projection rồi `XACK + XDEL`.
 
 Không query Controlplane DB trong charging path. Event chỉ được publish sau transaction commit.
 
@@ -142,7 +142,8 @@ Không query Controlplane DB trong charging path. Event chỉ được publish s
 | Lease contention | Republish durable trước settle original |
 | DP side effect xong, chết trước result | Kafka replay + idempotent executor |
 | Result DB transaction fail | Result offset không commit |
-| Notification fail | Result replay; business mutation guarded idempotently |
+| Notification fail | Best-effort drop + metric; UI query authoritative API |
+| Ownership Redis fail | Existing storage outbox row giữ pending; bounded recovery retry |
 | Cross-Zone command | topic + target Zone + ACL → DLQ |
 | Delete/create same identity race | DB lock/version/resource ID guard |
 
@@ -157,9 +158,9 @@ Không query Controlplane DB trong charging path. Event chỉ được publish s
 ## 8. Code map
 
 - `controlplane/internal/storage/`: handler/service/repository/outbox.
-- `job-orchestrator/src/cdc/mod.rs`: WAL → Kafka command.
+- `job-orchestrator/src/changefeed/worker.rs`: WAL → Kafka command.
 - `dataplane/src/job_runtime/intake.rs`: command intake và Zone validation.
 - `dataplane/src/executor/storage/bucket.rs`: physical executor.
 - `dataplane/src/job_runtime/execution.rs` + `completion.rs`: lease, retry/result/settlement.
-- `job-orchestrator/src/job_result/consumer.rs`: result manual consumer.
+- `job-orchestrator/src/results/worker.rs`: result manual consumer.
 - `job-orchestrator/src/reverse_provider/storage/`: terminal transaction/lifecycle relay.

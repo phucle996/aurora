@@ -14,6 +14,9 @@ const JOB_NOTIFICATION_STREAM: &str = "stream:{job_notifications}";
 const CONSUMER_GROUP: &str = "notification-service-v1";
 const READ_BATCH_SIZE: usize = 16;
 const CLAIM_IDLE_MS: usize = 30_000;
+const NOTIFICATION_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x43, 0xa7, 0xde, 0x2c, 0x59, 0x85, 0x50, 0x67, 0xa0, 0x16, 0x0b, 0x63, 0x8d, 0xd8, 0xe9, 0x71,
+]);
 
 pub mod job {
     tonic::include_proto!("job");
@@ -172,6 +175,7 @@ impl RedisSubscriber {
             let created_at = chrono::DateTime::from_timestamp(event.created_at, 0)
                 .ok_or("invalid notification timestamp")?
                 .to_rfc3339();
+            let notification_id = effective_notification_id(&event)?;
             let client_payload = serde_json::json!({
                 "status": event.status,
                 "title": event.title,
@@ -182,6 +186,7 @@ impl RedisSubscriber {
                 "resource_id": event.resource_id,
                 "job_version": event.job_version,
                 "attempt": event.attempt,
+                "notification_id": notification_id,
             });
             crate::service::job::notification::handle_job_notification(
                 &self.centrifugo_client,
@@ -267,7 +272,8 @@ async fn ack_and_delete(
 }
 
 fn valid_event(event: &job::JobNotificationEvent) -> bool {
-    uuid::Uuid::parse_str(&event.job_id).is_ok()
+    (event.notification_id.is_empty() || uuid::Uuid::parse_str(&event.notification_id).is_ok())
+        && uuid::Uuid::parse_str(&event.job_id).is_ok()
         && uuid::Uuid::parse_str(&event.user_id).is_ok()
         && matches!(event.status.as_str(), "PROCESSING" | "SUCCESS" | "FAILED")
         && !event.event_type.is_empty()
@@ -279,6 +285,20 @@ fn valid_event(event: &job::JobNotificationEvent) -> bool {
             &event.trace_parent,
             &event.trace_state,
         )
+}
+
+fn effective_notification_id(event: &job::JobNotificationEvent) -> Result<String, uuid::Error> {
+    if !event.notification_id.is_empty() {
+        return uuid::Uuid::parse_str(&event.notification_id).map(|value| value.to_string());
+    }
+    // Rolling compatibility: old JO producers do not carry field 13. Derive
+    // the same stable UUID from fields already present in the v1 contract.
+    let job_id = uuid::Uuid::parse_str(&event.job_id)?;
+    let identity = format!(
+        "{}:{}:{}:{}",
+        job_id, event.job_version, event.attempt, event.status
+    );
+    Ok(uuid::Uuid::new_v5(&NOTIFICATION_NAMESPACE, identity.as_bytes()).to_string())
 }
 
 #[cfg(test)]
@@ -299,12 +319,23 @@ mod tests {
             resource_id: "bucket-1".to_string(),
             job_version: 1,
             attempt: 0,
+            notification_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
     #[test]
     fn rolling_event_without_trace_context_is_valid() {
         assert!(valid_event(&event()));
+    }
+
+    #[test]
+    fn rolling_event_without_notification_id_gets_a_stable_fallback() {
+        let mut candidate = event();
+        candidate.notification_id.clear();
+        let first = effective_notification_id(&candidate).unwrap();
+        let replay = effective_notification_id(&candidate).unwrap();
+        assert_eq!(first, replay);
+        assert!(valid_event(&candidate));
     }
 
     #[test]

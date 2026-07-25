@@ -17,7 +17,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 	googlegrpc "google.golang.org/grpc"
 )
@@ -27,7 +26,6 @@ type App struct {
 	dbPool          *pgxpool.Pool
 	redisClient     *redis.Client
 	authRedisClient *redis.Client
-	natsConn        *nats.Conn
 	module          *Module
 
 	httpServer   *http.Server
@@ -74,15 +72,9 @@ func (a *App) Init() error {
 	}
 	a.authRedisClient = authRedisClient
 
-	// 5. Connect to NATS Messaging Infrastructure
-	natsConn, err := infra.ConnectNats(&a.Cfg.NATS)
-	if err != nil {
-		return err
-	}
-	a.natsConn = natsConn
-
-	// 6. Initialize Modules
-	module, err := NewModule(a.dbPool, a.natsConn, a.redisClient, a.authRedisClient)
+	// 5. Initialize Modules. Ownership is Central-internal and uses Shared Redis;
+	// Cost Manager no longer receives a cross-boundary NATS credential.
+	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient)
 	if err != nil {
 		return err
 	}
@@ -102,9 +94,12 @@ func (a *App) Start() error {
 			return fmt.Errorf("start personal wallet provision consumer: %w", err)
 		}
 	}
-	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
-		if err := a.module.ResourceOwnershipSubscriber.Start(context.Background()); err != nil {
-			return fmt.Errorf("start resource ownership subscriber: %w", err)
+	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
+		if err := a.module.ResourceOwnershipConsumer.Start(); err != nil {
+			if a.module.PersonalWalletProvisionConsumer != nil {
+				a.module.PersonalWalletProvisionConsumer.Stop()
+			}
+			return fmt.Errorf("start resource ownership consumer: %w", err)
 		}
 	}
 
@@ -189,8 +184,8 @@ func (a *App) Stop() {
 		}
 	}
 
-	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
-		a.module.ResourceOwnershipSubscriber.Stop()
+	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
+		a.module.ResourceOwnershipConsumer.Stop()
 	}
 	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
 		a.module.PersonalWalletProvisionConsumer.Stop()
@@ -233,10 +228,6 @@ func (a *App) Stop() {
 	}
 	if a.authRedisClient != nil {
 		_ = a.authRedisClient.Close()
-	}
-
-	if a.natsConn != nil {
-		a.natsConn.Close()
 	}
 
 	logger.SysInfo(op, "Cost Manager API fully terminated.")

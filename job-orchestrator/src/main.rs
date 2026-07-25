@@ -1,17 +1,18 @@
-mod cdc;
+mod changefeed;
 mod config;
 mod infra;
-mod job_result;
-mod lifecycle_relay;
+mod job_topics;
 mod observability;
+mod outbox;
+mod results;
 mod reverse_provider;
 
-use cdc::CdcStreamer;
+use changefeed::ChangefeedWorker;
 use config::Config;
-use job_result::JobResultConsumer;
 use observability::logger::Logger;
 use observability::metrics::MetricsManager;
 use observability::otel::OtelTracer;
+use results::ResultWorker;
 use reverse_provider::ReverseProvider;
 
 struct OtelShutdownGuard;
@@ -48,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     MetricsManager::init();
     Logger::sys_info(
         "main.init",
-        "Khởi động aurora-job-orchestrator (Mô hình 2 chiều)...",
+        "Starting Job Orchestrator changefeed, result settlement and reconciliation workers",
     );
 
     Logger::sys_info(
@@ -62,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     );
 
-    // 2. Khởi tạo và kiểm tra hạ tầng Logical Replication (Chạy một lần duy nhất lúc khởi động app, tự động reconnect)
-    cdc::setup::setup_replication_infrastructure(&config).await?;
+    // Runtime verifies but never mutates logical-replication infrastructure.
+    changefeed::bootstrap::verify(&config).await?;
 
     // [COMMENT]: Shared Redis không còn chở Zone Job; chỉ giữ Central
     // reconciler/runtime bridge, bounded stream và lock/checkpoint.
@@ -75,16 +76,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let nats_client = async_nats::connect(&config.env_nats_url).await?;
     Logger::sys_info("main.init", "Đã kết nối thành công tới NATS Core.");
+    let ownership_publisher = outbox::SharedStreamPublisher::connect(&cache_redis, &config).await?;
 
-    // 3. Khởi tạo các cấu phần proxy 2 chiều
-    // [COMMENT]: CdcStreamer::new là async — bootstrap desired_state_cache từ DB trước khi run.
-    // map_err để chuyển Box<dyn Error + Send + Sync> → Box<dyn Error> cho ? operator của main().
-    let streamer = CdcStreamer::new(config.clone(), kafka.clone())
+    // ChangefeedWorker bootstraps its desired-state cache before WAL replay.
+    let changefeed_worker = ChangefeedWorker::new(config.clone(), kafka.clone())
         .await
         .map_err(|e| -> Box<dyn std::error::Error> {
-            format!("CDC bootstrap thất bại: {}", e).into()
+            format!("changefeed cache bootstrap failed: {e}").into()
         })?;
-    let consumer = JobResultConsumer::new(config.clone(), kafka.clone(), cache_redis.clone());
+    let result_worker = ResultWorker::new(
+        config.clone(),
+        kafka.clone(),
+        cache_redis.clone(),
+        ownership_publisher.clone(),
+    );
+    let ownership_relay = outbox::OwnershipRelay::new(config.clone(), ownership_publisher);
     let reverse_provider = ReverseProvider::new(
         config.clone(),
         cache_redis.clone(),
@@ -92,20 +98,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         nats_client,
     );
 
-    let db_url = config.database_url.clone();
-    let nats_url = config.env_nats_url.clone();
-
     // [COMMENT]: Không gọi process::exit sau khi OTel đã khởi tạo; exit thô bỏ
     // toàn bộ batch queue. Mọi terminal branch hội tụ về một bounded shutdown.
     let run_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
-        res = streamer.run() => {
-            MetricsManager::record_worker_termination("cdc");
+        res = changefeed_worker.run() => {
+            MetricsManager::record_worker_termination("changefeed");
             match res {
-                Ok(()) => Err("CDC worker stopped unexpectedly".into()),
-                Err(error) => Err(format!("CDC worker failed: {error}").into()),
+                Ok(()) => Err("changefeed worker stopped unexpectedly".into()),
+                Err(error) => Err(format!("changefeed worker failed: {error}").into()),
             }
         }
-        res = consumer.run() => {
+        res = result_worker.run() => {
             MetricsManager::record_worker_termination("result_consumer");
             match res {
                 Ok(()) => Err("result consumer stopped unexpectedly".into()),
@@ -119,9 +122,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(error) => Err(format!("reverse provider failed: {error}").into()),
             }
         }
-        _ = lifecycle_relay::relay::run_relay_loop(db_url, nats_url) => {
-            MetricsManager::record_worker_termination("lifecycle_relay");
-            Err("resource lifecycle relay stopped unexpectedly".into())
+        res = ownership_relay.run() => {
+            MetricsManager::record_worker_termination("ownership_relay");
+            match res {
+                Ok(()) => Err("ownership relay stopped unexpectedly".into()),
+                Err(error) => Err(format!("ownership relay failed: {error}").into()),
+            }
         }
         _ = reverse_provider::mail::reconciler::run_periodic_mail_reconciliation(
             config.clone(), cache_redis.clone(), kafka.clone()

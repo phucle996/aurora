@@ -14,7 +14,7 @@ import (
 // [COMMENT]: Alias kiểu dữ liệu Identity từ pkgcontext để duy trì tương thích ngược cho middleware package.
 type Identity = pkgcontext.Identity
 
-// [COMMENT]: AuthorizationResolver là contract nhỏ để middleware không phụ thuộc implementation cache/NATS.
+// [COMMENT]: AuthorizationResolver giữ middleware độc lập với Redis/cache implementation.
 type AuthorizationResolver interface {
 	Resolve(ctx context.Context, userID uuid.UUID, critical bool) (map[string]struct{}, error)
 }

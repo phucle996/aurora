@@ -29,7 +29,7 @@ spec:
         - protocol: TCP
           port: 9094
 
-  # [COMMENT]: Egress Rule: Giới hạn kết nối đầu ra của Cost Manager chỉ tới DB, Cache, ClickHouse, NATS và DNS.
+  # [COMMENT]: Egress Rule: Cost chỉ tới Billing DB, Shared L2 Redis, ClickHouse và DNS.
   egress:
     # 1. DNS Resolution
     - ports:
@@ -61,11 +61,3 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
-    # 5. NATS Event Bus (Port 4222)
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: nats
-      ports:
-        - protocol: TCP
-          port: 4222

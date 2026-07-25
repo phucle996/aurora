@@ -2,8 +2,6 @@ use crate::observability::logger::Logger;
 use prost::Message;
 use tokio_postgres::NoTls;
 
-use super::lifecycle::{insert_resource_created, insert_resource_deleted, LifecycleEventParams};
-
 pub mod storage_proto {
     include!(concat!(env!("OUT_DIR"), "/storage.rs"));
 }
@@ -91,7 +89,8 @@ pub async fn update_tenant_bucket_size(
 }
 
 // [COMMENT]: Resolve bucket creation trong một transaction.
-// SUCCEEDED: UPDATE outbox thành SUCCEEDED và dùng immutable outbox snapshot để phát ownership event.
+// SUCCEEDED: UPDATE outbox thành SUCCEEDED. Ownership delivery được reconstruct từ
+// chính durable row này sau commit; không ghi thêm một lifecycle outbox thứ hai.
 // PROCESSING: UPDATE outbox thành PROCESSING.
 // FAILED: UPDATE outbox thành FAILED + DELETE bucket record (clean rollback cho retry với cùng tên).
 //
@@ -127,40 +126,6 @@ pub async fn resolve_bucket_creation_tx(
                 &[&job_uuid, &job_topic],
             )
             .await?;
-
-        // [COMMENT]: Owner là snapshot được Controlplane ghi nguyên tử cùng resource/outbox.
-        // Name nằm trong binary job payload; zone nằm trong routing_scope nên không query resource tables lần hai.
-        if let Some(ref row) = row_opt {
-            let resource_id_str: String = row.get(3);
-            let resource_id = uuid::Uuid::parse_str(&resource_id_str)?;
-            let owner_id: uuid::Uuid = row.get(4);
-            let owner_type: String = row.get(5);
-            let payload: Vec<u8> = row.get(6);
-            let routing_scope: String = row.get(7);
-            let sync_data = storage_proto::BucketCreateSync::decode(payload.as_slice())?;
-            if sync_data.name.trim().is_empty() {
-                return Err("bucket create outbox payload has an empty name".into());
-            }
-            // [COMMENT]: routing_scope là snapshot bắt buộc `zone:<uuid>` từ Controlplane.
-            let zone_id = uuid::Uuid::parse_str(
-                routing_scope
-                    .strip_prefix("zone:")
-                    .ok_or_else(|| format!("invalid storage routing_scope: {routing_scope}"))?,
-            )?;
-            let params = LifecycleEventParams {
-                source_job_id: job_uuid,
-                resource_id,
-                resource_type: "STORAGE_BUCKET",
-                resource_name: &sync_data.name,
-                owner_id,
-                owner_type: &owner_type,
-                zone_id,
-                source_version: 1,
-                effective_at: chrono::Utc::now(),
-                traceparent: None,
-            };
-            insert_resource_created(tx, params).await?;
-        }
 
         row_opt
     } else if status == "PROCESSING" {
@@ -318,7 +283,8 @@ pub async fn resolve_bucket_resize(
 //   1. Capture owner/name/zone từ DB TRƯỚC khi DELETE (sau DELETE không còn data).
 //   2. DELETE credentials và bucket.
 //   3. UPDATE job outbox thành SUCCEEDED (không DELETE).
-//   4. INSERT RESOURCE_DELETED lifecycle event với data đã capture.
+//   4. Durable storage outbox giữ owner/payload/routing để ownership publisher
+//      reconstruct event sau commit, kể cả resource row đã bị xóa.
 // PROCESSING: UPDATE outbox sang PROCESSING.
 // FAILED: UPDATE outbox sang FAILED, giữ nguyên resource.
 pub async fn resolve_bucket_deletion_tx(
@@ -343,7 +309,7 @@ pub async fn resolve_bucket_deletion_tx(
         // có thể consume outbox nhưng không xóa được resource, làm mất lifecycle event.
         let outbox = tx
             .query_opt(
-                "SELECT resource_id, owner_id, owner_type, payload, routing_scope \
+                "SELECT resource_id, owner_type, payload, routing_scope \
                  FROM storage.storage_outbox_records \
                  WHERE event_id = $1::uuid AND job_topic = $2 \
                    AND status IN ('PENDING', 'PROCESSING') \
@@ -356,22 +322,22 @@ pub async fn resolve_bucket_deletion_tx(
             return Ok(None);
         };
         let resource_id = uuid::Uuid::parse_str(outbox.get::<_, String>(0).as_str())?;
-        let owner_id: uuid::Uuid = outbox.get(1);
-        let owner_type: String = outbox.get(2);
-        let payload: Vec<u8> = outbox.get(3);
-        let routing_scope: String = outbox.get(4);
+        let owner_type: String = outbox.get(1);
+        let payload: Vec<u8> = outbox.get(2);
+        let routing_scope: String = outbox.get(3);
         let sync_data = storage_proto::BucketDeleteSync::decode(payload.as_slice())?;
         if sync_data.name.trim().is_empty() {
             return Err("bucket delete outbox payload has an empty name".into());
         }
         // [COMMENT]: Parse inline để contract `zone:<uuid>` minh bạch ngay tại delete flow.
-        let zone_id = uuid::Uuid::parse_str(
+        let _zone_id = uuid::Uuid::parse_str(
             routing_scope
                 .strip_prefix("zone:")
                 .ok_or_else(|| format!("invalid storage routing_scope: {routing_scope}"))?,
         )?;
 
-        // [COMMENT]: Capture xong mới xóa; transaction rollback sẽ phục hồi resource nếu event insert lỗi.
+        // Validate the immutable ownership source before deletion. A failure
+        // rolls the resource deletion and terminal outbox transition back together.
         match owner_type.as_str() {
             "PERSONAL" => {
                 tx.execute(
@@ -399,24 +365,6 @@ pub async fn resolve_bucket_deletion_tx(
             }
             _ => return Err(format!("unsupported owner_type {}", owner_type).into()),
         }
-
-        insert_resource_deleted(
-            tx,
-            LifecycleEventParams {
-                source_job_id: job_uuid,
-                resource_id,
-                resource_type: "STORAGE_BUCKET",
-                resource_name: &sync_data.name,
-                owner_id,
-                owner_type: &owner_type,
-                zone_id,
-                // [COMMENT]: Delete phải tiến lên version 2 để không bị head version bỏ qua sau create=1.
-                source_version: 2,
-                effective_at: chrono::Utc::now(),
-                traceparent: None,
-            },
-        )
-        .await?;
 
         tx.query_opt(
             "UPDATE storage.storage_outbox_records \

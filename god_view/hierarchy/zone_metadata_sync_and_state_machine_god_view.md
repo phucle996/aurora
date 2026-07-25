@@ -183,7 +183,7 @@ Nếu lag stale, Decision Engine giữ state hiện tại thay vì tự động 
 
 ## 9. Code map
 
-- `job-orchestrator/src/cdc/mod.rs`: full metadata snapshot publisher.
+- `job-orchestrator/src/changefeed/worker.rs`: full metadata snapshot publisher.
 - `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: durable query consumer.
 - `job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs`: Zone report consumer.
 - `dataplane/src/leader/leadership.rs`: Zone leader election/failover và fenced session.

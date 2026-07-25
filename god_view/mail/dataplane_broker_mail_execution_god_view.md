@@ -363,7 +363,7 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | Config COW/lazy template | `dataplane/src/executor/mail/runtime/configuration.rs` |
 | Kafka platform projection entry | `dataplane/src/executor/mail/executor.rs` |
 | JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
-| JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/l2_dispatcher.rs` |
+| JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/result_apply.rs` |
 | JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
 | Watch-aware reporter trên từng pod | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
 | Pod-local Mail snapshot | `dataplane/src/executor/mail/supervisor/local_observer.rs` |

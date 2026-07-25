@@ -1,13 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
 # ============================================================================
-# Stage 1: Builder - biên dịch binary release của aurora-dataplane
+# 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST AURORA-DATAPLANE
 # ============================================================================
+# [COMMENT]: Sử dụng rust:bookworm chính thức làm môi trường builder có đầy đủ công cụ biên dịch C/C++ và Protobuf
 FROM rust:bookworm AS builder
-RUN apt-get update && apt-get install -y protobuf-compiler curl
+
+# [COMMENT]: Cài đặt protobuf-compiler phục vụ biên dịch gRPC/Protobuf schemas trong Dataplane
+RUN apt-get update && apt-get install -y protobuf-compiler curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 
-# 1. Pre-warm dependency cache: chỉ copy manifest, build dummy để cache layer deps.
+# [COMMENT]: Pre-warm dependency cache bằng dummy main.rs để tối ưu layer caching của Docker
 COPY Cargo.toml Cargo.lock* ./
 RUN mkdir -p src \
     && echo "fn main() {}" > src/main.rs \
@@ -18,38 +21,36 @@ RUN mkdir -p src \
     target/release/deps/aurora_dataplane* \
     target/release/.fingerprint/aurora-dataplane-*
 
-# 1b. Get mc binary (MinIO Client) from the official minio/mc image to avoid network downloads
+# [COMMENT]: Lấy MinIO Client (mc) tĩnh từ official image minio/mc để thực hiện các thao tác MinIO Admin
 COPY --from=minio/mc:latest /usr/bin/mc /usr/local/bin/mc
 
-# 2. Copy toàn bộ source thật (target/ host đã bị .dockerignore loại trừ).
+# [COMMENT]: Copy toàn bộ source code thực tế và tiến hành biên dịch bản release
 COPY . .
 
-# 3. Force-touch các file .rs để cargo nhận thay đổi và rebuild crate chính.
+# [COMMENT]: Force-touch các file .rs để ép Cargo rebuild crate chính với code mới
 RUN find src -name "*.rs" -exec touch {} + \
     && cargo build --release --bin aurora-dataplane \
     && test -s target/release/aurora-dataplane
 
 # ============================================================================
-# Stage 2: Runtime - debian slim tối giản, non-root user
+# 🚀 STAGE 2: RUNNER - CONTAINER DISTROLESS CC DEBIAN 12 (NON-ROOT)
 # ============================================================================
-FROM debian:bookworm-slim AS runtime
-ARG LOCAL_USER=phucle
-ARG LOCAL_UID=1000
-ARG LOCAL_GID=1000
+# [COMMENT]: Chuyển sang gcr.io/distroless/cc-debian12:nonroot
+# Image này chứa sẵn C runtime library (glibc, libgcc_s1, libssl3, ca-certificates) cần cho Rust & MinIO Client
+# đồng thời triệt tiêu hoàn toàn Shell (/bin/sh) và package manager để tăng cường an ninh bảo mật Cloud-Native.
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata libssl-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
-    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --home-dir /var/lib/dataplane --shell /bin/bash ${LOCAL_USER} \
-    && mkdir -p /var/lib/dataplane /var/log/dataplane /etc/dataplane \
-    && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/dataplane /var/log/dataplane /etc/dataplane
-
+# [COMMENT]: Copy Rust release binary vào thư mục thực thi tiêu chuẩn
 COPY --from=builder /src/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
-# [COMMENT]: Copy mc binary vào runtime image — dùng để thực hiện MinIO Admin operations
+
+# [COMMENT]: Copy MinIO Client (mc) binary sang runtime distroless
 COPY --from=builder /usr/local/bin/mc /usr/local/bin/mc
 
+# [COMMENT]: Đặt thư mục làm việc mặc định cho Dataplane service
 WORKDIR /var/lib/dataplane
-USER ${LOCAL_USER}:${LOCAL_USER}
 
+# [COMMENT]: Thiết lập phân quyền chạy bằng user nonroot (UID 65532:65532) tuân thủ nguyên tắc Least Privilege
+USER 65532:65532
+
+# [COMMENT]: Khởi chạy trực tiếp binary mà không cần qua shell wrapper
 ENTRYPOINT ["/usr/local/bin/aurora-dataplane"]

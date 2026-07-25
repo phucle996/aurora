@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS billing.unrated_usage (
     CONSTRAINT ck_unrated_status CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'DEAD'))
 );
 
--- 18. Inbox idempotency cho ownership lifecycle events nhận từ JetStream (chống trùng lặp event)
+-- 18. Inbox idempotency cho ownership events nhận từ Shared Redis Stream.
 CREATE TABLE IF NOT EXISTS billing.ownership_event_inbox (
     event_id        UUID PRIMARY KEY,                      -- UUID duy nhất của event (deterministic từ source job)
     event_type      VARCHAR(32) NOT NULL,                  -- 'RESOURCE_CREATED' hoặc 'RESOURCE_DELETED'
@@ -302,12 +302,12 @@ CREATE TABLE IF NOT EXISTS billing.ownership_event_inbox (
     source_version  BIGINT NOT NULL DEFAULT 1,             -- Version ownership từ Controlplane
     status          VARCHAR(16) NOT NULL DEFAULT 'RECEIVED',-- Trạng thái inbox: RECEIVED | APPLIED | DEAD
     error_message   TEXT,                                  -- Thông tin lỗi chi tiết nếu xử lý thất bại
-    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),    -- Thời điểm nhận tin nhắn từ JetStream
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),    -- Thời điểm nhận từ Shared Redis
     processed_at    TIMESTAMPTZ,                           -- Thời điểm hoàn tất xử lý event
     CONSTRAINT ck_inbox_status CHECK (status IN ('RECEIVED', 'APPLIED', 'DEAD'))
 );
 
--- 19. Resource lifecycle head table để xử lý out-of-order delivery giữa các JetStream events
+-- 19. Resource lifecycle head xử lý out-of-order delivery giữa các Redis Stream events
 CREATE TABLE IF NOT EXISTS billing.resource_ownership_head (
     resource_id         UUID PRIMARY KEY,                  -- UUID của tài nguyên (bucket)
     last_source_version BIGINT NOT NULL,                   -- Version ownership mới nhất đã ghi nhận
