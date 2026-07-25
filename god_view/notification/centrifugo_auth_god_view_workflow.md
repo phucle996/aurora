@@ -16,7 +16,7 @@ Tài liệu được thiết kế cho các kỹ sư phát triển phân hệ Not
 ### ❓ Phân hệ Centrifugo Connect Authentication là gì?
 
 Đây là quy trình xác thực ủy quyền kết nối (Connection Proxy) khi máy khách (Browser/Client) thực hiện thiết lập kết nối WebSocket/SSE đến cụm dịch vụ **Centrifugo Engine**.
-Thay vì tự giải mã token và duy trì kết nối trực tiếp đến session store, Centrifugo ủy thác kiểm tra quyền qua HTTP POST đến **Notification Service**. Notification phân tách Admin/End-User và gọi **ACR** qua Shared L2 Redis Request-Reply. NATS Core của Notification vẫn dành cho realtime event Central-Zone, không nằm trên auth request path.
+Thay vì tự giải mã token và duy trì kết nối trực tiếp đến session store, Centrifugo ủy thác kiểm tra quyền qua HTTP POST đến **Notification Service**. Notification phân tách Admin/End-User và gọi **ACR** qua Shared L2 Redis Request-Reply. JO kết thúc NATS Core Central-Zone; Notification nhận realtime nội vùng Central qua Shared Redis Pub/Sub, tách khỏi auth request path.
 
 ### 📍 Các Biên Công Nghệ Hoạt Động
 

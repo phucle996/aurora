@@ -1,7 +1,7 @@
 use super::redis::SharedStreamPublisher;
 use crate::config::Config;
+use crate::contracts::storage as storage_proto;
 use crate::observability::logger::{LogFields, Logger};
-use crate::reverse_provider::storage::db::bucket::storage_proto;
 use chrono::{DateTime, Utc};
 use prost::Message;
 use std::sync::Arc;

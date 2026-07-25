@@ -44,8 +44,8 @@ Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zon
 [Dataplane] → CAS zone.metadata → [NATS Zone Config KV]
 [Dataplane Zone leader] → stable leader lease + current snapshots → [NATS Zone Health/Coordination KV]
 [ZoneStatusGateway] → PRODUCE ZoneReport (Protobuf) → [Kafka zone reports]
-[JO backpressure_listener] → manual poll → decode → DecisionEngine.evaluate()
-[JO] → Throttled UPSERT actual_state → [PostgreSQL]
+[JO zone_state worker] → manual poll → validate → ZoneDrainPolicy.evaluate()
+[JO] → timestamp-fenced UPDATE actual_state/observed_at → [PostgreSQL]
 [JO] → UPSERT hypervisor.nodes → [PostgreSQL]
 ```
 
@@ -83,7 +83,7 @@ stateDiagram-v2
 |:---|:---|:---|
 | **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs). Zone leader vẫn probe JMAP và xuất OTel/Grafana trước khi activate: [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs). |
 | **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ command topic của đúng Zone: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs). Zone leader tổng hợp queue pressure, JMAP và Stalwart health vào Zone KV/OTel: [`infra/mail.rs`](../../dataplane/src/leader/infra/mail.rs). |
-| **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L29). |
+| **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`policy.rs`](../../job-orchestrator/src/zone_state/policy.rs). |
 | **`maintenance`** | Zone bảo trì | Chặn kéo Job mới, chạy nốt worker pool: [`intake.rs`](../../dataplane/src/job_runtime/intake.rs).<br/>Cho phép SRE update service toggle desired_state: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L434). |
 | **`disabled`** | Vô hiệu hóa hoàn toàn | Dataplane không kéo job mới; health observer vẫn xuất OTel nhưng fenced `zone.service.mail` quảng cáo `down/0`. Dead-man không tự đổi lifecycle hoặc `desired_state`.<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
 
@@ -350,8 +350,8 @@ sequenceDiagram
     loop Kafka poll cycle
         JO_Back->>L1: manual poll aurora.zone.reports.v1
         L1-->>JO_Back: ZoneReport record
-        JO_Back->>JO_Back: Decode Protobuf & DecisionEngine::evaluate()
-        alt Decision Engine signals metric write-back (Throttled)
+        JO_Back->>JO_Back: Validate Protobuf & ZoneDrainPolicy::evaluate()
+        alt validated service observation
             JO_Back->>DB: update_zone_service_metrics() -> update actual_state
         end
         alt Hypervisor nodes report
@@ -369,8 +369,9 @@ sequenceDiagram
    * Dataplane [`zone_report`](../../dataplane/src/leader/zone_report.rs) chạy dưới stable `lease.zone.leader`, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
    * Gateway đóng gói `ZoneReport` Protobuf, dùng Zone ID làm record key và `acks=all`.
 3. **Write-back DB SoT**:
-   * JO [`run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs) manual-consume Kafka, decode Protobuf và commit sau side effects.
-   * Gọi [`DecisionEngine::evaluate()`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L7) tính toán và tự động cập nhật `actual_state` vào bảng `zone_services` thông qua [`db.rs#update_zone_service_metrics()`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) (sử dụng cơ chế Throttled Write để chống spam IOPS).
+   * JO [`run_backpressure_listener()`](../../job-orchestrator/src/zone_state/worker.rs) manual-consume Kafka, validate Protobuf và commit sau side effects.
+   * [`ZoneDrainPolicy::evaluate()`](../../job-orchestrator/src/zone_state/policy.rs) tính lifecycle; [`store.rs`](../../job-orchestrator/src/zone_state/store.rs) ghi mọi observation bằng timestamp fence. Việc không throttle timestamp là invariant để cluster-wide watchdog không hạ nhầm Zone sau rebalance.
+   * [`watchdog.rs`](../../job-orchestrator/src/zone_state/watchdog.rs) giữ Shared Redis leader lease ngắn và chỉ hạ actual health/node dựa trên timestamp durable; không đổi desired state.
 
 ---
 
@@ -736,7 +737,7 @@ sequenceDiagram
 
 1. **CDC Broadcast**: JO phát hiện DELETE và phải phát terminal metadata contract bền vững trên Kafka; không dùng ephemeral PubSub.
 2. **DP Detach**: DP leader [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) ghi nhận và đưa agent về trạng thái treo/dừng hoạt động đồng bộ.
-3. **JO Cleanup**: JO Backpressure Listener [`listener.rs`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L15) dừng tracking heartbeat của zone và dọn dẹp các cache vùng nhớ tạm trên RAM.
+3. **JO Cleanup**: [`zone_state/processor.rs`](../../job-orchestrator/src/zone_state/processor.rs) đọc lifecycle và desired-service state trong một PostgreSQL round-trip cho mỗi report; không giữ SRE state trong RAM qua Kafka rebalance. Cluster watchdog cũng không phụ thuộc process-local cache.
 
 ---
 
@@ -756,7 +757,7 @@ Cơ chế tự phục hồi cấu hình (Self-Healing) giúp đảm bảo Datapl
 1. **Khởi động nguội (Cold Start)**: Trigger ngay khi Dataplane giành `lease.zone.leader` trong [`zone_metadata.rs`](../../dataplane/src/leader/zone_metadata.rs).
 2. **Định kỳ (Periodic Polling)**: Sau khoảng 720 gateway cycle (xấp xỉ 60 phút), reporter kích hoạt một vòng repair mới; coordination lease loại duplicate query giữa các pod.
 3. **Distributed Lease Guard**: Các pod CAS stable key `lease.zone.leader` trong `AURORA_ZONE_COORDINATION`, TTL 15 giây và renew 5 giây. Value mang owner và fencing token; leader cũ không thể renew/release session mới.
-4. **JO Metadata Handler**: JO lắng nghe kênh truy vấn tại [`listener.rs#run_metadata_query_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L460) để đọc dữ liệu SoT trực tiếp từ Postgres và phản hồi ngược lại cho Dataplane.
+4. **JO Metadata Handler**: JO consume durable query tại [`metadata.rs`](../../job-orchestrator/src/zone_state/metadata.rs), đọc SoT bằng long-lived PostgreSQL connection rồi publish snapshot về Kafka compacted topic.
 
 ---
 
@@ -942,7 +943,7 @@ sequenceDiagram
 
 ## 12. Decision Engine — Backpressure & Zone Status
 
-Hệ thống đưa ra quyết định chuyển đổi trạng thái vận hành của Zone dựa trên các chỉ số hiệu năng và sức khỏe đo được. Triển khai tại [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L7).
+Hệ thống đưa ra quyết định chuyển đổi trạng thái vận hành của Zone dựa trên các chỉ số hiệu năng và sức khỏe đã validate. Triển khai tại [`policy.rs`](../../job-orchestrator/src/zone_state/policy.rs).
 
 > [!IMPORTANT]
 > **Nguyên tắc Enabled-Only Evaluation**: `DecisionEngine::evaluate()` chỉ nhận đầu vào từ các service đang **enabled** trên zone đó. Service bị tắt (`desired_state = false`) được coi là **không liên quan** — không được đưa vào điều kiện draining trigger cũng như recovery condition. Điều này ngăn zone bị kéo về `draining` chỉ vì một service không được cài đặt.
@@ -1127,7 +1128,7 @@ sequenceDiagram
 
 ### 13.2 Node-Level (45 giây)
 
-Nếu một Hypervisor Node không báo cáo trạng thái sau 45 giây, Node đó sẽ được đánh dấu là mất kết nối. Triển khai tại [`listener.rs#L416-L455`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L416-L455).
+Nếu một Hypervisor Node không báo cáo trạng thái sau 45 giây, Node đó sẽ được đánh dấu là mất kết nối bởi cluster-wide [`watchdog.rs`](../../job-orchestrator/src/zone_state/watchdog.rs) dưới Shared Redis leader lease.
 
 ```mermaid
 sequenceDiagram
@@ -1162,18 +1163,18 @@ sequenceDiagram
 | 5 | **Replay Attack** (resend request đã bắt) | Redis SETNX `iam:nonce:{nonce}` EX 120 atomic | `signature.rs#L86-L113` |
 | 6 | **Clock Skew Attack** (timestamp cũ để bypass) | `|now - ts| ≤ 120s` check | `signature.rs#L56-L71` |
 | 7 | **Out-of-order Hypervisor heartbeat** | `WHERE last_active_at < sent_at` trong UPSERT | `db.rs#L312` |
-| 8 | **actual_state IOPS spam** (ghi mỗi 5s) | Throttle: 3 điều kiện (status / delta>10 / >120s) | `listener.rs#L242-L258` |
-| 9 | **HA out-of-order Zone report** | `zone_services.actual_observed_at` chỉ nhận timestamp mới hơn | `reverse_provider/zone/db.rs` |
-| 9 | **Zone flapping** (active↔congested) | Hysteresis: overload threshold > recovery threshold | `decision.rs#L33-L38` |
+| 8 | **Watchdog false-down sau Kafka rebalance** | Mỗi report advance durable observation timestamp; watchdog dùng cluster-wide Redis lease | `zone_state/{worker,watchdog}.rs` |
+| 9 | **HA out-of-order Zone report** | `zone_services.actual_observed_at` chỉ nhận timestamp mới hơn | `zone_state/store.rs` |
+| 9 | **Zone flapping** (active↔draining) | Typed policy + hysteresis: overload threshold > recovery threshold | `zone_state/policy.rs` |
 | 10 | **Miss CDC khi cold start** | Leader reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/leader/zone_metadata.rs` |
-| 11 | **Zombie generic Zone report** | Dead Man's Switch hạ owned actual health; lifecycle/desired chỉ SRE được sửa | `reverse_provider/zone/listener/deadman.rs` |
+| 11 | **Zombie generic Zone report** | Singleton watchdog hạ actual health bằng durable timestamp; không sửa desired state | `zone_state/watchdog.rs` |
 | 12 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
 | 13 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
 | 14 | **Duplicate zone code** | `UNIQUE (code)` → `ErrCodeAlreadyExists` | `zone_repo.go#L239-L244` |
 | 15 | **UpdateService khi zone không maintenance** | SQL `WHERE status = 'maintenance'` trong upsert CTE | `zone_repo.go#L142` |
-| 16 | **EnabledServicesMap bootstrap gap** (JO restart, miss CDC event trong khoảng restart) | JO snapshot toàn bộ `zone_services` từ DB trước khi subscribe CDC | `decision.rs` — bootstrap loader |
-| 17 | **Decision với thiếu enabled info** (zone mới tạo sau JO boot, chưa có entry trong RAM) | Fallback: đọc DB trực tiếp khi miss RAM entry, nạp lại map trước khi evaluate | `decision.rs` — DB fallback |
-| 18 | **False draining** (service disabled bị tính là `down`) | Enabled-Only Evaluation: service disabled = transparent, không tham gia draining trigger | `decision.rs` — enabled_services filter |
+| 16 | **EnabledServicesMap bootstrap gap** | Changefeed bootstrap toàn bộ desired state bằng long-lived metadata connection | `changefeed/worker.rs` |
+| 17 | **Decision với enabled info stale** | Mỗi report đọc một typed policy snapshot từ PostgreSQL; không cache SRE state qua rebalance | `zone_state/{processor,store}.rs` |
+| 18 | **False draining** (service disabled bị tính là `down`) | Enabled-only typed policy: service disabled không tham gia trigger | `zone_state/policy.rs` |
 
 ---
 

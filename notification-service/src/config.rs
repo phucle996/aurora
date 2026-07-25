@@ -5,14 +5,6 @@ pub struct Config {
     pub app_port: u16,
     pub centrifugo_api_url: String,
     pub centrifugo_api_key: String,
-    // [COMMENT]: Địa chỉ NATS Core
-    pub nats_url: String,
-    // [COMMENT]: Đường dẫn chứng chỉ CA phục vụ TLS/mTLS đến NATS Core
-    pub nats_ca_cert: Option<String>,
-    // [COMMENT]: Đường dẫn chứng chỉ Client phục vụ mTLS đến NATS Core
-    pub nats_client_cert: Option<String>,
-    // [COMMENT]: Đường dẫn khóa riêng tư Client phục vụ mTLS đến NATS Core
-    pub nats_client_key: Option<String>,
     // [COMMENT]: Shared L2 Redis dùng cho request/reply xác thực với ACR.
     pub shared_redis_url: String,
     pub otel_exporter_otlp_endpoint: String,
@@ -31,11 +23,6 @@ impl Config {
                 .unwrap_or_else(|_| "http://centrifugo:8000/api".to_string()),
             centrifugo_api_key: env::var("CENTRIFUGO_API_KEY")
                 .unwrap_or_else(|_| "your_centrifugo_api_key_secret".to_string()),
-            // [COMMENT]: Nạp cấu hình kết nối NATS Core
-            nats_url: env::var("NATS_ADDR").unwrap_or_else(|_| "nats://nats:4222".to_string()),
-            nats_ca_cert: env::var("NATS_CA_CERT").ok(),
-            nats_client_cert: env::var("NATS_CLIENT_CERT").ok(),
-            nats_client_key: env::var("NATS_CLIENT_KEY").ok(),
             shared_redis_url: env::var("SHARED_REDIS_URL")
                 .unwrap_or_else(|_| "redis://controlplane-cp-redis:6379/0".to_string()),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")

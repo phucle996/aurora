@@ -2,7 +2,7 @@ use super::contract::ValidatedResult;
 use super::notify::{JobNotifier, NotificationIntent};
 use crate::observability::logger::{LogFields, Logger};
 use crate::outbox::{ownership, SharedStreamPublisher};
-use crate::reverse_provider;
+use crate::results::{mail, storage};
 use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use tokio_postgres::{Client, Row};
@@ -82,7 +82,7 @@ pub async fn apply_result(
     let db_result: Result<Option<Row>, Box<dyn std::error::Error>> = async {
         match wire.source_domain.as_str() {
             "MAIL" => {
-                reverse_provider::mail::result_apply::apply_mail_result(
+                mail::apply::apply_mail_result(
                     pg_client,
                     result.job_id,
                     &wire.job_topic,
@@ -93,7 +93,7 @@ pub async fn apply_result(
                 )
                 .await
             }
-            "STORAGE" => reverse_provider::storage::result_apply::apply_storage_result(
+            "STORAGE" => storage::apply::apply_storage_result(
                 pg_client,
                 result.job_id,
                 &wire.job_topic,

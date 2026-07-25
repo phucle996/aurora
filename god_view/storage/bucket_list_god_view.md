@@ -57,18 +57,19 @@ Snapshot fields:
 - Scanner chạy trong stable Zone leader session; current-owner check và leader fencing chỉ cho một
   full snapshot authoritative.
 - Kafka key is Zone ID; producer uses `acks=all`.
-- JO keeps previous snapshot in memory only to suppress unchanged updates; PostgreSQL remains current business read model.
+- JO uses `IS DISTINCT FROM` in PostgreSQL, so replay is idempotent without an unbounded per-Zone RAM snapshot.
 - Poison snapshot is durable DLQ then commit.
-- Partial DB/NATS failure returns error and stops listener before a higher offset can commit.
+- DB failure stops the partition before a higher offset can commit. Shared Redis notification failure is
+  best-effort because PostgreSQL is already authoritative and the UI can refetch.
 - Duplicate snapshot/update is safe.
 - Out-of-order business update must use observation/version fence in repository where historical ordering matters.
 - Dynamic scanner state/history is not persisted in Zone KV or a mail-style history table.
 
 ## 3. Billing boundary
 
-`used_bytes` update event carries `bucket_name`, `owner_id`, `owner_type`, bytes and observation timestamp.
-Cost Manager projects ownership separately and does not query CP DB while charging. Usage/rating cadence remains
-owned by Billing God Views; this workflow only supplies current storage measurement.
+Bucket snapshot chỉ cập nhật Controlplane `used_bytes` phục vụ authorized list API. Nó không phát
+usage event sang Cost. Cost Manager projects ownership riêng và tính usage từ ClickHouse theo
+`storage_usage_billing_god_view.md`; charging path không query Controlplane DB.
 
 ## 4. Failure matrix
 
@@ -77,14 +78,14 @@ owned by Billing God Views; this workflow only supplies current storage measurem
 | MinIO scan fails | Không publish partial authoritative snapshot |
 | Kafka quorum fails | Snapshot not ACKed; scanner retries next bounded cycle |
 | JO DB failure | Offset uncommitted; listener restart/replay |
-| NATS publish failure after DB update | Replay; DB update idempotent |
+| Shared Redis notification failure after DB update | Commit Kafka; UI refetch authoritative API |
 | Poison bucket namespace/negative bytes | DLQ before commit |
 | DP leader dies | `lease.zone.leader` expires; leader mới tiếp tục scan |
 
 ## 5. Code map
 
 - `dataplane/src/leader/infra/storage.rs`: leader-only storage health, customer bucket-size scan và Kafka publish.
-- `job-orchestrator/src/reverse_provider/storage/listener.rs`: validate/update/NATS/commit.
-- `job-orchestrator/src/reverse_provider/storage/db.rs`: Personal/Tenant size update.
+- `job-orchestrator/src/storage_usage/worker.rs`: validate/update/notify/commit.
+- `job-orchestrator/src/storage_usage/store.rs`: idempotent Personal/Tenant size update.
 - `controlplane/internal/storage/`: authorized list API.
 - `dataplane/proto/platform_transport.proto`: `StorageBucketSizesSnapshotV1`.

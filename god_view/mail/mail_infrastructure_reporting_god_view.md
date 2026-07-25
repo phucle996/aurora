@@ -33,8 +33,8 @@ flowchart LR
     STREAM --> JO[JO blocking consumer]
     JO -->|scope/config guard| DB[(Controlplane PostgreSQL)]
     JO -->|fenced ephemeral aggregate| RJ
-    JO -->|best effort notification| NATS
-    NATS --> NS[Notification Service]
+    JO -->|best effort Central notification| RJ
+    RJ -->|aurora:realtime:notifications| NS[Notification Service]
     NS --> CENTRI[Centrifugo personal channel]
     CENTRI --> UI
     UI -->|renew returns latest snapshot| CP
@@ -51,9 +51,9 @@ flowchart LR
 1. Business `GET /consumers/:id` chỉ đọc PostgreSQL config và không trả runtime.
 2. `POST /consumers/:id/runtime/watch` kiểm tra Personal ownership hoặc Tenant membership bằng
    PostgreSQL rồi atomically:
-   - set `mail:runtime:watch-active:{zone_id}:{consumer_id}` TTL 30 giây, value
+   - set `mail:runtime:{consumer_id}:watch-active:{zone_id}` TTL 30 giây, value
      `{config_version}:{runtime_epoch}`;
-   - upsert actor vào `mail:runtime:watchers:{zone_id}:{consumer_id}` ZSET bằng Redis server time;
+   - upsert actor vào `mail:runtime:{consumer_id}:watchers:{zone_id}` ZSET bằng Redis server time;
    - XADD `MailConsumerRuntimeWatchRequestedV1` vào `mail:runtime:watch-requests`;
    - trả snapshot current cùng epoch nếu còn fresh.
 3. JO consumer group publish watch lên subject
@@ -68,11 +68,14 @@ flowchart LR
 8. JO validate protobuf, đúng một Personal/Tenant aggregate, workspace placement,
    active `config_version` và `slot < parallelism`.
 9. JO atomically fence Redis slot bằng `(config_version, runtime_generation, report_sequence)`, derive
-   aggregate và commit `mail:runtime:snapshot:{scope}:{consumer_id}` chỉ khi watch lease/epoch còn đúng.
-10. JO publish best-effort `mail.runtime.notifications.{actor_user_id}`. Notification Service lọc
+   aggregate và commit `mail:runtime:{consumer_id}:snapshot:{scope}` chỉ khi watch lease/epoch còn đúng.
+   Hash tag `{consumer_id}` giữ toàn bộ Lua/MGET key cùng Redis Cluster slot.
+10. JO publish best-effort envelope lên Shared Redis Pub/Sub
+   `aurora:realtime:notifications`. Notification Service lọc
    allowlist field rồi publish `mail.consumer.runtime.changed` vào `personal:{actor_user_id}`.
 
-NATS Core là at-most-once soft-state data path Central↔Zone; Centrifugo chỉ là viewer wake-up signal.
+NATS Core chỉ là at-most-once soft-state data path Central↔Zone. Shared Redis Pub/Sub là
+JO↔Notification nội vùng Central; Centrifugo chỉ là viewer wake-up signal.
 Mất notification/report không làm sai business correctness: UI renew watch và Dataplane heartbeat kế tiếp
 sẽ dựng lại Redis snapshot. NATS report lỗi không tạo durable retry backlog.
 
@@ -128,7 +131,7 @@ queue và broker identifier không được làm metric label.
 | Pod cũ report sau takeover | Generation + sequence Lua fence | Không overwrite slot mới |
 | Hai JO replica aggregate sai thứ tự | Runtime revision + lease compare khi commit | Snapshot mới không rollback |
 | Watch hết hạn giữa report | Lua recheck active lease lúc slot và snapshot commit | Không materialize/publish |
-| NATS/Centrifugo mất event | Redis snapshot + renew response | UI recover không cần status polling |
+| Shared Redis Pub/Sub/Centrifugo mất event | Redis snapshot + renew response | UI recover không cần status polling |
 | Redis lỗi trước NATS watch publish | Không ACK watch Stream, PEL reclaim | Idempotent retry |
 | NATS Core mất watch/report | At-most-once soft state, UI renew và heartbeat định kỳ | Tự phục hồi, không sai business |
 | Redis/DB lỗi khi aggregate | Report sample hiện tại có thể mất; heartbeat sau gửi lại | Snapshot không rollback |
@@ -142,7 +145,8 @@ queue và broker identifier không được làm metric label.
 | Watch HTTP/service | `controlplane/internal/mail/transport/http/handler/*_consumer_handler.go`, `service/*_consumer_service_impl.go` |
 | Pod-local runtime registry | `dataplane/src/executor/mail/runtime/context.rs` |
 | Watch-aware relay | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
-| Redis aggregate/NATS signal | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
+| Redis aggregate/realtime signal | `job-orchestrator/src/mail_runtime/reports.rs` |
+| NATS report intake | `job-orchestrator/src/mail_runtime/ingest.rs` |
 | Centrifugo bridge | `notification-service/src/service/mail/runtime.rs` |
 | Pod-local health state | `dataplane/src/executor/mail/supervisor/local_observer.rs` |
 | Zonal aggregate health | `dataplane/src/leader/infra/mail.rs` |

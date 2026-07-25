@@ -362,13 +362,13 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | Fixed envelope/render/JMAP taxonomy | `dataplane/src/executor/mail/processor/stream.rs` |
 | Config COW/lazy template | `dataplane/src/executor/mail/runtime/configuration.rs` |
 | Kafka platform projection entry | `dataplane/src/executor/mail/executor.rs` |
-| JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
-| JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/result_apply.rs` |
-| JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
+| JO periodic reconcile | `job-orchestrator/src/reconcile/mail/` |
+| JO Mail result routing | `job-orchestrator/src/results/mail/apply.rs` |
+| JO Mail result transaction/hard-delete | `job-orchestrator/src/results/mail/` |
 | Watch-aware reporter trên từng pod | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
 | Pod-local Mail snapshot | `dataplane/src/executor/mail/supervisor/local_observer.rs` |
 | Leader-only health/KV/OTel observer | `dataplane/src/leader/infra/mail.rs` |
-| JO consumer report apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
+| JO consumer report apply/settle | `job-orchestrator/src/mail_runtime/reports.rs` |
 | Mail runtime/processor tests | `dataplane/src/executor/mail/test/` |
 
 ## 15. Phase status

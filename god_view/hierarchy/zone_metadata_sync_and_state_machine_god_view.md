@@ -184,8 +184,9 @@ Nếu lag stale, Decision Engine giữ state hiện tại thay vì tự động 
 ## 9. Code map
 
 - `job-orchestrator/src/changefeed/worker.rs`: full metadata snapshot publisher.
-- `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: durable query consumer.
-- `job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs`: Zone report consumer.
+- `job-orchestrator/src/zone_state/metadata.rs`: durable query consumer.
+- `job-orchestrator/src/zone_state/worker.rs`: Zone report consumer.
+- `job-orchestrator/src/zone_state/watchdog.rs`: Shared Redis leader lease và durable timestamp watchdog.
 - `dataplane/src/leader/leadership.rs`: Zone leader election/failover và fenced session.
 - `dataplane/src/leader/zone_metadata.rs`: compacted snapshot listener/projector và repair query publisher.
 - `dataplane/src/leader/zone_report.rs`: Zone report aggregation.

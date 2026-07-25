@@ -299,10 +299,10 @@ Code shape:
 |---|---|
 | Aggregate + outbox CTE | `controlplane/internal/mail/repository/` |
 | WAL decode/publish | `job-orchestrator/src/changefeed/worker.rs` |
-| Reconciler | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
+| Reconciler | `job-orchestrator/src/reconcile/mail/` |
 | Kafka transport JO | `job-orchestrator/src/infra/kafka.rs` |
 | Kafka command intake | `dataplane/src/job_runtime/intake.rs` |
 | Mail projector | `dataplane/src/executor/mail/executor.rs` |
 | Zone KV apply/L1 | `dataplane/src/executor/mail/{projection,configuration}.rs` |
-| Result transaction | `job-orchestrator/src/reverse_provider/mail/` |
+| Result transaction | `job-orchestrator/src/results/mail/` |
 | Runtime watch | `controlplane/internal/mail/`, `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |

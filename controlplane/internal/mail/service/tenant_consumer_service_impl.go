@@ -490,9 +490,9 @@ return {lease,snapshot,now}
 		ctx,
 		s.sharedRedis,
 		[]string{
-			fmt.Sprintf("mail:runtime:watch-active:%s:%s", req.ZoneID, req.ID),
-			fmt.Sprintf("mail:runtime:watchers:%s:%s", req.ZoneID, req.ID),
-			fmt.Sprintf("mail:runtime:snapshot:tenant:%s", req.ID),
+			fmt.Sprintf("mail:runtime:{%s}:watch-active:%s", req.ID, req.ZoneID),
+			fmt.Sprintf("mail:runtime:{%s}:watchers:%s", req.ID, req.ZoneID),
+			fmt.Sprintf("mail:runtime:{%s}:snapshot:tenant", req.ID),
 		},
 		current.ConfigVersion,
 		req.ActorUserID.String(),

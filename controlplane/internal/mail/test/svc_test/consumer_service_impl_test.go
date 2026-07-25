@@ -278,7 +278,7 @@ func TestPersonalRuntimeWatchUsesShortLeaseAndRejectsPreviousEpoch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshotKey := "mail:runtime:snapshot:personal:" + current.ID.String()
+	snapshotKey := "mail:runtime:{" + current.ID.String() + "}:snapshot:personal"
 	redisServer.Set(snapshotKey, string(snapshot))
 
 	second, err := service.WatchConsumerRuntime(context.Background(), &mailEntity.WatchPersonalConsumerRuntime{

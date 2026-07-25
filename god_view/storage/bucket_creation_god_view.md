@@ -163,4 +163,4 @@ Không query Controlplane DB trong charging path. Event chỉ được publish s
 - `dataplane/src/executor/storage/bucket.rs`: physical executor.
 - `dataplane/src/job_runtime/execution.rs` + `completion.rs`: lease, retry/result/settlement.
 - `job-orchestrator/src/results/worker.rs`: result manual consumer.
-- `job-orchestrator/src/reverse_provider/storage/`: terminal transaction/lifecycle relay.
+- `job-orchestrator/src/results/storage/`: terminal transaction/lifecycle relay.

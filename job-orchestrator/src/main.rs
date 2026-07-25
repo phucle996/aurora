@@ -1,11 +1,16 @@
 mod changefeed;
 mod config;
+mod contracts;
 mod infra;
 mod job_topics;
+mod mail_runtime;
 mod observability;
 mod outbox;
+mod reconcile;
 mod results;
-mod reverse_provider;
+mod storage_usage;
+mod workers;
+mod zone_state;
 
 use changefeed::ChangefeedWorker;
 use config::Config;
@@ -13,7 +18,7 @@ use observability::logger::Logger;
 use observability::metrics::MetricsManager;
 use observability::otel::OtelTracer;
 use results::ResultWorker;
-use reverse_provider::ReverseProvider;
+use workers::RuntimeWorkers;
 
 struct OtelShutdownGuard;
 
@@ -91,7 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ownership_publisher.clone(),
     );
     let ownership_relay = outbox::OwnershipRelay::new(config.clone(), ownership_publisher);
-    let reverse_provider = ReverseProvider::new(
+    contracts::verify_generated_contracts();
+    let runtime_workers = RuntimeWorkers::new(
         config.clone(),
         cache_redis.clone(),
         kafka.clone(),
@@ -115,11 +121,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(error) => Err(format!("result consumer failed: {error}").into()),
             }
         }
-        res = reverse_provider.run() => {
-            MetricsManager::record_worker_termination("reverse_provider");
+        res = runtime_workers.run() => {
+            MetricsManager::record_worker_termination("runtime_workers");
             match res {
-                Ok(()) => Err("reverse provider stopped unexpectedly".into()),
-                Err(error) => Err(format!("reverse provider failed: {error}").into()),
+                Ok(()) => Err("runtime workers stopped unexpectedly".into()),
+                Err(error) => Err(format!("runtime workers failed: {error}").into()),
             }
         }
         res = ownership_relay.run() => {
@@ -129,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(error) => Err(format!("ownership relay failed: {error}").into()),
             }
         }
-        _ = reverse_provider::mail::reconciler::run_periodic_mail_reconciliation(
+        _ = reconcile::mail::run_periodic_mail_reconciliation(
             config.clone(), cache_redis.clone(), kafka.clone()
         ) => {
             MetricsManager::record_worker_termination("mail_reconciler");

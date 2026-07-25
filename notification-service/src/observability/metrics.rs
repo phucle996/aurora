@@ -12,7 +12,7 @@ use std::time::Duration;
 
 static HTTP_REQUESTS: OnceLock<Counter<u64>> = OnceLock::new();
 static HTTP_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
-static NATS_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
+static REDIS_REALTIME_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static REDIS_STREAM_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
@@ -26,7 +26,7 @@ impl MetricsManager {
     pub fn init() {
         let _ = Self::http_requests();
         let _ = Self::http_duration();
-        let _ = Self::nats_events();
+        let _ = Self::redis_realtime_events();
         let _ = Self::redis_calls();
         let _ = Self::redis_duration();
         let _ = Self::redis_stream_events();
@@ -52,11 +52,11 @@ impl MetricsManager {
         })
     }
 
-    fn nats_events() -> &'static Counter<u64> {
-        NATS_EVENTS.get_or_init(|| {
+    fn redis_realtime_events() -> &'static Counter<u64> {
+        REDIS_REALTIME_EVENTS.get_or_init(|| {
             global::meter("aurora-notification-service")
-                .u64_counter("notification_nats_events_total")
-                .with_description("Tong so luong su kien tieu thu tu NATS Core")
+                .u64_counter("notification_shared_redis_realtime_events_total")
+                .with_description("Shared Redis realtime PubSub outcomes")
                 .init()
         })
     }
@@ -116,13 +116,9 @@ impl MetricsManager {
         Self::http_duration().record(duration.as_secs_f64(), &attrs);
     }
 
-    /// Ghi nhận chỉ số sự kiện NATS Core
-    pub fn record_nats_event(subject: &str, status: &str) {
-        let attrs = [
-            KeyValue::new("subject", subject.to_string()),
-            KeyValue::new("status", status.to_string()),
-        ];
-        Self::nats_events().add(1, &attrs);
+    pub fn record_redis_realtime(kind: &'static str, status: &'static str) {
+        let attrs = [KeyValue::new("kind", kind), KeyValue::new("status", status)];
+        Self::redis_realtime_events().add(1, &attrs);
     }
 
     pub fn record_redis_call(channel: &str, status: &str, duration: Duration) {

@@ -9,6 +9,7 @@ use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationE
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_postgres::NoTls;
 
 use super::connection::parse_pg_config;
 use super::pgoutput::{
@@ -32,6 +33,7 @@ impl std::error::Error for PermanentChangeError {}
 pub struct ChangefeedWorker {
     config: Config,
     kafka: Arc<KafkaTransport>,
+    metadata_client: Arc<tokio_postgres::Client>,
     /// [COMMENT]: Cache desired_state của từng (zone_id, service_type) — dùng để phát hiện thay đổi thực sự.
     /// Persist qua các lần reconnect (không reset khi replication stream ngắt/reconnect).
     /// Key: (zone_id, service_type), Value: desired_state hiện tại (true = enabled).
@@ -47,10 +49,28 @@ impl ChangefeedWorker {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // [COMMENT]: Bootstrap snapshot từ DB để khởi tạo cache trước khi nhận WAL events.
         // Tránh publish false-positive khi JO restart và WAL replay các event cũ.
-        let snapshot = crate::reverse_provider::zone::db::query_all_zone_services_enabled(
-            &config.database_url,
-        )
-        .await?;
+        let (metadata_client, metadata_connection) =
+            tokio_postgres::connect(&config.database_url, NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(error) = metadata_connection.await {
+                Logger::sys_error(
+                    "changefeed.metadata_postgres",
+                    "Changefeed metadata PostgreSQL connection stopped",
+                    &error.to_string(),
+                );
+            }
+        });
+        metadata_client
+            .batch_execute(
+                "SET default_transaction_read_only = on; \
+                 SET statement_timeout = '5s'; \
+                 SET lock_timeout = '1s'; \
+                 SET idle_in_transaction_session_timeout = '5s'",
+            )
+            .await?;
+        let metadata_client = Arc::new(metadata_client);
+        let snapshot =
+            crate::zone_state::store::query_all_zone_services_enabled(&metadata_client).await?;
 
         // [COMMENT]: Flatten từ HashMap<zone_id, HashMap<svc_type, bool>>
         // sang HashMap<(zone_id, svc_type), bool> để lookup O(1).
@@ -72,6 +92,7 @@ impl ChangefeedWorker {
         Ok(Self {
             config,
             kafka,
+            metadata_client,
             desired_state_cache: std::sync::Mutex::new(cache),
         })
     }
@@ -571,11 +592,8 @@ impl ChangefeedWorker {
         }
 
         // [COMMENT]: Luôn publish full snapshot; compacted topic không phụ thuộc thứ tự delta khi pod cold-start.
-        let (status, services) = crate::reverse_provider::zone::db::query_zone_metadata(
-            &self.config.database_url,
-            &zone_id,
-        )
-        .await?;
+        let (status, services) =
+            crate::zone_state::store::query_zone_metadata(&self.metadata_client, &zone_id).await?;
         let event_id = uuid::Uuid::new_v4();
         let snapshot = ZoneMetadataSnapshotV1 {
             event_id: event_id.as_bytes().to_vec(),
