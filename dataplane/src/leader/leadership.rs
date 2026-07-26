@@ -5,6 +5,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::executor::hypervisor::HypervisorRuntime;
 use crate::executor::mail::MailRuntime;
 use crate::infra::kafka::KafkaTransport;
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
@@ -106,6 +107,7 @@ pub(crate) async fn run_zone_leader_supervisor(
     zone_kv: Arc<ZoneKvStore>,
     kafka: Arc<KafkaTransport>,
     mail_runtime: Arc<MailRuntime>,
+    hypervisor_runtime: Arc<HypervisorRuntime>,
     shutdown: CancellationToken,
 ) {
     // [COMMENT]: Boot UUID phân biệt incarnation; pod restart không được renew lease của process cũ.
@@ -170,6 +172,7 @@ pub(crate) async fn run_zone_leader_supervisor(
             zone_kv.clone(),
             kafka.clone(),
             mail_runtime.clone(),
+            hypervisor_runtime.clone(),
         );
         let mut renew = tokio::time::interval(LEADER_RENEW_INTERVAL);
         renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -277,6 +280,7 @@ fn spawn_zone_leader_duties(
     zone_kv: Arc<ZoneKvStore>,
     kafka: Arc<KafkaTransport>,
     mail_runtime: Arc<MailRuntime>,
+    hypervisor_runtime: Arc<HypervisorRuntime>,
 ) -> JoinSet<()> {
     let mut duties = JoinSet::new();
 
@@ -301,6 +305,7 @@ fn spawn_zone_leader_duties(
         session.clone(),
         config.clone(),
         zone_kv.clone(),
+        hypervisor_runtime,
     ));
     duties.spawn(super::infra::storage::run_storage_health_probe(
         session.clone(),

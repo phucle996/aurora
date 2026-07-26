@@ -82,6 +82,7 @@ pub fn decode(payload: &[u8]) -> Result<ValidatedResult, ContractError> {
         ));
     }
     if wire.message.len() > MAX_RESULT_MESSAGE_BYTES
+        || wire.result_payload.len() > MAX_RESULT_PAYLOAD_BYTES
         || wire
             .error_code
             .as_ref()
@@ -91,6 +92,14 @@ pub fn decode(payload: &[u8]) -> Result<ValidatedResult, ContractError> {
         return Err(ContractError::new(
             "JOB_RESULT_FIELD_INVALID",
             "result contains an oversized or malformed bounded field",
+        ));
+    }
+    if (wire.result_payload.is_empty() && wire.result_payload_schema_version != 0)
+        || (!wire.result_payload.is_empty() && wire.result_payload_schema_version == 0)
+    {
+        return Err(ContractError::new(
+            "JOB_RESULT_PAYLOAD_FENCE_INVALID",
+            "result payload and schema version must either both be present or both be absent",
         ));
     }
     if !crate::observability::otel::OtelTracer::is_valid_propagation_context(
@@ -122,6 +131,8 @@ mod tests {
             source_domain: "STORAGE".to_string(),
             traceparent: String::new(),
             tracestate: String::new(),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         }
     }
 

@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/job_result.proto",
             "proto/zone_report.proto",
             "proto/storage_job.proto",
+            "proto/hypervisor_job.proto",
             // [COMMENT]: ResourceOwnershipChangedV1 — contract ownership phía Billing.
             "proto/resource_ownership.proto",
         ],

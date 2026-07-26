@@ -76,7 +76,13 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // [COMMENT]: JMAP client + batcher được tạo đúng một lần cho toàn pod; cấu hình/auth sai làm bootstrap fail-fast.
     let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone())
         .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
-    let worker_pool = Arc::new(WorkerLifecycleManager::new(mail_runtime));
+    let hypervisor_runtime =
+        crate::executor::hypervisor::HypervisorRuntime::new(&cfg, zone_kv.clone())
+            .map_err(|error| format!("initialize Hypervisor runtime failed: {error}"))?;
+    let worker_pool = Arc::new(WorkerLifecycleManager::new(
+        mail_runtime,
+        hypervisor_runtime,
+    ));
 
     Ok(BootstrapResult {
         config: Arc::new(cfg),

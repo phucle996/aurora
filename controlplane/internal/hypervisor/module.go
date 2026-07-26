@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
@@ -14,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// HypervisorModule đại diện cho phân hệ tương tác với ảo hóa (KVM, vSphere, v.v.).
+// HypervisorModule owns Proxmox-backed desired VM state and reported node state.
 // Đây là module Tier-1 (Non-Critical): Lỗi khởi tạo phân hệ này không được phép
 // gây sập hệ thống (Crash-Loopback) mà chỉ làm suy giảm tính năng (Graceful Degradation).
 type HypervisorModule struct {
@@ -25,6 +26,10 @@ type HypervisorModule struct {
 	NodeRepository hypervisorRepoInterface.NodeRepository
 	NodeService    hypervisorSvcInterface.NodeService
 	NodeHandler    *hypervisorHandler.NodeHandler
+	L1Registry     *cacheengine.CacheRegistry
+	VMRepository   hypervisorRepoInterface.PersonalVMRepository
+	VMService      hypervisorSvcInterface.PersonalVMService
+	VMHandler      *hypervisorHandler.PersonalVMHandler
 }
 
 // IsEnabled trả về true nếu module được khởi tạo thành công và sẵn sàng phục vụ.
@@ -41,18 +46,30 @@ func (m *HypervisorModule) GetError() error {
 }
 
 // NewModule khởi tạo HypervisorModule với đầy đủ các layered dependencies.
-func NewModule(cfg *config.Config, db *pgxpool.Pool) (*HypervisorModule, error) {
+func NewModule(
+	cfg *config.Config,
+	db *pgxpool.Pool,
+	cacheEngine *cacheengine.CacheRegistry,
+) (*HypervisorModule, error) {
 	if cfg == nil {
 		return nil, errors.New("hypervisor module: config is required")
 	}
 	if db == nil {
 		return nil, errors.New("hypervisor module: database connection pool is required")
 	}
+	if cacheEngine == nil {
+		return nil, errors.New("hypervisor module: cache engine registry is required")
+	}
 
-	// [COMMENT]: Wire dependencies theo nguyên lý Clean Architecture / Domain Driven Design
+	// Constructors below only wire dependencies; request validation remains at
+	// the HTTP handler and is not repeated in service or repository layers.
 	nodeRepo := hypervisorRepoImpl.NewNodeRepoPostgres(cfg, db)
 	nodeSvc := hypervisorSvcImpl.NewNodeService(nodeRepo)
 	nodeHandler := hypervisorHandler.NewNodeHandler(nodeSvc)
+
+	vmRepo := hypervisorRepoImpl.NewPersonalVMRepo(db, cfg)
+	vmSvc := hypervisorSvcImpl.NewPersonalVMService(vmRepo)
+	vmHandler := hypervisorHandler.NewPersonalVMHandler(vmSvc)
 
 	return &HypervisorModule{
 		enabled:        true,
@@ -61,6 +78,10 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*HypervisorModule, error) 
 		NodeRepository: nodeRepo,
 		NodeService:    nodeSvc,
 		NodeHandler:    nodeHandler,
+		L1Registry:     cacheEngine,
+		VMRepository:   vmRepo,
+		VMService:      vmSvc,
+		VMHandler:      vmHandler,
 	}, nil
 }
 
@@ -79,7 +100,7 @@ func (m *HypervisorModule) Bootstrap(ctx context.Context) error {
 		// Bỏ qua không khởi chạy các scheduler ngầm nếu module bị degraded
 		return nil
 	}
-	// Khởi động các worker định kỳ đồng bộ VM, v.v.
+	// VM execution and node observation run outside Controlplane.
 	return nil
 }
 
@@ -89,5 +110,3 @@ func (m *HypervisorModule) Stop() {
 	}
 	// Dừng an toàn các workers
 }
-
-

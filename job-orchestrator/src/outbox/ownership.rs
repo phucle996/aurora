@@ -188,6 +188,7 @@ async fn claim_pending(
     lease_secs: u64,
 ) -> Result<Vec<(Uuid, String)>, tokio_postgres::Error> {
     let lease_secs = i64::try_from(lease_secs).unwrap_or(30);
+    // [COMMENT]: Ép kiểu $3::bigint để tokio-postgres xác định đúng OID khi nhân với INTERVAL '1 second'
     let rows = client
         .query(
             "WITH candidates AS ( \
@@ -201,7 +202,7 @@ async fn claim_pending(
              ) \
              UPDATE storage.storage_outbox_records o \
              SET ownership_locked_by = $2, \
-                 ownership_locked_until = NOW() + ($3 * INTERVAL '1 second'), \
+                 ownership_locked_until = NOW() + ($3::bigint * INTERVAL '1 second'), \
                  ownership_attempt_count = ownership_attempt_count + 1 \
              FROM candidates c WHERE o.id = c.id \
              RETURNING o.event_id, o.job_topic",

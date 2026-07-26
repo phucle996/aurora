@@ -59,6 +59,8 @@ impl Executor for StorageAccessPrepareExecutor {
         // The opaque id was already returned by Controlplane to the client.
         Ok(ExecutionResult {
             message: "ACCESS_READY".to_string(),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         })
     }
 }

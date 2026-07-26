@@ -330,7 +330,11 @@ impl ChangefeedWorker {
             routing_scope.is_empty()
         };
 
-        if event_id.is_empty() || route_missing || job_topic.is_empty() || source_domain.is_empty()
+        if event_id.is_empty()
+            || route_missing
+            || job_topic.is_empty()
+            || source_domain.is_empty()
+            || resource_id.is_empty()
         {
             return Err(Box::new(PermanentChangeError(
                 "monitored outbox row is missing event_id/zone route/job_topic".to_string(),
@@ -448,7 +452,7 @@ impl ChangefeedWorker {
                 attempt: 0,
                 job_topic: job_topic_clone.clone(),
                 source_domain: source_domain_clone.clone(),
-                resource_id: resource_id_clone,
+                resource_id: resource_id_clone.clone(),
                 payload_schema_version,
                 payload: payload_bytes,
                 trace_id: trace_id_bytes,
@@ -462,7 +466,9 @@ impl ChangefeedWorker {
 
             match self
                 .kafka
-                .publish_message(&topic, event_uuid.as_bytes(), &command)
+                // Aggregate ordering is resource-scoped. Replays retain the
+                // same key even when a later operation receives a new event_id.
+                .publish_message(&topic, resource_id_clone.as_bytes(), &command)
                 .await
             {
                 Ok(()) => {

@@ -1,39 +1,45 @@
-pub mod core;
-pub mod vps;
+mod executor;
+mod processor;
+mod runtime;
 
-use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::job_runtime::model::ValidatedJob;
-use crate::observability::logger::Logger;
+use crate::config::Config;
+use crate::infra::zone_kv::ZoneKvStore;
 use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// ============================================================================
-/// 📂 MODULE: executor/hypervisor/mod.rs - BỘ ĐỊNH TUYẾN NỘI BỘ CHO WORKLOAD VPS
-/// ============================================================================
-///
-/// 📌 VAI TRÒ (ROLE):
-///   - Đóng vai trò là Sub-Router phân phối các Action cụ thể trong phân hệ VPS.
-///   - Giải quyết bài toán: `workload.action` (ví dụ: `vps.create` và `vps.resize`).
-///
-pub async fn dispatch_vps_job(
-    action: &str,
-    payload: Arc<ValidatedJob>,
-) -> Result<ExecutionResult, ExecutorError> {
-    Logger::sys_info(
-        "executor.vps.router",
-        &format!(
-            "VPS Sub-Router: Dispatching action '{}' for job_id={}",
-            action, payload.job_id
-        ),
-    );
+pub use executor::dispatch_hypervisor_job;
+pub(crate) use processor::ProxmoxNode;
 
-    match action {
-        "create" | "resize" => {
-            let exec = vps::VpsExecutor;
-            exec.execute(payload).await
-        }
-        _ => Err(ExecutorError::ExecutionFailed(format!(
-            "Unsupported VPS action: {}",
-            action
-        ))),
+pub mod hypervisor_proto {
+    include!(concat!(env!("OUT_DIR"), "/hypervisor.rs"));
+}
+
+/// Shared per-pod runtime, equivalent to `MailRuntime`: HTTP pooling,
+/// mutation backpressure and Zone-local provider identity have one owner.
+pub struct HypervisorRuntime {
+    pub(crate) proxmox: Arc<processor::ProxmoxClient>,
+    pub(crate) provider_bindings: Arc<runtime::VmProviderBindingRuntime>,
+    mutation_limit: Arc<Semaphore>,
+}
+
+impl HypervisorRuntime {
+    pub fn new(config: &Config, zone_kv: Arc<ZoneKvStore>) -> Result<Arc<Self>, String> {
+        Ok(Arc::new(Self {
+            proxmox: Arc::new(processor::ProxmoxClient::new(config)?),
+            provider_bindings: Arc::new(runtime::VmProviderBindingRuntime::new(zone_kv)),
+            mutation_limit: Arc::new(Semaphore::new(config.proxmox_max_concurrent_jobs)),
+        }))
+    }
+
+    pub(crate) async fn acquire_vm_mutation_permit(&self) -> Result<OwnedSemaphorePermit, String> {
+        self.mutation_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "Hypervisor mutation limiter is closed".to_string())
+    }
+
+    pub(crate) async fn probe_nodes(&self) -> Result<Vec<ProxmoxNode>, String> {
+        self.proxmox.fetch_nodes().await
     }
 }

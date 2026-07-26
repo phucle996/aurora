@@ -156,6 +156,9 @@ fn notification_title(job_topic: &str, status: &str) -> &'static str {
         ("storage.credential.delete", "SUCCEEDED") => "Storage Credential Deleted",
         ("storage.credential.delete", "FAILED") => "Storage Credential Deletion Failed",
         ("storage.credential.delete", _) => "Deleting Storage Credential",
+        ("hypervisor.vm.create", "SUCCEEDED") => "Virtual Machine Ready",
+        ("hypervisor.vm.create", "FAILED") => "Virtual Machine Creation Failed",
+        ("hypervisor.vm.create", _) => "Creating Virtual Machine",
         _ => "Job Notification",
     }
 }

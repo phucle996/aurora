@@ -115,7 +115,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ ảo hóa Hypervisor
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	hypervisorModule, err := hypervisor.NewModule(cfg, db)
+	hypervisorModule, err := hypervisor.NewModule(cfg, db, cacheEngine)
 	if err != nil {
 		// Log lỗi nghiêm trọng mức hệ thống phục vụ Alerting/Observability
 		logger.SysError("graceful.degradation.hypervisor", fmt.Sprintf("Failed to initialize hypervisor module: %v. Running in degraded mode.", err))

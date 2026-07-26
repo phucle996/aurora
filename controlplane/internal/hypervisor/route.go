@@ -1,6 +1,8 @@
 package hypervisor
 
 import (
+	"controlplane/internal/http/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,23 +14,30 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 
 	router.GET("/admin/hypervisor/nodes", module.NodeHandler.ListNodes)
 
-	// Group định tuyến cho hypervisor cũ
-	group := router.Group("/api/v1/hypervisor")
+	statusGroup := router.Group("/api/v1/hypervisor")
 	{
-		group.GET("/status", func(c *gin.Context) {
+		statusGroup.GET("/status", func(c *gin.Context) {
 			c.JSON(200, gin.H{
 				"status":  "healthy",
 				"message": "Phân hệ Hypervisor đang hoạt động ổn định.",
 			})
 		})
-
-		group.GET("/vms", func(c *gin.Context) {
-			c.JSON(200, gin.H{
-				"vms": []gin.H{
-					{"id": "vm-01", "name": "SRE-Bastion-Host", "status": "running"},
-					{"id": "vm-02", "name": "DB-Replica-01", "status": "running"},
-				},
-			})
-		})
 	}
+
+	personal := router.Group("/api/v1/personal/hypervisor")
+	personal.POST(
+		"/vms",
+		middleware.Authorize("hypervisor:vm:create", module.L1Registry, "*"),
+		module.VMHandler.Create,
+	)
+	personal.GET(
+		"/vms",
+		middleware.Authorize("hypervisor:vm:read", module.L1Registry, "*"),
+		module.VMHandler.List,
+	)
+	personal.GET(
+		"/vms/:id",
+		middleware.Authorize("hypervisor:vm:read", module.L1Registry, "*"),
+		module.VMHandler.Get,
+	)
 }

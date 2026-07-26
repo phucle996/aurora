@@ -157,6 +157,7 @@ impl AppContainer {
             self.zone_kv.clone(),
             self.kafka.clone(),
             self.worker_pool.mail_runtime.clone(),
+            self.worker_pool.hypervisor_runtime.clone(),
             self.worker_pool.cancel_token(),
             self.worker_pool.track_task(),
         );
@@ -222,6 +223,7 @@ impl AppContainer {
                     retry_tx,
                     zone_id: self.config.zone_id.clone(),
                     mail_runtime: self.worker_pool.mail_runtime.clone(),
+                    hypervisor_runtime: self.worker_pool.hypervisor_runtime.clone(),
                     cleanup_spawner: self.worker_pool.task_tracker(),
                     shutdown: self.worker_pool.cancel_token(),
                 },

@@ -267,6 +267,8 @@ pub async fn apply_mail_consumer_upsert(
             if event.config_version < head.version {
                 return Ok(ExecutionResult {
                     message: "mail consumer upsert projection STALE".to_string(),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
             if event.config_version == head.version {
@@ -288,6 +290,8 @@ pub async fn apply_mail_consumer_upsert(
                         "mail consumer upsert projection DUPLICATE{}",
                         if repaired { "/REPAIRED" } else { "" }
                     ),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
         }
@@ -323,6 +327,8 @@ pub async fn apply_mail_consumer_upsert(
         if result.is_ok() {
             return Ok(ExecutionResult {
                 message: "mail consumer upsert projection APPLIED".to_string(),
+                result_payload: Vec::new(),
+                result_payload_schema_version: 0,
             });
         }
     }
@@ -376,6 +382,8 @@ pub async fn apply_mail_consumer_delete(
             if event.config_version < head.version {
                 return Ok(ExecutionResult {
                     message: "mail consumer delete projection STALE".to_string(),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
             if event.config_version == head.version {
@@ -386,6 +394,8 @@ pub async fn apply_mail_consumer_delete(
                 }
                 return Ok(ExecutionResult {
                     message: "mail consumer delete projection DUPLICATE".to_string(),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
         }
@@ -408,6 +418,8 @@ pub async fn apply_mail_consumer_delete(
         if result.is_ok() {
             return Ok(ExecutionResult {
                 message: "mail consumer delete projection APPLIED".to_string(),
+                result_payload: Vec::new(),
+                result_payload_schema_version: 0,
             });
         }
     }
@@ -504,6 +516,8 @@ pub async fn apply_mail_template_version_published(
             if event.template_revision < head.revision {
                 return Ok(ExecutionResult {
                     message: "mail template projection STALE".to_string(),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
             if event.template_revision == head.revision {
@@ -525,6 +539,8 @@ pub async fn apply_mail_template_version_published(
                         "mail template projection DUPLICATE{}",
                         if repaired { "/REPAIRED" } else { "" }
                     ),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
         }
@@ -556,6 +572,8 @@ pub async fn apply_mail_template_version_published(
         if result.is_ok() {
             return Ok(ExecutionResult {
                 message: "mail template projection APPLIED".to_string(),
+                result_payload: Vec::new(),
+                result_payload_schema_version: 0,
             });
         }
     }
@@ -607,6 +625,8 @@ pub async fn apply_mail_template_deleted(
             if event.template_revision < head.revision {
                 return Ok(ExecutionResult {
                     message: "mail template delete projection STALE".to_string(),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
             if event.template_revision == head.revision {
@@ -617,6 +637,8 @@ pub async fn apply_mail_template_deleted(
                 }
                 return Ok(ExecutionResult {
                     message: "mail template delete projection DUPLICATE".to_string(),
+                    result_payload: Vec::new(),
+                    result_payload_schema_version: 0,
                 });
             }
         }
@@ -639,6 +661,8 @@ pub async fn apply_mail_template_deleted(
         if result.is_ok() {
             return Ok(ExecutionResult {
                 message: "mail template delete projection APPLIED".to_string(),
+                result_payload: Vec::new(),
+                result_payload_schema_version: 0,
             });
         }
     }
@@ -693,6 +717,8 @@ pub async fn apply_mail_reconcile_completed(
         {
             return Ok(ExecutionResult {
                 message: "mail reconcile marker STALE_OR_DUPLICATE".to_string(),
+                result_payload: Vec::new(),
+                result_payload_schema_version: 0,
             });
         }
         let marker = ReconcileMarker {
@@ -714,6 +740,8 @@ pub async fn apply_mail_reconcile_completed(
         if result.is_ok() {
             return Ok(ExecutionResult {
                 message: "mail reconcile marker APPLIED".to_string(),
+                result_payload: Vec::new(),
+                result_payload_schema_version: 0,
             });
         }
     }

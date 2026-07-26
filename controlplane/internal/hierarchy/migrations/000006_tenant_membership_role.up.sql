@@ -5,9 +5,17 @@ UPDATE tenant_memberships
 SET role='tenant_owner'
 WHERE is_ownership=true;
 
-ALTER TABLE tenant_memberships
-    ADD CONSTRAINT ck_tenant_membership_role
-    CHECK (role ~ '^tenant_[a-z0-9_]+$');
+-- [COMMENT]: Thêm ràng buộc check role format theo cơ chế idempotent tránh lỗi duplicate_object (SQLSTATE 42710)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'ck_tenant_membership_role'
+    ) THEN
+        ALTER TABLE tenant_memberships
+            ADD CONSTRAINT ck_tenant_membership_role
+            CHECK (role ~ '^tenant_[a-z0-9_]+$');
+    END IF;
+END $$;
 
 -- [COMMENT]: Membership role is the canonical tenant authorization binding.
 -- Keep the legacy assignment projection synchronized for existing consumers,

@@ -250,7 +250,7 @@ services:
       REPLICATION_SLOT_NAME: outbox_slot
     volumes:
       - ./dev/postgres/provision-changefeed.sh:/usr/local/bin/provision-changefeed.sh:ro
-    entrypoint: ["/bin/sh", "/usr/local/bin/provision-changefeed.sh"]
+    entrypoint: [ "/bin/sh", "/usr/local/bin/provision-changefeed.sh" ]
     depends_on:
       psql:
         condition: service_healthy
@@ -892,7 +892,7 @@ services:
       AUTH_REDIS_URL: "redis://acr:aurora-dev-acr-secret@controlplane-acr-redis:6379/0"
       SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.7Bjv38bvXX4DuXpMl3rVWWuP"
+      VAULT_TOKEN: "hvs.bmEYXu28616H11YtER7uuejz"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       # Enable only after the corresponding v1 public key has been provisioned
       # into the Zone Storage Authz deployment.
@@ -975,7 +975,7 @@ services:
     volumes:
       - controlplane_timeline_scylla_data:/var/lib/scylla
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh --no-color -e 'SELECT now() FROM system.local' 127.0.0.1 9042 >/dev/null 2>&1"]
+      test: [ "CMD-SHELL", "cqlsh --no-color -e 'SELECT now() FROM system.local' 127.0.0.1 9042 >/dev/null 2>&1" ]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -1006,6 +1006,10 @@ services:
       - "8085:8080" # Admin HTTP API & Web UI (Dành cho dev cấu hình)
     environment:
       - STALWART_RECOVERY_ADMIN=admin:27012004
+      # [COMMENT]: Tắt cơ chế chặn IP tự động (security.ip-blocked) của Stalwart trong môi trường dev
+      - STALWART_SECURITY_BLOCK_ENABLED=false
+      # [COMMENT]: Đưa dải IP Docker internal vào Trusted Network để Stalwart không chặn dataplane/controlplane
+      - STALWART_SECURITY_TRUSTED_NETWORK=172.16.0.0/12,127.0.0.1/8
     volumes:
       - controlplane_stalwart_etc:/etc/stalwart
       - controlplane_stalwart_data:/var/lib/stalwart

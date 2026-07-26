@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::executor::hypervisor::HypervisorRuntime;
 use crate::executor::mail::MailRuntime;
 use crate::infra::kafka::KafkaTransport;
 use crate::infra::zone_kv::ZoneKvStore;
@@ -28,13 +29,21 @@ impl ZoneLeaderSupervisor {
         zone_kv: Arc<ZoneKvStore>,
         kafka: Arc<KafkaTransport>,
         mail_runtime: Arc<MailRuntime>,
+        hypervisor_runtime: Arc<HypervisorRuntime>,
         shutdown: CancellationToken,
         task_guard: TaskGuard,
     ) {
         tokio::spawn(async move {
             let _task_guard = task_guard;
-            leadership::run_zone_leader_supervisor(config, zone_kv, kafka, mail_runtime, shutdown)
-                .await;
+            leadership::run_zone_leader_supervisor(
+                config,
+                zone_kv,
+                kafka,
+                mail_runtime,
+                hypervisor_runtime,
+                shutdown,
+            )
+            .await;
         });
     }
 }

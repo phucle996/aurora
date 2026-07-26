@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   Lock,
   Mail,
+  Server,
   Users,
 } from "lucide-react";
 
@@ -15,6 +16,7 @@ export type NavigationId =
   | "users"
   | "rbac"
   | "storage"
+  | "compute"
   | "mail"
   | "billing";
 
@@ -69,6 +71,14 @@ export function consoleNavigation(
       icon: Lock,
       breadcrumb: ["Console", "Access Control"],
       permission: { key: "iam:role", action: "read" },
+    },
+    {
+      id: "compute",
+      label: "Virtual Machines",
+      path: "/compute",
+      icon: Server,
+      breadcrumb: ["Console", "Virtual Machines"],
+      permission: { key: "hypervisor:vm", action: "read" },
     },
     {
       id: "storage",

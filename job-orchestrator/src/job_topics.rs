@@ -19,6 +19,7 @@ pub fn is_registered(source_domain: &str, job_topic: &str) -> bool {
                 | "storage.credential.delete"
                 | "storage.access.prepare"
         ),
+        "HYPERVISOR" => matches!(job_topic, "hypervisor.vm.create"),
         _ => false,
     }
 }
@@ -34,5 +35,7 @@ mod tests {
         assert!(!is_registered("STORAGE", "storage.object.sts"));
         assert!(!is_registered("MAIL", "storage.bucket.create"));
         assert!(!is_registered("STORAGE", "storage.unknown"));
+        assert!(is_registered("HYPERVISOR", "hypervisor.vm.create"));
+        assert!(!is_registered("STORAGE", "hypervisor.vm.create"));
     }
 }

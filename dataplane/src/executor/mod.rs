@@ -45,11 +45,12 @@ pub enum ExecutorError {
 
 /// Cấu trúc kết quả trả về sau khi thực thi nghiệp vụ hoàn tất.
 pub struct ExecutionResult {
-    // Loại bỏ các trường 'success' và 'return_code' vì chúng không được sử dụng ở tầng truyền kết quả
-    // qua Redis Stream lên Controlplane. Việc hardcode "SUCCEEDED" / "FAILED" trên tầng cao giúp
-    // đơn giản hóa và tăng tính an toàn dữ liệu.
     /// Chuỗi thông báo kỹ thuật mô tả kết quả xử lý.
     pub message: String,
+    /// Domain result payload is returned only by workflows whose authoritative
+    /// Central state needs provider identity after the Zone side effect.
+    pub result_payload: Vec<u8>,
+    pub result_payload_schema_version: u32,
 }
 
 #[async_trait]

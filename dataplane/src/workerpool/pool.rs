@@ -26,6 +26,9 @@ pub struct WorkerLifecycleManager {
 
     /// [COMMENT]: Một JMAP mail runtime dùng chung toàn pod để micro-batch job từ mọi worker.
     pub mail_runtime: Arc<crate::executor::mail::MailRuntime>,
+    /// [COMMENT]: Hypervisor runtime mirrors MailRuntime: all workers reuse one
+    /// HTTP pool, mutation limiter and Zone-local provider binding owner.
+    pub hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,13 +60,17 @@ impl WorkerStateCounts {
 }
 
 impl WorkerLifecycleManager {
-    pub fn new(mail_runtime: Arc<crate::executor::mail::MailRuntime>) -> Self {
+    pub fn new(
+        mail_runtime: Arc<crate::executor::mail::MailRuntime>,
+        hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
+    ) -> Self {
         Self {
             cancel_token: CancellationToken::new(),
             active_workers: Mutex::new(HashMap::new()),
             next_generation: AtomicU64::new(1),
             tracker: Arc::new(TaskTracker::new()),
             mail_runtime,
+            hypervisor_runtime,
         }
     }
 

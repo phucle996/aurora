@@ -69,6 +69,8 @@ impl Executor for BucketResizeExecutor {
 
         Ok(ExecutionResult {
             message: format!("Bucket '{}' resized successfully", sync_data.name),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         })
     }
 }

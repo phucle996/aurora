@@ -1,5 +1,6 @@
 pub mod apply;
 pub mod contract;
+pub mod hypervisor;
 pub mod mail;
 pub mod notify;
 pub mod quarantine;

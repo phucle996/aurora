@@ -9,9 +9,9 @@ const JOB_EXECUTION_LEASE_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn acquire_execution_lease(
     zone_kv: &ZoneKvStore,
-    job_id: &str,
+    resource_execution_identity: &str,
 ) -> Result<Option<ZoneLease>, String> {
-    let job_key_digest = Sha256::digest(job_id.as_bytes());
+    let job_key_digest = Sha256::digest(resource_execution_identity.as_bytes());
     let lock_key = format!("lease.job.{job_key_digest:x}");
     let owner_id = format!(
         "{}-{}",

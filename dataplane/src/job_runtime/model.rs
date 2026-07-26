@@ -151,16 +151,8 @@ impl ValidatedJob {
             .map(|(workload, _)| workload)
             .unwrap_or_default();
         match (workload, command.source_domain.as_str()) {
-            ("mail", "MAIL") | ("storage", "STORAGE") => {}
-            ("vps", _) => {
-                // JO currently has no durable IAM/VPS result owner. Executing
-                // the side effect would settle a command whose result is DLQed.
-                return Err(JobValidationError::new(
-                    "JOB_WORKLOAD_ROUTE_UNSUPPORTED",
-                    "vps commands are disabled until a durable result owner is implemented",
-                ));
-            }
-            ("mail" | "storage", _) => {
+            ("mail", "MAIL") | ("storage", "STORAGE") | ("hypervisor", "HYPERVISOR") => {}
+            ("mail" | "storage" | "hypervisor", _) => {
                 return Err(JobValidationError::new(
                     "JOB_SOURCE_DOMAIN_MISMATCH",
                     "source_domain does not own the declared workload",
@@ -352,12 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn validation_disables_vps_until_result_owner_exists() {
+    fn validation_accepts_hypervisor_commands_from_the_hypervisor_domain() {
         let mut command = command();
-        command.job_topic = "vps.create".to_string();
-        command.source_domain = "IAM".to_string();
-        let error = ValidatedJob::from_command(command, "zone-a", 5).unwrap_err();
-        assert_eq!(error.code, "JOB_WORKLOAD_ROUTE_UNSUPPORTED");
+        command.job_topic = "hypervisor.vm.create".to_string();
+        command.source_domain = "HYPERVISOR".to_string();
+        let job = ValidatedJob::from_command(command, "zone-a", 5).expect("valid command");
+        assert_eq!(job.job_topic, "hypervisor.vm.create");
     }
 
     #[test]

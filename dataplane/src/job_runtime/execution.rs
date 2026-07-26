@@ -98,6 +98,7 @@ pub struct JobExecutionRuntime {
     retry_tx: tokio::sync::mpsc::Sender<RetryRequest>,
     zone_id: String,
     mail_runtime: Arc<crate::executor::mail::MailRuntime>,
+    hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
     cleanup_spawner: Arc<dyn CleanupTaskSpawner>,
     shutdown: CancellationToken,
 }
@@ -110,6 +111,7 @@ pub struct JobExecutionDependencies {
     pub retry_tx: tokio::sync::mpsc::Sender<RetryRequest>,
     pub zone_id: String,
     pub mail_runtime: Arc<crate::executor::mail::MailRuntime>,
+    pub hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
     pub cleanup_spawner: Arc<dyn CleanupTaskSpawner>,
     pub shutdown: CancellationToken,
 }
@@ -124,6 +126,7 @@ impl JobExecutionRuntime {
             retry_tx: dependencies.retry_tx,
             zone_id: dependencies.zone_id,
             mail_runtime: dependencies.mail_runtime,
+            hypervisor_runtime: dependencies.hypervisor_runtime,
             cleanup_spawner: dependencies.cleanup_spawner,
             shutdown: dependencies.shutdown,
         }
@@ -139,13 +142,14 @@ impl JobExecutionRuntime {
             release_admitted_job(&self.admitted_jobs, "shutdown_before_lease");
             return;
         }
+        let lease_identity = format!("{}:{}", queued.job.source_domain, queued.job.resource_id);
         let lease_result = tokio::select! {
             biased;
             _ = self.shutdown.cancelled() => {
                 release_admitted_job(&self.admitted_jobs, "shutdown_during_lease");
                 return;
             }
-            result = acquire_execution_lease(&self.zone_kv, &queued.job.job_id) => result,
+            result = acquire_execution_lease(&self.zone_kv, &lease_identity) => result,
         };
         let lease = match lease_result {
             Ok(Some(lease)) => lease,
@@ -334,6 +338,7 @@ impl JobExecutionRuntime {
             let workload = AssertUnwindSafe(execute_workload(
                 job.clone(),
                 self.mail_runtime.clone(),
+                self.hypervisor_runtime.clone(),
                 &self.zone_id,
                 self.zone_kv.clone(),
             ))
@@ -527,6 +532,7 @@ impl JobExecutionRuntime {
 async fn execute_workload(
     job: Arc<ValidatedJob>,
     mail_runtime: Arc<crate::executor::mail::MailRuntime>,
+    hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
     zone_id: &str,
     zone_kv: Arc<ZoneKvStore>,
 ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
@@ -541,7 +547,10 @@ async fn execute_workload(
         "mail" => {
             crate::executor::mail::dispatch_mail_job(action, job, mail_runtime, zone_id).await
         }
-        "vps" => crate::executor::hypervisor::dispatch_vps_job(action, job).await,
+        "hypervisor" => {
+            crate::executor::hypervisor::dispatch_hypervisor_job(action, job, hypervisor_runtime)
+                .await
+        }
         "storage" => crate::executor::storage::dispatch_storage_job(action, job, zone_kv).await,
         _ => Err(crate::executor::ExecutorError::ExecutionFailed(format!(
             "Unsupported workload type: {workload}"

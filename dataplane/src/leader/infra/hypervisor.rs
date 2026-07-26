@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::super::leadership::ZoneLeaderSession;
 use crate::config::Config;
-use crate::executor::hypervisor::core::client::{ProxmoxClient, ProxmoxNodeRaw};
+use crate::executor::hypervisor::{HypervisorRuntime, ProxmoxNode};
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::{LogFields, Logger};
 
@@ -35,6 +35,7 @@ pub(crate) async fn run_hypervisor_health_probe(
     session: ZoneLeaderSession,
     config: Arc<Config>,
     zone_kv: Arc<ZoneKvStore>,
+    hypervisor_runtime: Arc<HypervisorRuntime>,
 ) {
     if config.proxmox_api_url.is_empty() || config.proxmox_api_token.is_empty() {
         Logger::sys_warn(
@@ -46,8 +47,6 @@ pub(crate) async fn run_hypervisor_health_probe(
         cancel.cancelled().await;
         return;
     }
-    let client = ProxmoxClient::new(&config);
-
     loop {
         let now = now_seconds();
         let metadata = match zone_kv.read_zone_metadata().await {
@@ -87,7 +86,7 @@ pub(crate) async fn run_hypervisor_health_probe(
             let cancel = session.cancellation_token();
             match tokio::select! {
                 _ = cancel.cancelled() => return,
-                result = client.fetch_nodes() => result,
+                result = hypervisor_runtime.probe_nodes() => result,
             } {
                 Ok(nodes) => nodes
                     .iter()
@@ -200,7 +199,7 @@ async fn load_previous_hypervisor_nodes_as_disconnected(
     previous
 }
 
-fn compute_hypervisor_node_health_status(node: &ProxmoxNodeRaw) -> String {
+fn compute_hypervisor_node_health_status(node: &ProxmoxNode) -> String {
     if node.status != "online" {
         return "disconnected".to_string();
     }

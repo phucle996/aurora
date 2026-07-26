@@ -55,11 +55,20 @@ pub struct JobExecutionResult {
     pub job_topic: String,
     pub source_domain: String,
     pub trace_id: String,
+    pub result_payload: Vec<u8>,
+    pub result_payload_schema_version: u32,
 }
 
 impl JobExecutionResult {
     pub fn processing(job: &ValidatedJob) -> Self {
-        Self::new(job, CompletionStatus::Processing, None, String::new())
+        Self::new(
+            job,
+            CompletionStatus::Processing,
+            None,
+            String::new(),
+            Vec::new(),
+            0,
+        )
     }
 
     pub fn timeout(job: &ValidatedJob) -> Self {
@@ -68,6 +77,8 @@ impl JobExecutionResult {
             CompletionStatus::Failed,
             Some("EXECUTION_TIMEOUT".to_string()),
             "Job execution cancelled by the lease watchdog after its deadline".to_string(),
+            Vec::new(),
+            0,
         )
     }
 
@@ -76,18 +87,29 @@ impl JobExecutionResult {
         outcome: Result<ExecutionResult, ExecutorError>,
     ) -> Self {
         match outcome {
-            Ok(result) => Self::new(job, CompletionStatus::Succeeded, None, result.message),
+            Ok(result) => Self::new(
+                job,
+                CompletionStatus::Succeeded,
+                None,
+                result.message,
+                result.result_payload,
+                result.result_payload_schema_version,
+            ),
             Err(ExecutorError::ExecutionFailed(message)) => Self::new(
                 job,
                 CompletionStatus::Failed,
                 Some("EXECUTION_FAILED".to_string()),
                 message,
+                Vec::new(),
+                0,
             ),
             Err(ExecutorError::Retryable(message)) => Self::new(
                 job,
                 CompletionStatus::Retryable,
                 Some("TRANSIENT_INFRASTRUCTURE".to_string()),
                 message,
+                Vec::new(),
+                0,
             ),
         }
     }
@@ -102,6 +124,8 @@ impl JobExecutionResult {
         status: CompletionStatus,
         error_code: Option<String>,
         message: String,
+        result_payload: Vec<u8>,
+        result_payload_schema_version: u32,
     ) -> Self {
         Self {
             job_id: job.job_id.clone(),
@@ -116,6 +140,8 @@ impl JobExecutionResult {
             job_topic: job.job_topic.clone(),
             source_domain: job.source_domain.clone(),
             trace_id: job.trace_id.clone(),
+            result_payload,
+            result_payload_schema_version,
         }
     }
 }
@@ -278,7 +304,9 @@ async fn publish_retry_after_delay(
         propagation.traceparent,
         propagation.tracestate,
     );
-    let key = command.job_id.clone();
+    // Retry must stay on the same Kafka partition as the first attempt so
+    // per-resource ordering is preserved across the whole execution lifecycle.
+    let key = retry.job.resource_id.as_bytes().to_vec();
     let publish_result = tokio::select! {
         biased;
         _ = shutdown.cancelled() => return,
@@ -366,6 +394,8 @@ pub async fn publish_result(
         source_domain: result.source_domain.clone(),
         traceparent: propagation.traceparent,
         tracestate: propagation.tracestate,
+        result_payload: result.result_payload.clone(),
+        result_payload_schema_version: result.result_payload_schema_version,
     };
     let key = proto.job_id.clone();
     let publish_result = kafka

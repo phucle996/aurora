@@ -103,6 +103,8 @@ impl Executor for CredentialCreateExecutor {
 
         Ok(ExecutionResult {
             message: format!("Credential '{}' created successfully", sync_data.access_key),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         })
     }
 }
@@ -175,6 +177,8 @@ impl Executor for CredentialDeleteExecutor {
 
         Ok(ExecutionResult {
             message: format!("Credential '{}' deleted successfully", sync_data.access_key),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         })
     }
 }

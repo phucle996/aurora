@@ -3,6 +3,9 @@
 > [!NOTE]
 > Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng Kết Nối, Giám Sát Trạng Thái (Healthcheck) và Vòng Đời Kết Nối (Connection Lifecycle) của các máy chủ ảo hóa Proxmox Hypervisor Node.
 > Mọi thay đổi liên quan đến schema `hypervisor`, controlplane Go module, job-orchestrator, dataplane agent, và Admin UI bắt buộc phải tuân thủ nghiêm ngặt đặc tả này.
+>
+> Luồng provision VM cá nhân được đặc tả riêng tại
+> [`personal_vm_create_god_view.md`](./personal_vm_create_god_view.md).
 
 ---
 
@@ -29,7 +32,7 @@ graph TD
     CP["🚀 Controlplane Go (hypervisor module)"]:::backend
     DB["💾 PostgreSQL SoT (hypervisor schema)"]:::storage
     ZoneKV["🗄️ NATS Zone KV (Health + Coordination)"]:::storage
-    RedisL1["⚡ Central Kafka"]:::storage
+    Kafka["⚡ Central Kafka"]:::storage
     JO["🚀 job-orchestrator (Rust Listener)"]:::backend
     DP["💻 Dataplane Agent (Rust)"]:::dataplane
     PVE["🖥️ Proxmox Cluster"]:::dataplane
@@ -48,10 +51,10 @@ graph TD
     
     %% Gateway Gom & Sync L1 (ZoneStatusGateway)
     ZoneKV -- "c. Read zone.service.* snapshots" --> DP
-    DP -- "d. PRODUCE aurora.zone.reports.v1" --> RedisL1
+    DP -- "d. PRODUCE aurora.zone.reports.v1" --> Kafka
     
     %% Platform listener consume & write DB
-    RedisL1 -- "e. Manual Kafka poll" --> JO
+    Kafka -- "e. Manual Kafka poll" --> JO
     JO -- "f. UPSERT Dynamic Nodes" --> DB
 ```
 
@@ -124,7 +127,12 @@ CREATE INDEX IF NOT EXISTS idx_hypervisor_nodes_status ON hypervisor.nodes(statu
 
 ### 1. Cơ chế Tự Động Phát Hiện Node (Auto-Discovery)
 - SRE **không cần** đăng ký thủ công từng node vật lý của Proxmox Cluster trên Admin UI.
-- Dataplane Agent khi khởi động sẽ kết nối tới Proxmox Cluster qua API endpoint (định cấu hình trong biến môi trường của Dataplane), tự động thực hiện truy vấn API danh sách node vật lý của Cluster đó.
+- Dataplane khởi tạo một `HypervisorRuntime` shared cho pod nhưng không probe khi
+  khởi tạo. Chỉ replica đang giữ Zone leader lease mới chạy periodic query danh
+  sách node vật lý qua Proxmox API; worker replica không chạy health probe.
+- Leader và job executor dùng chung connection pool của runtime. Worker chỉ gọi
+  Proxmox cho command đã được Kafka deliver và Zone lease/fence; failover leader
+  không sinh thêm một HTTP client hoặc một health loop song song trong cùng pod.
 - Danh sách node được ghi thành current snapshot trong Zone Health KV rồi Zone Gateway đẩy lên Platform.
 - Phía Platform (`job-orchestrator`), khi nhận báo cáo từ stream, nếu phát hiện `node_code` chưa tồn tại trong bảng `hypervisor.nodes` thuộc `zone_id` tương ứng, hệ thống sẽ tự động thực hiện **INSERT** bản ghi node mới với UUIDv7 được sinh tự động.
 
@@ -164,7 +172,7 @@ sequenceDiagram
     participant CP as 🚀 Controlplane (Go Backend)
     participant DB as 💾 PostgreSQL (hypervisor schema)
 
-    UI->>Envoy: GET /admin/hypervisor/nodes?zone_id=<uuid><br/>Cookie: access_token, access_key, access_secret
+    UI->>Envoy: GET /admin/hypervisor/nodes<br/>Cookie: verified admin session
     
     Note over Envoy,acr: Envoy chuyển gRPC check sang acr service
     Envoy->>acr: CheckRequest (Headers & Cookies)
@@ -179,11 +187,11 @@ sequenceDiagram
     alt Session Hợp Lệ
         acr-->>Envoy: CheckResponse OK (status 0)
         
-        Envoy->>CP: Forward GET /admin/hypervisor/nodes?zone_id=<uuid>
+        Envoy->>CP: Forward GET /admin/hypervisor/nodes + verified X-Zone-Context
         
-        Note over CP: Hypervisor Handler kiểm tra tính hợp lệ của tham số:
-        alt zone_id bị thiếu HOẶC có giá trị 'global' / '*'
-            CP-->>Envoy: HTTP 400 Bad Request (Error: zone_id is required and cannot be global)
+        Note over CP: Handler chỉ lấy Zone từ context đã được edge xác minh
+        alt X-Zone-Context thiếu hoặc không phải UUID
+            CP-->>Envoy: HTTP 400 Bad Request
             Envoy-->>UI: HTTP 400 Bad Request
         else zone_id hợp lệ (UUID cụ thể)
             CP->>DB: SELECT id, zone_id, node_code, name, status, cpu_cores_total, cpu_cores_used, ram_mb_total, ram_mb_used, storage_gb_total, storage_gb_used, last_active_at<br/>FROM hypervisor.nodes WHERE zone_id = <uuid> ORDER BY node_code ASC
@@ -245,11 +253,11 @@ sequenceDiagram
 
 ## 🔒 5. Ranh Giới Bảo Mật & Rủi Ro HA (Security & Reliability Guardrails)
 
-### 1. Đối soát Trạng Thái Máy Ảo (Phòng Ngừa Split-Brain / Out-of-sync)
-* **Thách thức**: Người dùng thay đổi trạng thái VM trực tiếp trên Proxmox UI, gây lệch cấu hình với Controlplane.
-* **Giải pháp**: 
-  - Dataplane Agent chạy một background worker định kỳ 30 giây thực hiện truy vấn trạng thái VM (`GET /api2/json/cluster/resources?type=vm`).
-  - Gửi bản đối chiếu VM ID + Trạng thái (running, stopped) về Platform để cập nhật lại DB logic.
+### 1. Đối soát Trạng thái Máy ảo
+
+Periodic VM drift reconciliation chưa phải AS-IS. Nó là workflow deferred và
+không được suy luận từ health report. Khi bổ sung phải dùng Kafka durable report,
+bounded batch/jitter, leader fencing và authoritative settlement riêng.
 
 ### 2. Nguyên Tắc Quyền Tối Thiểu (Least Privilege) cho API Proxmox
 * **Thách thức**: Hacker chiếm quyền Dataplane Agent ở biên và phá hủy toàn bộ hạ tầng Proxmox vật lý.
@@ -260,8 +268,13 @@ sequenceDiagram
 ### 3. Tối ưu hóa API Query (Tránh Rate Limiting Proxmox)
 * **Thách thức**: Việc query liên tục danh sách Node và VM lên API Proxmox làm nghẽn tiến trình `pvedaemon` / `pveproxy`.
 * **Giải pháp**:
-  - Dataplane Agent lưu cache kết quả query API trong bộ nhớ RAM tạm thời.
-  - Sử dụng cơ chế gộp request (Request Batching) thay vì gửi nhiều query đơn lẻ.
+  - Chỉ Zone leader gọi một cluster-level node-list request trong mỗi health
+    interval; không query riêng từng node và không để mỗi replica tự poll.
+  - Current health snapshot trong Zone Health KV là dữ liệu để reporter đọc lại;
+    reporter không gọi ngược Proxmox.
+  - `HypervisorRuntime` dùng một shared `reqwest` connection pool cho health probe
+    và job execution. Không có cache RAM mơ hồ có thể phục vụ capacity stale cho
+    placement; create workflow lấy inventory/capacity mới trước mutation.
 
 ### 4. Tự Phục Hồi & Phát Hiện Node Chết (Dead Man's Switch)
 * **Giải pháp**:
@@ -272,8 +285,4 @@ sequenceDiagram
   UPDATE hypervisor.nodes 
   SET status = $1, cpu_cores_used = $2, ..., last_active_at = $3
   WHERE zone_id = $4 AND node_code = $5 AND last_active_at < $3;
-
-### 3. Tự Phục Hồi & Phát Hiện Node Chết (Dead Man's Switch)
-* **Giải pháp**:
-  - `job-orchestrator` kế thừa **Dead Man's Switch** của Zone report listener. Nếu cả Zone quá 30 giây không có Kafka report mới, current health bị hạ theo observation fence; desired/lifecycle state vẫn thuộc SRE.
-  - Nếu zone vẫn gửi report nhưng một node cụ thể biến mất hoặc không được cập nhật trong `zone.service.hypervisor` quá 45 giây, `job-orchestrator` đánh dấu node đó là `disconnected`.
+  ```

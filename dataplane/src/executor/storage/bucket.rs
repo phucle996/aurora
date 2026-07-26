@@ -276,6 +276,8 @@ impl Executor for BucketCreateExecutor {
                 "Bucket '{}' provisioned với access key '{}' (user + policy + bucket)",
                 sync_data.name, sync_data.access_key
             ),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         })
     }
 }

@@ -6,6 +6,10 @@ pub mod storage {
     include!(concat!(env!("OUT_DIR"), "/storage.rs"));
 }
 
+pub mod hypervisor {
+    include!(concat!(env!("OUT_DIR"), "/hypervisor.rs"));
+}
+
 pub fn verify_generated_contracts() {
     // These messages are used by sibling services. Constructing them here keeps
     // protobuf drift visible to the compiler even when JO does not consume them.
@@ -15,5 +19,7 @@ pub fn verify_generated_contracts() {
     let _ = storage::StorageAccessPrepareRequest::default();
     let _ = storage::StorageAccessPrepareResponse::default();
     let _ = storage::StorageAccessRecord::default();
+    let _ = hypervisor::VmCreateV1::default();
+    let _ = hypervisor::VmCreateResultV1::default();
     let _ = mail::MailDispatchEnvelopeV1::default();
 }

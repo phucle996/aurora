@@ -1,0 +1,26 @@
+syntax = "proto3";
+package hypervisor;
+
+option go_package = "controlplane/internal/hypervisor/transport/rpc/proto;hypervisorproto";
+
+message VmCreateV1 {
+  uint32 schema_version = 1;
+  bytes vm_id = 2;
+  string provider_name = 3;
+  string image = 4;
+  uint32 cpu_cores = 5;
+  uint64 memory_mb = 6;
+  uint64 disk_gb = 7;
+  string ssh_public_key = 8;
+  bytes config_hash = 9;
+}
+
+message VmCreateResultV1 {
+  uint32 schema_version = 1;
+  bytes vm_id = 2;
+  string provider_name = 3;
+  string provider_node = 4;
+  uint64 provider_vmid = 5;
+  string ipv4_address = 6;
+  bytes config_hash = 7;
+}

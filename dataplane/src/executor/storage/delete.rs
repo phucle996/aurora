@@ -89,6 +89,8 @@ impl Executor for BucketDeleteExecutor {
                 "Bucket '{}' and associated credentials deleted successfully",
                 sync_data.name
             ),
+            result_payload: Vec::new(),
+            result_payload_schema_version: 0,
         })
     }
 }

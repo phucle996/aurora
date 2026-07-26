@@ -60,6 +60,10 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 		fallbackGroup.Any("/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "HYPERVISOR_MODULE_DEGRADED: Phân hệ Hypervisor hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
+		personalFallbackGroup := router.Group("/api/v1/personal/hypervisor")
+		personalFallbackGroup.Any("/*any", func(c *gin.Context) {
+			apires.RespondServiceUnavailable(c, "HYPERVISOR_MODULE_DEGRADED: Phân hệ Hypervisor hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
+		})
 	}
 
 	// 2. Mail Module hỗ trợ Fallback Route trả về HTTP 503 khi disabled hoặc degraded

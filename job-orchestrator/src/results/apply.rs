@@ -2,7 +2,7 @@ use super::contract::ValidatedResult;
 use super::notify::{JobNotifier, NotificationIntent};
 use crate::observability::logger::{LogFields, Logger};
 use crate::outbox::{ownership, SharedStreamPublisher};
-use crate::results::{mail, storage};
+use crate::results::{hypervisor, mail, storage};
 use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use tokio_postgres::{Client, Row};
@@ -37,6 +37,10 @@ pub async fn verify_authority(
         }
         "STORAGE" => {
             "SELECT job_version FROM storage.storage_outbox_records \
+             WHERE event_id = $1 AND job_topic = $2"
+        }
+        "HYPERVISOR" => {
+            "SELECT job_version FROM hypervisor.vm_outbox_records \
              WHERE event_id = $1 AND job_topic = $2"
         }
         _ => return Ok(AuthorityCheck::Reject("JOB_RESULT_SOURCE_INVALID")),
@@ -103,6 +107,18 @@ pub async fn apply_result(
             )
             .await
             .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string())),
+            "HYPERVISOR" => hypervisor::apply_vm_result(
+                pg_client,
+                result.job_id,
+                &wire.job_topic,
+                &wire.result_status,
+                error_code,
+                error_message,
+                &wire.result_payload,
+                wire.result_payload_schema_version,
+            )
+            .await
+            .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string())),
             _ => Err(format!("unsupported source_domain '{}'", wire.source_domain).into()),
         }
     }
@@ -124,6 +140,14 @@ pub async fn apply_result(
         // A replay after DB commit must still reconstruct the same ownership
         // intent. Dataplane fields are never used as the ownership authority.
         load_existing_storage_result(
+            pg_client,
+            result.job_id,
+            &wire.job_topic,
+            &wire.result_status,
+        )
+        .await?
+    } else if wire.source_domain == "HYPERVISOR" {
+        load_existing_hypervisor_result(
             pg_client,
             result.job_id,
             &wire.job_topic,
@@ -237,6 +261,23 @@ pub async fn apply_result(
     } else {
         ApplyOutcome::AlreadyApplied
     })
+}
+
+async fn load_existing_hypervisor_result(
+    client: &Client,
+    job_id: uuid::Uuid,
+    job_topic: &str,
+    status: &str,
+) -> Result<Option<ResolvedResult>, tokio_postgres::Error> {
+    let row = client
+        .query_opt(
+            "SELECT actor_user_id::text, job_topic, trace_id, resource_id \
+             FROM hypervisor.vm_outbox_records \
+             WHERE event_id = $1 AND job_topic = $2 AND status = $3",
+            &[&job_id, &job_topic, &status],
+        )
+        .await?;
+    Ok(row.map(resolve_row))
 }
 
 fn resolve_row(row: Row) -> ResolvedResult {
