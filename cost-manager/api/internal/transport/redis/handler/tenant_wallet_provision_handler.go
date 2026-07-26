@@ -33,7 +33,7 @@ const (
 // tenant event cannot create backpressure on personal account verification.
 type TenantWalletProvisionConsumer struct {
 	sharedRedis *goredis.Client
-	service     billingSvcInterface.AccountService
+	service     billingSvcInterface.TenantAccountService
 	consumer    string
 
 	cancel context.CancelFunc
@@ -43,10 +43,10 @@ type TenantWalletProvisionConsumer struct {
 
 func NewTenantWalletProvisionConsumer(
 	sharedRedis *goredis.Client,
-	service billingSvcInterface.AccountService,
+	service billingSvcInterface.TenantAccountService,
 ) (*TenantWalletProvisionConsumer, error) {
 	if sharedRedis == nil || service == nil {
-		return nil, errors.New("tenant wallet provision consumer requires Shared Redis and AccountService")
+		return nil, errors.New("tenant wallet provision consumer requires Shared Redis and TenantAccountService")
 	}
 	hostname, err := os.Hostname()
 	if err != nil || strings.TrimSpace(hostname) == "" {

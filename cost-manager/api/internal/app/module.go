@@ -33,9 +33,11 @@ import (
 
 // [COMMENT]: Module quản lý tất cả các repository, service và handler của ứng dụng.
 type Module struct {
-	AccountRepo                     billingRepoInterface.AccountRepository
-	AccountService                  billingSvcInterface.AccountService
-	AccountHandler                  *handler.AccountHandler
+	PersonalAccountRepo             billingRepoInterface.PersonalAccountRepository
+	TenantAccountRepo               billingRepoInterface.TenantAccountRepository
+	PersonalAccountService          billingSvcInterface.PersonalAccountService
+	TenantAccountService            billingSvcInterface.TenantAccountService
+	PersonalAccountHandler          *handler.PersonalAccountHandler
 	PersonalWalletProvisionConsumer *redisHandler.PersonalWalletProvisionConsumer
 	TenantWalletProvisionConsumer   *redisHandler.TenantWalletProvisionConsumer
 
@@ -84,10 +86,15 @@ func NewModule(
 	if authRedisClient == nil {
 		return nil, fmt.Errorf("authRedisClient infrastructure connection cannot be nil")
 	}
-	// 1. Account Domain DI
-	accountRepo := repository.NewAccountRepository(dbPool)
-	if accountRepo == nil {
-		return nil, fmt.Errorf("failed to initialize AccountRepository: instance is nil")
+	// Account dependencies are owner-specific. This prevents a tenant stream
+	// consumer from acquiring the personal referral/account capability.
+	personalAccountRepo := repository.NewPersonalAccountRepository(dbPool)
+	if personalAccountRepo == nil {
+		return nil, fmt.Errorf("failed to initialize PersonalAccountRepository: instance is nil")
+	}
+	tenantAccountRepo := repository.NewTenantAccountRepository(dbPool)
+	if tenantAccountRepo == nil {
+		return nil, fmt.Errorf("failed to initialize TenantAccountRepository: instance is nil")
 	}
 
 	intentTTL, err := time.ParseDuration(paymentCfg.IntentTTL)
@@ -131,17 +138,27 @@ func NewModule(
 		paymentPolicy.WebhookTolerance <= 0 {
 		return nil, fmt.Errorf("payment configuration is incomplete or uses weak signing keys")
 	}
-	accountService := service.NewAccountService(accountRepo, paymentPolicy)
+	personalAccountService := service.NewPersonalAccountService(personalAccountRepo, paymentPolicy)
+	tenantAccountService := service.NewTenantAccountService(tenantAccountRepo)
 
-	accountHandler := handler.NewAccountHandler(accountService, paymentPolicy.MinimumTopUp)
-	if accountHandler == nil {
-		return nil, fmt.Errorf("failed to initialize AccountHandler: instance is nil")
+	personalAccountHandler := handler.NewPersonalAccountHandler(
+		personalAccountService,
+		paymentPolicy.MinimumTopUp,
+	)
+	if personalAccountHandler == nil {
+		return nil, fmt.Errorf("failed to initialize PersonalAccountHandler: instance is nil")
 	}
-	personalWalletProvisionConsumer, err := redisHandler.NewPersonalWalletProvisionConsumer(redisClient, accountService)
+	personalWalletProvisionConsumer, err := redisHandler.NewPersonalWalletProvisionConsumer(
+		redisClient,
+		personalAccountService,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionConsumer: %w", err)
 	}
-	tenantWalletProvisionConsumer, err := redisHandler.NewTenantWalletProvisionConsumer(redisClient, accountService)
+	tenantWalletProvisionConsumer, err := redisHandler.NewTenantWalletProvisionConsumer(
+		redisClient,
+		tenantAccountService,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize TenantWalletProvisionConsumer: %w", err)
 	}
@@ -250,9 +267,11 @@ func NewModule(
 	}
 
 	return &Module{
-		AccountRepo:                     accountRepo,
-		AccountService:                  accountService,
-		AccountHandler:                  accountHandler,
+		PersonalAccountRepo:             personalAccountRepo,
+		TenantAccountRepo:               tenantAccountRepo,
+		PersonalAccountService:          personalAccountService,
+		TenantAccountService:            tenantAccountService,
+		PersonalAccountHandler:          personalAccountHandler,
 		PersonalWalletProvisionConsumer: personalWalletProvisionConsumer,
 		TenantWalletProvisionConsumer:   tenantWalletProvisionConsumer,
 		PersonalPaymentRepo:             personalPaymentRepository,

@@ -97,7 +97,7 @@ func (r *personalPaymentRepository) CreatePersonalIntent(
 		SELECT id, wallet_id, actor_user_id, amount_micro_units, currency, provider,
 		       COALESCE(provider_payment_id, ''),
 		       CASE WHEN status='PENDING' AND expires_at <= NOW() THEN 'EXPIRED' ELSE status END,
-		       activates_wallet, referral_reservation_id, expires_at, settled_at, created_at
+		       activates_wallet, personal_referral_reservation_id, expires_at, settled_at, created_at
 		FROM billing.payment_intents
 		WHERE owner_id=$1 AND owner_type='PERSONAL'::billing.owner_type AND idempotency_key=$2
 		FOR UPDATE
@@ -153,8 +153,8 @@ func (r *personalPaymentRepository) CreatePersonalIntent(
 		var referralCurrency string
 		err = tx.QueryRow(ctx, `
 			SELECT id, minimum_top_up_micro_units, currency
-			FROM billing.referral_reservations
-			WHERE owner_id=$1 AND owner_type='PERSONAL'::billing.owner_type
+			FROM billing.personal_referral_reservations
+			WHERE user_id=$1
 			  AND redemption_kind='ONBOARDING' AND status='RESERVED' AND expires_at > NOW()
 			FOR UPDATE
 		`, command.OwnerID).Scan(&reservedID, &referralMinimum, &referralCurrency)
@@ -186,7 +186,7 @@ func (r *personalPaymentRepository) CreatePersonalIntent(
 	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.payment_intents
 			(id, wallet_id, owner_id, owner_type, actor_user_id, amount_micro_units, currency,
-			 provider, status, activates_wallet, referral_reservation_id,
+			 provider, status, activates_wallet, personal_referral_reservation_id,
 			 idempotency_key, expires_at)
 		VALUES ($1, $2, $3, 'PERSONAL', $3, $4, $5, $6, 'PENDING', $7, $8, $9, $10)
 		RETURNING created_at
@@ -219,7 +219,7 @@ func (r *personalPaymentRepository) GetPersonalIntent(
 		SELECT id, wallet_id, actor_user_id, amount_micro_units, currency, provider,
 		       COALESCE(provider_payment_id, ''),
 		       CASE WHEN status='PENDING' AND expires_at <= NOW() THEN 'EXPIRED' ELSE status END,
-		       activates_wallet, referral_reservation_id, expires_at, settled_at, created_at
+		       activates_wallet, personal_referral_reservation_id, expires_at, settled_at, created_at
 		FROM billing.payment_intents
 		WHERE id=$1 AND owner_id=$2 AND owner_type='PERSONAL'::billing.owner_type
 	`, intentID, ownerID).Scan(
@@ -273,29 +273,31 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 	var inserted bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.payment_webhook_inbox
-			(provider, provider_event_id, payload_hash, payment_intent_id)
-		VALUES ($1, $2, $3, $4)
+			(provider, provider_event_id, owner_type, payload_hash, payment_intent_id)
+		VALUES ($1, $2, 'PERSONAL', $3, $4)
 		ON CONFLICT (provider, provider_event_id) DO NOTHING
 		RETURNING TRUE
 	`, settlement.Provider, settlement.ProviderEventID, settlement.PayloadHash,
 		settlement.PaymentIntentID).Scan(&inserted)
 	replayedEvent := false
 	if errors.Is(err, pgx.ErrNoRows) {
-		var storedHash, status string
+		var storedHash, storedOwnerType, status string
 		var storedIntentID *uuid.UUID
 		if err = tx.QueryRow(ctx, `
-			SELECT payload_hash, status, payment_intent_id
+			SELECT payload_hash, owner_type::text, status, payment_intent_id
 			FROM billing.payment_webhook_inbox
 			WHERE provider=$1 AND provider_event_id=$2
 			FOR UPDATE
 		`, settlement.Provider, settlement.ProviderEventID).Scan(
 			&storedHash,
+			&storedOwnerType,
 			&status,
 			&storedIntentID,
 		); err != nil {
 			return nil, fmt.Errorf("personal payment repo: read webhook replay: %w", err)
 		}
 		if storedHash != settlement.PayloadHash ||
+			storedOwnerType != string(entity.OwnerTypePersonal) ||
 			storedIntentID == nil ||
 			*storedIntentID != settlement.PaymentIntentID {
 			return nil, billingTaxonomy.ErrWebhookReplayConflict
@@ -313,7 +315,7 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 	err = tx.QueryRow(ctx, `
 		SELECT id, wallet_id, owner_id, actor_user_id, amount_micro_units,
 		       currency, provider, COALESCE(provider_payment_id, ''), status,
-		       activates_wallet, referral_reservation_id, expires_at, settled_at, created_at
+		       activates_wallet, personal_referral_reservation_id, expires_at, settled_at, created_at
 		FROM billing.payment_intents
 		WHERE id=$1 AND owner_type='PERSONAL'::billing.owner_type
 		FOR UPDATE
@@ -512,21 +514,19 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 	}
 	if walletActivated && referralID != nil {
 		var reservation entity.ReferralReservation
-		var reservationOwnerID uuid.UUID
-		var reservationOwnerType string
+		var reservationUserID uuid.UUID
 		var alreadyRedeemed bool
 		referralErr := tx.QueryRow(ctx, `
-			SELECT id, campaign_id, owner_id, owner_type::text, code_snapshot,
+			SELECT id, campaign_id, user_id, code_snapshot,
 			       status, grant_amount_micro_units, minimum_top_up_micro_units,
 			       currency, expires_at, grant_expires_at
-			FROM billing.referral_reservations
+			FROM billing.personal_referral_reservations
 			WHERE id=$1
 			FOR UPDATE
 		`, *referralID).Scan(
 			&reservation.ID,
 			&reservation.CampaignID,
-			&reservationOwnerID,
-			&reservationOwnerType,
+			&reservationUserID,
 			&reservation.Code,
 			&reservation.Status,
 			&reservation.GrantAmountMicroUnits,
@@ -542,9 +542,8 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 			if redemptionErr := tx.QueryRow(ctx, `
 				SELECT EXISTS(
 					SELECT 1
-					FROM billing.referral_redemptions
-					WHERE owner_id=$1 AND owner_type='PERSONAL'::billing.owner_type
-					  AND redemption_kind='ONBOARDING'
+					FROM billing.personal_referral_redemptions
+					WHERE user_id=$1 AND redemption_kind='ONBOARDING'
 				)
 			`, intent.OwnerID).Scan(&alreadyRedeemed); redemptionErr != nil {
 				return nil, fmt.Errorf("personal payment repo: check referral redemption: %w", redemptionErr)
@@ -554,8 +553,7 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 		switch {
 		case errors.Is(referralErr, pgx.ErrNoRows):
 			result.ReferralRejectReason = "RESERVATION_NOT_FOUND"
-		case reservationOwnerID != intent.OwnerID ||
-			reservationOwnerType != string(entity.OwnerTypePersonal):
+		case reservationUserID != intent.OwnerID:
 			result.ReferralRejectReason = "OWNER_MISMATCH"
 		case reservation.Status != "RESERVED":
 			result.ReferralRejectReason = "RESERVATION_NOT_ACTIVE"
@@ -614,11 +612,11 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 
 				redemptionID := uuid.NewSHA1(referralRedeemNamespace, reservation.ID[:])
 				if _, err = tx.Exec(ctx, `
-					INSERT INTO billing.referral_redemptions
-						(id, reservation_id, campaign_id, wallet_id, owner_id, owner_type,
+					INSERT INTO billing.personal_referral_redemptions
+						(id, reservation_id, campaign_id, wallet_id, user_id,
 						 redemption_kind, payment_intent_id, credit_grant_id,
 						 amount_micro_units, currency, redeemed_at)
-					VALUES ($1, $2, $3, $4, $5, 'PERSONAL', 'ONBOARDING',
+					VALUES ($1, $2, $3, $4, $5, 'ONBOARDING',
 					        $6, $7, $8, $9, $10)
 				`, redemptionID, reservation.ID, reservation.CampaignID, intent.WalletID,
 					intent.OwnerID, intent.ID, grantID, reservation.GrantAmountMicroUnits,
@@ -630,7 +628,7 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 					return nil, fmt.Errorf("personal payment repo: insert referral redemption: %w", err)
 				}
 				if _, err = tx.Exec(ctx, `
-					UPDATE billing.referral_reservations
+					UPDATE billing.personal_referral_reservations
 					SET status='REDEEMED', redeemed_at=$1, updated_at=NOW()
 					WHERE id=$2
 				`, settlement.SettledAt, reservation.ID); err != nil {
@@ -643,7 +641,7 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 
 		if result.ReferralRejectReason != "" && reservation.ID != uuid.Nil {
 			if _, err = tx.Exec(ctx, `
-				UPDATE billing.referral_reservations
+				UPDATE billing.personal_referral_reservations
 				SET status='REJECTED', rejection_reason=$1, updated_at=NOW()
 				WHERE id=$2 AND status='RESERVED'
 			`, result.ReferralRejectReason, reservation.ID); err != nil {

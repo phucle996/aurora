@@ -10,22 +10,22 @@ import (
 	"github.com/google/uuid"
 )
 
-type accountService struct {
-	repo   billingRepoInterface.AccountRepository
+type personalAccountService struct {
+	repo   billingRepoInterface.PersonalAccountRepository
 	policy entity.PaymentPolicy
 }
 
-func NewAccountService(
-	repo billingRepoInterface.AccountRepository,
+func NewPersonalAccountService(
+	repo billingRepoInterface.PersonalAccountRepository,
 	policy entity.PaymentPolicy,
-) *accountService {
-	return &accountService{
+) *personalAccountService {
+	return &personalAccountService{
 		repo:   repo,
 		policy: policy,
 	}
 }
 
-func (s *accountService) ProvisionPersonalWallet(
+func (s *personalAccountService) ProvisionPersonalWallet(
 	ctx context.Context,
 	eventID uuid.UUID,
 	ownerID uuid.UUID,
@@ -34,24 +34,14 @@ func (s *accountService) ProvisionPersonalWallet(
 	return s.repo.ApplyPersonalWalletProvision(ctx, eventID, ownerID, payloadHash)
 }
 
-func (s *accountService) ProvisionTenantWallet(
-	ctx context.Context,
-	eventID uuid.UUID,
-	tenantID uuid.UUID,
-	actorID uuid.UUID,
-	payloadHash string,
-) error {
-	return s.repo.ApplyTenantWalletProvision(ctx, eventID, tenantID, actorID, payloadHash)
-}
-
-func (s *accountService) GetOnboarding(
+func (s *personalAccountService) GetOnboarding(
 	ctx context.Context,
 	ownerID uuid.UUID,
 ) (*entity.OnboardingSnapshot, error) {
 	return s.repo.GetOnboarding(ctx, ownerID, s.policy.MinimumTopUp)
 }
 
-func (s *accountService) ReserveReferral(
+func (s *personalAccountService) ReserveReferral(
 	ctx context.Context,
 	command entity.ReserveReferralCommand,
 ) (*entity.ReferralReservation, error) {
@@ -59,20 +49,20 @@ func (s *accountService) ReserveReferral(
 	return s.repo.ReserveReferral(ctx, command)
 }
 
-func (s *accountService) ListReferralCampaigns(
+func (s *personalAccountService) ListReferralCampaigns(
 	ctx context.Context,
 ) ([]entity.ReferralCampaign, error) {
 	return s.repo.ListReferralCampaigns(ctx)
 }
 
-func (s *accountService) CreateReferralCampaign(
+func (s *personalAccountService) CreateReferralCampaign(
 	ctx context.Context,
 	command entity.CreateReferralCampaignCommand,
 ) (*entity.ReferralCampaign, error) {
 	return s.repo.CreateReferralCampaign(ctx, command)
 }
 
-func (s *accountService) UpdateReferralCampaignStatus(
+func (s *personalAccountService) UpdateReferralCampaignStatus(
 	ctx context.Context,
 	command entity.UpdateReferralCampaignStatusCommand,
 ) (*entity.ReferralCampaign, error) {

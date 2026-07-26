@@ -158,7 +158,7 @@ func (r *tenantPaymentRepository) CreateTenantIntent(
 	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.payment_intents
 			(id, wallet_id, owner_id, owner_type, actor_user_id, amount_micro_units, currency,
-			 provider, status, activates_wallet, referral_reservation_id,
+			 provider, status, activates_wallet, personal_referral_reservation_id,
 			 idempotency_key, expires_at)
 		VALUES ($1, $2, $3, 'TENANT', $4, $5, $6, $7, 'PENDING', $8, NULL, $9, $10)
 		RETURNING created_at
@@ -237,29 +237,31 @@ func (r *tenantPaymentRepository) ApplyTenantSettlement(
 	var inserted bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.payment_webhook_inbox
-			(provider, provider_event_id, payload_hash, payment_intent_id)
-		VALUES ($1, $2, $3, $4)
+			(provider, provider_event_id, owner_type, payload_hash, payment_intent_id)
+		VALUES ($1, $2, 'TENANT', $3, $4)
 		ON CONFLICT (provider, provider_event_id) DO NOTHING
 		RETURNING TRUE
 	`, settlement.Provider, settlement.ProviderEventID, settlement.PayloadHash,
 		settlement.PaymentIntentID).Scan(&inserted)
 	replayedEvent := false
 	if errors.Is(err, pgx.ErrNoRows) {
-		var storedHash, status string
+		var storedHash, storedOwnerType, status string
 		var storedIntentID *uuid.UUID
 		if err = tx.QueryRow(ctx, `
-			SELECT payload_hash, status, payment_intent_id
+			SELECT payload_hash, owner_type::text, status, payment_intent_id
 			FROM billing.payment_webhook_inbox
 			WHERE provider=$1 AND provider_event_id=$2
 			FOR UPDATE
 		`, settlement.Provider, settlement.ProviderEventID).Scan(
 			&storedHash,
+			&storedOwnerType,
 			&status,
 			&storedIntentID,
 		); err != nil {
 			return nil, fmt.Errorf("tenant payment repo: read webhook replay: %w", err)
 		}
 		if storedHash != settlement.PayloadHash ||
+			storedOwnerType != string(entity.OwnerTypeTenant) ||
 			storedIntentID == nil ||
 			*storedIntentID != settlement.PaymentIntentID {
 			return nil, billingTaxonomy.ErrWebhookReplayConflict

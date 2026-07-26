@@ -395,12 +395,12 @@ Inbox and wallet:
 SELECT i.event_id, i.status AS inbox_status, i.payload_hash,
        w.id AS wallet_id, w.owner_type, w.currency,
        w.cash_balance, w.promotional_balance, w.status AS wallet_status
-FROM billing.wallet_provision_inbox i
+FROM billing.personal_wallet_provision_inbox i
 LEFT JOIN billing.wallets w
-  ON w.owner_id = i.owner_id
+  ON w.owner_id = i.user_id
  AND w.owner_type = 'PERSONAL'
  AND w.currency = 'USD'
-WHERE i.owner_id = $1;
+WHERE i.user_id = $1;
 ```
 
 Không sửa balance hoặc status trực tiếp. DLQ replay phải giữ nguyên event ID/payload/event type, xác minh inbox trước và ghi operator/reason/timestamp.
@@ -468,6 +468,6 @@ Không dùng user/event/email/error message làm label. Trace correlation dùng 
 | Billing outbox retention | `k8s/outbox-retention-cronjob.yaml` |
 | Billing protobuf producer | `controlplane/internal/iam/transport/rpc/proto/personal_wallet_provision.proto` |
 | Cost Manager consumer | `cost-manager/api/internal/transport/redis/handler/personal_wallet_provision_handler.go` |
-| Billing inbox/wallet transaction | `cost-manager/api/internal/repository/account_repo.go` |
-| Billing schema | `cost-manager/api/migrations/000002_tables.up.sql`, `000007_wallet_provision_inbox.up.sql` |
+| Billing inbox/wallet transaction | `cost-manager/api/internal/repository/personal_account_repo.go` |
+| Billing schema | `cost-manager/api/migrations/000002_tables.up.sql` |
 | Upstream registration | `god_view/iam/user_registration_god_view_workflow.md` |

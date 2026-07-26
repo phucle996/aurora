@@ -26,9 +26,9 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 		v1.GET("/tiers/:service_type/:code", middleware.Authorize(m.AuthorizationResolver, "billing:tier:read", false), m.TierHandler.GetTierDetail)
 		v1.PATCH("/critical/tiers/:service_type/:code/metadata", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:tier:publish", true), m.TierHandler.UpdateTierMetadata)
 		v1.POST("/critical/tiers/:service_type/:code/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:tier:publish", true), m.TierHandler.CreateTierVersion)
-		v1.GET("/referrals", middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", false), m.AccountHandler.ListReferralCampaigns)
-		v1.POST("/critical/referrals", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.AccountHandler.CreateReferralCampaign)
-		v1.PATCH("/critical/referrals/:id/status", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.AccountHandler.UpdateReferralCampaignStatus)
+		v1.GET("/referrals", middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", false), m.PersonalAccountHandler.ListReferralCampaigns)
+		v1.POST("/critical/referrals", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.CreateReferralCampaign)
+		v1.PATCH("/critical/referrals/:id/status", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.UpdateReferralCampaignStatus)
 	}
 
 	// These are internal owner routes. Browser/SDK calls the neutral
@@ -38,8 +38,8 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 
 	personal := ownerAPI.Group("/personal/billing")
 	personal.GET("/wallet/summary", m.PersonalPaymentHandler.GetWallet)
-	personal.GET("/wallet/onboarding", m.AccountHandler.GetOnboarding)
-	personal.POST("/wallet/referral", m.AccountHandler.ReserveReferral)
+	personal.GET("/wallet/onboarding", m.PersonalAccountHandler.GetOnboarding)
+	personal.POST("/wallet/referral", m.PersonalAccountHandler.ReserveReferral)
 	personal.POST("/wallet/top-ups", m.PersonalPaymentHandler.CreateTopUp)
 	personal.GET("/wallet/top-ups/:id", m.PersonalPaymentHandler.GetTopUp)
 	personal.GET("/wallet/estimate/storage", m.TierHandler.EstimateStorage)

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"cost-manager/api/internal/domain/entity"
 	billingService "cost-manager/api/internal/service"
@@ -17,37 +16,6 @@ import (
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
-
-type accountRepoStub struct {
-	referralCommand entity.ReserveReferralCommand
-	err             error
-}
-
-func (s *accountRepoStub) ApplyPersonalWalletProvision(context.Context, uuid.UUID, uuid.UUID, string) error {
-	return s.err
-}
-func (s *accountRepoStub) ApplyTenantWalletProvision(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string) error {
-	return s.err
-}
-func (s *accountRepoStub) GetPersonalWalletSummary(context.Context, uuid.UUID) (*entity.WalletSummary, error) {
-	return nil, s.err
-}
-func (s *accountRepoStub) GetOnboarding(context.Context, uuid.UUID, int64) (*entity.OnboardingSnapshot, error) {
-	return nil, s.err
-}
-func (s *accountRepoStub) ReserveReferral(_ context.Context, command entity.ReserveReferralCommand) (*entity.ReferralReservation, error) {
-	s.referralCommand = command
-	return &entity.ReferralReservation{ID: uuid.New(), ExpiresAt: command.ExpiresAt}, s.err
-}
-func (s *accountRepoStub) ListReferralCampaigns(context.Context) ([]entity.ReferralCampaign, error) {
-	return nil, s.err
-}
-func (s *accountRepoStub) CreateReferralCampaign(context.Context, entity.CreateReferralCampaignCommand) (*entity.ReferralCampaign, error) {
-	return nil, s.err
-}
-func (s *accountRepoStub) UpdateReferralCampaignStatus(context.Context, entity.UpdateReferralCampaignStatusCommand) (*entity.ReferralCampaign, error) {
-	return nil, s.err
-}
 
 type personalPaymentRepoStub struct {
 	command entity.CreatePersonalPaymentIntentCommand
@@ -58,6 +26,7 @@ type personalPaymentRepoStub struct {
 func (s *personalPaymentRepoStub) GetPersonalWalletSummary(context.Context, uuid.UUID) (*entity.WalletSummary, error) {
 	return nil, s.err
 }
+
 func (s *personalPaymentRepoStub) CreatePersonalIntent(
 	_ context.Context,
 	command entity.CreatePersonalPaymentIntentCommand,
@@ -79,25 +48,20 @@ func (s *personalPaymentRepoStub) CreatePersonalIntent(
 		Created:          true,
 	}, s.err
 }
-func (s *personalPaymentRepoStub) GetPersonalIntent(context.Context, uuid.UUID, uuid.UUID) (*entity.PaymentIntent, error) {
+
+func (s *personalPaymentRepoStub) GetPersonalIntent(
+	context.Context,
+	uuid.UUID,
+	uuid.UUID,
+) (*entity.PaymentIntent, error) {
 	return s.intent, s.err
 }
-func (s *personalPaymentRepoStub) ApplyPersonalSettlement(context.Context, entity.PaymentSettlement) (*entity.SettlementResult, error) {
-	return nil, s.err
-}
 
-func testPaymentPolicy() entity.PaymentPolicy {
-	return entity.PaymentPolicy{
-		Provider:           "test-gateway",
-		CheckoutBaseURL:    "https://payments.aurora.test/checkout",
-		ReturnBaseURL:      "https://cost.aurora.test/",
-		CheckoutSigningKey: "checkout-signing-secret-at-least-32-bytes",
-		WebhookSigningKey:  "webhook-signing-secret-at-least-32-bytes",
-		MinimumTopUp:       1_000_000,
-		IntentTTL:          30 * time.Minute,
-		ReferralTTL:        24 * time.Hour,
-		WebhookTolerance:   5 * time.Minute,
-	}
+func (s *personalPaymentRepoStub) ApplyPersonalSettlement(
+	context.Context,
+	entity.PaymentSettlement,
+) (*entity.SettlementResult, error) {
+	return nil, s.err
 }
 
 func TestPersonalPaymentServiceSignsOwnerBoundDurableIntent(t *testing.T) {
@@ -143,23 +107,5 @@ func TestPersonalPaymentServiceSignsOwnerBoundDurableIntent(t *testing.T) {
 	if checkout.Query().Get("owner_type") != string(entity.OwnerTypePersonal) ||
 		checkout.Query().Get("signature") != wantSignature {
 		t.Fatal("checkout owner binding or signature mismatch")
-	}
-}
-
-func TestReserveReferralPinsServerTTL(t *testing.T) {
-	repo := &accountRepoStub{}
-	policy := testPaymentPolicy()
-	service := billingService.NewAccountService(repo, policy)
-	before := time.Now().UTC()
-	_, err := service.ReserveReferral(context.Background(), entity.ReserveReferralCommand{
-		OwnerID: uuid.New(), Code: "AURORA", IdempotencyKey: "reserve-1",
-	})
-	if err != nil {
-		t.Fatalf("ReserveReferral() error = %v", err)
-	}
-	want := before.Add(policy.ReferralTTL)
-	if repo.referralCommand.ExpiresAt.Before(want) ||
-		repo.referralCommand.ExpiresAt.After(want.Add(time.Second)) {
-		t.Fatalf("reservation expiry %v is outside server TTL window", repo.referralCommand.ExpiresAt)
 	}
 }

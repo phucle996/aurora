@@ -8,9 +8,8 @@ import (
 	"github.com/google/uuid"
 )
 
-type AccountService interface {
+type PersonalAccountService interface {
 	ProvisionPersonalWallet(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error
-	ProvisionTenantWallet(ctx context.Context, eventID uuid.UUID, tenantID uuid.UUID, actorID uuid.UUID, payloadHash string) error
 	GetOnboarding(ctx context.Context, ownerID uuid.UUID) (*entity.OnboardingSnapshot, error)
 	ReserveReferral(ctx context.Context, command entity.ReserveReferralCommand) (*entity.ReferralReservation, error)
 	ListReferralCampaigns(ctx context.Context) ([]entity.ReferralCampaign, error)

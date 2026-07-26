@@ -33,7 +33,7 @@ const (
 // PostgreSQL inbox + wallet mutation remains the idempotency and apply boundary.
 type PersonalWalletProvisionConsumer struct {
 	sharedRedis *goredis.Client
-	service     billingSvcInterface.AccountService
+	service     billingSvcInterface.PersonalAccountService
 	consumer    string
 
 	cancel context.CancelFunc
@@ -43,10 +43,10 @@ type PersonalWalletProvisionConsumer struct {
 
 func NewPersonalWalletProvisionConsumer(
 	sharedRedis *goredis.Client,
-	service billingSvcInterface.AccountService,
+	service billingSvcInterface.PersonalAccountService,
 ) (*PersonalWalletProvisionConsumer, error) {
 	if sharedRedis == nil || service == nil {
-		return nil, errors.New("personal wallet provision consumer requires Shared Redis and AccountService")
+		return nil, errors.New("personal wallet provision consumer requires Shared Redis and PersonalAccountService")
 	}
 	hostname, err := os.Hostname()
 	if err != nil || strings.TrimSpace(hostname) == "" {

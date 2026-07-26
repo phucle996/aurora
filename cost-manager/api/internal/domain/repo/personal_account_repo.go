@@ -8,13 +8,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// AccountRepository owns wallet provisioning, onboarding and referral campaign
-// state. Payment intent and provider settlement transactions live behind the
-// dedicated payment repository contracts below.
-type AccountRepository interface {
+// PersonalAccountRepository owns personal wallet provisioning and onboarding.
+// Referral reservations are part of this lifecycle because tenant accounts can
+// never reserve or redeem onboarding credit.
+type PersonalAccountRepository interface {
 	ApplyPersonalWalletProvision(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error
-	ApplyTenantWalletProvision(ctx context.Context, eventID uuid.UUID, tenantID uuid.UUID, actorID uuid.UUID, payloadHash string) error
-	GetPersonalWalletSummary(ctx context.Context, ownerID uuid.UUID) (*entity.WalletSummary, error)
 	GetOnboarding(ctx context.Context, ownerID uuid.UUID, minimumTopUp int64) (*entity.OnboardingSnapshot, error)
 	ReserveReferral(ctx context.Context, command entity.ReserveReferralCommand) (*entity.ReferralReservation, error)
 	ListReferralCampaigns(ctx context.Context) ([]entity.ReferralCampaign, error)

@@ -10,8 +10,8 @@ in the same settlement transaction.
 Creating a tenant atomically records a zero-balance tenant wallet provision intent. Tenant wallets use the
 same verified-payment activation rule, but never reserve or redeem personal referral credit.
 
-The legacy `FREE_TIER` pack and `FREE_TIER_100_USD` campaign remain immutable migration history but migration
-`000008_wallet_onboarding` moves them to `DEPRECATED`/`ENDED`. No public API activates them.
+The legacy `FREE_TIER` pack and `FREE_TIER_100_USD` campaign remain immutable migration history but seed migration
+`000006_seeds.up.sql` moves them to `DEPRECATED`/`ENDED`. No public API activates them.
 
 ```text
 IAM account ACTIVE != Billing wallet ACTIVE
@@ -77,14 +77,19 @@ not use Kafka or NATS.
 
 Cost Manager commits:
 
-1. `wallet_provision_inbox`;
+1. `personal_wallet_provision_inbox` with `user_id`, or
+   `tenant_wallet_provision_inbox` with `tenant_id + actor_user_id`;
 2. unique `(owner_id, owner_type, currency)` wallet;
 3. wallet state `PENDING_ACTIVATION`, cash `0`, promotional `0`;
-4. inbox state `APPLIED`.
+4. the matching owner-specific inbox state `APPLIED`.
 
 Duplicate event IDs must carry the same payload hash. Different event IDs for the same owner are absorbed by
 the wallet unique constraint. Redis delivery is ACKed only after the transaction commits; pending messages are
 reclaimed by another Cost replica after failure.
+
+The two inboxes are intentionally separate. Personal events cannot carry a tenant actor and tenant events
+cannot omit one. The shared `wallets`, `payment_intents`, `payment_webhook_inbox` and append-only ledger remain
+one money core so provider references and webhook event IDs stay globally unique across owner types.
 
 ## 4. IAM and HTTP security boundary
 
@@ -136,7 +141,7 @@ RESERVED ──settlement valid──> REDEEMED
 - Campaign code, amount, currency, minimum top-up and grant expiry are snapshotted into a reservation.
 - Unexpired reservations occupy campaign capacity.
 - Expired reservations are cancelled before a replacement reservation is inserted.
-- `referral_redemptions` has a unique `(owner_id, owner_type, redemption_kind)` constraint. An account may
+- `personal_referral_redemptions` has a unique `(user_id, redemption_kind)` constraint. An account may
   reserve again after timeout but can redeem onboarding credit only once.
 - `EXTENSION` is a separate future redemption kind; it must not weaken the onboarding uniqueness rule.
 
@@ -157,7 +162,7 @@ and webhook keys must be different and supplied from a production Secret.
 
 Settlement locks the payment intent and wallet, then commits:
 
-1. webhook inbox/deduplication;
+1. webhook inbox/deduplication fenced by owner type;
 2. wallet cash increase;
 3. `TOP_UP` append-only ledger row with deterministic ID;
 4. wallet transition to `ACTIVE`;
@@ -215,9 +220,10 @@ Money values are integer strings in JSON to prevent JavaScript rounding.
 
 | Concern | Source |
 |---|---|
-| Schema and state machines | `cost-manager/api/migrations/000008_wallet_onboarding.up.sql` |
-| Wallet provisioning/read | `cost-manager/api/internal/repository/account_repo.go` |
-| Referral reservation/catalogue | `cost-manager/api/internal/repository/referral_repo.go` |
+| Wallet & Account DDL schema | `cost-manager/api/migrations/000002_tables.up.sql` |
+| Wallet & Account Seed data | `cost-manager/api/migrations/000006_seeds.up.sql` |
+| Personal wallet provisioning/read/referral | `cost-manager/api/internal/repository/personal_account_repo.go` |
+| Tenant wallet provisioning | `cost-manager/api/internal/repository/tenant_account_repo.go` |
 | Personal intent/referral/settlement | `cost-manager/api/internal/repository/personal_payment_repo.go` |
 | Tenant intent/settlement | `cost-manager/api/internal/repository/tenant_payment_repo.go` |
 | Checkout signing/business policy | `cost-manager/api/internal/service/personal_payment_service.go`, `tenant_payment_service.go` |

@@ -1,10 +1,17 @@
--- Migration 000003 Down: Xóa bỏ các chỉ mục hiệu năng
+-- Migration 000003 Down: Drop tất cả các indexes trong billing schema
+DROP INDEX IF EXISTS billing.idx_payment_intents_pending_expiry;
+DROP INDEX IF EXISTS billing.idx_payment_intents_actor_created;
+DROP INDEX IF EXISTS billing.idx_payment_intents_owner_created;
+DROP INDEX IF EXISTS billing.uq_personal_referral_reservation_live_user;
+DROP INDEX IF EXISTS billing.idx_personal_referral_reservations_campaign_capacity;
+DROP INDEX IF EXISTS billing.idx_referral_campaign_catalog;
 DROP INDEX IF EXISTS billing.idx_unrated_usage_pending;
 DROP INDEX IF EXISTS billing.idx_wallet_ledger_billing_run;
 DROP INDEX IF EXISTS billing.idx_wallet_ledger_wallet_time;
 DROP INDEX IF EXISTS billing.uq_resource_plan_active_resource;
 DROP INDEX IF EXISTS billing.idx_credential_bindings_resource;
 DROP INDEX IF EXISTS billing.uq_credential_bindings_active_access_key;
+DROP INDEX IF EXISTS billing.uq_ownership_inbox_resource_version;
 DROP INDEX IF EXISTS billing.idx_resource_ownership_lookup;
 DROP INDEX IF EXISTS billing.uq_resource_ownership_active_name;
 DROP INDEX IF EXISTS billing.uq_resource_ownership_active_resource;

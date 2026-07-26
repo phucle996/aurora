@@ -225,7 +225,7 @@ Các ràng buộc chặt chẽ được thực thi tại database schema `hierar
 * Protobuf chứa `event_id`, `schema_version=1`, `tenant_id`, `actor_user_id`, `currency=USD`, `occurred_at`.
 * Outbox row và tenant aggregate cùng commit. Relay failure để row `PENDING/PUBLISHING` cho cold-start/periodic
   reconciliation; không rollback tenant sau khi HTTP đã trả thành công.
-* Cost `wallet_provision_inbox` kiểm tra event ID + payload hash trước khi upsert unique
-  `(owner_id, owner_type='TENANT', currency='USD')`.
+* Cost `tenant_wallet_provision_inbox` kiểm tra event ID + tenant ID + actor ID + payload hash trước khi
+  upsert unique `(owner_id, owner_type='TENANT', currency='USD')`. Không dùng chung inbox với personal.
 * Tenant không có referral/promo onboarding. Verified tenant top-up cần exact
   `{tenant}:nil:billing:wallet:top_up`.
