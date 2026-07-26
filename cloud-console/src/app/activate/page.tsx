@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
-import { authAPI } from "@/lib/api/auth";
+import { authAPI } from "@/features/auth/api";
 
 type ActivationSecret = { user_id: string; event_id: string; token: string };
 
@@ -22,12 +22,17 @@ export default function ActivateAccountPage() {
 			token: values.get("token")?.trim() ?? "",
 		};
 		window.history.replaceState(null, "", window.location.pathname);
-		if (!next.user_id || !next.event_id || !next.token) {
-			setState("invalid");
-			setMessage("This activation link is incomplete or invalid.");
-			return;
-		}
-		setSecret(next);
+		let active = true;
+		queueMicrotask(() => {
+			if (!active) return;
+			if (!next.user_id || !next.event_id || !next.token) {
+				setState("invalid");
+				setMessage("This activation link is incomplete or invalid.");
+				return;
+			}
+			setSecret(next);
+		});
+		return () => { active = false; };
 	}, []);
 
 	async function confirmActivation() {

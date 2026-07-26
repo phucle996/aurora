@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { KeyRound, X, Loader2, ShieldAlert, Check, Copy, CheckSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { type CredentialItem } from "@/lib/api/storage";
+import { type CredentialItem } from "@/features/storage/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -91,17 +91,20 @@ export function GenerateCredentialModal({
 
   // Sync modal steps and reset policy text when opened/closed or bucketName changes
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
       setModalStep("policy");
       setConfirmedSave(false);
       setCustomPolicyText(getReadWritePolicy(bucketName));
-    }
+    });
+    return () => { active = false; };
   }, [isOpen, bucketName]);
 
   useEffect(() => {
-    if (createdResult) {
-      setModalStep("result");
-    }
+    if (!createdResult) return;
+    queueMicrotask(() => setModalStep("result"));
   }, [createdResult]);
 
   if (!isOpen) return null;

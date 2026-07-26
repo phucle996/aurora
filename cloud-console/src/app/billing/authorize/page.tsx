@@ -2,21 +2,23 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { fetchJSON } from "@/lib/api/fetcher";
+import { fetchJSON } from "@/shared/api/http";
 
 function BillingAuthorizeContent() {
   const searchParams = useSearchParams();
   const started = useRef(false);
-  const [error, setError] = useState<string | null>(null);
   const state = searchParams.get("state") || "";
   const codeChallenge = searchParams.get("code_challenge") || "";
+  const invalidRequest = !/^[A-Za-z0-9_-]{32,128}$/.test(state) || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge);
+  const [error, setError] = useState<string | null>(() =>
+    invalidRequest ? "Invalid Cost Console authorization request." : null
+  );
 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
 
     if (!/^[A-Za-z0-9_-]{32,128}$/.test(state) || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) {
-      setError("Invalid Cost Console authorization request.");
       return;
     }
 

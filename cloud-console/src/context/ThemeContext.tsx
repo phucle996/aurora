@@ -13,15 +13,11 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeMode>("dark");
-
-  // [COMMENT]: Khôi phục theme đã lưu trong localStorage khi mount lần đầu
-  useEffect(() => {
+  const [theme, setThemeState] = useState<ThemeMode>(() => {
+    if (typeof window === "undefined") return "dark";
     const saved = localStorage.getItem("theme");
-    if (saved === "light" || saved === "dark" || saved === "system") {
-      setThemeState(saved as ThemeMode);
-    }
-  }, []);
+    return saved === "light" || saved === "dark" || saved === "system" ? saved : "dark";
+  });
 
   // [COMMENT]: Đồng bộ class 'dark' trên documentElement và lưu vào localStorage
   useEffect(() => {

@@ -8,7 +8,6 @@ import {
   ChevronUp,
   Tag,
   Plus,
-  Trash2,
   History,
   Shield,
   Lock,

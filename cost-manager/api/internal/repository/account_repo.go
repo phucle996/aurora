@@ -261,3 +261,35 @@ func (r *accountRepository) ApplyPersonalWalletProvision(ctx context.Context, ev
 	}
 	return tx.Commit(ctx)
 }
+
+// GetPersonalWalletSummary chỉ đọc đúng wallet PERSONAL của trusted actor.
+// Không nhận owner_type/currency từ HTTP để tránh caller biến endpoint thành wallet enumeration.
+func (r *accountRepository) GetPersonalWalletSummary(ctx context.Context, ownerID uuid.UUID) (*entity.WalletSummary, error) {
+	var summary entity.WalletSummary
+	var status string
+	err := r.db.QueryRow(ctx, `
+		SELECT id, currency, cash_balance, promotional_balance, overdraft_limit,
+		       status::text, version, updated_at
+		FROM billing.wallets
+		WHERE owner_id = $1
+		  AND owner_type = 'PERSONAL'::billing.owner_type
+		  AND currency = 'USD'
+	`, ownerID).Scan(
+		&summary.WalletID,
+		&summary.Currency,
+		&summary.CashBalanceMicroUnits,
+		&summary.PromotionalBalanceMicroUnits,
+		&summary.OverdraftLimitMicroUnits,
+		&status,
+		&summary.Version,
+		&summary.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, billingTaxonomy.ErrWalletNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("account repo: read personal wallet summary: %w", err)
+	}
+	summary.Status = status
+	return &summary, nil
+}

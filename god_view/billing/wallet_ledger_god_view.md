@@ -44,3 +44,39 @@ flowchart LR
 | Egress debit transaction | `cost-manager/engine/src/service/storage/egress_billing.rs` |
 | Billing run/version pin | `cost-manager/engine/src/engine/runtime.rs` |
 
+## 5. Cloud Console wallet summary read path
+
+Cloud Console may show a compact personal-wallet snapshot in the global header, but the header is never a billing
+authority and must not receive an owner identifier from the browser.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CloudUI as Cloud Console
+    participant Envoy
+    participant Cost as Cost Manager API
+    participant PG as Billing PostgreSQL
+
+    CloudUI->>Envoy: GET /api/v1/billing/me/wallet/summary
+    Envoy->>Envoy: ext_authz verifies IAM session and injects trusted identity
+    Envoy->>Cost: Forward `/api/v1/billing/me/` route branch
+    Cost->>Cost: RequireIdentity + fixed self scope
+    Cost->>PG: Read PERSONAL/USD wallet by trusted owner_id
+    PG-->>Cost: cash + promotional + overdraft + version
+    Cost-->>CloudUI: Snapshot; micro-units serialized as strings
+```
+
+Invariants:
+
+- The Cloud vhost uses the extensible `/api/v1/billing/me/` prefix to `cost_manager_cluster` before generic
+  Controlplane `/api/`; browser code never targets the internal Cost Manager address.
+- `/api/v1/billing/me/*` is explicitly self-scoped and uses the normal IAM session. ACR reserves the remaining
+  Billing branches (`/billing/tiers`, `/billing/critical/*`, `/billing/auth/*`) for the Cost Console alias.
+- `owner_id`, `owner_type` and wallet selection are derived/validated server-side. A client-provided owner header is
+  not billing evidence. The `/me` endpoint is fixed to PERSONAL/USD and does not grant the broader operator
+  `billing:wallet:read` permission to ordinary platform users.
+- The response exposes exact micro-unit components as strings. It is a read snapshot only; it cannot authorize,
+  reserve or charge funds.
+- Wallet absence returns `404`, authorization failure returns `403`, and a billing/database outage returns `503`;
+  the Console must never render an error as zero balance.
+- The header uses a bounded memory query with auth-generation fencing and does not poll NATS/Centrifugo for money.

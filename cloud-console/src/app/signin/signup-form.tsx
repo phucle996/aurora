@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 // [COMMENT]: Import API module đăng ký
-import { authAPI } from "@/lib/api/auth";
+import { authAPI } from "@/features/auth/api";
 
 // [COMMENT]: Import icons từ lucide-react
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -32,7 +32,7 @@ function CircleIcon({ active }: { active: boolean }) {
 // [COMMENT]: Hàm chuyển đổi số điện thoại thô sang định dạng E.164 (ví dụ: 0346287974 -> +84346287974)
 // Hàm này sẽ tự động thêm mã quốc gia Việt Nam (+84) làm mặc định nếu số điện thoại bắt đầu bằng 0.
 const formatPhoneToE164 = (rawPhone: string) => {
-  let cleaned = rawPhone.replace(/[^\d+]/g, "");
+  const cleaned = rawPhone.replace(/[^\d+]/g, "");
   if (!cleaned) return "";
 
   if (cleaned.startsWith("+")) {

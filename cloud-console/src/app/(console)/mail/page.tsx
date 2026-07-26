@@ -5,7 +5,7 @@ import { ArrowRight, FileCode2, Mail, Plus, Radio } from "lucide-react";
 
 import RouteGuard from "@/components/route-guard";
 import { useWorkspace } from "@/context/WorkspaceContext";
-import { useUserSession } from "@/hooks/useUserSession";
+import { useUserSession } from "@/session/use-session";
 
 
 function MailOverviewContent() {

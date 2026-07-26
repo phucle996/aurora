@@ -4,10 +4,11 @@ import React, { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { HardDrive, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
-import { createBucket, type CreatedBucketResult, listBucketNames } from "@/lib/api/storage";
+import { createBucket, type CreatedBucketResult, type BucketItem, listBucketNames } from "@/features/storage/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import RouteGuard from "@/components/route-guard";
 import { useWorkspace } from "@/context/WorkspaceContext";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 // Import sub-components
 import { BillingCalculator } from "./components/BillingCalculator";
@@ -50,6 +51,7 @@ const getReadOnlyPolicy = () => `{
 function CreateBucketContent() {
   const router = useRouter();
   const { activeWorkspaceID } = useWorkspace();
+  const scope = useConsoleQueryScope();
   const queryClient = useQueryClient();
 
   const [step, setStep] = useState<"form" | "result">("form");
@@ -58,7 +60,7 @@ function CreateBucketContent() {
   const [name, setName] = useState("");
   const [quotaGB, setQuotaGB] = useState<number>(50);
   const [selectedPolicyTemplate, setSelectedPolicyTemplate] = useState<"readwrite" | "readonly" | "custom">("readwrite");
-  const [customPolicyText, setCustomPolicyText] = useState("");
+  const [customPolicyText, setCustomPolicyText] = useState(getReadWritePolicy);
 
   // Advanced configurations states
   const [encryptEnabled, setEncryptEnabled] = useState(false);
@@ -69,18 +71,13 @@ function CreateBucketContent() {
   const [legalHoldEnabled, setLegalHoldEnabled] = useState(false);
   const [tags, setTags] = useState<Record<string, string>>({});
 
-  // Initialize custom policy text template
-  React.useEffect(() => {
-    setCustomPolicyText(getReadWritePolicy());
-  }, []);
-
   // Result state
   const [result, setResult] = useState<CreatedBucketResult | null>(null);
 
-  const hasFullCache = !!queryClient.getQueryData(["buckets", activeWorkspaceID]);
+  const hasFullCache = !!queryClient.getQueryData([...scope, "storage", "buckets"]);
 
   const { data: bucketNames, isLoading: isNamesLoading } = useQuery<string[]>({
-    queryKey: ["bucket-names", activeWorkspaceID],
+    queryKey: [...scope, "storage", "bucket-names"],
     queryFn: () => listBucketNames(),
     enabled: !hasFullCache && !!activeWorkspaceID,
     staleTime: 60000,
@@ -88,11 +85,11 @@ function CreateBucketContent() {
 
   const existingBucketsList = useMemo(() => {
     if (hasFullCache) {
-      const fullBuckets = queryClient.getQueryData<any[]>(["buckets", activeWorkspaceID]);
+      const fullBuckets = queryClient.getQueryData<BucketItem[]>([...scope, "storage", "buckets"]);
       return fullBuckets?.map((b) => b.name) || [];
     }
     return bucketNames || [];
-  }, [hasFullCache, bucketNames, activeWorkspaceID, queryClient]);
+  }, [hasFullCache, bucketNames, queryClient, scope]);
 
   const isDuplicateName = useMemo(() => {
     if (!name || !activeWorkspaceID) return false;
@@ -127,8 +124,8 @@ function CreateBucketContent() {
       setStep("result");
       toast.success("Storage bucket created successfully!");
     },
-    onError: (err: any) => {
-      toast.error(err.message || "Failed to create storage bucket");
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Failed to create storage bucket");
     },
   });
 
@@ -160,7 +157,7 @@ function CreateBucketContent() {
       try {
         JSON.parse(customPolicyText);
         policy = customPolicyText;
-      } catch (err) {
+      } catch {
         toast.error("Custom JSON policy syntax is invalid");
         return;
       }

@@ -123,7 +123,7 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize TierRepository: instance is nil")
 	}
 
-	tierService := service.NewTierService(tierRepo, pricingOutboxRelay.Notify)
+	tierService := service.NewTierService(tierRepo, redisClient, pricingOutboxRelay.Notify)
 	if tierService == nil {
 		return nil, fmt.Errorf("failed to initialize TierService: instance is nil")
 	}

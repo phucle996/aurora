@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
@@ -15,10 +15,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 
 // [COMMENT]: Import các API và security modules
-import { authAPI, type LoginRequest } from "@/lib/api/auth";
-import { type ZoneCatalogItem } from "@/lib/api/zone";
+import { authAPI, type LoginRequest } from "@/features/auth/api";
+import { type ZoneCatalogItem } from "@/features/zones/api";
 import { ensureDevicePublicKey, signSessionProof } from "@/lib/security/deviceKey";
-import { useUserSession } from "@/hooks/useUserSession";
+import { useUserSession } from "@/session/use-session";
 
 // [COMMENT]: Icon cho các SSO providers
 function MicrosoftIcon() {
@@ -65,24 +65,21 @@ export default function SignInForm({
   onZoneChange,
   onSwitchToSignUp,
 }: SignInFormProps) {
+  void zones;
+  void onZoneChange;
   const router = useRouter();
   const { t } = useTranslation();
 
   // [COMMENT]: State nội bộ cho form đăng nhập — tách biệt khỏi signup form
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState(() =>
+    typeof window === "undefined" ? "" : window.sessionStorage.getItem("iam.pending_verification_username") || ""
+  );
   const [password, setPassword] = useState("");
   const [trustDevice, setTrustDevice] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-	const [pendingVerification, setPendingVerification] = useState(false);
-
-	useEffect(() => {
-		// [COMMENT]: Prefill account pending verification; password luôn phải nhập lại để authorize resend.
-		const pendingUsername = window.sessionStorage.getItem("iam.pending_verification_username");
-		if (pendingUsername) {
-			setUsername(pendingUsername);
-			setPendingVerification(true);
-		}
-	}, []);
+	const [pendingVerification, setPendingVerification] = useState(() =>
+		typeof window !== "undefined" && Boolean(window.sessionStorage.getItem("iam.pending_verification_username"))
+	);
 
   // [COMMENT]: Parse username@tenant_domain real-time:
   // nếu username chứa '@', tách thành rawUsername và tenantDomain để hiển thị badge và gửi lên API.
@@ -177,7 +174,7 @@ export default function SignInForm({
     } finally {
       setIsLoading(false);
     }
-	}, [username, password, trustDevice, selectedZoneCode, pendingVerification, t, router, refreshSession]);
+	}, [username, password, trustDevice, selectedZoneCode, pendingVerification, t, router, refreshSession, rawUsername, tenantDomain]);
 
   return (
     <div className="space-y-5">

@@ -20,7 +20,8 @@ import React, {
   type ReactNode,
 } from "react";
 
-import { fetchWorkspaceCatalog, type WorkspaceCatalogItem } from "@/lib/api/workspace";
+import { fetchWorkspaceCatalog, type WorkspaceCatalogItem } from "@/features/workspaces/api";
+import { useQueryClient } from "@tanstack/react-query";
 
 // ─── Cookie helpers ───────────────────────────────────────────────────────────
 
@@ -32,14 +33,20 @@ function getCookieWorkspaceID(): string | null {
   const match = document.cookie
     .split("; ")
     .find((row) => row.startsWith(`${COOKIE_KEY}=`));
-  return match ? decodeURIComponent(match.split("=")[1]) : null;
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match.split("=")[1]);
+  } catch {
+    return null;
+  }
 }
 
 // [COMMENT]: Ghi workspace_id vào cookie Strict/Secure, expires 30 ngày
 function setCookieWorkspaceID(id: string): void {
   if (typeof document === "undefined") return;
   const maxAge = 30 * 24 * 60 * 60; // 30 ngày
-  document.cookie = `${COOKIE_KEY}=${encodeURIComponent(id)}; path=/; max-age=${maxAge}; SameSite=Strict`;
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${COOKIE_KEY}=${encodeURIComponent(id)}; path=/; max-age=${maxAge}; SameSite=Strict${secure}`;
 }
 
 // [COMMENT]: Xóa cookie workspace_id ngay lập tức
@@ -51,10 +58,7 @@ function clearCookieWorkspaceID(): void {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type WorkspaceContextInput = {
-  userID: string;
-  zoneID: string;
-  tenantID?: string;
-  roleID?: string;
+  tenantContext?: boolean;
 };
 
 export type WorkspaceContextValue = {
@@ -82,6 +86,7 @@ export type WorkspaceContextValue = {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [catalog, setCatalog] = useState<WorkspaceCatalogItem[]>([]);
   const [activeWorkspaceID, setActiveWorkspaceID] = useState<string | null>(
     () => getCookieWorkspaceID(),
@@ -98,6 +103,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     async (input: WorkspaceContextInput) => {
       // Cancel request cũ nếu đang chạy
       abortRef.current?.abort();
+      void queryClient.cancelQueries();
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -109,12 +115,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
       try {
         const items = await fetchWorkspaceCatalog({
-          userID: input.userID,
-          zoneID: input.zoneID,
-          tenantID: input.tenantID,
-          roleID: input.roleID,
+          tenantContext: input.tenantContext,
           signal: controller.signal,
         });
+
+        if (controller.signal.aborted || abortRef.current !== controller) return;
 
         setCatalog(items);
 
@@ -130,20 +135,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setActiveWorkspaceID(firstID);
       } catch (err: unknown) {
         // [COMMENT]: Bỏ qua lỗi abort — không phải lỗi thật
-        if (err instanceof Error && err.name === "AbortError") return;
+        if (controller.signal.aborted || abortRef.current !== controller || (err instanceof Error && err.name === "AbortError")) return;
         setError(err instanceof Error ? err.message : "Failed to load workspace catalog");
       } finally {
-        setLoading(false);
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setLoading(false);
+        }
       }
     },
-    [],
+    [queryClient],
   );
 
   // [COMMENT]: selectWorkspace — user chủ động chọn workspace từ dropdown
   const selectWorkspace = useCallback((id: string) => {
+    if (!catalog.some((workspace) => workspace.id === id)) return;
+    void queryClient.cancelQueries();
     setCookieWorkspaceID(id);
     setActiveWorkspaceID(id);
-  }, []);
+  }, [catalog, queryClient]);
 
   // [COMMENT]: clearWorkspaceContext — dọn dẹp toàn bộ khi logout
   const clearWorkspaceContext = useCallback(() => {
@@ -152,6 +162,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCatalog([]);
     setActiveWorkspaceID(null);
     setError(null);
+    setLoading(false);
   }, []);
 
   // [COMMENT]: addWorkspaceToCatalog — append trực tiếp workspace mới tạo vào catalog dropdown hiện tại trên client

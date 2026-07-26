@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { HardDrive, RefreshCw, Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
+import { Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { updateBucketQuota, deleteBucket, type BucketItem } from "@/lib/api/storage";
-import { cn } from "@/lib/utils";
+import { updateBucketQuota, deleteBucket, type BucketItem } from "@/features/storage/api";
 
 interface OverviewTabProps {
   bucket: BucketItem;
@@ -88,8 +87,8 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
       toast.success("Storage quota limit updated successfully");
       setShowEditQuota(false);
       onRefresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to update quota limit");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to update quota limit");
     } finally {
       setUpdatingQuota(false);
     }
@@ -108,8 +107,8 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
       await deleteBucket(bucket.id, bucket.name);
       toast.success("Bucket deletion sequence initiated");
       router.push("/storage");
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete bucket");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete bucket");
     } finally {
       setDeleting(false);
     }

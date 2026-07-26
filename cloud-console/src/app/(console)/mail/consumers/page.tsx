@@ -5,14 +5,16 @@ import { ArrowLeft, Plus, Radio } from "lucide-react";
 
 import RouteGuard from "@/components/route-guard";
 import { useWorkspace } from "@/context/WorkspaceContext";
-import { useUserSession } from "@/hooks/useUserSession";
+import { useUserSession } from "@/session/use-session";
 import { ConsumersTab } from "../components/ConsumersTab";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 function ConsumersContent() {
   const { activeWorkspaceID, catalog, loading } = useWorkspace();
-  const { renderContext, checkPermission } = useUserSession();
+  const { checkPermission } = useUserSession();
+  const queryScope = useConsoleQueryScope();
   const workspace = catalog.find((item) => item.id === activeWorkspaceID);
-  const scopeKey = `${renderContext?.is_personal ? "personal" : "tenant"}:${activeWorkspaceID ?? "none"}`;
+  const scopeKey = queryScope.join(":");
 
   const canCreate = checkPermission("email:consumer", "create");
 

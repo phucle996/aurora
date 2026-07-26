@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 
 // [COMMENT]: Import API tạo tenant từ api module
-import { createTenant, type CreateTenantPayload } from "@/lib/api/tenant";
+import { createTenant, type CreateTenantPayload } from "@/features/tenants/api";
 
 export default function CreateTenantPage() {
   const router = useRouter();
@@ -58,9 +58,9 @@ export default function CreateTenantPage() {
       
       // [COMMENT]: Chuyển hướng người dùng quay lại trang danh sách tổ chức sau khi tạo thành công
       router.push("/tenants");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[Tenant] Failed to create tenant", err);
-      const errMsg = err?.message || "Failed to create organization. Code might already exist.";
+      const errMsg = err instanceof Error ? err.message : "Failed to create organization. Code might already exist.";
       toast.error(errMsg);
     } finally {
       setIsSubmitting(false);

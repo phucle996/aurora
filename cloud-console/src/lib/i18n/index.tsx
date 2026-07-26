@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback } from "react";
 import en from "./locales/signin/en.json";
 import vi from "./locales/signin/vi.json";
 import ja from "./locales/signin/ja.json";
@@ -22,15 +22,11 @@ const I18nContext = createContext<{
 
 // [COMMENT]: Nhà cung cấp ngữ cảnh đa ngôn ngữ (i18n) lưu vết lựa chọn qua localStorage
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [lang, setLangState] = useState<Language>("en");
-
-  // Sync ngôn ngữ đã lưu khi mount
-  useEffect(() => {
+  const [lang, setLangState] = useState<Language>(() => {
+    if (typeof window === "undefined") return "en";
     const savedLang = localStorage.getItem("lang") as Language;
-    if (savedLang && locales[savedLang]) {
-      setLangState(savedLang);
-    }
-  }, []);
+    return savedLang && locales[savedLang] ? savedLang : "en";
+  });
 
   const setLang = useCallback((newLang: Language) => {
     if (locales[newLang]) {

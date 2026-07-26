@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,48 @@ func (h *TierHandler) GetTierDetail(c *gin.Context) {
 		"metadata_version": detail.MetadataVersion,
 		"latest_version":   latestVersionObj,
 	}, "Successfully retrieved tier detail")
+}
+
+// EstimateStorage calculates a read-only capacity estimate from Cost's effective pricing snapshot.
+func (h *TierHandler) EstimateStorage(c *gin.Context) {
+	const op = "handler.tier.estimate_storage"
+	rawCapacity := strings.TrimSpace(c.Query("capacity_bytes"))
+	capacityBytes, err := strconv.ParseInt(rawCapacity, 10, 64)
+	if err != nil || capacityBytes <= 0 || capacityBytes > 1<<60 {
+		apires.RespondBadRequest(c, "capacity_bytes must be a positive integer no larger than 1<<60")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 2*time.Second)
+	defer cancel()
+	estimate, err := h.tierService.EstimateStorage(ctx, capacityBytes)
+	if err != nil {
+		switch {
+		case errors.Is(err, billingTaxonomy.ErrInvalidArgument), errors.Is(err, billingTaxonomy.ErrInvalidTierRanges):
+			apires.RespondBadRequest(c, "invalid storage estimate request")
+		case errors.Is(err, billingTaxonomy.ErrTierNotFound):
+			apires.RespondServiceUnavailable(c, "storage pricing is not available")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondServiceUnavailable(c, "storage estimate is temporarily unavailable")
+		}
+		return
+	}
+
+	apires.RespondSuccess(c, gin.H{
+		"capacity_bytes":               strconv.FormatInt(estimate.CapacityBytes, 10),
+		"hourly_estimate_micro_units":  strconv.FormatInt(estimate.HourlyMicroUnits, 10),
+		"monthly_estimate_micro_units": strconv.FormatInt(estimate.MonthlyMicroUnits, 10),
+		"billing_hours_per_month":      estimate.BillingHoursPerMonth,
+		"currency":                     estimate.Currency,
+		"tier_code":                    estimate.TierCode,
+		"tier_id":                      estimate.TierID.String(),
+		"tier_version_id":              estimate.TierVersionID.String(),
+		"pricing_version":              estimate.PricingVersion,
+		"pricing_checksum":             estimate.PricingChecksum,
+		"pricing_effective_from":       estimate.PricingEffectiveFrom,
+		"estimated_at":                 estimate.EstimatedAt,
+	}, "storage estimate")
 }
 
 // UpdateTierMetadata chỉ sửa display name và không phát pricing event.

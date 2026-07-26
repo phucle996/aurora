@@ -137,23 +137,27 @@ pub async fn authorize_and_sign(
 }
 
 fn action_for_request(method: &str, path: &str) -> Option<&'static str> {
-    if path.ends_with("/tags") {
+    // Query parameters are part of the signed canonical path, but route/action
+    // classification must use the path component so ListObjectsV2's
+    // `list-type=2` does not become an unknown action and fail closed.
+    let path_only = path.split('?').next().unwrap_or(path);
+    if path_only.ends_with("/tags") {
         return match method {
             "GET" => Some("GetObjectTagging"),
             "PUT" => Some("PutObjectTagging"),
             _ => None,
         };
     }
-    if path.ends_with("/bulk-delete") && method == "POST" {
+    if path_only.ends_with("/bulk-delete") && method == "POST" {
         return Some("DeleteObject");
     }
-    if path.ends_with("/presign-upload") && method == "POST" {
+    if path_only.ends_with("/presign-upload") && method == "POST" {
         return Some("PutObject");
     }
-    if path.ends_with("/presign-download") && method == "POST" {
+    if path_only.ends_with("/presign-download") && method == "POST" {
         return Some("GetObject");
     }
-    if method == "GET" && path.ends_with("/objects") {
+    if method == "GET" && path_only.ends_with("/objects") {
         return Some("ListBucket");
     }
     if method == "HEAD" && path.contains("/objects/") {

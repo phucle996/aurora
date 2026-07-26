@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { ShieldAlert, Download, Check, Copy, CheckSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { type CreatedBucketResult } from "@/lib/api/storage";
+import { type CreatedBucketResult } from "@/features/storage/api";
 
 interface CreatedBucketResultViewProps {
   result: CreatedBucketResult;

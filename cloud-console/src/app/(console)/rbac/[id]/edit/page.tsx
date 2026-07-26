@@ -4,9 +4,10 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { Shield, ArrowLeft, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
-import { listPermissions, getRoleDetails, updateRole, type PermissionItem } from "@/lib/api/rbac";
+import { listPermissions, getRoleDetails, updateRole, type PermissionItem, type UpdateRoleInput } from "@/features/rbac/api";
 import RouteGuard from "@/components/route-guard";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 // Sub-components import
 import RoleDetailsCard from "./components/RoleDetailsCard";
@@ -17,6 +18,7 @@ import SelectedPreviewCard from "./components/SelectedPreviewCard";
 function EditRoleContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
+  const queryScope = useConsoleQueryScope();
 
   // [COMMENT]: State cho các trường thông tin của Role và audit metadata
   const [name, setName] = useState("");
@@ -45,7 +47,7 @@ function EditRoleContent() {
     data: permissions = [],
     isLoading: loadingPerms,
   } = useQuery<PermissionItem[]>({
-    queryKey: ["permissions"],
+    queryKey: [...queryScope, "rbac", "permissions"],
     queryFn: () => listPermissions(),
   });
 
@@ -54,12 +56,12 @@ function EditRoleContent() {
     data: roleData = null,
     isLoading: loadingRole,
   } = useQuery({
-    queryKey: ["role", id],
+    queryKey: [...queryScope, "rbac", "role", id],
     queryFn: async () => {
       try {
         return await getRoleDetails(id);
-      } catch (err: any) {
-        toast.error(err.message || "Failed to load role details.");
+      } catch (err: unknown) {
+        toast.error(err instanceof Error ? err.message : "Failed to load role details.");
         router.push("/rbac");
         return null;
       }
@@ -71,7 +73,10 @@ function EditRoleContent() {
 
   // Cập nhật thông tin vai trò khi roleData đã tải xong
   useEffect(() => {
-    if (roleData) {
+    if (!roleData) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
       setName(roleData.name);
       setCode(roleData.code);
       setDescription(roleData.description || "");
@@ -83,20 +88,20 @@ function EditRoleContent() {
       const flatIds = (roleData.permissions || []).map((p) => p.id);
       setSelectedPerms(flatIds);
       setOriginalPerms(flatIds);
-    }
+    });
+    return () => { active = false; };
   }, [roleData]);
 
   // Mặc định expand tất cả các Module khi hiển thị lần đầu sau khi permissions load xong
   useEffect(() => {
-    if (permissions.length > 0) {
-      const initialModules: Record<string, boolean> = {};
-      permissions.forEach((p) => {
-        if (p.module) {
-          initialModules[p.module] = true;
-        }
-      });
-      setExpandedModules(initialModules);
-    }
+    if (permissions.length === 0) return;
+    const initialModules: Record<string, boolean> = {};
+    permissions.forEach((p) => {
+      if (p.module) initialModules[p.module] = true;
+    });
+    let active = true;
+    queueMicrotask(() => { if (active) setExpandedModules(initialModules); });
+    return () => { active = false; };
   }, [permissions]);
 
   // [COMMENT]: Xử lý nhóm và lọc permissions phẳng thành cấu trúc cây 3 bậc (Module -> Object -> Behaviors)
@@ -242,12 +247,12 @@ function EditRoleContent() {
   const queryClient = useQueryClient();
 
   // [COMMENT]: Mutation gửi API cập nhật Role và invalidate cache liên quan
-  const updateRoleMutation = useMutation<void, Error, any>({
+  const updateRoleMutation = useMutation<void, Error, UpdateRoleInput>({
     mutationFn: (variables) => updateRole(id, variables),
     onSuccess: () => {
       toast.success("Role updated successfully.");
-      queryClient.invalidateQueries({ queryKey: ["role", id] });
-      queryClient.invalidateQueries({ queryKey: ["roles"] });
+      queryClient.invalidateQueries({ queryKey: [...queryScope, "rbac", "role", id] });
+      queryClient.invalidateQueries({ queryKey: [...queryScope, "rbac", "roles"] });
       router.push(`/rbac/${id}`);
     },
     onError: (err) => {

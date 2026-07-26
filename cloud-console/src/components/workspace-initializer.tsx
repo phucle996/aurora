@@ -4,8 +4,9 @@
  * WorkspaceInitializer.tsx — Cầu nối giữa UserSession và WorkspaceContext.
  *
  * Trigger: khi session authenticated + profile.user_id có sẵn (sau khi resolveUserSession chạy xong)
- * - Đọc zone_id từ zone catalog (gọi fetchZoneCatalog) + zone_code từ cookie (do ACR set)
- * - Gọi initWorkspaceContext với đúng context headers
+ * - Đọc Zone context từ the verified session/cookie boundary (never forwards
+ *   actor or Zone identifiers as authorization claims)
+ * - Gọi initWorkspaceContext để lấy catalog workspace authoritative
  * - Khi session mất (logout) → clearWorkspaceContext
  *
  * Đặt component này bên trong cả <UserSessionProvider> và <WorkspaceProvider>.
@@ -13,16 +14,21 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useUserSession } from "@/hooks/useUserSession";
+import { useUserSession } from "@/session/use-session";
 import { useWorkspace } from "@/context/WorkspaceContext";
-import { fetchZoneCatalog } from "@/lib/api/zone";
 
 // [COMMENT]: Đọc giá trị cookie từ document.cookie — dùng để lấy zone_code ACR đã set
 function readCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
   const value = `; ${document.cookie}`;
   const parts = value.split(`; ${name}=`);
-  if (parts.length === 2) return parts.pop()?.split(";").shift() ?? null;
+  if (parts.length === 2) {
+    try {
+      return decodeURIComponent(parts.pop()?.split(";").shift() ?? "") || null;
+    } catch {
+      return null;
+    }
+  }
   return null;
 }
 
@@ -60,23 +66,11 @@ export function WorkspaceInitializer() {
     if (lastContextRef.current === contextKey) return;
     lastContextRef.current = contextKey;
 
-    // [COMMENT]: Resolve zone_id từ catalog bằng zone_code, sau đó call workspace catalog
+    // The backend derives actor and Zone from the verified session/cookie; the
+    // Console never forwards those values as authorization claims.
     void (async () => {
       try {
-        const zones = await fetchZoneCatalog();
-        const matched = zones.find(
-          (z) => z.code.toLowerCase() === zoneCode.toLowerCase()
-        );
-        if (!matched) {
-          console.warn("[WorkspaceInitializer] zone_code not found in catalog:", zoneCode);
-          return;
-        }
-
-        await initWorkspaceContext({
-          userID,
-          zoneID: matched.id,
-          // [COMMENT]: tenantID / roleID sẽ được bổ sung khi tenant context đầy đủ
-        });
+        await initWorkspaceContext({ tenantContext: false });
       } catch (err) {
         console.error("[WorkspaceInitializer] Failed to init workspace context:", err);
       }

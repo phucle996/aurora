@@ -97,47 +97,11 @@ func (r *AuthorizationResolver) Close() {
 	r.wg.Wait()
 }
 
-func authorizationKeys(userID uuid.UUID) (data, generation, dataGeneration, lock string) {
-	tag := fmt.Sprintf("authz:billing:{%s}", userID)
-	return tag + ":data", tag + ":generation", tag + ":data_generation", tag + ":lock"
-}
-
-func decodeBillingPermissions(binary []byte) (map[string]struct{}, error) {
-	permissions := make(map[string]struct{})
-	for len(binary) > 0 {
-		number, wireType, consumed := protowire.ConsumeTag(binary)
-		if consumed < 0 {
-			return nil, errors.New("invalid IAM RoleEntry tag")
-		}
-		binary = binary[consumed:]
-		if number != 1 || wireType != protowire.BytesType {
-			skipped := protowire.ConsumeFieldValue(number, wireType, binary)
-			if skipped < 0 {
-				return nil, errors.New("invalid IAM RoleEntry field")
-			}
-			binary = binary[skipped:]
-			continue
-		}
-		value, size := protowire.ConsumeBytes(binary)
-		if size < 0 {
-			return nil, errors.New("invalid IAM RoleEntry permission")
-		}
-		permission := string(value)
-		parts := strings.Split(permission, ":")
-		if len(parts) != 3 || parts[0] != "billing" || parts[1] == "" || parts[2] == "" {
-			return nil, fmt.Errorf("IAM returned invalid Billing permission %q", permission)
-		}
-		permissions[permission] = struct{}{}
-		binary = binary[size:]
-	}
-	if len(permissions) == 0 {
-		return nil, errors.New("IAM returned no Billing permission")
-	}
-	return permissions, nil
-}
-
 func (r *AuthorizationResolver) readL2(ctx context.Context, userID uuid.UUID) (map[string]struct{}, bool, error) {
-	dataKey, generationKey, dataGenerationKey, _ := authorizationKeys(userID)
+	tag := fmt.Sprintf("authz:billing:{%s}", userID)
+	dataKey := tag + ":data"
+	generationKey := tag + ":generation"
+	dataGenerationKey := tag + ":data_generation"
 	values, err := r.authRedis.MGet(ctx, dataKey, generationKey, dataGenerationKey).Result()
 	if err != nil {
 		return nil, false, fmt.Errorf("read authorization L2: %w", err)
@@ -161,14 +125,41 @@ func (r *AuthorizationResolver) readL2(ctx context.Context, userID uuid.UUID) (m
 	default:
 		return nil, false, errors.New("authorization L2 contains an invalid payload")
 	}
-	permissions, err := decodeBillingPermissions(binary)
-	if err != nil {
-		return nil, false, err
+
+	permissions := make(map[string]struct{})
+	for len(binary) > 0 {
+		number, wireType, consumed := protowire.ConsumeTag(binary)
+		if consumed < 0 {
+			return nil, false, errors.New("invalid IAM RoleEntry tag")
+		}
+		binary = binary[consumed:]
+		if number != 1 || wireType != protowire.BytesType {
+			skipped := protowire.ConsumeFieldValue(number, wireType, binary)
+			if skipped < 0 {
+				return nil, false, errors.New("invalid IAM RoleEntry field")
+			}
+			binary = binary[skipped:]
+			continue
+		}
+		value, size := protowire.ConsumeBytes(binary)
+		if size < 0 {
+			return nil, false, errors.New("invalid IAM RoleEntry permission")
+		}
+		permission := string(value)
+		parts := strings.Split(permission, ":")
+		if len(parts) != 3 || parts[0] != "billing" || parts[1] == "" || parts[2] == "" {
+			return nil, false, fmt.Errorf("IAM returned invalid Billing permission %q", permission)
+		}
+		permissions[permission] = struct{}{}
+		binary = binary[size:]
+	}
+	if len(permissions) == 0 {
+		return nil, false, errors.New("IAM returned no Billing permission")
 	}
 	return permissions, true, nil
 }
 
-func (r *AuthorizationResolver) requestAuthorization(ctx context.Context, userID uuid.UUID) ([]byte, error) {
+func (r *AuthorizationResolver) requestAuthorization(ctx context.Context, userID uuid.UUID) ([]byte, map[string]struct{}, error) {
 	requestContext, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
 	defer cancel()
 	requestID := uuid.New()
@@ -176,7 +167,7 @@ func (r *AuthorizationResolver) requestAuthorization(ctx context.Context, userID
 	pubsub := r.sharedRedis.Subscribe(requestContext, replyChannel)
 	defer pubsub.Close()
 	if _, err := pubsub.Receive(requestContext); err != nil {
-		return nil, fmt.Errorf("subscribe Billing authorization reply: %w", err)
+		return nil, nil, fmt.Errorf("subscribe Billing authorization reply: %w", err)
 	}
 	replies := pubsub.Channel(redis.WithChannelSize(1))
 
@@ -186,35 +177,68 @@ func (r *AuthorizationResolver) requestAuthorization(ctx context.Context, userID
 	request = append(request, userID[:]...)
 	subscribers, err := r.sharedRedis.Publish(requestContext, billingAuthorizationRequestChannel, request).Result()
 	if err != nil {
-		return nil, fmt.Errorf("publish IAM Billing authorization request: %w", err)
+		return nil, nil, fmt.Errorf("publish IAM Billing authorization request: %w", err)
 	}
 	if subscribers == 0 {
-		return nil, errors.New("IAM Billing authorization resolver is unavailable")
+		return nil, nil, errors.New("IAM Billing authorization resolver is unavailable")
 	}
 
 	select {
 	case <-requestContext.Done():
-		return nil, fmt.Errorf("request IAM Billing authorization: %w", requestContext.Err())
+		return nil, nil, fmt.Errorf("request IAM Billing authorization: %w", requestContext.Err())
 	case response, ok := <-replies:
 		if !ok {
-			return nil, errors.New("IAM Billing authorization reply subscription closed")
+			return nil, nil, errors.New("IAM Billing authorization reply subscription closed")
 		}
 		payload := []byte(response.Payload)
 		if len(payload) == 0 {
-			return nil, errors.New("IAM returned an empty Billing authorization response")
+			return nil, nil, errors.New("IAM returned an empty Billing authorization response")
 		}
 		if payload[0] != 1 {
-			return nil, errors.New(string(payload[1:]))
+			return nil, nil, errors.New(string(payload[1:]))
 		}
-		if _, err := decodeBillingPermissions(payload[1:]); err != nil {
-			return nil, err
+
+		binary := payload[1:]
+		permissions := make(map[string]struct{})
+		for len(binary) > 0 {
+			number, wireType, consumed := protowire.ConsumeTag(binary)
+			if consumed < 0 {
+				return nil, nil, errors.New("invalid IAM RoleEntry tag")
+			}
+			binary = binary[consumed:]
+			if number != 1 || wireType != protowire.BytesType {
+				skipped := protowire.ConsumeFieldValue(number, wireType, binary)
+				if skipped < 0 {
+					return nil, nil, errors.New("invalid IAM RoleEntry field")
+				}
+				binary = binary[skipped:]
+				continue
+			}
+			value, size := protowire.ConsumeBytes(binary)
+			if size < 0 {
+				return nil, nil, errors.New("invalid IAM RoleEntry permission")
+			}
+			permission := string(value)
+			parts := strings.Split(permission, ":")
+			if len(parts) != 3 || parts[0] != "billing" || parts[1] == "" || parts[2] == "" {
+				return nil, nil, fmt.Errorf("IAM returned invalid Billing permission %q", permission)
+			}
+			permissions[permission] = struct{}{}
+			binary = binary[size:]
 		}
-		return payload[1:], nil
+		if len(permissions) == 0 {
+			return nil, nil, errors.New("IAM returned no Billing permission")
+		}
+		return payload[1:], permissions, nil
 	}
 }
 
 func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forceIAM bool) (map[string]struct{}, error) {
-	dataKey, generationKey, dataGenerationKey, lockKey := authorizationKeys(userID)
+	tag := fmt.Sprintf("authz:billing:{%s}", userID)
+	dataKey := tag + ":data"
+	generationKey := tag + ":generation"
+	dataGenerationKey := tag + ":data_generation"
+	lockKey := tag + ":lock"
 	maxAttempts := 3
 	if forceIAM {
 		maxAttempts = 12
@@ -262,7 +286,7 @@ func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forc
 			} else if generationErr != nil {
 				return nil, fmt.Errorf("read authorization generation: %w", generationErr)
 			}
-			binary, requestErr := r.requestAuthorization(ctx, userID)
+			binary, loadedPermissions, requestErr := r.requestAuthorization(ctx, userID)
 			if requestErr != nil {
 				return nil, requestErr
 			}
@@ -284,7 +308,7 @@ func (r *AuthorizationResolver) load(ctx context.Context, userID uuid.UUID, forc
 			if written != 1 {
 				return nil, nil
 			}
-			return decodeBillingPermissions(binary)
+			return loadedPermissions, nil
 		}()
 		if loadErr != nil {
 			return nil, loadErr

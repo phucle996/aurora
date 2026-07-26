@@ -22,4 +22,11 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 		v1.POST("/critical/tiers/:service_type/:code/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:tier:publish", true), m.TierHandler.CreateTierVersion)
 		v1.POST("/subscriptions/free-tier/personal", middleware.Authorize(m.AuthorizationResolver, "billing:subscription:write", false), m.AccountHandler.ActivatePersonalFreeTier)
 	}
+
+	// Self-scoped Billing reads stay under the Billing API branch so Envoy can route the whole
+	// `/api/v1/billing/me/` subtree without an exact-route change for every new read endpoint.
+	// They intentionally do not use the operator Billing permission/alias middleware.
+	billingMe := v1.Group("/me")
+	billingMe.GET("/wallet/summary", m.AccountHandler.GetPersonalWalletSummary)
+	billingMe.GET("/estimate/storage", m.TierHandler.EstimateStorage)
 }

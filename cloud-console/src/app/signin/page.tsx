@@ -3,18 +3,19 @@
 import React, { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Toaster } from "@/components/ui/sonner";
-import { useUserSession } from "@/hooks/useUserSession";
+import { useUserSession } from "@/session/use-session";
 
 // [COMMENT]: Import i18n hooks phục vụ đa ngôn ngữ toàn hệ thống
 import { useTranslation, type Language } from "@/lib/i18n";
 import { useTheme, type ThemeMode } from "@/context/ThemeContext";
 
 // [COMMENT]: Import API module zone catalog
-import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
+import { fetchZoneCatalog, type ZoneCatalogItem } from "@/features/zones/api";
 
 // [COMMENT]: Import các form component con — mỗi form tự quản lý state nội bộ
 import SignInForm from "./signin-form";
 import SignUpForm from "./signup-form";
+import { useQuery } from "@tanstack/react-query";
 
 // [COMMENT]: Icon SVG nhỏ gọn cho Logo thương hiệu
 function AuroraLogo() {
@@ -57,14 +58,23 @@ function AuthPageContent() {
   const { lang, setLang, t } = useTranslation();
 
   // [COMMENT]: Mode điều khiển form nào đang hiển thị (signin / signup)
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [mode, setMode] = useState<"signin" | "signup">(
+    () => (searchParams.get("mode") === "signup" ? "signup" : "signin")
+  );
 
   // [COMMENT]: Lấy state theme và hàm cập nhật từ ThemeProvider toàn cục
   const { theme, setTheme } = useTheme();
 
   // [COMMENT]: Danh sách active zones lấy từ ACR edge
-  const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
+  const { data: zones = [] } = useQuery<ZoneCatalogItem[]>({
+    queryKey: ["public", "zones", "catalog"],
+    queryFn: ({ signal }) => fetchZoneCatalog({ signal }),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+  });
   const [selectedZoneCode, setSelectedZoneCode] = useState("");
+  const effectiveZoneCode = selectedZoneCode || zones[0]?.code || "";
 
   // [COMMENT]: Ref tới flex container chứa 2 form panel — dùng cho slide animation
   const sliderRef = useRef<HTMLDivElement>(null);
@@ -75,18 +85,6 @@ function AuthPageContent() {
   // =========================================================================
   // EFFECTS: Khởi tạo và đồng bộ trạng thái
   // =========================================================================
-
-  // [COMMENT]: Đồng bộ mode từ URL query params khi trang được load lần đầu
-  useEffect(() => {
-    if (searchParams) {
-      const modeParam = searchParams.get("mode");
-      if (modeParam === "signup") {
-        setMode("signup");
-      } else {
-        setMode("signin");
-      }
-    }
-  }, [searchParams]);
 
   // [COMMENT]: Lắng nghe sự kiện phím Back/Forward của trình duyệt để đổi mode
   useEffect(() => {
@@ -100,26 +98,6 @@ function AuthPageContent() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
-
-  // [COMMENT]: Tra cứu danh sách active zones từ ACR edge khi mount
-  useEffect(() => {
-    let active = true;
-    fetchZoneCatalog()
-      .then((data) => {
-        if (active && data) {
-          setZones(data);
-          if (data.length > 0) {
-            setSelectedZoneCode(data[0].code);
-          }
-        }
-      })
-      .catch((err) => {
-        console.error("[Auth] Failed to fetch active zones list", err);
-      });
-    return () => { active = false; };
-  }, []);
-
-
 
   // =========================================================================
   // HEIGHT OBSERVER: Theo dõi chiều cao panel đang active
@@ -221,7 +199,7 @@ function AuthPageContent() {
                 <div className="px-7 py-6">
                   <SignInForm
                     zones={zones}
-                    selectedZoneCode={selectedZoneCode}
+                    selectedZoneCode={effectiveZoneCode}
                     onZoneChange={setSelectedZoneCode}
                     onSwitchToSignUp={() => switchMode("signup")}
                   />
@@ -274,7 +252,7 @@ function AuthPageContent() {
             <span className="text-slate-300 dark:text-slate-800">|</span>
             <div className="flex items-center gap-1">
               <select
-                value={selectedZoneCode}
+                value={effectiveZoneCode}
                 onChange={(e) => setSelectedZoneCode(e.target.value)}
                 className="bg-transparent text-xs text-slate-600 outline-none hover:border-slate-300 transition-colors cursor-pointer font-medium dark:text-slate-400 dark:hover:border-slate-700"
               >

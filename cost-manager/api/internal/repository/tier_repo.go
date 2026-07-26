@@ -193,6 +193,70 @@ func (r *tierRepository) GetTierDetail(ctx context.Context, code string, service
 	return detail, nil
 }
 
+// GetActivePricingSnapshot chọn một snapshot effective hiện tại bằng cùng boundary mà estimate cần dùng.
+// Tiers/ranges được đọc trong một query; không ghép các version khác nhau ở application layer.
+func (r *tierRepository) GetActivePricingSnapshot(ctx context.Context, serviceType entity.ServiceType) (*entity.PricingSnapshot, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH candidate AS (
+			SELECT t.id AS tier_id, t.code, t.service_type,
+			       v.id AS tier_version_id, v.version_number,
+			       v.effective_from, v.effective_to, v.checksum
+			FROM billing.tiers t
+			JOIN billing.tier_versions v ON v.tier_id = t.id
+			WHERE t.service_type = $1::billing.service_type
+			  AND v.status <> 'CANCELLED'
+			  AND v.effective_from <= NOW()
+			  AND (v.effective_to IS NULL OR NOW() < v.effective_to)
+			ORDER BY v.version_number DESC, v.effective_from DESC, t.code ASC
+			LIMIT 1
+		)
+		SELECT c.tier_id, c.code, c.service_type, c.tier_version_id, c.version_number,
+		       c.effective_from, c.effective_to, c.checksum,
+		       r.id, r.range_start, r.range_end, r.base_unit_price
+		FROM candidate c
+		JOIN billing.tier_version_ranges r ON r.tier_version_id = c.tier_version_id
+		ORDER BY r.range_start ASC
+	`, string(serviceType))
+	if err != nil {
+		return nil, fmt.Errorf("tier repo: query active pricing snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshot *entity.PricingSnapshot
+	for rows.Next() {
+		var tierID, versionID, rangeID uuid.UUID
+		var code, rawServiceType, checksum string
+		var versionNumber int
+		var effectiveFrom time.Time
+		var effectiveTo *time.Time
+		var tierRange entity.TierRangeInput
+		if err := rows.Scan(
+			&tierID, &code, &rawServiceType, &versionID, &versionNumber,
+			&effectiveFrom, &effectiveTo, &checksum,
+			&rangeID, &tierRange.RangeStart, &tierRange.RangeEnd, &tierRange.BaseUnitPrice,
+		); err != nil {
+			return nil, fmt.Errorf("tier repo: scan active pricing snapshot: %w", err)
+		}
+		tierRange.ID = rangeID
+		if snapshot == nil {
+			snapshot = &entity.PricingSnapshot{
+				TierID: tierID, TierVersionID: versionID, Code: code,
+				ServiceType: entity.ServiceType(rawServiceType), VersionNumber: versionNumber,
+				EffectiveFrom: effectiveFrom, EffectiveTo: effectiveTo, Checksum: checksum,
+			}
+		}
+		snapshot.Ranges = append(snapshot.Ranges, tierRange)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tier repo: iterate active pricing snapshot: %w", err)
+	}
+	if snapshot == nil {
+		return nil, billingTaxonomy.ErrTierNotFound
+	}
+	snapshot.Currency = "USD"
+	return snapshot, nil
+}
+
 // UpdateTierMetadata khóa identity row và chỉ thay name/metadata_version.
 func (r *tierRepository) UpdateTierMetadata(ctx context.Context, update entity.TierMetadataUpdate) (*entity.TierMetadata, error) {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})

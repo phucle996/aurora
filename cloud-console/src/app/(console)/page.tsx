@@ -1,33 +1,13 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React from "react";
 import {
-  Compass,
-  Globe,
   Cpu,
   HardDrive,
   Network,
-  GitMerge,
-  Layers,
-  FolderGit,
-  Copy,
-  Building2,
-  LayoutGrid,
   Server,
   Lock,
-  UserCheck,
-  History,
-  Activity,
-  AlertCircle,
-  Clock,
-  Users,
-  Settings,
-  ChevronLeft,
-  ChevronRight,
-  ShieldAlert,
-  CircleDot
 } from "lucide-react";
-import { useConsoleLayout } from "./layout";
 
 interface ZoneData {
   name: string;
@@ -49,8 +29,7 @@ interface VMData {
 }
 
 export default function ConsoleDashboard() {
-  // [COMMENT]: Lấy trạng thái activeId từ Context Layout chung
-  const { activeId } = useConsoleLayout();
+  const activeId: string = "overview";
 
   // [COMMENT]: Mock data chi tiết cho các domain hạ tầng vật lý và mạng
   const mockZones: ZoneData[] = [

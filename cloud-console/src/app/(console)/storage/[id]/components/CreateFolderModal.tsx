@@ -26,7 +26,7 @@ export const CreateFolderModal: React.FC<CreateFolderModalProps> = ({
       await onCreate(folderName.trim());
       setFolderName("");
       onClose();
-    } catch (err) {
+    } catch {
       // Error is caught/handled in caller
     } finally {
       setIsCreating(false);

@@ -71,3 +71,11 @@ func (s *accountService) ProvisionPersonalWallet(ctx context.Context, eventID uu
 	}
 	return s.repo.ApplyPersonalWalletProvision(ctx, eventID, ownerID, payloadHash)
 }
+
+// GetPersonalWalletSummary giữ owner boundary ở server; UI không thể chọn wallet khác.
+func (s *accountService) GetPersonalWalletSummary(ctx context.Context, ownerID uuid.UUID) (*entity.WalletSummary, error) {
+	if ownerID == uuid.Nil {
+		return nil, billingTaxonomy.ErrInvalidArgument
+	}
+	return s.repo.GetPersonalWalletSummary(ctx, ownerID)
+}

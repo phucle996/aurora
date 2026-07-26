@@ -20,6 +20,7 @@ import (
 
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	pricingv1 "cost-manager/api/internal/genproto/billing/pricing/v1"
+	"cost-manager/api/pkg/logger"
 
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
@@ -121,6 +122,12 @@ func (r *PricingOutboxRelay) drain(ctx context.Context, refreshStatuses bool) er
 				_ = r.repo.RecordOutboxError(ctx, row.ID, err.Error())
 				publishErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, err)
 				break
+			}
+
+			// Cache invalidation is a separate best-effort hint so API subscribers do not
+			// affect the Engine listener count used by the existing outbox safety check.
+			if err := r.sharedRedis.Publish(ctx, pricingCacheInvalidationChannel, payload).Err(); err != nil {
+				logger.SysWarn("billing.pricing.cache.invalidate.publish", err.Error())
 			}
 
 			if err := r.repo.MarkOutboxPublished(ctx, row.ID); err != nil {

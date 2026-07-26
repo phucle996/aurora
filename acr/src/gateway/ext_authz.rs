@@ -71,6 +71,10 @@ pub fn extract_cookie_value(cookie_header: &str, cookie_name: &str) -> Option<St
     None
 }
 
+fn is_billing_alias_path(path: &str) -> bool {
+    path.starts_with("/api/v1/billing") && !path.starts_with("/api/v1/billing/me/")
+}
+
 pub fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -461,7 +465,9 @@ impl Authorization for ExtAuthzService {
 
         // [COMMENT]: Đã trích xuất cookie_header ở đầu hàm check cho Phase 1 Rate Limiting nên không cần trích xuất lại tại đây.
 
-        let is_billing = path.starts_with("/api/v1/billing");
+        // `/billing/me/*` is a self-scoped read branch used by Cloud Console. Keep it on the
+        // normal IAM session path; operator Billing Console routes remain alias-protected.
+        let is_billing = is_billing_alias_path(path);
         let is_sre = path.starts_with("/admin");
 
         let mut claims: Option<Claims> = None;
@@ -1137,5 +1143,22 @@ impl Authorization for ExtAuthzService {
         }
 
         Ok(Response::new(ok_response))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_billing_alias_path;
+
+    #[test]
+    fn billing_me_stays_on_normal_iam_session() {
+        assert!(!is_billing_alias_path("/api/v1/billing/me/wallet/summary"));
+        assert!(!is_billing_alias_path(
+            "/api/v1/billing/me/estimate/storage?capacity_bytes=1"
+        ));
+        assert!(is_billing_alias_path("/api/v1/billing/tiers"));
+        assert!(is_billing_alias_path(
+            "/api/v1/billing/critical/tiers/STORAGE/CODE"
+        ));
     }
 }

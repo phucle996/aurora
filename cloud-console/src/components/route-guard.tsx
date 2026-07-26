@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldAlert, ArrowLeft, Loader2 } from "lucide-react";
-import { useUserSession } from "@/hooks/useUserSession";
+import { useUserSession } from "@/session/use-session";
 
 // [COMMENT]: RouteGuard kiểm tra quyền truy cập dựa trên key và action được cấu hình động cho mỗi route.
 // Thiết kế thuần Render Engine, không chứa bất kỳ logic nghiệp vụ hoặc cứng hóa URL/Quyền hạn nào.
@@ -17,7 +17,12 @@ interface RouteGuardProps {
 export default function RouteGuard({ children, requiredKey, requiredAction, customCheck }: RouteGuardProps) {
   const router = useRouter();
   const { loading, authenticated, checkPermission } = useUserSession();
-  const [authorized, setAuthorized] = useState<boolean | null>(null);
+  const authorized = useMemo(() => {
+    if (loading || !authenticated) return null;
+    if (customCheck) return customCheck(checkPermission);
+    if (requiredKey && requiredAction) return checkPermission(requiredKey, requiredAction);
+    return false;
+  }, [loading, authenticated, requiredKey, requiredAction, customCheck, checkPermission]);
 
   useEffect(() => {
     if (loading) return;
@@ -28,15 +33,7 @@ export default function RouteGuard({ children, requiredKey, requiredAction, cust
       return;
     }
 
-    // [COMMENT]: So khớp quyền hạn động sử dụng triết lý pure render engine
-    let allowed = false;
-    if (customCheck) {
-      allowed = customCheck(checkPermission);
-    } else if (requiredKey && requiredAction) {
-      allowed = checkPermission(requiredKey, requiredAction);
-    }
-    setAuthorized(allowed);
-  }, [loading, authenticated, requiredKey, requiredAction, customCheck, checkPermission, router]);
+  }, [loading, authenticated, router]);
 
   // [COMMENT]: Giao diện chờ kiểm tra quyền hạn mượt mà
   if (loading || authorized === null) {

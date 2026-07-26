@@ -17,9 +17,10 @@ import {
   Edit
 } from "lucide-react";
 import { toast } from "sonner";
-import { getRoleDetails, type PermissionItem } from "@/lib/api/rbac";
+import { getRoleDetails } from "@/features/rbac/api";
 import RouteGuard from "@/components/route-guard";
 import { useQuery } from "@tanstack/react-query";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 // [COMMENT]: Định dạng ngày tháng hiển thị thông minh
 function formatDate(dateStr: string): string {
@@ -71,6 +72,7 @@ function CopyBadge({ value }: { value: string }) {
 function ViewRoleContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
+  const queryScope = useConsoleQueryScope();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
@@ -81,13 +83,13 @@ function ViewRoleContent() {
     data: roleData = null,
     isLoading: loading,
   } = useQuery({
-    queryKey: ["role", id],
+    queryKey: [...queryScope, "rbac", "role", id],
     queryFn: async () => {
       try {
         const data = await getRoleDetails(id);
         return data;
-      } catch (err: any) {
-        toast.error(err.message || "Failed to load role details.");
+      } catch (err: unknown) {
+        toast.error(err instanceof Error ? err.message : "Failed to load role details.");
         router.push("/rbac");
         return null;
       }
@@ -97,15 +99,14 @@ function ViewRoleContent() {
 
   // Mặc định expand tất cả các Module có trong quyền được gán sau khi roleData được load
   useEffect(() => {
-    if (roleData?.permissions) {
-      const initialModules: Record<string, boolean> = {};
-      roleData.permissions.forEach((p) => {
-        if (p.module) {
-          initialModules[p.module] = true;
-        }
-      });
-      setExpandedModules(initialModules);
-    }
+    if (!roleData?.permissions) return;
+    const initialModules: Record<string, boolean> = {};
+    roleData.permissions.forEach((p) => {
+      if (p.module) initialModules[p.module] = true;
+    });
+    let active = true;
+    queueMicrotask(() => { if (active) setExpandedModules(initialModules); });
+    return () => { active = false; };
   }, [roleData]);
 
   const name = roleData?.name || "";
@@ -117,7 +118,7 @@ function ViewRoleContent() {
   const permissionsCount = roleData?.permissions_count || 0;
   const createdAt = roleData?.created_at || "";
   const updatedAt = roleData?.updated_at || "";
-  const grantedTree = roleData?.permissions || [];
+  const grantedTree = useMemo(() => roleData?.permissions || [], [roleData?.permissions]);
 
   // [COMMENT]: Thực hiện bộ lọc tìm kiếm và dựng cây 3 bậc từ danh sách phẳng
   const filteredTree = useMemo(() => {

@@ -11,8 +11,7 @@ import {
   CheckSquare,
   Square
 } from "lucide-react";
-import { type PermissionItem } from "@/lib/api/rbac";
-import { cn } from "@/lib/utils";
+import { type PermissionItem } from "@/features/rbac/api";
 
 interface GrantPermissionsCardProps {
   permissions: PermissionItem[];

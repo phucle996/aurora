@@ -10,9 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { type APIError } from "@/lib/api/fetcher";
-import { createMailTemplate, deleteMailTemplate, getMailTemplate, listMailTemplates, listMailTemplateVersions, publishMailTemplate, type MailTemplate, type TemplateContentWrite } from "@/lib/api/mail";
-import { useRealtime } from "@/context/RealtimeContext";
+import { type APIError } from "@/shared/api/http";
+import { createMailTemplate, deleteMailTemplate, getMailTemplate, listMailTemplates, listMailTemplateVersions, publishMailTemplate, type MailTemplate, type TemplateContentWrite } from "@/features/mail/api";
+import { useRealtime } from "@/realtime/provider";
 
 type TemplatesTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type TemplateForm = TemplateContentWrite & { code: string; name: string };
@@ -69,10 +69,6 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
       return createMailTemplate({ ...content, code: form.code, name: form.name.trim() });
     },
     onSuccess: async (result) => {
-      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
-        id: result.operation_id, title: formMode === "publish" ? "Publishing mail template" : "Creating mail template",
-        message: `${result.template.name} is being applied in the selected zone.`, type: "processing",
-      } }));
       await queryClient.invalidateQueries({ queryKey: ["mail", scopeKey] });
       setSelectedID(result.template.id); setFormMode(null); setForm(emptyForm);
       toast.success(formMode === "publish" ? "Template publish scheduled" : "Template creation scheduled");
@@ -81,11 +77,7 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   });
   const deleteMutation = useMutation({
     mutationFn: (template: MailTemplate) => deleteMailTemplate(template.id, template.template_revision),
-    onSuccess: (result, template) => {
-      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
-        id: result.operation_id, title: "Deleting mail template",
-        message: `${template.name} is being deleted from the selected zone.`, type: "processing",
-      } }));
+    onSuccess: () => {
       toast.success("Template deletion scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),

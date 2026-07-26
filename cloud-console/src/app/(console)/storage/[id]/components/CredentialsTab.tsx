@@ -1,28 +1,26 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import {
   KeyRound,
   Plus,
-  Trash2,
   Copy,
   Check,
-  ShieldAlert,
   Loader2,
-  CheckSquare,
   FileCode,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import {
   listCredentials,
   createCredential,
   deleteCredential,
   type CredentialItem,
   type BucketItem,
-} from "@/lib/api/storage";
-import { cn } from "@/lib/utils";
+} from "@/features/storage/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 import { PolicyViewModal } from "./PolicyViewModal";
 import { DeleteKeyModal } from "./DeleteKeyModal";
 import { GenerateCredentialModal } from "./GenerateCredentialModal";
@@ -64,6 +62,7 @@ const READ_ONLY_POLICY = `{
 
 export function CredentialsTab({ bucket }: CredentialsTabProps) {
   const queryClient = useQueryClient();
+  const scope = useConsoleQueryScope();
 
   // Modal states for creating key
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -84,10 +83,9 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
   const {
     data: credentials = [],
     isLoading: loading,
-    refetch: fetchKeys,
   } = useQuery<CredentialItem[]>({
     // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
-    queryKey: ["credentials", bucket.id],
+    queryKey: [...scope, "storage", "credentials", bucket.id],
     queryFn: () => listCredentials(bucket.id),
     enabled: !!bucket.id,
   });
@@ -107,10 +105,10 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
       setCreatedResult(res);
       toast.success("Access credential generated successfully");
       // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
-      queryClient.invalidateQueries({ queryKey: ["credentials", bucket.id] });
+      queryClient.invalidateQueries({ queryKey: [...scope, "storage", "credentials", bucket.id] });
     },
-    onError: (err: any) => {
-      toast.error(err.message || "Failed to generate credentials");
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Failed to generate credentials");
     },
   });
 
@@ -128,13 +126,13 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     },
     onSuccess: (_, { id }) => {
       toast.success("Access Key successfully deleted");
-      queryClient.setQueryData<CredentialItem[]>(["credentials", bucket.id], (prev) => {
+      queryClient.setQueryData<CredentialItem[]>([...scope, "storage", "credentials", bucket.id], (prev) => {
         if (!prev) return [];
         return prev.filter((item) => item.id !== id);
       });
     },
-    onError: (err: any) => {
-      toast.error(err.message || "Failed to delete credential");
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Failed to delete credential");
     },
     onSettled: () => {
       setDeletingId(null);
@@ -157,7 +155,7 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     setIsModalOpen(false);
     setCreatedResult(null);
     // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
-    queryClient.invalidateQueries({ queryKey: ["credentials", bucket.id] });
+    queryClient.invalidateQueries({ queryKey: [...scope, "storage", "credentials", bucket.id] });
   };
 
   const getPolicyName = (policyJSON: string) => {

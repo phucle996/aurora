@@ -7,27 +7,42 @@ import (
 	billingSvcInterface "cost-manager/api/internal/domain/service"
 	billingTaxonomy "cost-manager/api/internal/taxonomy"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
+	"math/bits"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
+)
+
+const (
+	storageBytesPerMB            int64 = 1_048_576
+	storageEstimateHoursPerMonth int64 = 730
 )
 
 type tierService struct {
 	tierRepo            billingRepoInterface.TierRepository
+	pricingCache        *pricingCache
 	notifyPricingOutbox func()
 }
 
 // [COMMENT]: NewTierService khởi tạo instance của tierService.
-func NewTierService(tierRepo billingRepoInterface.TierRepository, notifier ...func()) billingSvcInterface.TierService {
+func NewTierService(tierRepo billingRepoInterface.TierRepository, redisClient *goredis.Client, notifier ...func()) billingSvcInterface.TierService {
 	var notify func()
 	if len(notifier) > 0 {
 		notify = notifier[0]
 	}
-	return &tierService{tierRepo: tierRepo, notifyPricingOutbox: notify}
+	return &tierService{
+		tierRepo: tierRepo,
+		pricingCache: &pricingCache{
+			repo:        tierRepo,
+			redisClient: redisClient,
+			l1:          make(map[entity.ServiceType]pricingCacheItem),
+		},
+		notifyPricingOutbox: notify,
+	}
 }
 
 // [COMMENT]: GetTiersList điều hướng gọi repository để lấy danh sách biểu giá.
@@ -43,6 +58,74 @@ func (s *tierService) GetTierDetail(ctx context.Context, code string, serviceTyp
 		return nil, billingTaxonomy.ErrInvalidArgument
 	}
 	return s.tierRepo.GetTierDetail(ctx, code, serviceType)
+}
+
+// EstimateStorage uses the same effective progressive ranges as the billing engine, then scales one hourly
+// charge by the documented 730-hour month. The estimate never writes wallet/ledger state.
+func (s *tierService) EstimateStorage(ctx context.Context, capacityBytes int64) (*entity.StorageEstimate, error) {
+	snapshot, err := s.pricingCache.get(ctx, entity.ServiceTypeStorage)
+	if err != nil {
+		return nil, err
+	}
+	// Handler đã validate capacity_bytes. Giữ phép tính tại boundary này để pricing flow không phụ thuộc helper
+	// rải ở service package; 1 MiB là mẫu số cố định nên uint128 đủ chính xác và không cần float/big.Rat.
+	wholeMB := capacityBytes / storageBytesPerMB
+	remainderBytes := capacityBytes % storageBytesPerMB
+	var numeratorHigh, numeratorLow uint64
+	for _, tierRange := range snapshot.Ranges {
+		if tierRange.RangeStart > wholeMB || (tierRange.RangeStart == wholeMB && remainderBytes == 0) {
+			break
+		}
+		startBytes := tierRange.RangeStart * storageBytesPerMB
+		upperBytes := capacityBytes
+		if tierRange.RangeEnd != 0 && tierRange.RangeEnd <= wholeMB {
+			upperBytes = tierRange.RangeEnd * storageBytesPerMB
+		}
+		unitsBytes := upperBytes - startBytes
+		productHigh, productLow := bits.Mul64(uint64(unitsBytes), uint64(tierRange.BaseUnitPrice))
+		var carry uint64
+		numeratorLow, carry = bits.Add64(numeratorLow, productLow, 0)
+		var overflow uint64
+		numeratorHigh, overflow = bits.Add64(numeratorHigh, productHigh, carry)
+		if overflow != 0 {
+			return nil, fmt.Errorf("pricing charge exceeds uint128 capacity")
+		}
+	}
+	quotientHigh := numeratorHigh >> 20
+	quotientLow := numeratorLow>>20 | numeratorHigh<<44
+	const maxInt64 = uint64(^uint64(0) >> 1)
+	if quotientHigh != 0 || quotientLow > maxInt64 {
+		return nil, fmt.Errorf("pricing charge exceeds BIGINT capacity")
+	}
+	if numeratorLow&uint64(storageBytesPerMB-1) != 0 {
+		if quotientLow == maxInt64 {
+			return nil, fmt.Errorf("pricing charge exceeds BIGINT capacity")
+		}
+		quotientLow++
+	}
+	hourly := int64(quotientLow)
+	if hourly > 0 && uint64(hourly) > maxInt64/uint64(storageEstimateHoursPerMonth) {
+		return nil, fmt.Errorf("storage estimate exceeds BIGINT capacity")
+	}
+	monthly := hourly * storageEstimateHoursPerMonth
+	return &entity.StorageEstimate{
+		CapacityBytes:        capacityBytes,
+		HourlyMicroUnits:     hourly,
+		MonthlyMicroUnits:    monthly,
+		BillingHoursPerMonth: storageEstimateHoursPerMonth,
+		Currency:             snapshot.Currency,
+		TierCode:             snapshot.Code,
+		TierID:               snapshot.TierID,
+		TierVersionID:        snapshot.TierVersionID,
+		PricingVersion:       snapshot.VersionNumber,
+		PricingChecksum:      snapshot.Checksum,
+		PricingEffectiveFrom: snapshot.EffectiveFrom,
+		EstimatedAt:          time.Now().UTC(),
+	}, nil
+}
+
+func (s *tierService) RunPricingCacheInvalidation(ctx context.Context) {
+	s.pricingCache.runInvalidation(ctx)
 }
 
 // UpdateTierMetadata sửa display metadata độc lập để không tạo pricing version ngoài ý muốn.
@@ -76,10 +159,45 @@ func (s *tierService) CreateTierVersion(ctx context.Context, create entity.TierV
 	})
 
 	// Một pricing schedule hợp lệ phải phủ liên tục từ zero đến đúng một infinity.
-	if err := validateTierRanges(create.Ranges); err != nil {
-		return nil, err
+	if len(create.Ranges) == 0 || create.Ranges[0].RangeStart != 0 {
+		return nil, billingTaxonomy.ErrInvalidTierRanges
 	}
-	create.Checksum = tierVersionChecksum(create)
+	seenIDs := make(map[uuid.UUID]struct{}, len(create.Ranges))
+	for i, current := range create.Ranges {
+		if current.RangeStart < 0 || current.BaseUnitPrice < 0 {
+			return nil, billingTaxonomy.ErrInvalidTierRanges
+		}
+		if current.RangeEnd != 0 && current.RangeEnd <= current.RangeStart {
+			return nil, billingTaxonomy.ErrInvalidTierRanges
+		}
+
+		// UUID nil dành cho insert; UUID hiện hữu không được lặp trong cùng payload.
+		if current.ID != uuid.Nil {
+			if _, exists := seenIDs[current.ID]; exists {
+				return nil, billingTaxonomy.ErrInvalidTierRanges
+			}
+			seenIDs[current.ID] = struct{}{}
+		}
+
+		isLast := i == len(create.Ranges)-1
+		if isLast {
+			if current.RangeEnd != 0 {
+				return nil, billingTaxonomy.ErrInvalidTierRanges
+			}
+			continue
+		}
+		// Infinity chỉ được nằm cuối; equality giữa hai boundary loại bỏ cả gap lẫn overlap.
+		if current.RangeEnd == 0 || current.RangeEnd != create.Ranges[i+1].RangeStart {
+			return nil, billingTaxonomy.ErrInvalidTierRanges
+		}
+	}
+
+	checksum := sha256.New()
+	_, _ = fmt.Fprintf(checksum, "%s\x00%s\x00", create.Code, string(create.ServiceType))
+	for _, tierRange := range create.Ranges {
+		_, _ = fmt.Fprintf(checksum, "%d:%d:%d;", tierRange.RangeStart, tierRange.RangeEnd, tierRange.BaseUnitPrice)
+	}
+	create.Checksum = fmt.Sprintf("%x", checksum.Sum(nil))
 	version, err := s.tierRepo.CreateTierVersion(ctx, create)
 	if err != nil {
 		return nil, err
@@ -89,53 +207,4 @@ func (s *tierService) CreateTierVersion(ctx context.Context, create entity.TierV
 		s.notifyPricingOutbox()
 	}
 	return version, nil
-}
-
-// tierVersionChecksum tạo content fingerprint ổn định để Engine kiểm tra snapshot đã load đầy đủ.
-func tierVersionChecksum(create entity.TierVersionCreate) string {
-	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "%s\x00%s\x00", create.Code, string(create.ServiceType))
-	for _, tierRange := range create.Ranges {
-		_, _ = fmt.Fprintf(h, "%d:%d:%d;", tierRange.RangeStart, tierRange.RangeEnd, tierRange.BaseUnitPrice)
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// validateTierRanges áp dụng boundary contract [start,end), với end=0 biểu thị infinity.
-func validateTierRanges(ranges []entity.TierRangeInput) error {
-	if len(ranges) == 0 || ranges[0].RangeStart != 0 {
-		return billingTaxonomy.ErrInvalidTierRanges
-	}
-
-	seenIDs := make(map[string]struct{}, len(ranges))
-	for i, current := range ranges {
-		if current.RangeStart < 0 || current.BaseUnitPrice < 0 {
-			return billingTaxonomy.ErrInvalidTierRanges
-		}
-		if current.RangeEnd != 0 && current.RangeEnd <= current.RangeStart {
-			return billingTaxonomy.ErrInvalidTierRanges
-		}
-
-		// UUID nil dành cho insert; UUID hiện hữu không được lặp trong cùng payload.
-		if current.ID != uuid.Nil {
-			key := current.ID.String()
-			if _, exists := seenIDs[key]; exists {
-				return billingTaxonomy.ErrInvalidTierRanges
-			}
-			seenIDs[key] = struct{}{}
-		}
-
-		isLast := i == len(ranges)-1
-		if isLast {
-			if current.RangeEnd != 0 {
-				return billingTaxonomy.ErrInvalidTierRanges
-			}
-			continue
-		}
-		// Infinity chỉ được nằm cuối; equality giữa hai boundary loại bỏ cả gap lẫn overlap.
-		if current.RangeEnd == 0 || current.RangeEnd != ranges[i+1].RangeStart {
-			return billingTaxonomy.ErrInvalidTierRanges
-		}
-	}
-	return nil
 }

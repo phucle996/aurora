@@ -18,12 +18,14 @@ import {
   Info
 } from "lucide-react";
 import { toast } from "sonner";
-import { listPermissions, createRole, type PermissionItem } from "@/lib/api/rbac";
+import { listPermissions, createRole, type PermissionItem, type CreateRoleInput } from "@/features/rbac/api";
 import RouteGuard from "@/components/route-guard";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 function CreateRoleContent() {
   const router = useRouter();
+  const scope = useConsoleQueryScope();
   // [COMMENT]: Khởi tạo state cho các trường thông tin của Role và tìm kiếm
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -45,21 +47,20 @@ function CreateRoleContent() {
     data: permissions = [],
     isLoading: loading,
   } = useQuery<PermissionItem[]>({
-    queryKey: ["permissions"],
+    queryKey: [...scope, "rbac", "permissions"],
     queryFn: () => listPermissions(),
   });
 
   // Mặc định expand tất cả các Module khi hiển thị lần đầu sau khi permissions load xong
   useEffect(() => {
-    if (permissions.length > 0) {
-      const initialModules: Record<string, boolean> = {};
-      permissions.forEach((p) => {
-        if (p.module) {
-          initialModules[p.module] = true;
-        }
-      });
-      setExpandedModules(initialModules);
-    }
+    if (permissions.length === 0) return;
+    const initialModules: Record<string, boolean> = {};
+    permissions.forEach((p) => {
+      if (p.module) initialModules[p.module] = true;
+    });
+    let active = true;
+    queueMicrotask(() => { if (active) setExpandedModules(initialModules); });
+    return () => { active = false; };
   }, [permissions]);
 
   // [COMMENT]: Xử lý nhóm và lọc permissions phẳng thành cấu trúc cây 3 bậc (Module -> Object -> Behaviors)
@@ -239,11 +240,11 @@ function CreateRoleContent() {
   const queryClient = useQueryClient();
 
   // [COMMENT]: Mutation gửi API tạo mới Role và tự động invalidate query danh sách roles
-  const createRoleMutation = useMutation<void, Error, any>({
+  const createRoleMutation = useMutation<void, Error, CreateRoleInput>({
     mutationFn: (variables) => createRole(variables),
     onSuccess: () => {
       toast.success("Role created successfully.");
-      queryClient.invalidateQueries({ queryKey: ["roles"] });
+      queryClient.invalidateQueries({ queryKey: [...scope, "rbac", "roles"] });
       router.push("/rbac");
     },
     onError: (err) => {

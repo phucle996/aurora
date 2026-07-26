@@ -7,9 +7,9 @@
 | Thuộc tính | AS-IS contract |
 |---|---|
 | Public host | `https://cost-manager.aurora.local` |
-| Read routes | `GET /api/v1/billing/tiers`, `GET /api/v1/billing/tiers/:service_type/:code` |
+| Read routes | `GET /api/v1/billing/tiers`, `GET /api/v1/billing/tiers/:service_type/:code`, self-scoped `GET /api/v1/billing/me/*` |
 | Critical write routes | `PATCH /api/v1/billing/critical/tiers/:service_type/:code/metadata`, `POST /api/v1/billing/critical/tiers/:service_type/:code/versions` |
-| Identity | IAM user → ACR Billing domain Trinity |
+| Identity | Operator routes: IAM user → ACR Billing domain Trinity; `/billing/me/*`: normal IAM self scope |
 | Read permission | `billing:tier:read` |
 | Write permission | `billing:tier:publish` + verified Ed25519 session proof |
 | Stable identity | `(service_type, code)`; cả hai immutable |
@@ -20,6 +20,7 @@
 | Durable run pin | `billing.billing_runs.tier_version_id` |
 | Currency unit | USD micro-units; integer `BIGINT` |
 | Range boundary | Progressive `[range_start, range_end)`; `range_end=0` only for final infinity |
+| Byte-metered range unit | MiB (`1_048_576` bytes); `base_unit_price` is micro-units/MiB/hour |
 
 ## 1. Non-negotiable invariants
 
@@ -67,6 +68,7 @@ flowchart LR
 |---|---|---|
 | `GET /api/v1/billing/tiers` | identity + `billing:tier:read` | `ListTiers` |
 | `GET /api/v1/billing/tiers/:service_type/:code` | identity + `billing:tier:read` | `GetTierDetail` |
+| `GET /api/v1/billing/me/*` | normal IAM identity, fixed self scope | read-only personal Cost projections |
 | `PATCH /api/v1/billing/critical/tiers/:service_type/:code/metadata` | identity + proof + `billing:tier:publish` | `UpdateTierMetadata` |
 | `POST /api/v1/billing/critical/tiers/:service_type/:code/versions` | identity + proof + `billing:tier:publish` | `CreateTierVersion` |
 
@@ -145,6 +147,8 @@ base_unit_price >= 0
 ```
 
 Charge progressive tính riêng phần quantity nằm trong từng interval. `range_end=0` không có nghĩa là zero-length; nó là infinity sentinel của range cuối.
+Với `STORAGE`, `NETWORK_IN` và `NETWORK_OUT`, boundary lưu theo MiB. Byte usage được đổi sang MiB chính xác,
+nhân từng progressive range và chỉ ceil một lần tại integer micro-unit boundary.
 
 ## 5. Read workflows
 
@@ -204,8 +208,8 @@ Request là complete aggregate:
   "effective_from": "2026-07-24T00:00:00Z",
   "change_reason": "July storage pricing",
   "ranges": [
-    {"range_start": 0, "range_end": 10737418240, "base_unit_price": 10},
-    {"range_start": 10737418240, "range_end": 0, "base_unit_price": 8}
+    {"range_start": 0, "range_end": 10240, "base_unit_price": 10},
+    {"range_start": 10240, "range_end": 0, "base_unit_price": 8}
   ]
 }
 ```

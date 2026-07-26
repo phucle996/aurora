@@ -2,11 +2,11 @@ import type { Metadata } from "next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { I18nProvider } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/sonner";
-import { UserSessionProvider } from "@/hooks/UserSessionProvider";
+import { UserSessionProvider } from "@/session/provider";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { WorkspaceProvider } from "@/context/WorkspaceContext";
 import { WorkspaceInitializer } from "@/components/workspace-initializer";
-import { RealtimeProviderWrapper } from "@/context/RealtimeContext";
+import { RealtimeProviderWrapper } from "@/realtime/provider";
 import QueryProvider from "@/components/providers/QueryProvider";
 import "@fontsource-variable/inter";
 import "./globals.css";
@@ -52,4 +52,3 @@ export default function RootLayout({
     </html>
   );
 }
-

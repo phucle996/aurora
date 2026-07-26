@@ -28,11 +28,13 @@ type App struct {
 	authRedisClient *redis.Client
 	module          *Module
 
-	httpServer   *http.Server
-	grpcServer   *googlegrpc.Server
-	rustCmd      *exec.Cmd
-	outboxCancel context.CancelFunc
-	outboxDone   chan struct{}
+	httpServer         *http.Server
+	grpcServer         *googlegrpc.Server
+	rustCmd            *exec.Cmd
+	outboxCancel       context.CancelFunc
+	outboxDone         chan struct{}
+	pricingCacheCancel context.CancelFunc
+	pricingCacheDone   chan struct{}
 }
 
 func NewApp() *App {
@@ -116,6 +118,19 @@ func (a *App) Start() error {
 		close(a.outboxDone)
 	}
 
+	// Pricing cache invalidation is a best-effort Pub/Sub hint; TTL/cold-start remains the recovery path.
+	pricingCacheCtx, pricingCacheCancel := context.WithCancel(context.Background())
+	a.pricingCacheCancel = pricingCacheCancel
+	a.pricingCacheDone = make(chan struct{})
+	if a.module != nil && a.module.TierService != nil {
+		go func() {
+			defer close(a.pricingCacheDone)
+			a.module.TierService.RunPricingCacheInvalidation(pricingCacheCtx)
+		}()
+	} else {
+		close(a.pricingCacheDone)
+	}
+
 	// 3. Start gRPC Reconciler Worker
 	if a.module != nil && a.module.ReconcilerWorker != nil {
 		a.module.ReconcilerWorker.Start(context.Background())
@@ -172,6 +187,17 @@ func (a *App) Wait() {
 func (a *App) Stop() {
 	const op = "app.stop"
 	logger.SysInfo(op, "Shutting down Cost Manager API gracefully...")
+
+	if a.pricingCacheCancel != nil {
+		a.pricingCacheCancel()
+	}
+	if a.pricingCacheDone != nil {
+		select {
+		case <-a.pricingCacheDone:
+		case <-time.After(2 * time.Second):
+			logger.SysWarn(op, "Timed out waiting for pricing cache invalidation worker")
+		}
+	}
 
 	if a.outboxCancel != nil {
 		a.outboxCancel()

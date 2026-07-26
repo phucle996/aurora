@@ -92,3 +92,34 @@ type TierDetail struct {
 	MetadataVersion int
 	LatestVersion   TierVersion
 }
+
+// PricingSnapshot là immutable pricing read model dùng chung cho estimate và các read path nhanh.
+// Không chứa owner/request data; giá trị được chọn theo effective window trong Billing PostgreSQL.
+type PricingSnapshot struct {
+	TierID        uuid.UUID
+	TierVersionID uuid.UUID
+	Code          string
+	ServiceType   ServiceType
+	VersionNumber int
+	EffectiveFrom time.Time
+	EffectiveTo   *time.Time
+	Checksum      string
+	Currency      string
+	Ranges        []TierRangeInput
+}
+
+// StorageEstimate là kết quả ước tính tham khảo, không phải ledger posting hay authorization decision.
+type StorageEstimate struct {
+	CapacityBytes        int64
+	HourlyMicroUnits     int64
+	MonthlyMicroUnits    int64
+	BillingHoursPerMonth int64
+	Currency             string
+	TierCode             string
+	TierID               uuid.UUID
+	TierVersionID        uuid.UUID
+	PricingVersion       int
+	PricingChecksum      string
+	PricingEffectiveFrom time.Time
+	EstimatedAt          time.Time
+}

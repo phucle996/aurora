@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from "react";
-import { type PermissionItem } from "@/lib/api/rbac";
+import { type PermissionItem } from "@/features/rbac/api";
 import { cn } from "@/lib/utils";
 
 interface SelectedPreviewCardProps {

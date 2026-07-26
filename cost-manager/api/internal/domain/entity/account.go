@@ -34,3 +34,16 @@ type FreeTierAccount struct {
 	SubscriptionStarted time.Time
 	Created             bool
 }
+
+// WalletSummary là read model tối thiểu cho UI. Các số tiền giữ nguyên micro-unit
+// dạng int64; HTTP adapter sẽ serialize thành string để không mất chính xác qua JSON/JS.
+type WalletSummary struct {
+	WalletID                     uuid.UUID
+	Currency                     string
+	CashBalanceMicroUnits        int64
+	PromotionalBalanceMicroUnits int64
+	OverdraftLimitMicroUnits     int64
+	Status                       string
+	Version                      int64
+	UpdatedAt                    time.Time
+}

@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { type APIError } from "@/lib/api/fetcher";
-import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, watchMailConsumerRuntime, type ConsumerWrite, type MailConsumer, type MailConsumerRuntimeWatch, type MailRuntimeState, type MailSourceType, updateMailConsumer } from "@/lib/api/mail";
-import { useRealtime } from "@/context/RealtimeContext";
+import { type APIError } from "@/shared/api/http";
+import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, watchMailConsumerRuntime, type ConsumerWrite, type MailConsumer, type MailConsumerRuntimeWatch, type MailRuntimeState, type MailSourceType, updateMailConsumer } from "@/features/mail/api";
+import { useRealtime } from "@/realtime/provider";
 
 type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type ConsumerForm = ConsumerWrite & { code: string };
@@ -169,14 +169,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         ? updateMailConsumer(editing.id, { ...input, desired_state: editing.desired_state, expected_config_version: editing.config_version })
         : createMailConsumer({ ...input, code: form.code });
     },
-    onSuccess: async (result) => {
-      // [COMMENT]: Header activity là local-only; cùng operation_id sẽ được realtime result ghi đè.
-      window.dispatchEvent(new CustomEvent("local-notification:add", {
-        detail: {
-          id: result.operation_id, title: editing ? "Updating mail consumer" : "Creating mail consumer",
-          message: `${result.name} is being applied in the selected zone.`, type: "processing",
-        }
-      }));
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey });
       toast.success(editing ? "Consumer update scheduled" : "Consumer creation scheduled");
       setEditing(null); setForm(emptyForm); setFormOpen(false);
@@ -186,26 +179,14 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
   const stateChange = useMutation({
     mutationFn: ({ consumer, action }: { consumer: MailConsumer; action: "pause" | "resume" }) => changeMailConsumerState(consumer.id, action, consumer.config_version),
-    onSuccess: async (result) => {
-      window.dispatchEvent(new CustomEvent("local-notification:add", {
-        detail: {
-          id: result.operation_id, title: "Applying mail consumer state",
-          message: `${result.name} is being applied in the selected zone.`, type: "processing",
-        }
-      }));
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer state change scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const remove = useMutation({
     mutationFn: (consumer: MailConsumer) => deleteMailConsumer(consumer.id, consumer.config_version),
-    onSuccess: (result, consumer) => {
-      window.dispatchEvent(new CustomEvent("local-notification:add", {
-        detail: {
-          id: result.operation_id, title: "Deleting mail consumer",
-          message: `${consumer.name} is being deleted from the selected zone.`, type: "processing",
-        }
-      }));
+    onSuccess: () => {
       toast.success("Consumer deletion scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),

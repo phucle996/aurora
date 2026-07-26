@@ -7,7 +7,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ArrowLeft, CheckCircle2, Eye, FileCode2, Info, Loader2, Sparkles } from "lucide-react";
 
 import RouteGuard from "@/components/route-guard";
-import { createMailTemplate } from "@/lib/api/mail";
+import { createMailTemplate } from "@/features/mail/api";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 const PARAM_GRAMMAR_REGEX = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const PLACEHOLDER_FIND_REGEX = /\{\{\s*([^}]+?)\s*\}\}/g;
@@ -40,6 +41,7 @@ function parseAndValidatePlaceholders(text: string): ValidationResult {
 function NewTemplateContent() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const queryScope = useConsoleQueryScope();
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [subjectTemplate, setSubjectTemplate] = useState("Hello {{name}}, your order {{order_id}} is confirmed!");
@@ -107,7 +109,7 @@ function NewTemplateContent() {
       });
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["mail"] });
+      void queryClient.invalidateQueries({ queryKey: ["mail", queryScope.join(":")] });
       router.push("/mail/templates");
     },
     onError: (err: Error) => {

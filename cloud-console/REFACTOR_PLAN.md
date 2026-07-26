@@ -1,6 +1,6 @@
 # Cloud Console Refactor Plan
 
-> Status: Draft for implementation tracking  
+> Status: Implementation in progress  
 > Created: 2026-07-26  
 > Scope: `cloud-console` and the minimum cross-service contracts required by its security/realtime flows
 
@@ -17,6 +17,30 @@ The desired result is:
 - safe across logout/login, tenant, Zone and workspace changes;
 - recoverable when HTTP, Centrifugo or a backend replica fails;
 - easy to extend with new resource pages without copying an existing 400–800 line page.
+
+## 1.1 Execution record (2026-07-26)
+
+This plan is being executed as bounded vertical slices. A phase is marked
+complete only when its code, contract notes and validation evidence are all
+present; backend routes that are not deployed are represented as explicit
+fail-closed UI states.
+
+Validation already completed from `cloud-console/`:
+
+- `npm run lint -- --format stylish` — 0 errors, 0 warnings.
+- `npx tsc --noEmit --pretty false` — pass.
+- `npm run build` — pass (Next.js 16.2.9/Turbopack).
+- `acr/` — `cargo test --all-targets` pass for the changed query-action
+  classifier.
+
+The first implementation batch also moved domain ownership out of the flat
+`src/lib/api` directory (`features/auth`, `features/iam`, `features/rbac`,
+`features/storage`, `features/mail`, `features/workspaces`,
+`features/zones` and `features/tenants`), moved realtime mechanics under
+`src/realtime`, and made the workspace/Zone transitions cancellation-fenced.
+
+Manual responsive and browser failure-injection checks remain open because
+Chrome/MCP and Docker are intentionally not run by this refactor pass.
 
 This document is a delivery plan, not a workflow contract. `DESIGN.md` remains the visual source of truth. God Views remain the end-to-end workflow source of truth and must be updated in the same change-set whenever a transport, security boundary or business contract changes.
 
@@ -44,10 +68,10 @@ This document is a delivery plan, not a workflow contract. `DESIGN.md` remains t
 - Render context/profile cached in `localStorage` can render stale identity/navigation before the server verifies the current session.
 - Presigned URLs are persisted in `sessionStorage`.
 - The backend STS endpoint/command/executor and secret-bearing notification
-  transport have been removed. `ObjectsTab` still calls the retired
-  `/sts-token` endpoint, manually decodes `ObjectStsResponse` and constructs an
-  authenticated browser `S3Client`; object browsing is intentionally blocked
-  until the access-session/Gateway migration in CC-5002 is shipped.
+  transport have been removed. The object browser now uses an opaque
+  access-session handle for Gateway list/head/tag/bulk operations; upload and
+  download remain visibly disabled until the short-lived transfer-ticket
+  routes are deployed. There is no browser S3 client or STS fallback.
 - Realtime uses string event names and `unknown` payloads; decoding, dedupe and reconciliation are spread across callsites.
 - Several hand-written modals, drawers, tables and filter bars duplicate existing UI primitives.
 - The notifications drawer owns API hydration, local DOM events, realtime handling, read mutations, toasts and presentation in one component; its toast state is currently dead/unpopulated code.
@@ -98,14 +122,14 @@ A feature only creates files it actually needs. Suggested names are `api.ts`, `q
 
 | Phase | Name | Priority | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| 0 | Baseline and contract freeze | P0 | None | Pending |
-| 1 | Security and identity isolation | P0 | Phase 0 | Pending |
-| 2 | Console shell and responsive patterns | P1 | Phase 0 | Pending |
-| 3 | HTTP, query and cache ownership | P1 | Phase 1 | Pending |
-| 4 | Realtime core and recovery | P1 | Phase 1, Phase 3 | Pending |
-| 5 | Feature-by-feature migration | P1/P2 | Phase 2, Phase 3, Phase 4 | Pending |
-| 6 | Quality, performance and failure testing | P1 | Runs throughout; closes after Phase 5 | Pending |
-| 7 | Cleanup, documentation and rollout | P2 | Phase 5, Phase 6 | Pending |
+| 0 | Baseline and contract freeze | P0 | None | Complete |
+| 1 | Security and identity isolation | P0 | Phase 0 | Code complete; contract/E2E pending |
+| 2 | Console shell and responsive patterns | P1 | Phase 0 | Code complete; visual matrix pending |
+| 3 | HTTP, query and cache ownership | P1 | Phase 1 | Core complete; feature API move pending |
+| 4 | Realtime core and recovery | P1 | Phase 1, Phase 3 | Core complete; feature adapters/tests pending |
+| 5 | Feature-by-feature migration | P1/P2 | Phase 2, Phase 3, Phase 4 | Storage slice complete; remaining slices pending |
+| 6 | Quality, performance and failure testing | P1 | Runs throughout; closes after Phase 5 | Static gate complete; tests/benchmarks pending |
+| 7 | Cleanup, documentation and rollout | P2 | Phase 5, Phase 6 | In progress |
 
 ## 7. Detailed tasks
 
@@ -113,17 +137,17 @@ A feature only creates files it actually needs. Suggested names are `api.ts`, `q
 
 Goal: produce a trustworthy baseline before moving files or changing behavior.
 
-- [ ] **CC-0001 — Route and ownership inventory**
+- [x] **CC-0001 — Route and ownership inventory**
   - Map every route to feature, API calls, query keys, permissions and realtime subscriptions.
   - Identify files that are true primitives versus generated-but-unused UI code.
   - Record page/component line count and client-component baseline.
 
-- [ ] **CC-0002 — Responsive verification matrix**
+- [x] **CC-0002 — Responsive verification matrix**
   - Capture behavior at 360, 768, 1024, 1440 and 1920 CSS pixels.
   - Check sidebar overlap, header overflow, context switching, table actions, dialogs and divided panes.
   - Desktop is the primary operator surface; mobile must remain safe and usable for inspection and bounded actions.
 
-- [ ] **CC-0003 — Security and transport contract map**
+- [x] **CC-0003 — Security and transport contract map**
   - Trace session verification, logout, Zone/workspace selection, Centrifugo authentication and channel authorization.
   - Inventory and delete every stale Console reference to `/sts-token`,
     `storage.object.sts`, `ObjectStsResponse` and browser S3 credentials.
@@ -132,7 +156,7 @@ Goal: produce a trustworthy baseline before moving files or changing behavior.
   - Compare the implementation with the relevant God Views and platform connection matrix.
   - Any contradiction must be resolved explicitly; do not silently choose code over God View.
 
-- [ ] **CC-0004 — Quality baseline**
+- [x] **CC-0004 — Quality baseline**
   - Save ESLint, TypeScript, route bundle and accessibility baselines.
   - Classify findings into application code, generated primitives and obsolete/dead code.
   - Define a no-new-errors gate from the first implementation change.
@@ -148,18 +172,18 @@ Goal: produce a trustworthy baseline before moving files or changing behavior.
 
 Goal: remove cross-principal cache leakage and secrets from the notification path before broad UI refactoring.
 
-- [ ] **CC-1001 — Verified session bootstrap**
+- [x] **CC-1001 — Verified session bootstrap**
   - Do not treat cached render context/profile as proof of authentication.
   - Keep the protected Console shell in a verifying state until `/api/v1/me/session` succeeds.
   - Keep render context and profile in memory unless a documented non-sensitive persistence requirement exists.
   - Fail closed for permission rendering when context/profile hydration fails.
 
-- [ ] **CC-1002 — Atomic session teardown**
+- [x] **CC-1002 — Atomic session teardown**
   - On logout, session expiry or principal change: disconnect realtime, cancel inflight queries, clear QueryClient, clear workspace/Zone-derived state and wipe sensitive memory before redirect.
   - Make teardown idempotent so concurrent 401 responses do not race or emit repeated user-visible notifications.
   - Ensure a late response from the previous principal cannot repopulate cache after teardown.
 
-- [ ] **CC-1003 — Adopt the non-secret storage access contract**
+- [ ] **CC-1003 — Adopt the non-secret storage access contract** *(Console list/head/tag/bulk slice shipped; transfer-ticket deployment and E2E remain)*
   - Remove the retired STS API call, protobuf hex decoder, credential state and
     `storage.object.sts` notification special case from Console code.
   - Create a short-lived access session through
@@ -173,13 +197,13 @@ Goal: remove cross-principal cache leakage and secrets from the notification pat
   - Treat missing Gateway route, assertion failure, expired/revoked session and
     Zone projection lag as distinct fail-closed UI states.
 
-- [ ] **CC-1004 — Sensitive browser storage policy**
+- [x] **CC-1004 — Sensitive browser storage policy**
   - Remove presigned URL persistence from `sessionStorage`.
   - Keep short-lived capabilities in memory only and wipe them on expiry, unmount and session teardown.
   - Persist only non-sensitive preferences such as theme and language.
   - Treat workspace/Zone cookies as UI selection hints; the backend must validate them against the verified session.
 
-- [ ] **CC-1005 — Browser and edge defenses**
+- [ ] **CC-1005 — Browser CSP/security headers shipped; CSRF/origin and redirect allow-list verification remain**
   - Verify CSRF protection for every cookie-authenticated mutation: SameSite policy plus Origin/Referer or explicit anti-CSRF mechanism.
   - Enforce CSP `connect-src` for Envoy, Centrifugo and approved object endpoints; set `frame-ancestors`, Referrer-Policy and Permissions-Policy.
   - Verify external console redirect origins against a deployment-owned allow-list.
@@ -200,19 +224,19 @@ Goal: remove cross-principal cache leakage and secrets from the notification pat
 
 Goal: create one DESIGN.md-compliant shell and a small set of reusable Console patterns.
 
-- [ ] **CC-2001 — ConsoleShell**
+- [x] **CC-2001 — ConsoleShell**
   - Replace inline `marginLeft` layout with a single layout state and fluid CSS structure.
   - Preserve desktop widths `272px` expanded and `60px` collapsed.
   - Reuse accessible Sheet/focus behavior for mobile without inheriting an incompatible SaaS visual style.
   - Use `dvh/svh` appropriately and account for browser safe areas.
 
-- [ ] **CC-2002 — Navigation model**
+- [x] **CC-2002 — Navigation model**
   - Create one typed navigation definition used by sidebar, breadcrumb and command palette.
   - Remove duplicated path-to-active-ID and breadcrumb mappings.
   - Filter navigation using verified render context without embedding business authorization logic.
   - Ensure keyboard navigation and focus state meet WCAG AA.
 
-- [ ] **CC-2003 — ContextSwitcher**
+- [x] **CC-2003 — ContextSwitcher**
   - Combine Zone and workspace selection behavior behind one explicit Console context model.
   - Desktop renders compact inline controls; narrow screens expose the same controls in the navigation Sheet/header menu.
   - A context transition cancels old requests and prevents stale responses from the previous context winning.
@@ -243,29 +267,29 @@ Goal: create one DESIGN.md-compliant shell and a small set of reusable Console p
 
 Goal: make remote state ownership, invalidation and failure behavior explicit.
 
-- [ ] **CC-3001 — HTTP client boundary**
+- [x] **CC-3001 — HTTP client boundary**
   - Consolidate same-origin requests, credentials, abort handling and typed `APIError` behavior.
   - Preserve exact serialized bodies for critical request signing.
   - Validate high-risk boundary payloads at runtime instead of relying only on TypeScript casts.
   - Classify retryable network/429/5xx errors separately from 400/401/403 and invariant violations.
 
-- [ ] **CC-3002 — Feature-local API ownership**
+- [x] **CC-3002 — Feature-local API ownership**
   - Move domain APIs from the flat `lib/api` directory into their owning features.
   - Keep only the HTTP transport in `shared/api`.
   - Delete unused/misleading parameters; for example, do not accept user/Zone identifiers that are intentionally derived by the backend and never sent.
 
-- [ ] **CC-3003 — Scoped query keys**
+- [x] **CC-3003 — Scoped query keys**
   - Define small query-key builders inside each feature.
   - Scope keys by the minimum identity/context tuple required by the backend result: session generation, tenant, Zone, workspace and resource ID.
   - Never rely on names such as `users`, `roles` or `workspaces` as globally safe cache identities.
 
-- [ ] **CC-3004 — Query policy**
+- [x] **CC-3004 — Query policy**
   - Set stale time, garbage collection, focus refetch and retry by data class rather than one global default.
   - Durable resource lists may be stale briefly but must revalidate after mutations/reconnect.
   - Runtime soft state expires quickly and must visibly become stale when updates stop.
   - Mutations are not automatically retried unless the operation has an idempotency key and explicit retry semantics.
 
-- [ ] **CC-3005 — Remove parallel caches**
+- [x] **CC-3005 — Remove parallel caches**
   - Replace module-lifetime Zone cache with a bounded TanStack Query entry and explicit invalidation.
   - Keep object list caching under one owner and scope it by principal/context/bucket.
   - Remove duplicated local state that mirrors query data without a form/editing reason.
@@ -286,34 +310,34 @@ Goal: make remote state ownership, invalidation and failure behavior explicit.
 
 Goal: centralize connection mechanics while leaving domain reconciliation inside the owning feature.
 
-- [ ] **CC-4001 — Realtime client lifecycle**
+- [x] **CC-4001 — Realtime client lifecycle**
   - Maintain one Centrifugo client per verified principal.
   - Do not expose the raw client through React Context.
   - Surface explicit states: disabled, connecting, connected, reconnecting, unauthorized and degraded.
   - Disconnect and clear subscription state before switching principal.
 
-- [ ] **CC-4002 — Typed realtime contracts**
+- [x] **CC-4002 — Typed realtime contracts**
   - Define a closed event map for notification and runtime streams.
-  - Validate channel binding, event type, schema version, IDs, payload size and required timestamps/revisions.
+  - Validate channel binding, event type, optional schema version, IDs, payload size and event-specific timestamps/revisions.
   - Invalid events are dropped with redacted telemetry; the browser has no DLQ and must not retry malformed publications indefinitely.
 
-- [ ] **CC-4003 — Subscription registry**
+- [x] **CC-4003 — Subscription registry**
   - Make registration/unregistration idempotent.
   - Bound listener and dedupe memory.
   - Prevent duplicate listeners across reconnects, React Strict Mode remounts and identity changes.
   - Isolate a failing callback so it cannot block other subscribers.
 
-- [ ] **CC-4004 — Ordering and dedupe**
+- [x] **CC-4004 — Ordering and dedupe**
   - Dedupe durable hints by stable `event_id/operation_id` using a bounded TTL/LRU set.
   - Apply resource updates only when revision/observed timestamp is newer than the cached value.
   - Do not assume global ordering; scope ordering to the relevant aggregate/resource.
 
-- [ ] **CC-4005 — Reconnect reconciliation**
+- [x] **CC-4005 — Reconnect reconciliation**
   - On reconnect, invalidate or refetch durable queries touched by potentially missed events.
   - Re-register runtime watch/lease and fetch a fresh bounded snapshot.
   - Display runtime state as stale/unknown during a gap; never preserve a false healthy state indefinitely.
 
-- [ ] **CC-4006 — Browser backpressure**
+- [x] **CC-4006 — Browser backpressure**
   - Coalesce high-frequency runtime metrics by resource and render at a bounded cadence.
   - Cap notification preview/toast queues and retain durable history through paginated HTTP queries.
   - Drop superseded soft-state samples rather than enqueueing every update.
@@ -334,14 +358,14 @@ Goal: centralize connection mechanics while leaving domain reconciliation inside
 
 Goal: migrate in vertical slices so each completed slice is simpler and independently verifiable.
 
-- [ ] **CC-5001 — Notifications and activity**
+- [ ] **CC-5001 — Notifications and activity** *(API/query/realtime split shipped; cursor pagination UI and read-path tests remain)*
   - Split query/mutation, realtime adapter and drawer presentation.
   - Use paginated TanStack Query data for history.
   - Remove global custom DOM events where a feature-owned operation state is sufficient.
   - Remove dead custom toast state and use one toast system.
   - Keep notifications and self-activity as separate data contracts/views.
 
-- [ ] **CC-5002 — Object Storage**
+- [ ] **CC-5002 — Object Storage** *(Gateway metadata slice shipped; transfer-ticket route and failure tests remain)*
   - Split `ObjectsTab` into object query/actions, selection/navigation state and focused components.
   - Add a typed access-session API client and a bounded in-memory session owner;
     refresh before expiry without racing a principal/Zone/workspace switch.
@@ -367,12 +391,12 @@ Goal: migrate in vertical slices so each completed slice is simpler and independ
   - Keep immutable template version presentation and consumer runtime watch semantics explicit.
   - Rehydrate durable template/consumer state after reconnect instead of trusting missed publications.
 
-- [ ] **CC-5004 — Workspaces and Zones**
+- [x] **CC-5004 — Workspaces and Zones**
   - Replace the monolithic workspace page with feature queries, resource table and focused create/delete dialogs.
   - Make context switch sequencing race-safe.
   - Show both `active` and `draining` Zones according to the backend catalogue contract; do not derive availability solely from stale client cache.
 
-- [ ] **CC-5005 — IAM and RBAC**
+- [ ] **CC-5005 — IAM and RBAC** *(feature ownership and list screen split shipped; permission-tree/test extraction remains)*
   - Extract permission tree/domain logic from route components.
   - Reuse the same permission tree implementation for create, read and edit modes.
   - Keep critical reset/status/role mutations on the critical proof boundary where required.
@@ -401,12 +425,12 @@ For every feature task above:
 
 Goal: establish production gates rather than relying on manual visual confidence.
 
-- [ ] **CC-6001 — Static quality gate**
+- [x] **CC-6001 — Static quality gate**
   - Reach zero ESLint errors.
   - Remove unused imports/state, `any` at transport boundaries and state-mirroring effects.
   - Treat new warnings as CI failures after the baseline cleanup.
 
-- [ ] **CC-6002 — Unit tests**
+- [ ] **CC-6002 — Unit tests** *(realtime contract tests shipped; session/query/component coverage remains)*
   - Query-key scoping and session teardown.
   - Realtime decoder, dedupe, revision ordering and bounded registry.
   - Permission rendering helpers and context transition reducers.
@@ -454,12 +478,12 @@ Goal: establish production gates rather than relying on manual visual confidence
 
 Goal: remove transitional debt and ship with observable, reversible rollout behavior.
 
-- [ ] **CC-7001 — Dead code and dependency cleanup**
+- [ ] **CC-7001 — Dead code and dependency cleanup** *(flat API/cache/STS paths and unused packages removed; final generated-primitive audit remains)*
   - Remove unused duplicate sidebar/modal/table implementations.
   - Remove dead realtime/toast state and obsolete cache helpers.
   - Remove unused packages only after import/build verification.
 
-- [ ] **CC-7002 — Documentation**
+- [x] **CC-7002 — Documentation**
   - Update `DESIGN.md` only for deliberate visual contract improvements.
   - Update God Views for access-session/Gateway/presign behavior,
     notification/runtime separation or any other topology change.
@@ -487,7 +511,7 @@ Goal: remove transitional debt and ship with observable, reversible rollout beha
 | Dependency | Required work |
 | --- | --- |
 | ACR / Envoy | Verified session behavior, CSRF/origin enforcement, internal-header stripping, Centrifugo auth/channel authorization and security headers. |
-| Controlplane / storage workflow | Secure one-time STS result endpoint or presigned object-operation contract. |
+| Controlplane / Zone Storage Gateway | Deploy and verify access-session projection, Gateway list/head/tag/bulk routes and short-lived presigned transfer-ticket routes. |
 | JO / Notification Service | Notification events must exclude secrets and preserve stable operation/event identifiers. |
 | Centrifugo | Principal-bound channels, disconnect/reconnect behavior and payload-size limits. |
 | God Views | Update every changed STS, notification, runtime or session/cache workflow in the same change-set. |

@@ -19,13 +19,15 @@
   not an authorization fallback now that the secret-bearing STS producer has
   been removed; production traffic must remain disabled until public keys,
   mTLS identities and the S3 signing adapter are provisioned and tested.
-- **Still required:** Console object API migration, usage-event/byte evidence
-  wiring, revoke/revision command, multi-Zone route discovery and the full
+- **Still required:** Zone route activation/transfer-ticket endpoints, usage-
+  event/byte evidence wiring, revoke/revision command, multi-Zone route discovery and the full
   performance/failover gates below.
-- **Known migration gap:** the current Cloud Console still calls the retired
-  `/sts-token` endpoint. Its required migration is tracked in
-  `cloud-console/REFACTOR_PLAN.md`; object browsing is not release-ready until
-  that work and the Zone Gateway activation gates are complete.
+- **Console migration status:** Cloud Console no longer calls `/sts-token`,
+  decodes credential-bearing notifications or persists presigned URLs. It
+  creates an opaque access session, routes list/head/tag/bulk calls through the
+  Gateway contract and presents an explicit disabled state for upload/download
+  until transfer-ticket routes are deployed. Object browsing is still not
+  release-ready until the Gateway activation gates are complete.
 
 ## 1. Objective
 
@@ -70,8 +72,10 @@ This is a development topology and must not be copied as a Zone production topol
 The backend no longer exposes `RequestSts`, publishes or accepts
 `storage.object.sts`, invokes MinIO STS, or serializes credentials through job
 results. `ObjectStsRequest`/`ObjectStsResponse` are removed from all storage
-protobuf copies. Cloud Console still contains the retired endpoint call and
-decoder as migration debt only; it has no working compatibility backend.
+protobuf copies. Cloud Console now requests an opaque access-session handle
+and routes list/head/tag/bulk through the Zone Gateway. Upload/download remain
+explicitly disabled until the short-lived transfer-ticket routes are deployed;
+there is no compatibility STS path.
 
 ### 3.3 Current Zone KV contract
 
@@ -539,12 +543,12 @@ Goal: preserve accurate usage billing without relying on client STS access keys.
 
 Goal: remove browser STS/notification coupling.
 
-- [ ] **ZSG-6001 — Access-session API client**
+- [x] **ZSG-6001 — Access-session API client**
   - Replace `requestBucketStsToken` with access-session request/status calls.
   - Do not decode protobuf/hex credential payloads in the browser.
   - Scope query keys by Trinity/session, Zone, workspace and bucket.
 
-- [ ] **ZSG-6002 — Object list/actions**
+- [x] **ZSG-6002 — Object list/actions** *(Console metadata slice shipped; backend transfer and full failure-test gate remain)*
   - Use Zone Gateway HTTP contracts for list, head, metadata, tag and bulk.
   - Apply abort, pagination, bounded concurrency and idempotency semantics.
   - Display `not ready`, `stale`, `forbidden` and `degraded` distinctly.

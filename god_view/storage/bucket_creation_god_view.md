@@ -19,6 +19,50 @@
 | UI completion | Shared L2 Redis Stream → Notification → Centrifugo |
 | Billing ownership | Durable lifecycle event sau create/delete terminal success |
 
+## 0.1. Read-only storage estimate
+
+Trước khi submit create mutation, Cloud Console lấy estimate từ Cost Manager thay vì tự giữ
+bảng giá hoặc công thức billing trong browser.
+
+```mermaid
+sequenceDiagram
+    participant UI as Cloud Console
+    participant Edge as Envoy + ACR
+    participant Cost as Cost Manager API
+    participant L1 as Cost in-process cache
+    participant L2 as Shared L2 Redis
+    participant PG as Billing PostgreSQL
+
+    UI->>Edge: GET /api/v1/billing/me/estimate/storage?capacity_bytes=N
+    Edge->>Edge: verify IAM session + strip/inject trusted identity
+    Edge->>Cost: exact self-service route
+    Cost->>L1: active STORAGE pricing snapshot
+    alt L1 miss
+        Cost->>L2: versioned rebuildable cache entry
+        alt L2 miss or invalid
+            Cost->>PG: read one effective tier version + ordered ranges
+            PG-->>Cost: immutable pricing snapshot
+            Cost->>L2: bounded TTL cache fill
+        end
+        Cost->>L1: bounded TTL cache fill
+    end
+    Cost->>Cost: progressive MB ranges, ceil micro-units once, monthly = hourly x 730
+    Cost-->>UI: exact string amounts + tier version/checksum/effective time
+```
+
+Invariants:
+
+- Estimate là read-only hint; không reserve/debit wallet, không ghi ledger và không xác nhận create bucket.
+- Billing PostgreSQL vẫn là pricing SoT. L1/L2 chỉ là cache rebuildable; cache miss/invalid phải quay về một
+  effective tier snapshot duy nhất, không ghép ranges từ nhiều version.
+- Pricing publish phát một cache-invalidation hint riêng; TTL là safety net khi Pub/Sub hint bị mất. Hint không
+  tham gia durable activation/ledger transaction.
+- `/api/v1/billing/me` dùng IAM session thường của Cloud Console; ACR chỉ dùng Billing alias cho operator routes
+  (`/billing/tiers`, `/billing/critical/*`, `/billing/auth/*`). Browser không gửi `owner_id`, tier, unit price hoặc
+  Cost credential. Envoy route prefix `/api/v1/billing/me/` phải nằm trước generic Controlplane `/api/` route.
+- Final charge vẫn dựa trên metered usage và immutable tier version do billing run pin. Estimate có thể stale
+  trong bounded cache window và không được dùng là ledger evidence.
+
 ## 1. Create transaction
 
 ```mermaid

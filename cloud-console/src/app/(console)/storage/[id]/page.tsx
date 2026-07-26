@@ -13,14 +13,14 @@ import {
   FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
-import { getBucketDetails, type BucketItem } from "@/lib/api/storage";
-import { useUserSession } from "@/hooks/useUserSession";
+import { getBucketDetails, type BucketItem } from "@/features/storage/api";
+import { useUserSession } from "@/session/use-session";
 import RouteGuard from "@/components/route-guard";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useBucketSizesSync } from "@/hooks/useBucketSizesSync";
+import { useBucketSizesSync } from "@/features/storage/realtime";
+import { useConsoleQueryScope } from "@/shared/query/scope";
 
 import { OverviewTab } from "./components/OverviewTab";
 import { CredentialsTab } from "./components/CredentialsTab";
@@ -29,17 +29,17 @@ import { ObjectsTab } from "./components/ObjectsTab";
 function ViewBucketContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
-  const { checkPermission, profile } = useUserSession();
+  const { checkPermission } = useUserSession();
+  const scope = useConsoleQueryScope();
 
   const [activeTab, setActiveTab] = useState("Overview");
 
   const queryClient = useQueryClient();
   // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket cho chi tiết bucket
   useBucketSizesSync(
-    profile?.user_id,
     useCallback((updatedSizes: Record<string, number>) => {
       queryClient.setQueryData<BucketItem | null>(
-        ["bucket", id],
+        [...scope, "storage", "bucket", id],
         (prevBucket) => {
           if (!prevBucket) return null;
           if (updatedSizes[prevBucket.name] !== undefined) {
@@ -51,7 +51,7 @@ function ViewBucketContent() {
           return prevBucket;
         }
       );
-    }, [queryClient, id])
+    }, [queryClient, id, scope])
   );
 
   // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý chi tiết bucket.
@@ -62,13 +62,13 @@ function ViewBucketContent() {
     isRefetching: refreshing,
     refetch: loadBucketDetails,
   } = useQuery<BucketItem | null>({
-    queryKey: ["bucket", id],
+    queryKey: [...scope, "storage", "bucket", id],
     queryFn: async () => {
       if (!id) return null;
       try {
         return await getBucketDetails(id);
-      } catch (err: any) {
-        toast.error(err.message || "Failed to load bucket details");
+      } catch (err: unknown) {
+        toast.error(err instanceof Error ? err.message : "Failed to load bucket details");
         router.push("/storage");
         return null;
       }

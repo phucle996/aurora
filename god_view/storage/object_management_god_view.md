@@ -64,9 +64,12 @@ Bucket size is a separate periodic snapshot workflow documented in
 
 The non-secret access-session path is the only backend authorization flow for
 Console object operations. The legacy STS endpoint, command, executor and
-secret-bearing result have been removed. The path is not release-ready until
-Zone mTLS certificates, assertion public keys, the Envoy route/S3 signing
-adapter and the Cloud Console migration are complete.
+secret-bearing result have been removed. Cloud Console now uses the opaque
+access-session handle and fails closed when the Gateway/transfer-ticket route
+is not enabled; it never constructs a browser S3 client. The path is not
+release-ready until Zone mTLS certificates, assertion public keys, the Envoy
+route/S3 signing adapter and upload/download transfer-ticket endpoints are
+complete.
 
 ```mermaid
 sequenceDiagram
