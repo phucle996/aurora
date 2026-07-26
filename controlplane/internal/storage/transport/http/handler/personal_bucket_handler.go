@@ -327,62 +327,109 @@ func (h *PersonalBucketHandler) Delete(c *gin.Context) {
 	apires.RespondSuccess(c, nil, "bucket deletion initiated")
 }
 
-// [COMMENT]: RequestSts xử lý HTTP request yêu cầu cấp STS token cho bucket.
-func (h *PersonalBucketHandler) RequestSts(c *gin.Context) {
-	const op = "storage.personal_bucket.request_sts"
+// CreateAccessSession starts the metadata-only access flow. The returned id is
+// an opaque handle, not a credential; Envoy/ACR must still authenticate the
+// Trinity session on every Gateway request.
+func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
+	const op = "storage.personal_bucket.create_access_session"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// 1. Trích xuất thông tin định danh trực tiếp từ context
 	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
-
 	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
 	if !ok {
 		return
 	}
-
 	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
-
-	idStr := c.Param("id")
-	bucketID, err := uuid.Parse(idStr)
+	bucketID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		apires.RespondBadRequest(c, "invalid bucket id format")
 		return
 	}
-
-	var req storageDto.RequestBucketStsRequest
+	var req storageDto.RequestStorageAccessRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
 		return
 	}
-
-	// 2. Build entity riêng rồi gọi service
-	param := &storageEntity.RequestBucketSts{
-		BucketID:        bucketID,
-		DurationSeconds: req.DurationSeconds,
-		UserID:          userID,
-		WorkspaceID:     workspaceID,
-		ZoneID:          zoneID,
+	duration := req.DurationSeconds
+	if duration < 60 || duration > 3600 {
+		apires.RespondBadRequest(c, "duration_seconds must be between 60 and 3600")
+		return
 	}
-
-	eventID, serviceErr := h.personalSvc.RequestSts(ctx, param)
-	if serviceErr != nil {
-		if errors.Is(serviceErr, storageTaxonomy.ErrNotFound) {
-			apires.RespondNotFound(c, "bucket not found")
+	actions := req.Actions
+	if len(actions) == 0 {
+		actions = []string{"ListBucket", "GetObject", "PutObject", "DeleteObject", "GetObjectTagging", "PutObjectTagging"}
+	}
+	allowed := map[string]struct{}{"ListBucket": {}, "GetObject": {}, "PutObject": {}, "DeleteObject": {}, "GetObjectTagging": {}, "PutObjectTagging": {}}
+	seen := make(map[string]struct{}, len(actions))
+	for _, action := range actions {
+		if _, valid := allowed[action]; !valid {
+			apires.RespondBadRequest(c, "unsupported storage action")
 			return
 		}
-		logger.HandlerError(c, op, serviceErr)
+		if _, duplicate := seen[action]; duplicate {
+			continue
+		}
+		seen[action] = struct{}{}
+	}
+	keyPrefix := strings.TrimSpace(req.KeyPrefix)
+	if len(keyPrefix) > 256 || strings.ContainsAny(keyPrefix, "\r\n") {
+		apires.RespondBadRequest(c, "invalid key_prefix")
+		return
+	}
+	accessSessionID, err := uuid.NewV7()
+	if err != nil {
+		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
-
+	// Authorization is checked by the repository in the same transaction that
+	// inserts the preparation outbox; do not trust a bucket id from the client.
+	session := &storageEntity.StorageAccessSession{
+		AccessSessionID:      accessSessionID,
+		ActorID:              userID,
+		ResourceID:           bucketID,
+		WorkspaceID:          workspaceID,
+		ZoneID:               zoneID,
+		Actions:              actions,
+		KeyPrefix:            keyPrefix,
+		ExpiresAtUnixSeconds: uint64(time.Now().Add(time.Duration(duration) * time.Second).Unix()),
+		PolicyRevision:       1,
+	}
+	// Service performs the owner lookup before persisting the auth projection.
+	bucket, err := h.personalSvc.GetBucket(ctx, bucketID, userID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "bucket not found")
+			return
+		}
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+	if bucket.ZoneID != zoneID {
+		// A valid user must not be able to prepare a session for a bucket in a
+		// different routed Zone, even if the bucket UUID is otherwise owned.
+		apires.RespondNotFound(c, "bucket not found")
+		return
+	}
+	session.BucketName = bucket.Name
+	if err := h.personalSvc.CreateStorageAccessSession(ctx, session); err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
 	apires.RespondAccepted(c, gin.H{
-		"event_id": eventID.String(),
-	}, "sts token generation initiated")
+		"access_session_id": accessSessionID.String(),
+		"zone_id":           zoneID.String(),
+		"bucket_id":         bucketID.String(),
+		"expires_at":        time.Unix(int64(session.ExpiresAtUnixSeconds), 0).UTC().Format(time.RFC3339),
+		"gateway_path":      "/storage/v1/",
+	}, "storage access session is being prepared")
 }

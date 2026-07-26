@@ -172,6 +172,9 @@ pub async fn apply_result(
             .actor_user_id
             .as_deref()
             .filter(|value| !value.is_empty())
+            // Access preparation is an internal authorization projection. It
+            // must not create a user notification or expose payload details.
+            .filter(|_| wire.job_topic != "storage.access.prepare")
         {
             let current_context = opentelemetry::Context::current();
             let propagation =

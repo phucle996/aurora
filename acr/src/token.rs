@@ -68,6 +68,14 @@ impl TokenManager {
         self.generate_vault_token(claims, "user").await
     }
 
+    pub async fn sign_storage_assertion(
+        &self,
+        key_path: &str,
+        payload: &[u8],
+    ) -> Result<(String, String), AcrError> {
+        self.vault_client.sign_asymmetric(key_path, payload).await
+    }
+
     async fn generate_vault_token<T: Serialize>(
         &self,
         claims: &T,

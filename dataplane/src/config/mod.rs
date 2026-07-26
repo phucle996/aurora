@@ -116,8 +116,6 @@ pub struct Config {
     /// Bỏ qua TLS certificate verification (CHỈ dùng cho môi trường dev/test)
     /// Trên production bắt buộc phải đặt là false để đảm bảo an toàn kết nối
     pub proxmox_tls_insecure: bool,
-    /// [COMMENT]: API Endpoint Public phục vụ gọi từ trình duyệt UI (bắt buộc cấu hình)
-    pub minio_public_endpoint: String,
 }
 
 use std::sync::OnceLock;
@@ -153,16 +151,6 @@ impl Config {
                 crate::observability::logger::Logger::sys_error(
                     "system.bootstrap",
                     "CRITICAL: ZONE_ID environment variable is missing but required for stateless Dataplane!",
-                    &err.to_string(),
-                );
-                std::process::abort();
-            }),
-
-            // [COMMENT]: Nạp cấu hình Endpoint S3 Gateway phục vụ Direct S3 (Bắt buộc cấu hình, không fallback)
-            minio_public_endpoint: env::var("MINIO_PUBLIC_ENDPOINT").unwrap_or_else(|err| {
-                crate::observability::logger::Logger::sys_error(
-                    "system.bootstrap",
-                    "CRITICAL: MINIO_PUBLIC_ENDPOINT environment variable is missing but required for S3 Console Direct operations!",
                     &err.to_string(),
                 );
                 std::process::abort();

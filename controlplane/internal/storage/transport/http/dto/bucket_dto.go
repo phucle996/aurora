@@ -6,7 +6,7 @@ type CreateBucketRequest struct {
 	QuotaBytes           int64             `json:"quota_bytes"`
 	Policy               string            `json:"policy" binding:"required"`
 	EncryptEnabled       *bool             `json:"encrypt_enabled" binding:"required"`
-	VersioningEnabled     *bool             `json:"versioning_enabled" binding:"required"`
+	VersioningEnabled    *bool             `json:"versioning_enabled" binding:"required"`
 	ObjectLockingEnabled *bool             `json:"object_locking_enabled" binding:"required"`
 	ReplicationEnabled   *bool             `json:"replication_enabled" binding:"required"`
 	RetentionDays        int64             `json:"retention_days"`
@@ -19,7 +19,11 @@ type UpdateQuotaRequest struct {
 	QuotaBytes int64 `json:"quota_bytes" binding:"required"`
 }
 
-// [COMMENT]: RequestBucketStsRequest định nghĩa cấu trúc dữ liệu khi yêu cầu STS token.
-type RequestBucketStsRequest struct {
-	DurationSeconds int64 `json:"duration_seconds" binding:"required,min=900,max=3600"`
+// RequestStorageAccessRequest requests an ephemeral access session rather
+// than returning client credentials. The gateway consumes the session only
+// after ACR has authenticated the Trinity cookie.
+type RequestStorageAccessRequest struct {
+	DurationSeconds int64    `json:"duration_seconds" binding:"required,min=60,max=3600"`
+	Actions         []string `json:"actions"`
+	KeyPrefix       string   `json:"key_prefix"`
 }

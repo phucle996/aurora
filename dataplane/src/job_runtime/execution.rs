@@ -335,6 +335,7 @@ impl JobExecutionRuntime {
                 job.clone(),
                 self.mail_runtime.clone(),
                 &self.zone_id,
+                self.zone_kv.clone(),
             ))
             .catch_unwind();
             let executor_result = tokio::select! {
@@ -527,6 +528,7 @@ async fn execute_workload(
     job: Arc<ValidatedJob>,
     mail_runtime: Arc<crate::executor::mail::MailRuntime>,
     zone_id: &str,
+    zone_kv: Arc<ZoneKvStore>,
 ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
     let job_topic = job.job_topic.clone();
     let Some((workload, action)) = job_topic.split_once('.') else {
@@ -540,7 +542,7 @@ async fn execute_workload(
             crate::executor::mail::dispatch_mail_job(action, job, mail_runtime, zone_id).await
         }
         "vps" => crate::executor::hypervisor::dispatch_vps_job(action, job).await,
-        "storage" => crate::executor::storage::dispatch_storage_job(action, job).await,
+        "storage" => crate::executor::storage::dispatch_storage_job(action, job, zone_kv).await,
         _ => Err(crate::executor::ExecutorError::ExecutionFailed(format!(
             "Unsupported workload type: {workload}"
         ))),

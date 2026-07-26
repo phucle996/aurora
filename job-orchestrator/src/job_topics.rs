@@ -17,7 +17,7 @@ pub fn is_registered(source_domain: &str, job_topic: &str) -> bool {
                 | "storage.bucket.resize"
                 | "storage.credential.create"
                 | "storage.credential.delete"
-                | "storage.object.sts"
+                | "storage.access.prepare"
         ),
         _ => false,
     }
@@ -30,6 +30,8 @@ mod tests {
     #[test]
     fn route_requires_the_expected_source_domain() {
         assert!(is_registered("STORAGE", "storage.bucket.create"));
+        assert!(is_registered("STORAGE", "storage.access.prepare"));
+        assert!(!is_registered("STORAGE", "storage.object.sts"));
         assert!(!is_registered("MAIL", "storage.bucket.create"));
         assert!(!is_registered("STORAGE", "storage.unknown"));
     }

@@ -3,8 +3,8 @@ package storageRepoInterface
 import (
 	"context"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: PersonalBucketRepo định nghĩa các phương thức giao tiếp CSDL cho Bucket Cá nhân (Individual).
@@ -33,6 +33,7 @@ type PersonalBucketRepo interface {
 	// [COMMENT]: Lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
 	ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error)
 
-	// [COMMENT]: Khởi tạo job xin cấp STS token cho bucket thông qua Outbox Record có kiểm tra IDOR (chống chéo quyền sở hữu).
-	CreateSts(ctx context.Context, param *storageEntity.RequestBucketSts, outbox *storageEntity.StorageOutboxRecord) error
+	// CreateAccessPrepare atomically verifies bucket ownership/Zone binding and
+	// inserts the durable access-preparation outbox command.
+	CreateAccessPrepare(ctx context.Context, session *storageEntity.StorageAccessSession, outbox *storageEntity.StorageOutboxRecord) error
 }

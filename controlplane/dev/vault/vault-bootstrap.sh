@@ -212,6 +212,19 @@ transit/keys/jwt-signer/config \
 }'
 
 ##############################################################################
+# Create asymmetric Zone Storage assertion key
+##############################################################################
+
+# [COMMENT]: The private Ed25519 material stays inside Vault. Deployments must
+# distribute only the versioned public key returned by Transit to each Zone.
+request \
+POST \
+transit/keys/storage-assertion \
+'{
+    "type":"ed25519"
+}'
+
+##############################################################################
 # Enable KV-v2
 ##############################################################################
 

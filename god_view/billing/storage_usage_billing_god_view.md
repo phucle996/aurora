@@ -10,9 +10,10 @@ Billing DB không bao giờ kết nối trực tiếp vào Controlplane DB.
 
 ```mermaid
 flowchart LR
-    SDK[S3 SDK SigV4 or STS] --> ENV[Storage Envoy]
-    ENV --> MINIO[MinIO authenticates]
-    ENV --> CH[(ClickHouse hourly usage)]
+    SDK[Browser + access session / presigned URL] --> ENV[Zone Storage Gateway]
+    ENV --> AUTHZ[Central assertion + Zone access record]
+    ENV --> MINIO[Private MinIO/S3]
+    ENV --> CH[(ClickHouse hourly usage evidence)]
     CP[(Controlplane Storage Outbox)] --> JO[Job Orchestrator Ownership Publisher]
     JO --> RS[(Shared Redis Stream)]
     RS --> CONSUMER[Cost Manager Ownership Consumer]
@@ -53,10 +54,11 @@ owner is `personal_workspaces.owner_id`; for tenant buckets it is `tenant_bucket
 
 ## 4. Metering security
 
-Storage Envoy extracts the SigV4 access-key identifier into an internal metering header and overwrites any
-client-supplied value. Raw `Authorization` is forwarded to MinIO but never written into access logs.
-Only successful storage responses enter chargeable aggregates. MinIO direct data-plane ports must remain
-private so a caller cannot bypass the trusted ingress and metering path.
+The staged gateway path emits trusted `resource_id`, `actor_id`, action and response/byte metadata after
+the Zone ExtAuthz decision. It never accepts client `x-owner-*` or identity headers as billing evidence.
+Legacy Docker STS ingress still extracts a credential identifier for rollback compatibility; it must be
+drained before the new usage event becomes the sole chargeable source. Only successful chargeable
+responses enter aggregates. MinIO direct data-plane ports remain private.
 
 ## 5. Source map
 
@@ -70,6 +72,8 @@ private so a caller cannot bypass the trusted ingress and metering path.
 | Ownership consumer | `cost-manager/api/internal/transport/redis/handler/resource_ownership_handler.go` |
 | Billing projection schema | `cost-manager/api/migrations/000002_tables.up.sql` |
 | Storage ingress metering identity | `controlplane/dev/envoy/envoy-storage.yaml` |
+| Staged Zone assertion verifier | `zone-storage-authz/src/check.rs` |
+| Staged access projection | `dataplane/src/infra/zone_kv.rs` (`AURORA_ZONE_ACCESS`) |
 | Hourly usage schema | `controlplane/dev/clickhouse/init.sql` |
 | Owner resolution and debit | `cost-manager/engine/src/service/storage/egress_billing.rs` |
 | Pipeline God View | `god_view/billing/resource_ownership_god_view.md` |

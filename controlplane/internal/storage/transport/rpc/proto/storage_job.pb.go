@@ -346,29 +346,40 @@ func (x *BucketDeleteSync) GetAccessKeys() []string {
 	return nil
 }
 
-// Cấu hình yêu cầu cấp khóa tạm thời (STS) cho đối tượng
-type ObjectStsRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	BucketName      string                 `protobuf:"bytes,1,opt,name=bucket_name,json=bucketName,proto3" json:"bucket_name,omitempty"`
-	DurationSeconds int64                  `protobuf:"varint,2,opt,name=duration_seconds,json=durationSeconds,proto3" json:"duration_seconds,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+// Ephemeral access projection written to the Zone-local KV. This contract
+// deliberately carries authorization metadata only; it never carries an S3
+// secret, STS token, or credential material.
+type StorageAccessPrepareRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	AccessSessionId      string                 `protobuf:"bytes,1,opt,name=access_session_id,json=accessSessionId,proto3" json:"access_session_id,omitempty"`
+	BindingHash          string                 `protobuf:"bytes,2,opt,name=binding_hash,json=bindingHash,proto3" json:"binding_hash,omitempty"`
+	ActorId              string                 `protobuf:"bytes,3,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	ResourceId           string                 `protobuf:"bytes,4,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	BucketName           string                 `protobuf:"bytes,5,opt,name=bucket_name,json=bucketName,proto3" json:"bucket_name,omitempty"`
+	WorkspaceId          string                 `protobuf:"bytes,6,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	ZoneId               string                 `protobuf:"bytes,7,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`
+	Actions              []string               `protobuf:"bytes,8,rep,name=actions,proto3" json:"actions,omitempty"`
+	KeyPrefix            string                 `protobuf:"bytes,9,opt,name=key_prefix,json=keyPrefix,proto3" json:"key_prefix,omitempty"`
+	ExpiresAtUnixSeconds uint64                 `protobuf:"varint,10,opt,name=expires_at_unix_seconds,json=expiresAtUnixSeconds,proto3" json:"expires_at_unix_seconds,omitempty"`
+	PolicyRevision       uint64                 `protobuf:"varint,11,opt,name=policy_revision,json=policyRevision,proto3" json:"policy_revision,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
-func (x *ObjectStsRequest) Reset() {
-	*x = ObjectStsRequest{}
+func (x *StorageAccessPrepareRequest) Reset() {
+	*x = StorageAccessPrepareRequest{}
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ObjectStsRequest) String() string {
+func (x *StorageAccessPrepareRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ObjectStsRequest) ProtoMessage() {}
+func (*StorageAccessPrepareRequest) ProtoMessage() {}
 
-func (x *ObjectStsRequest) ProtoReflect() protoreflect.Message {
+func (x *StorageAccessPrepareRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -380,51 +391,123 @@ func (x *ObjectStsRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ObjectStsRequest.ProtoReflect.Descriptor instead.
-func (*ObjectStsRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use StorageAccessPrepareRequest.ProtoReflect.Descriptor instead.
+func (*StorageAccessPrepareRequest) Descriptor() ([]byte, []int) {
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *ObjectStsRequest) GetBucketName() string {
+func (x *StorageAccessPrepareRequest) GetAccessSessionId() string {
+	if x != nil {
+		return x.AccessSessionId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetBindingHash() string {
+	if x != nil {
+		return x.BindingHash
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetResourceId() string {
+	if x != nil {
+		return x.ResourceId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetBucketName() string {
 	if x != nil {
 		return x.BucketName
 	}
 	return ""
 }
 
-func (x *ObjectStsRequest) GetDurationSeconds() int64 {
+func (x *StorageAccessPrepareRequest) GetWorkspaceId() string {
 	if x != nil {
-		return x.DurationSeconds
+		return x.WorkspaceId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetZoneId() string {
+	if x != nil {
+		return x.ZoneId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetActions() []string {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
+func (x *StorageAccessPrepareRequest) GetKeyPrefix() string {
+	if x != nil {
+		return x.KeyPrefix
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareRequest) GetExpiresAtUnixSeconds() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixSeconds
 	}
 	return 0
 }
 
-// Cấu hình phản hồi khóa tạm thời (STS) dạng nhị phân Protobuf
-type ObjectStsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AccessKey     string                 `protobuf:"bytes,1,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
-	SecretKey     string                 `protobuf:"bytes,2,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`
-	SessionToken  string                 `protobuf:"bytes,3,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
-	Expiration    string                 `protobuf:"bytes,4,opt,name=expiration,proto3" json:"expiration,omitempty"`
-	Endpoint      string                 `protobuf:"bytes,5,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+func (x *StorageAccessPrepareRequest) GetPolicyRevision() uint64 {
+	if x != nil {
+		return x.PolicyRevision
+	}
+	return 0
 }
 
-func (x *ObjectStsResponse) Reset() {
-	*x = ObjectStsResponse{}
+// Auth-State Redis projection consumed by ACR. This is intentionally distinct
+// from StorageAccessPrepareRequest: the former is a Central authorization
+// record, while the latter is a durable command sent to Dataplane.
+type StorageAccessRecord struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion        uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	AccessSessionId      string                 `protobuf:"bytes,2,opt,name=access_session_id,json=accessSessionId,proto3" json:"access_session_id,omitempty"`
+	BindingHash          string                 `protobuf:"bytes,3,opt,name=binding_hash,json=bindingHash,proto3" json:"binding_hash,omitempty"`
+	ActorId              string                 `protobuf:"bytes,4,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	ResourceId           string                 `protobuf:"bytes,5,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	BucketName           string                 `protobuf:"bytes,6,opt,name=bucket_name,json=bucketName,proto3" json:"bucket_name,omitempty"`
+	WorkspaceId          string                 `protobuf:"bytes,7,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	ZoneId               string                 `protobuf:"bytes,8,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`
+	Actions              []string               `protobuf:"bytes,9,rep,name=actions,proto3" json:"actions,omitempty"`
+	KeyPrefix            string                 `protobuf:"bytes,10,opt,name=key_prefix,json=keyPrefix,proto3" json:"key_prefix,omitempty"`
+	ExpiresAtUnixSeconds uint64                 `protobuf:"varint,11,opt,name=expires_at_unix_seconds,json=expiresAtUnixSeconds,proto3" json:"expires_at_unix_seconds,omitempty"`
+	PolicyRevision       uint64                 `protobuf:"varint,12,opt,name=policy_revision,json=policyRevision,proto3" json:"policy_revision,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *StorageAccessRecord) Reset() {
+	*x = StorageAccessRecord{}
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ObjectStsResponse) String() string {
+func (x *StorageAccessRecord) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ObjectStsResponse) ProtoMessage() {}
+func (*StorageAccessRecord) ProtoMessage() {}
 
-func (x *ObjectStsResponse) ProtoReflect() protoreflect.Message {
+func (x *StorageAccessRecord) ProtoReflect() protoreflect.Message {
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -436,42 +519,167 @@ func (x *ObjectStsResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ObjectStsResponse.ProtoReflect.Descriptor instead.
-func (*ObjectStsResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use StorageAccessRecord.ProtoReflect.Descriptor instead.
+func (*StorageAccessRecord) Descriptor() ([]byte, []int) {
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *ObjectStsResponse) GetAccessKey() string {
+func (x *StorageAccessRecord) GetSchemaVersion() uint32 {
 	if x != nil {
-		return x.AccessKey
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *StorageAccessRecord) GetAccessSessionId() string {
+	if x != nil {
+		return x.AccessSessionId
 	}
 	return ""
 }
 
-func (x *ObjectStsResponse) GetSecretKey() string {
+func (x *StorageAccessRecord) GetBindingHash() string {
 	if x != nil {
-		return x.SecretKey
+		return x.BindingHash
 	}
 	return ""
 }
 
-func (x *ObjectStsResponse) GetSessionToken() string {
+func (x *StorageAccessRecord) GetActorId() string {
 	if x != nil {
-		return x.SessionToken
+		return x.ActorId
 	}
 	return ""
 }
 
-func (x *ObjectStsResponse) GetExpiration() string {
+func (x *StorageAccessRecord) GetResourceId() string {
 	if x != nil {
-		return x.Expiration
+		return x.ResourceId
 	}
 	return ""
 }
 
-func (x *ObjectStsResponse) GetEndpoint() string {
+func (x *StorageAccessRecord) GetBucketName() string {
 	if x != nil {
-		return x.Endpoint
+		return x.BucketName
+	}
+	return ""
+}
+
+func (x *StorageAccessRecord) GetWorkspaceId() string {
+	if x != nil {
+		return x.WorkspaceId
+	}
+	return ""
+}
+
+func (x *StorageAccessRecord) GetZoneId() string {
+	if x != nil {
+		return x.ZoneId
+	}
+	return ""
+}
+
+func (x *StorageAccessRecord) GetActions() []string {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
+func (x *StorageAccessRecord) GetKeyPrefix() string {
+	if x != nil {
+		return x.KeyPrefix
+	}
+	return ""
+}
+
+func (x *StorageAccessRecord) GetExpiresAtUnixSeconds() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixSeconds
+	}
+	return 0
+}
+
+func (x *StorageAccessRecord) GetPolicyRevision() uint64 {
+	if x != nil {
+		return x.PolicyRevision
+	}
+	return 0
+}
+
+type StorageAccessPrepareResponse struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	AccessSessionId      string                 `protobuf:"bytes,1,opt,name=access_session_id,json=accessSessionId,proto3" json:"access_session_id,omitempty"`
+	ResourceId           string                 `protobuf:"bytes,2,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	ZoneId               string                 `protobuf:"bytes,3,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`
+	ExpiresAtUnixSeconds uint64                 `protobuf:"varint,4,opt,name=expires_at_unix_seconds,json=expiresAtUnixSeconds,proto3" json:"expires_at_unix_seconds,omitempty"`
+	State                string                 `protobuf:"bytes,5,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *StorageAccessPrepareResponse) Reset() {
+	*x = StorageAccessPrepareResponse{}
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StorageAccessPrepareResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StorageAccessPrepareResponse) ProtoMessage() {}
+
+func (x *StorageAccessPrepareResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StorageAccessPrepareResponse.ProtoReflect.Descriptor instead.
+func (*StorageAccessPrepareResponse) Descriptor() ([]byte, []int) {
+	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *StorageAccessPrepareResponse) GetAccessSessionId() string {
+	if x != nil {
+		return x.AccessSessionId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareResponse) GetResourceId() string {
+	if x != nil {
+		return x.ResourceId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareResponse) GetZoneId() string {
+	if x != nil {
+		return x.ZoneId
+	}
+	return ""
+}
+
+func (x *StorageAccessPrepareResponse) GetExpiresAtUnixSeconds() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixSeconds
+	}
+	return 0
+}
+
+func (x *StorageAccessPrepareResponse) GetState() string {
+	if x != nil {
+		return x.State
 	}
 	return ""
 }
@@ -513,21 +721,47 @@ const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"\x10BucketDeleteSync\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vaccess_keys\x18\x02 \x03(\tR\n" +
-	"accessKeys\"^\n" +
-	"\x10ObjectStsRequest\x12\x1f\n" +
-	"\vbucket_name\x18\x01 \x01(\tR\n" +
-	"bucketName\x12)\n" +
-	"\x10duration_seconds\x18\x02 \x01(\x03R\x0fdurationSeconds\"\xb2\x01\n" +
-	"\x11ObjectStsResponse\x12\x1d\n" +
+	"accessKeys\"\x9e\x03\n" +
+	"\x1bStorageAccessPrepareRequest\x12*\n" +
+	"\x11access_session_id\x18\x01 \x01(\tR\x0faccessSessionId\x12!\n" +
+	"\fbinding_hash\x18\x02 \x01(\tR\vbindingHash\x12\x19\n" +
+	"\bactor_id\x18\x03 \x01(\tR\aactorId\x12\x1f\n" +
+	"\vresource_id\x18\x04 \x01(\tR\n" +
+	"resourceId\x12\x1f\n" +
+	"\vbucket_name\x18\x05 \x01(\tR\n" +
+	"bucketName\x12!\n" +
+	"\fworkspace_id\x18\x06 \x01(\tR\vworkspaceId\x12\x17\n" +
+	"\azone_id\x18\a \x01(\tR\x06zoneId\x12\x18\n" +
+	"\aactions\x18\b \x03(\tR\aactions\x12\x1d\n" +
 	"\n" +
-	"access_key\x18\x01 \x01(\tR\taccessKey\x12\x1d\n" +
+	"key_prefix\x18\t \x01(\tR\tkeyPrefix\x125\n" +
+	"\x17expires_at_unix_seconds\x18\n" +
+	" \x01(\x04R\x14expiresAtUnixSeconds\x12'\n" +
+	"\x0fpolicy_revision\x18\v \x01(\x04R\x0epolicyRevision\"\xbd\x03\n" +
+	"\x13StorageAccessRecord\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12*\n" +
+	"\x11access_session_id\x18\x02 \x01(\tR\x0faccessSessionId\x12!\n" +
+	"\fbinding_hash\x18\x03 \x01(\tR\vbindingHash\x12\x19\n" +
+	"\bactor_id\x18\x04 \x01(\tR\aactorId\x12\x1f\n" +
+	"\vresource_id\x18\x05 \x01(\tR\n" +
+	"resourceId\x12\x1f\n" +
+	"\vbucket_name\x18\x06 \x01(\tR\n" +
+	"bucketName\x12!\n" +
+	"\fworkspace_id\x18\a \x01(\tR\vworkspaceId\x12\x17\n" +
+	"\azone_id\x18\b \x01(\tR\x06zoneId\x12\x18\n" +
+	"\aactions\x18\t \x03(\tR\aactions\x12\x1d\n" +
 	"\n" +
-	"secret_key\x18\x02 \x01(\tR\tsecretKey\x12#\n" +
-	"\rsession_token\x18\x03 \x01(\tR\fsessionToken\x12\x1e\n" +
-	"\n" +
-	"expiration\x18\x04 \x01(\tR\n" +
-	"expiration\x12\x1a\n" +
-	"\bendpoint\x18\x05 \x01(\tR\bendpointB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
+	"key_prefix\x18\n" +
+	" \x01(\tR\tkeyPrefix\x125\n" +
+	"\x17expires_at_unix_seconds\x18\v \x01(\x04R\x14expiresAtUnixSeconds\x12'\n" +
+	"\x0fpolicy_revision\x18\f \x01(\x04R\x0epolicyRevision\"\xd1\x01\n" +
+	"\x1cStorageAccessPrepareResponse\x12*\n" +
+	"\x11access_session_id\x18\x01 \x01(\tR\x0faccessSessionId\x12\x1f\n" +
+	"\vresource_id\x18\x02 \x01(\tR\n" +
+	"resourceId\x12\x17\n" +
+	"\azone_id\x18\x03 \x01(\tR\x06zoneId\x125\n" +
+	"\x17expires_at_unix_seconds\x18\x04 \x01(\x04R\x14expiresAtUnixSeconds\x12\x14\n" +
+	"\x05state\x18\x05 \x01(\tR\x05stateB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
 
 var (
 	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce sync.Once
@@ -541,14 +775,15 @@ func file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP() [
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData
 }
 
-var file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = []any{
-	(*BucketCreateSync)(nil),  // 0: storage.BucketCreateSync
-	(*CredentialSync)(nil),    // 1: storage.CredentialSync
-	(*BucketResizeSync)(nil),  // 2: storage.BucketResizeSync
-	(*BucketDeleteSync)(nil),  // 3: storage.BucketDeleteSync
-	(*ObjectStsRequest)(nil),  // 4: storage.ObjectStsRequest
-	(*ObjectStsResponse)(nil), // 5: storage.ObjectStsResponse
+	(*BucketCreateSync)(nil),             // 0: storage.BucketCreateSync
+	(*CredentialSync)(nil),               // 1: storage.CredentialSync
+	(*BucketResizeSync)(nil),             // 2: storage.BucketResizeSync
+	(*BucketDeleteSync)(nil),             // 3: storage.BucketDeleteSync
+	(*StorageAccessPrepareRequest)(nil),  // 4: storage.StorageAccessPrepareRequest
+	(*StorageAccessRecord)(nil),          // 5: storage.StorageAccessRecord
+	(*StorageAccessPrepareResponse)(nil), // 6: storage.StorageAccessPrepareResponse
 }
 var file_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -569,7 +804,7 @@ func file_internal_storage_transport_rpc_proto_storage_job_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc), len(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

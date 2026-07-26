@@ -17,7 +17,7 @@ type PersonalBucket struct {
 	CreatedAt            time.Time // Thời gian tạo bản ghi
 	UpdatedAt            time.Time // Thời gian cập nhật bản ghi cuối
 	EncryptEnabled       bool
-	VersioningEnabled     bool
+	VersioningEnabled    bool
 	ObjectLockingEnabled bool
 	ReplicationEnabled   bool
 	RetentionDays        int64
@@ -38,7 +38,7 @@ type TenantBucket struct {
 	CreatedAt            time.Time // Thời gian tạo bản ghi
 	UpdatedAt            time.Time // Thời gian cập nhật bản ghi cuối
 	EncryptEnabled       bool
-	VersioningEnabled     bool
+	VersioningEnabled    bool
 	ObjectLockingEnabled bool
 	ReplicationEnabled   bool
 	RetentionDays        int64
@@ -55,7 +55,7 @@ type CreatePersonalBucket struct {
 	UserID               uuid.UUID
 	Policy               string
 	EncryptEnabled       bool
-	VersioningEnabled     bool
+	VersioningEnabled    bool
 	ObjectLockingEnabled bool
 	ReplicationEnabled   bool
 	RetentionDays        int64
@@ -72,7 +72,7 @@ type CreateTenantBucket struct {
 	CapacityQuotaBytes   int64
 	UserID               uuid.UUID
 	EncryptEnabled       bool
-	VersioningEnabled     bool
+	VersioningEnabled    bool
 	ObjectLockingEnabled bool
 	ReplicationEnabled   bool
 	RetentionDays        int64
@@ -109,12 +109,18 @@ type DeleteTenantBucket struct {
 	UserID      uuid.UUID
 }
 
-// [COMMENT]: RequestBucketSts chứa các tham số dùng để gửi yêu cầu xin cấp STS token cho bucket.
-type RequestBucketSts struct {
-	BucketID        uuid.UUID
-	BucketName      string
-	DurationSeconds int64
-	UserID          uuid.UUID
-	WorkspaceID     uuid.UUID
-	ZoneID          uuid.UUID
+// StorageAccessSession is the short-lived Central authorization projection
+// consumed by ACR and mirrored to the target Zone. It is never an S3 secret.
+type StorageAccessSession struct {
+	AccessSessionID      uuid.UUID
+	BindingHash          string
+	ActorID              uuid.UUID
+	ResourceID           uuid.UUID
+	BucketName           string
+	WorkspaceID          uuid.UUID
+	ZoneID               uuid.UUID
+	Actions              []string
+	KeyPrefix            string
+	ExpiresAtUnixSeconds uint64
+	PolicyRevision       uint64
 }

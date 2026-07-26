@@ -1,4 +1,5 @@
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 pub async fn dispatch_storage_job(
     action: &str,
     payload: Arc<ValidatedJob>,
+    zone_kv: Arc<ZoneKvStore>,
 ) -> Result<ExecutionResult, ExecutorError> {
     Logger::sys_info(
         "executor.storage.router",
@@ -54,9 +56,8 @@ pub async fn dispatch_storage_job(
             exec.execute(payload).await
         }
 
-        // [COMMENT]: Định tuyến lấy STS credentials
-        "object.sts" => {
-            let exec = super::ObjectStsExecutor;
+        "access.prepare" => {
+            let exec = super::StorageAccessPrepareExecutor::new(zone_kv);
             exec.execute(payload).await
         }
 

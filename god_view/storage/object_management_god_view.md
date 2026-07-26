@@ -19,6 +19,7 @@
 sequenceDiagram
     participant C as Client
     participant CP as Controlplane
+    participant PG as PostgreSQL outbox
     participant PG as PostgreSQL + outbox
     participant JO as Job Orchestrator
     participant K as Central Kafka
@@ -58,3 +59,58 @@ Bucket size is a separate periodic snapshot workflow documented in
 - Bucket create/delete: [`bucket_creation_god_view.md`](bucket_creation_god_view.md)
 - Bucket list/size: [`bucket_list_god_view.md`](bucket_list_god_view.md)
 - Ownership: [`resource_ownership_god_view.md`](../billing/resource_ownership_god_view.md)
+
+## 6. Zone Storage Gateway access-session path (staged)
+
+The non-secret access-session path is the only backend authorization flow for
+Console object operations. The legacy STS endpoint, command, executor and
+secret-bearing result have been removed. The path is not release-ready until
+Zone mTLS certificates, assertion public keys, the Envoy route/S3 signing
+adapter and the Cloud Console migration are complete.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant E as Central Envoy/ACR
+    participant CP as Controlplane
+    participant R as Auth-State Redis
+    participant JO as Job Orchestrator
+    participant K as Kafka
+    participant DP as Dataplane Zone
+    participant ZG as Zone Storage Authz
+    participant S3 as Private MinIO/S3
+
+    B->>E: POST /api/v1/storage/buckets/{id}/access-sessions
+    E->>CP: trusted actor/workspace/Zone context
+    CP->>CP: repository owner check
+    CP->>PG: storage.access.prepare outbox (metadata only)
+    CP->>R: protobuf StorageAccessRecord at storage_access:{session_id} with TTL
+    PG-->>JO: WAL/changefeed
+    JO->>K: durable command to exact Zone
+    K->>DP: prepare access projection
+    DP->>DP: CAS AURORA_ZONE_ACCESS/{session_id}
+    B->>E: storage request + Trinity + access_session_id
+    E->>R: verify central projection
+    E->>ZG: signed assertion over mTLS
+    ZG->>DP: read matching Zone access record
+    ZG->>S3: authorized private S3 request
+    S3-->>B: object/list/tag response
+```
+
+Invariants:
+
+- The Central repository remains the ownership/IDOR authority; the Zone KV
+  entry is only an execution/readiness projection.
+- The access-session command and result contain no S3 access key, secret key or
+  session token. `ACCESS_READY` is not sent through the user notification lane.
+- ACR signs with the dedicated Vault Transit asymmetric key; Zones receive only
+  the versioned public key. Missing key material, Redis, KV or mTLS fails closed.
+- The Zone verifier compares session, binding hash, actor, resource, workspace,
+  Zone, action, policy revision, canonical path/body hashes and expiry. The
+  assertion `jti` is atomically replay-fenced in a bounded cache.
+- There is no STS/notification-secret fallback. Rollback is limited to
+  deployment and route configuration, and object traffic remains disabled when
+  the Gateway trust chain is incomplete.
+
+Implementation detail and rollout gates are tracked in
+[`zone_storage_gateway_access_refactor_plan.md`](zone_storage_gateway_access_refactor_plan.md).

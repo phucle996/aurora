@@ -1,4 +1,4 @@
-use super::{bucket, credential, object};
+use super::{access, bucket, credential};
 use crate::observability::logger::Logger;
 
 // Phân phối kết quả Storage job tới đúng transaction owner.
@@ -80,7 +80,10 @@ pub async fn apply_storage_result(
             tx.commit().await?;
             Ok(row_opt)
         }
-        "storage.object.sts" => object::resolve_object_job(
+        // Access-session preparation has no business aggregate to mutate. The
+        // outbox row is only a durable command fence and is settled by the
+        // dedicated idempotent access-preparation lifecycle.
+        "storage.access.prepare" => access::resolve_access_prepare(
             pg_client,
             job_uuid,
             job_topic,

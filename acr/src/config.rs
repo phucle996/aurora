@@ -18,6 +18,10 @@ pub struct VaultConfig {
     pub transit_key_path: String,
     pub totp_key_path: String,
     pub admin_api_key_path: String,
+    // Separate asymmetric Transit key used only for Zone storage assertions.
+    // Empty means the storage gateway route is disabled fail-closed.
+    pub storage_assertion_key_path: String,
+    pub storage_assertion_key_id: String,
     pub timeout: Duration,
     pub max_retries: usize,
 }
@@ -88,6 +92,11 @@ impl Config {
         let vault_admin_api_key_path = env::var("VAULT_ADMIN_API_KEY_PATH")
             .unwrap_or_else(|_| "secret/data/admin/api-key".to_string());
 
+        let vault_storage_assertion_key_path =
+            env::var("VAULT_STORAGE_ASSERTION_KEY_PATH").unwrap_or_default();
+        let vault_storage_assertion_key_id =
+            env::var("VAULT_STORAGE_ASSERTION_KEY_ID").unwrap_or_default();
+
         let vault_timeout_secs = env::var("VAULT_TIMEOUT_SECS")
             .unwrap_or_else(|_| "5".to_string())
             .parse::<u64>()
@@ -106,6 +115,8 @@ impl Config {
             transit_key_path: vault_transit_key_path,
             totp_key_path: vault_totp_key_path,
             admin_api_key_path: vault_admin_api_key_path,
+            storage_assertion_key_path: vault_storage_assertion_key_path,
+            storage_assertion_key_id: vault_storage_assertion_key_id,
             timeout: Duration::from_secs(vault_timeout_secs),
             max_retries: vault_max_retries,
         };

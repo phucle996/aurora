@@ -428,8 +428,10 @@ func (r *PersonalBucketRepoImpl) ListAccessKeys(ctx context.Context, bucketID uu
 	return keys, nil
 }
 
-// [COMMENT]: CreateSts kiểm tra quyền sở hữu bucket và insert Outbox Record cho tác vụ xin STS.
-func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEntity.RequestBucketSts, outbox *storageEntity.StorageOutboxRecord) error {
+// CreateAccessPrepare verifies ownership and Zone binding in the same SQL
+// statement that inserts the durable preparation command. The Redis access
+// record is written only after this PostgreSQL durability boundary succeeds.
+func (r *PersonalBucketRepoImpl) CreateAccessPrepare(ctx context.Context, session *storageEntity.StorageAccessSession, outbox *storageEntity.StorageOutboxRecord) error {
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	query := fmt.Sprintf(`
@@ -437,6 +439,7 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 			SELECT b.id FROM %s.personal_buckets b
 			JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 			WHERE b.id = $1 AND b.workspace_id = $2 AND w.owner_id = $3
+			  AND b.zone_id = $20 AND w.zone_id = $20
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
@@ -447,9 +450,9 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 	`, r.storage, r.hierarchy, r.storage)
 
 	res, err := r.db.Exec(ctx, query,
-		param.BucketID,
-		param.WorkspaceID,
-		param.UserID.String(),
+		session.ResourceID,
+		session.WorkspaceID,
+		session.ActorID.String(),
 		mo.EventID,
 		mo.RoutingScope,
 		mo.JobTopic,
@@ -466,10 +469,11 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 		mo.ErrorMessage,
 		mo.OwnerType,
 		mo.ActorUserID,
+		session.ZoneID,
 	)
 
 	if err != nil {
-		return fmt.Errorf("storage repo: create bucket sts job failed: %w", err)
+		return fmt.Errorf("storage repo: create access prepare command failed: %w", err)
 	}
 
 	if res.RowsAffected() == 0 {

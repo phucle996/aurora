@@ -12,7 +12,8 @@ pub fn verify_generated_contracts() {
     let _ = storage::BucketCreateSync::default();
     let _ = storage::CredentialSync::default();
     let _ = storage::BucketDeleteSync::default();
-    let _ = storage::ObjectStsRequest::default();
-    let _ = storage::ObjectStsResponse::default();
+    let _ = storage::StorageAccessPrepareRequest::default();
+    let _ = storage::StorageAccessPrepareResponse::default();
+    let _ = storage::StorageAccessRecord::default();
     let _ = mail::MailDispatchEnvelopeV1::default();
 }

@@ -3,8 +3,8 @@ package storageSvcInterface
 import (
 	"context"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: PersonalBucketService quản lý các nghiệp vụ Bucket dành riêng cho cá nhân (Personal Owner).
@@ -28,6 +28,7 @@ type PersonalBucketService interface {
 	// [COMMENT]: Yêu cầu xóa Bucket cá nhân.
 	DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error
 
-	// [COMMENT]: Yêu cầu cấp khóa tạm thời (STS) cho bucket cá nhân.
-	RequestSts(ctx context.Context, param *storageEntity.RequestBucketSts) (uuid.UUID, error)
+	// CreateStorageAccessSession creates a metadata-only access projection and
+	// a transactional Zone preparation command. No credential is returned.
+	CreateStorageAccessSession(ctx context.Context, param *storageEntity.StorageAccessSession) error
 }

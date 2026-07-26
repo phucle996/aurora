@@ -51,3 +51,4 @@ logs/
 # Build artifacts
 controlplane/tmp/
 dataplane/target/
+zone-storage-authz/target/

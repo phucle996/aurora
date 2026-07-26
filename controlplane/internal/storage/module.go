@@ -72,6 +72,7 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
+	authRds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
 ) (*StorageModule, error) {
@@ -87,6 +88,9 @@ func NewModule(
 	}
 	if rds == nil {
 		return nil, errors.New("storage module: redis client is nil")
+	}
+	if authRds == nil {
+		return nil, errors.New("storage module: auth redis client is nil")
 	}
 	if cacheEngine == nil {
 		return nil, errors.New("storage module: cache engine registry is nil")
@@ -117,13 +121,12 @@ func NewModule(
 		return nil, errors.New("storage module: failed to construct personal credential repository")
 	}
 
-
 	// 2. Khởi tạo services tách biệt theo scope
 	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo)
 	if tenantBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant bucket service")
 	}
-	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo)
+	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, authRds)
 	if personalBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket service")
 	}
@@ -135,7 +138,6 @@ func NewModule(
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}
-
 
 	// 3. Khởi tạo HTTP handlers
 	personalBucketHandler := storageHandler.NewPersonalBucketHandler(personalBucketSvc)
@@ -154,7 +156,6 @@ func NewModule(
 	if tenantCredentialHandler == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential handler")
 	}
-
 
 	return &StorageModule{
 		enabled:                   true,

@@ -815,6 +815,49 @@ impl Authorization for ExtAuthzService {
             }
         }
 
+        let storage_signed_headers = if path_without_query.starts_with("/storage/v1/") {
+            let Some(ref storage_claims) = claims else {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("Storage Gateway requires a user Trinity session"),
+                )));
+            };
+            let raw_body = req
+                .attributes
+                .as_ref()
+                .and_then(|attributes| attributes.request.as_ref())
+                .and_then(|request| request.http.as_ref())
+                .map(|http| {
+                    if http.body.is_empty() {
+                        http.raw_body.clone()
+                    } else {
+                        http.body.as_bytes().to_vec()
+                    }
+                })
+                .unwrap_or_default();
+            match crate::storage::assertion::authorize_and_sign(
+                &self.session_mgr,
+                &self.token_mgr,
+                &self.config,
+                storage_claims,
+                client_headers,
+                method,
+                path,
+                &raw_body,
+            )
+            .await
+            {
+                Ok(headers) => Some(headers),
+                Err(reason) => {
+                    Logger::authz_log(&storage_claims.uid, method, path, "DENIED", reason);
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied(reason),
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
         cookies_to_set.extend(cookies_to_set_zone);
 
         // [COMMENT]: Khởi tạo biến lưu trữ đường dẫn đã ghi đè (nếu có)
@@ -921,6 +964,26 @@ impl Authorization for ExtAuthzService {
             use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
             if let HttpResponse::OkResponse(ref mut ok) = http_resp {
                 use envoy_types::pb::envoy::config::core::v3::HeaderValueOption;
+
+                if let Some(signed) = storage_signed_headers {
+                    for (key, value) in [
+                        ("x-aurora-access-session-id", signed.access_session_id),
+                        ("x-aurora-storage-assertion", signed.assertion),
+                        ("x-aurora-storage-signature", signed.signature),
+                        ("x-aurora-storage-key-id", signed.key_id),
+                    ] {
+                        let mut header = HeaderValueOption::default();
+                        header.header =
+                            Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                key: key.to_string(),
+                                value,
+                            });
+                        // OVERWRITE_IF_EXISTS prevents a client-injected copy
+                        // from surviving the Central security boundary.
+                        header.append_action = 2;
+                        ok.headers.push(header);
+                    }
+                }
 
                 // [COMMENT]: Luôn overwrite marker để client không thể tự giả mạo header đã được ACR xác minh.
                 let mut proof_header = HeaderValueOption::default();

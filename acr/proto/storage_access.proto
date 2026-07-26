@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package storage;
+
+// Auth-State Redis projection consumed by ACR. This contract intentionally
+// mirrors StorageAccessRecord in the Central storage transport schema.
+message StorageAccessRecord {
+  uint32 schema_version = 1;
+  string access_session_id = 2;
+  string binding_hash = 3;
+  string actor_id = 4;
+  string resource_id = 5;
+  string bucket_name = 6;
+  string workspace_id = 7;
+  string zone_id = 8;
+  repeated string actions = 9;
+  string key_prefix = 10;
+  uint64 expires_at_unix_seconds = 11;
+  uint64 policy_revision = 12;
+}

@@ -1,0 +1,101 @@
+# Apply the ConfigMap from zone-storage-authz/deploy/envoy-zone-storage.yaml
+# in the same Zone overlay. This manifest keeps the S3 listener private and
+# accepts only Central Envoy mTLS clients.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zone-storage-envoy
+  namespace: zone-z1
+  labels:
+    app.kubernetes.io/name: zone-storage-envoy
+    app.kubernetes.io/component: storage-gateway
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: zone-storage-envoy }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zone-storage-envoy
+        app.kubernetes.io/component: storage-gateway
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.33.2
+          args: ["-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+          ports:
+            - { name: https, containerPort: 8080 }
+            - { name: admin, containerPort: 9901 }
+          volumeMounts:
+            - { name: envoy-config, mountPath: /etc/envoy, readOnly: true }
+            - { name: gateway-tls, mountPath: /etc/aurora/tls, readOnly: true }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: 2000m, memory: 1Gi }
+          readinessProbe:
+            httpGet: { path: /ready, port: admin }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /server_info, port: admin }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: envoy-config
+          configMap: { name: zone-storage-envoy-config }
+        - name: gateway-tls
+          secret: { secretName: zone-storage-envoy-tls }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zone-storage-envoy
+  namespace: zone-z1
+spec:
+  type: ClusterIP
+  ports:
+    - { name: https, port: 8080, targetPort: https }
+    - { name: admin, port: 9901, targetPort: admin }
+  selector: { app.kubernetes.io/name: zone-storage-envoy }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zone-storage-envoy
+  namespace: zone-z1
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: zone-storage-envoy }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zone-storage-envoy
+  namespace: zone-z1
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: zone-storage-envoy }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: controlplane } }
+      ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: zone-storage-authz } }
+      ports: [{ protocol: TCP, port: 50052 }]
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: minio } }
+      ports: [{ protocol: TCP, port: 9000 }]
+

@@ -2,6 +2,7 @@ package storageSvcImpl
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -16,20 +17,25 @@ import (
 	"controlplane/pkg/crypto"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: PersonalBucketServiceImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Cá nhân.
 type PersonalBucketSvcImpl struct {
-	repo storageRepoInterface.PersonalBucketRepo
+	repo    storageRepoInterface.PersonalBucketRepo
+	authRds *goredis.Client
 }
 
-// [COMMENT]: NewPersonalBucketService khởi tạo instance thực thi PersonalBucketService.
-func NewPersonalBucketService(repo storageRepoInterface.PersonalBucketRepo) storageSvcInterface.PersonalBucketService {
-	return &PersonalBucketSvcImpl{
-		repo: repo,
-	}
+// NewPersonalBucketService wires the repository and the dedicated
+// Security-State Redis in one constructor. Shared L2 Redis is intentionally
+// not accepted here: an access session is an authz projection, not a cache.
+func NewPersonalBucketService(
+	repo storageRepoInterface.PersonalBucketRepo,
+	authRds *goredis.Client,
+) storageSvcInterface.PersonalBucketService {
+	return &PersonalBucketSvcImpl{repo: repo, authRds: authRds}
 }
 
 // [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
@@ -311,63 +317,92 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 	return nil
 }
 
-// [COMMENT]: RequestSts thực thi nghiệp vụ yêu cầu cấp STS token cho bucket cá nhân, tạo Outbox Record.
-func (s *PersonalBucketSvcImpl) RequestSts(ctx context.Context, param *storageEntity.RequestBucketSts) (uuid.UUID, error) {
-	// 1. SELECT GetByID để lấy bucket_name vật lý và kiểm định nhanh sự tồn tại
-	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.UserID)
-	if err != nil {
-		return uuid.Nil, apperr.Wrap(err, err, "get_failed")
+func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, param *storageEntity.StorageAccessSession) error {
+	if s.authRds == nil {
+		return apperr.Wrap(fmt.Errorf("auth-state redis is not configured"), nil, "access_session_unavailable")
+	}
+	if param == nil || param.AccessSessionID == uuid.Nil || param.ResourceID == uuid.Nil || param.ActorID == uuid.Nil {
+		return apperr.Wrap(fmt.Errorf("access session identity is incomplete"), nil, "invalid_access_session")
+	}
+	if param.ExpiresAtUnixSeconds <= uint64(time.Now().Unix()) {
+		return apperr.Wrap(fmt.Errorf("access session expiry is in the past"), nil, "invalid_access_session_expiry")
 	}
 
-	// Cập nhật tên bucket vật lý vào param
-	param.BucketName = bucket.Name
+	// The random binding is retained only as a digest. The client receives the
+	// opaque session id, while ACR binds it to the authenticated Trinity actor.
+	param.BindingHash = fmt.Sprintf("%x", sha256.Sum256([]byte(param.AccessSessionID.String()+":"+param.ActorID.String()+":"+uuid.New().String())))
+	// Auth-State Redis stores a versioned protobuf projection. The domain entity
+	// remains tag-free; this binary contract is the only Go/Rust wire boundary.
+	encoded, err := proto.Marshal(&storageproto.StorageAccessRecord{
+		SchemaVersion:        1,
+		AccessSessionId:      param.AccessSessionID.String(),
+		BindingHash:          param.BindingHash,
+		ActorId:              param.ActorID.String(),
+		ResourceId:           param.ResourceID.String(),
+		BucketName:           param.BucketName,
+		WorkspaceId:          param.WorkspaceID.String(),
+		ZoneId:               param.ZoneID.String(),
+		Actions:              append([]string(nil), param.Actions...),
+		KeyPrefix:            param.KeyPrefix,
+		ExpiresAtUnixSeconds: param.ExpiresAtUnixSeconds,
+		PolicyRevision:       param.PolicyRevision,
+	})
+	if err != nil {
+		return apperr.Wrap(err, err, "marshal_access_record_failed")
+	}
+	ttl := time.Until(time.Unix(int64(param.ExpiresAtUnixSeconds), 0))
+	if ttl <= 0 {
+		return apperr.Wrap(fmt.Errorf("access session ttl is not positive"), nil, "invalid_access_session_expiry")
+	}
+	// The opaque UUID is the lookup handle; the random digest stays inside the
+	// value and is copied to the Zone for assertion/record equality checks.
+	key := "storage_access:{" + param.AccessSessionID.String() + "}"
 
-	// Trích xuất Trace ID phục vụ distributed tracing
-	var traceID []byte
+	reqProto := &storageproto.StorageAccessPrepareRequest{
+		AccessSessionId:      param.AccessSessionID.String(),
+		BindingHash:          param.BindingHash,
+		ActorId:              param.ActorID.String(),
+		ResourceId:           param.ResourceID.String(),
+		BucketName:           param.BucketName,
+		WorkspaceId:          param.WorkspaceID.String(),
+		ZoneId:               param.ZoneID.String(),
+		Actions:              append([]string(nil), param.Actions...),
+		KeyPrefix:            param.KeyPrefix,
+		ExpiresAtUnixSeconds: param.ExpiresAtUnixSeconds,
+		PolicyRevision:       param.PolicyRevision,
+	}
+	payloadBytes, err := proto.Marshal(reqProto)
+	if err != nil {
+		return apperr.Wrap(err, err, "marshal_access_session_command_failed")
+	}
+	traceID := []byte(nil)
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
 		tid := spanCtx.TraceID()
 		traceID = tid[:]
 	}
-
-	// 2. Tạo event ID dạng UUIDv7
-	eventID, err := uuid.NewV7()
-	if err != nil {
-		return uuid.Nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
-	}
-
-	// 3. Marshal ObjectStsRequest protobuf
-	reqProto := &storageproto.ObjectStsRequest{
-		BucketName:      bucket.Name,
-		DurationSeconds: param.DurationSeconds,
-	}
-	payloadBytes, err := proto.Marshal(reqProto)
-	if err != nil {
-		return uuid.Nil, apperr.Wrap(err, err, "marshal_payload_failed")
-	}
-
-	// 4. Tạo Outbox Record với topic "storage.object.sts"
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + param.ZoneID.String(),
-		JobTopic:     "storage.object.sts",
-		Payload:      payloadBytes,
-		OwnerID:      param.UserID,
-		OwnerType:    storageEntity.StorageOwnerTypePersonal,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
-
+		EventID:              param.AccessSessionID,
+		RoutingScope:         "zone:" + param.ZoneID.String(),
+		JobTopic:             "storage.access.prepare",
+		Payload:              payloadBytes,
+		OwnerID:              param.ActorID,
+		OwnerType:            storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:          &param.ActorID,
+		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
-		ResourceID:           param.BucketID.String(),
+		ResourceID:           param.ResourceID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,
 	}
-
-	// 5. Lưu vào CSDL
-	err = s.repo.CreateSts(ctx, param, outbox)
-	if err != nil {
-		return uuid.Nil, apperr.Wrap(err, err, "create_sts_failed")
+	// The PostgreSQL outbox is the first durability boundary. A crash before
+	// the following Redis write may prepare an unusable Zone record, but can
+	// never authorize a request because ACR has no Central Access Record.
+	if err := s.repo.CreateAccessPrepare(ctx, param, outbox); err != nil {
+		return apperr.Wrap(err, err, "create_access_session_command_failed")
 	}
-
-	return eventID, nil
+	if err := s.authRds.Set(ctx, key, encoded, ttl).Err(); err != nil {
+		return apperr.Wrap(err, err, "persist_access_session_failed")
+	}
+	return nil
 }

@@ -156,9 +156,6 @@ fn notification_title(job_topic: &str, status: &str) -> &'static str {
         ("storage.credential.delete", "SUCCEEDED") => "Storage Credential Deleted",
         ("storage.credential.delete", "FAILED") => "Storage Credential Deletion Failed",
         ("storage.credential.delete", _) => "Deleting Storage Credential",
-        ("storage.object.sts", "SUCCEEDED") => "Temporary Storage Access Ready",
-        ("storage.object.sts", "FAILED") => "Temporary Storage Access Failed",
-        ("storage.object.sts", _) => "Preparing Temporary Storage Access",
         _ => "Job Notification",
     }
 }

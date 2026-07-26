@@ -54,10 +54,11 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.PersonalBucketHandler.Delete,
 		)
 
-		// [COMMENT]: Yêu cầu cấp khóa tạm thời (STS) cho bucket
-		personalGroup.POST("/storage/buckets/:id/sts-token",
+		// Metadata-only session. ACR authenticates the Trinity cookie and the
+		// Zone Gateway verifies the Central assertion; no client secret is issued.
+		personalGroup.POST("/storage/buckets/:id/access-sessions",
 			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.RequestSts,
+			module.PersonalBucketHandler.CreateAccessSession,
 		)
 
 		// ========================================================================
@@ -85,7 +86,6 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		// ========================================================================
 		// 📦 PHÂN KHÚC OBJECTS: QUẢN LÝ ĐỐI TƯỢNG (PERSONAL)
 		// ========================================================================
-
 
 	}
 

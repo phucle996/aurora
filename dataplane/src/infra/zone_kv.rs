@@ -61,11 +61,28 @@ pub struct ZoneLease {
     pub fencing_token: u64,
 }
 
-/// [COMMENT]: Ba bucket tách durability config, current health và coordination TTL để một loại tải không ép retention loại khác.
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct StorageAccessRecord {
+    pub access_session_id: String,
+    pub binding_hash: String,
+    pub actor_id: String,
+    pub resource_id: String,
+    pub bucket_name: String,
+    pub workspace_id: String,
+    pub zone_id: String,
+    pub actions: Vec<String>,
+    pub key_prefix: String,
+    pub expires_at_unix_seconds: u64,
+    pub policy_revision: u64,
+}
+
+/// [COMMENT]: Các bucket tách config, health, access và coordination để tải
+/// authorization ngắn hạn không ép retention hoặc quyền ACL của loại state khác.
 #[derive(Clone)]
 pub struct ZoneKvStore {
     config: kv::Store,
     health: kv::Store,
+    access: kv::Store,
     coordination: kv::Store,
 }
 
@@ -154,11 +171,41 @@ impl ZoneKvStore {
                     .map_err(|get_error| format!("create Zone coordination KV: {create_error}; reopen failed: {get_error}"))?,
             },
         };
+        let access = match js.get_key_value("AURORA_ZONE_ACCESS").await {
+            Ok(store) => store,
+            Err(_) => match js
+                .create_key_value(kv::Config {
+                    bucket: "AURORA_ZONE_ACCESS".to_string(),
+                    description: "Aurora Zone ephemeral storage authorization projections"
+                        .to_string(),
+                    history: 1,
+                    max_age: Duration::from_secs(86_400),
+                    max_value_size: 32 * 1024,
+                    max_bytes: 256 * 1024 * 1024,
+                    storage: StorageType::File,
+                    num_replicas: replicas,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(store) => store,
+                Err(create_error) => {
+                    js.get_key_value("AURORA_ZONE_ACCESS")
+                        .await
+                        .map_err(|get_error| {
+                            format!(
+                                "create Zone access KV: {create_error}; reopen failed: {get_error}"
+                            )
+                        })?
+                }
+            },
+        };
 
         // [COMMENT]: Bucket tồn tại nhưng sai durability contract phải fail-fast thay vì âm thầm hạ HA.
         for (name, store) in [
             ("config", &config),
             ("health", &health),
+            ("access", &access),
             ("coordination", &coordination),
         ] {
             let status = store
@@ -180,7 +227,39 @@ impl ZoneKvStore {
             config,
             health,
             coordination,
+            access,
         }))
+    }
+
+    /// Idempotent CAS projection. A replay with identical content succeeds;
+    /// a conflicting command for the same session id is rejected rather than
+    /// widening privileges after a producer bug or malicious replay.
+    pub async fn access_put(&self, record: &StorageAccessRecord) -> Result<(), String> {
+        let value = Bytes::from(serde_json::to_vec(record).map_err(|error| error.to_string())?);
+        for _ in 0..5 {
+            let current = self
+                .access
+                .entry(record.access_session_id.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(entry) = &current {
+                let existing: StorageAccessRecord = serde_json::from_slice(&entry.value)
+                    .map_err(|error| format!("storage access record corrupt: {error}"))?;
+                if existing == *record {
+                    return Ok(());
+                }
+                return Err("conflicting storage access session replay".to_string());
+            }
+            if self
+                .access
+                .update(&record.access_session_id, value.clone(), 0)
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        Err("storage access session CAS contention".to_string())
     }
 
     pub async fn config_keys_page(

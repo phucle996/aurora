@@ -1,6 +1,6 @@
 # [COMMENT]: Dev-only credentials mirror production ACL shape. Production values come from Secret mounts.
 user default off
 user health on >aurora-dev-health-secret -@all +ping resetkeys resetchannels
-user acr on >aurora-dev-acr-secret +@all -@dangerous +eval +evalsha ~iam:* ~billing:* ~ratelimit:* ~authz:* resetchannels
-user controlplane on >aurora-dev-controlplane-secret +@all -@dangerous +eval +evalsha ~authz:* ~auth:revocation:* resetchannels &authz.invalidate.*
+user acr on >aurora-dev-acr-secret +@all -@dangerous +eval +evalsha ~iam:* ~billing:* ~ratelimit:* ~authz:* ~storage_access:* resetchannels
+user controlplane on >aurora-dev-controlplane-secret +@all -@dangerous +eval +evalsha ~authz:* ~auth:revocation:* ~storage_access:* resetchannels &authz.invalidate.*
 user cost on >aurora-dev-cost-secret +@all -@dangerous +eval +evalsha ~authz:* ~auth:proof:cost:* resetchannels &authz.invalidate.*

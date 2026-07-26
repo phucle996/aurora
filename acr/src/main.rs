@@ -13,6 +13,7 @@ mod observability;
 pub mod pkg;
 mod rpc;
 mod sre;
+mod storage;
 mod token;
 mod transport;
 mod user;

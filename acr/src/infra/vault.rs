@@ -359,6 +359,73 @@ impl VaultClient {
         Ok(format!("{}_{}", version, sig_b64_url))
     }
 
+    /// Signs a short-lived Zone assertion with a dedicated asymmetric Transit
+    /// key. Only the public key is distributed to Zones; this method never
+    /// exposes private key material to ACR or Dataplane.
+    pub async fn sign_asymmetric(
+        &self,
+        key_path: &str,
+        input: &[u8],
+    ) -> Result<(String, String), AcrError> {
+        use base64::Engine;
+
+        let normalized = key_path.trim_matches('/');
+        let parts: Vec<&str> = normalized
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let (mount, key) = match parts.as_slice() {
+            [mount, "keys", key] => (*mount, *key),
+            [mount, key] => (*mount, *key),
+            [key] => ("transit", *key),
+            _ => {
+                return Err(AcrError::ConfigError(
+                    "VAULT_STORAGE_ASSERTION_KEY_PATH must identify one Transit key".to_string(),
+                ))
+            }
+        };
+        let response = self
+            .http_client
+            .post(format!("{}/v1/{}/sign/{}", self.addr, mount, key))
+            .header("X-Vault-Token", &self.token)
+            .json(&serde_json::json!({
+                "input": base64::engine::general_purpose::STANDARD.encode(input),
+            }))
+            .send()
+            .await
+            .map_err(|error| {
+                AcrError::Internal(format!("Vault storage assertion sign failed: {error}"))
+            })?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.map_err(|error| {
+            AcrError::Internal(format!("Vault storage assertion response invalid: {error}"))
+        })?;
+        if !status.is_success() {
+            return Err(AcrError::Internal(format!(
+                "Vault storage assertion sign HTTP {status}"
+            )));
+        }
+        let signature = body["data"]["signature"].as_str().ok_or_else(|| {
+            AcrError::Internal("Vault storage assertion signature missing".to_string())
+        })?;
+        let mut signature_parts = signature.splitn(3, ':');
+        if signature_parts.next() != Some("vault") {
+            return Err(AcrError::Internal(
+                "Vault storage assertion signature format invalid".to_string(),
+            ));
+        }
+        let version = signature_parts.next().ok_or_else(|| {
+            AcrError::Internal("Vault storage assertion version missing".to_string())
+        })?;
+        let encoded = signature_parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AcrError::Internal("Vault storage assertion bytes missing".to_string())
+            })?;
+        Ok((format!("{key}:{version}"), encoded.to_string()))
+    }
+
     /// [COMMENT]: Đọc dữ liệu secret từ một đường dẫn bất kỳ trong Vault (KV v2)
     /// Hỗ trợ đọc API Key và 2FA Secret thô phục vụ xác thực tại biên (ACL).
     pub async fn read_secret(&self, path: &str) -> Result<serde_json::Value, AcrError> {

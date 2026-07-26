@@ -43,19 +43,42 @@ message BucketDeleteSync {
   repeated string access_keys = 2; // Danh sách access keys cần thu hồi/xóa sạch
 }
 
-// Cấu hình yêu cầu cấp khóa tạm thời (STS) cho đối tượng
-message ObjectStsRequest {
-  string bucket_name = 1;
-  int64 duration_seconds = 2;
+message StorageAccessPrepareRequest {
+  string access_session_id = 1;
+  string binding_hash = 2;
+  string actor_id = 3;
+  string resource_id = 4;
+  string bucket_name = 5;
+  string workspace_id = 6;
+  string zone_id = 7;
+  repeated string actions = 8;
+  string key_prefix = 9;
+  uint64 expires_at_unix_seconds = 10;
+  uint64 policy_revision = 11;
 }
 
-// Cấu hình phản hồi khóa tạm thời (STS) dạng nhị phân Protobuf
-message ObjectStsResponse {
-  string access_key = 1;
-  string secret_key = 2;
-  string session_token = 3;
-  string expiration = 4;
-  string endpoint = 5;
+// Auth-State Redis projection consumed by ACR. This is intentionally distinct
+// from StorageAccessPrepareRequest: the former is a Central authorization
+// record, while the latter is a durable command sent to Dataplane.
+message StorageAccessRecord {
+  uint32 schema_version = 1;
+  string access_session_id = 2;
+  string binding_hash = 3;
+  string actor_id = 4;
+  string resource_id = 5;
+  string bucket_name = 6;
+  string workspace_id = 7;
+  string zone_id = 8;
+  repeated string actions = 9;
+  string key_prefix = 10;
+  uint64 expires_at_unix_seconds = 11;
+  uint64 policy_revision = 12;
 }
 
-
+message StorageAccessPrepareResponse {
+  string access_session_id = 1;
+  string resource_id = 2;
+  string zone_id = 3;
+  uint64 expires_at_unix_seconds = 4;
+  string state = 5;
+}

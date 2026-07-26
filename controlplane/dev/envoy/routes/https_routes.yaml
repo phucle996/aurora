@@ -38,7 +38,7 @@ resources:
                   regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
               - exact: "http://localhost:5173"
             allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Aurora-Access-Session-Id, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
             allow_credentials:
               value: true
             max_age: "86400"
@@ -74,7 +74,7 @@ resources:
                   regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
               - exact: "http://localhost:5173"
             allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Aurora-Access-Session-Id, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
             allow_credentials:
               value: true
             max_age: "86400"
@@ -121,7 +121,7 @@ resources:
                   regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
               - exact: "http://localhost:3000"
             allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Aurora-Access-Session-Id, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
             allow_credentials:
               value: true
             max_age: "86400"
@@ -204,7 +204,7 @@ resources:
                   regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
               - exact: "http://localhost:5173"
             allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Aurora-Access-Session-Id, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
             allow_credentials:
               value: true
             max_age: "86400"
