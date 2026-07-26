@@ -59,7 +59,7 @@ export function PlanModal({ isOpen, onClose, onSave, editPlan, zones }: PlanModa
         description: description.trim(),
       });
       onClose();
-    } catch (err) {
+    } catch {
       // Error is handled in page component
     } finally {
       setIsSaving(false);

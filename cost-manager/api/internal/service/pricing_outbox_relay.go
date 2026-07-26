@@ -54,91 +54,87 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 	defer reconcile.Stop()
 
 	for {
+		refreshStatuses := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-r.wake:
-			if err := r.drain(ctx, false); err != nil && ctx.Err() == nil {
-				fmt.Printf("Pricing outbox relay error: %v\n", err)
-			}
 		case <-reconcile.C:
-			if err := r.drain(ctx, true); err != nil && ctx.Err() == nil {
-				fmt.Printf("Pricing outbox relay reconciliation error: %v\n", err)
+			refreshStatuses = true
+		}
+
+		var relayErr error
+		if refreshStatuses {
+			if err := r.repo.RefreshTierVersionStatuses(ctx); err != nil {
+				relayErr = fmt.Errorf("refresh pricing version statuses failed: %w", err)
 			}
-			// [COMMENT]: Jitter tránh mọi replica cùng đánh DB tại đúng một thời điểm.
+		}
+
+		for relayErr == nil {
+			batch, err := r.repo.GetUnpublishedOutboxBatch(ctx, 100)
+			if err != nil {
+				relayErr = fmt.Errorf("get unpublished outbox batch failed: %w", err)
+				break
+			}
+
+			if len(batch) == 0 {
+				break
+			}
+
+			// DB outbox vẫn là SoT; Engine cold-start/reconciler tự load lại nếu PubSub bị lỡ.
+			for _, row := range batch {
+				payload, marshalErr := proto.Marshal(&pricingv1.TierVersionPublished{
+					EventId:             row.ID.String(),
+					TierId:              row.TierID.String(),
+					TierVersionId:       row.TierVersionID.String(),
+					VersionNumber:       row.VersionNumber,
+					ServiceType:         string(row.ServiceType),
+					EffectiveFromUnixMs: row.EffectiveFrom.UnixMilli(),
+					Checksum:            row.Checksum,
+					OccurredAtUnixMs:    row.OccurredAt.UnixMilli(),
+				})
+				if marshalErr != nil {
+					relayErr = fmt.Errorf("marshal outbox event %s failed: %w", row.ID, marshalErr)
+					break
+				}
+
+				// [COMMENT]: Không mark published khi không có listener nào nhận hint.
+				// Engine có thể đang rolling restart; row sẽ được retry ở reconciliation sau đó.
+				listeners, publishErr := r.sharedRedis.Publish(ctx, pricingVersionPublishedChannel, payload).Result()
+				if publishErr != nil {
+					_ = r.repo.RecordOutboxError(ctx, row.ID, publishErr.Error())
+					relayErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, publishErr)
+					break
+				}
+				if listeners == 0 {
+					publishErr = fmt.Errorf("no pricing listener subscribed to %s", pricingVersionPublishedChannel)
+					_ = r.repo.RecordOutboxError(ctx, row.ID, publishErr.Error())
+					relayErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, publishErr)
+					break
+				}
+
+				// Cache invalidation is a separate best-effort hint so API subscribers do not
+				// affect the Engine listener count used by the existing outbox safety check.
+				if err := r.sharedRedis.Publish(ctx, pricingCacheInvalidationChannel, payload).Err(); err != nil {
+					logger.SysWarn("billing.pricing.cache.invalidate.publish", err.Error())
+				}
+
+				if err := r.repo.MarkOutboxPublished(ctx, row.ID); err != nil {
+					relayErr = fmt.Errorf("mark outbox event %s published failed: %w", row.ID, err)
+					break
+				}
+			}
+
+			if relayErr != nil {
+				break
+			}
+		}
+		if relayErr != nil && ctx.Err() == nil {
+			logger.SysError("billing.pricing.outbox.relay", relayErr.Error())
+		}
+		if refreshStatuses {
+			// [COMMENT]: Tính interval từ lúc đợt reconciliation hoàn tất để relay chậm không tạo vòng lặp nóng.
 			reconcile.Reset(30*time.Second + time.Duration(rand.Int63n(int64(10*time.Second))))
 		}
-	}
-}
-
-func (r *PricingOutboxRelay) drain(ctx context.Context, refreshStatuses bool) error {
-	if refreshStatuses {
-		// 1. Cập nhật trạng thái các phiên bản bảng giá qua Repo
-		if err := r.repo.RefreshTierVersionStatuses(ctx); err != nil {
-			return fmt.Errorf("refresh pricing version statuses failed: %w", err)
-		}
-	}
-
-	for {
-		// 2. Lấy đợt bản ghi outbox chưa được phát sóng
-		batch, err := r.repo.GetUnpublishedOutboxBatch(ctx, 100)
-		if err != nil {
-			return fmt.Errorf("get unpublished outbox batch failed: %w", err)
-		}
-
-		if len(batch) == 0 {
-			return nil
-		}
-
-		// 3. Duyệt danh sách bản ghi, marshal Protobuf và publish hint sang Shared Redis.
-		// DB outbox vẫn là SoT; Engine cold-start/reconciler tự load lại nếu PubSub bị lỡ.
-		var publishErr error
-		for _, row := range batch {
-			payload, marshalErr := proto.Marshal(&pricingv1.TierVersionPublished{
-				EventId:             row.ID.String(),
-				TierId:              row.TierID.String(),
-				TierVersionId:       row.TierVersionID.String(),
-				VersionNumber:       row.VersionNumber,
-				ServiceType:         string(row.ServiceType),
-				EffectiveFromUnixMs: row.EffectiveFrom.UnixMilli(),
-				Checksum:            row.Checksum,
-				OccurredAtUnixMs:    row.OccurredAt.UnixMilli(),
-			})
-			if marshalErr != nil {
-				publishErr = fmt.Errorf("marshal outbox event %s failed: %w", row.ID, marshalErr)
-				break
-			}
-
-			// [COMMENT]: Không mark published khi không có listener nào nhận hint.
-			// Engine có thể đang rolling restart; row sẽ được retry ở reconciliation sau đó.
-			listeners, err := r.sharedRedis.Publish(ctx, pricingVersionPublishedChannel, payload).Result()
-			if err != nil {
-				_ = r.repo.RecordOutboxError(ctx, row.ID, err.Error())
-				publishErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, err)
-				break
-			}
-			if listeners == 0 {
-				err := fmt.Errorf("no pricing listener subscribed to %s", pricingVersionPublishedChannel)
-				_ = r.repo.RecordOutboxError(ctx, row.ID, err.Error())
-				publishErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, err)
-				break
-			}
-
-			// Cache invalidation is a separate best-effort hint so API subscribers do not
-			// affect the Engine listener count used by the existing outbox safety check.
-			if err := r.sharedRedis.Publish(ctx, pricingCacheInvalidationChannel, payload).Err(); err != nil {
-				logger.SysWarn("billing.pricing.cache.invalidate.publish", err.Error())
-			}
-
-			if err := r.repo.MarkOutboxPublished(ctx, row.ID); err != nil {
-				publishErr = fmt.Errorf("mark outbox event %s published failed: %w", row.ID, err)
-				break
-			}
-		}
-
-		if publishErr != nil && ctx.Err() == nil {
-			return publishErr
-		}
-
 	}
 }

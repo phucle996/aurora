@@ -1,16 +1,16 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Header, navigationItems } from './components/Header';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { Header } from './components/Header';
+import { RouteGuard } from './components/RouteGuard';
 import PlanPage from './page/plan/page';
 import DashboardPage from './page/dashboard/page';
+import { queryClient } from './lib/queryClient';
 import { useAuthStore } from './lib/store/useAuthStore';
+import { navigationItems } from './navigation';
 import { Coins } from 'lucide-react';
 import { Toaster } from 'sonner';
 import './App.css';
-
-// Khởi tạo React Query client cho toàn bộ ứng dụng
-const queryClient = new QueryClient();
 
 // Component hiển thị fallback cho các menu tính năng chưa phát triển
 function FeatureInDevelopment() {
@@ -32,6 +32,11 @@ function FeatureInDevelopment() {
 function CostDashboardShell() {
   // State quản lý loại tiền tệ chính (VND / USD)
   const [currency, setCurrency] = useState('VND');
+  const { checkPermission } = useAuthStore();
+  const hasAdminDashboard = [
+    ['billing:tier', 'publish'],
+    ['billing:credit', 'adjust'],
+  ].some(([key, action]) => checkPermission(key, action));
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-200 overflow-hidden">
@@ -46,13 +51,50 @@ function CostDashboardShell() {
         <section className="flex-1 overflow-y-auto p-8">
           <Routes>
             {/* Route chính /plan cho trang Quản lý Gói Cước & Giá */}
-            <Route path="/plan" element={<PlanPage />} />
+            <Route
+              path="/plan"
+              element={
+                <RouteGuard
+                  customCheck={(check) =>
+                    check('billing:plan', 'read')
+                    || check('billing:tier', 'read')
+                    || check('billing:subscription', 'write')
+                  }
+                >
+                  <PlanPage />
+                </RouteGuard>
+              }
+            />
             {/* Alias redirect từ /plans về /plan để nhất quán */}
             <Route path="/plans" element={<Navigate to="/plan" replace />} />
 
             {/* Route trang chủ / và /dashboard */}
-            <Route path="/" element={<DashboardPage currency={currency} />} />
-            <Route path="/dashboard" element={<DashboardPage currency={currency} />} />
+            <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} />} />
+            <Route path="/dashboard" element={<DashboardPage currency={currency} admin={hasAdminDashboard} />} />
+            <Route
+              path="/invoices"
+              element={
+                <RouteGuard requiredKey="billing:ledger" requiredAction="read">
+                  <FeatureInDevelopment />
+                </RouteGuard>
+              }
+            />
+            <Route
+              path="/gateways"
+              element={
+                <RouteGuard requiredKey="billing:wallet" requiredAction="read">
+                  <FeatureInDevelopment />
+                </RouteGuard>
+              }
+            />
+            <Route
+              path="/history"
+              element={
+                <RouteGuard requiredKey="billing:ledger" requiredAction="read">
+                  <FeatureInDevelopment />
+                </RouteGuard>
+              }
+            />
 
             {/* Catch-all route cho các menu khác chưa dựng UI chi tiết */}
             <Route path="*" element={<FeatureInDevelopment />} />

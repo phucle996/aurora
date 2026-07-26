@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom"; // Hook quản lý URL query search parameters
 import { Plus, Coins, Info, RefreshCw } from "lucide-react";
 import { PlanTable, type PlanItem } from "./sections/PlanTable";
@@ -7,6 +7,7 @@ import { PlanModal } from "./sections/PlanModal";
 import { SubscriptionPanel } from "./sections/SubscriptionPanel";
 import { TierTable } from "./sections/TierTable"; // [COMMENT]: Import thêm component bảng cước lũy tiến Tiers mới
 import { billingApi, type Subscription, type ZoneItem } from "../../lib/api/billing";
+import { useAuthStore } from "../../lib/store/useAuthStore";
 import { cn } from "../../lib/utils";
 
 const mapPlanResponseToItem = (p: any): PlanItem => ({
@@ -23,6 +24,12 @@ const mapPlanResponseToItem = (p: any): PlanItem => ({
 });
 
 export default function PlanPage() {
+  const { checkPermission } = useAuthStore();
+  const canReadPlans = checkPermission("billing:plan", "read");
+  const canWritePlans = checkPermission("billing:plan", "write");
+  const canReadTiers = checkPermission("billing:tier", "read");
+  const canPublishTiers = checkPermission("billing:tier", "publish");
+  const canWriteSubscriptions = checkPermission("billing:subscription", "write");
   const [plans, setPlans] = useState<PlanItem[]>([]);
   const [zones, setZones] = useState<ZoneItem[]>([]);
 
@@ -32,8 +39,16 @@ export default function PlanPage() {
   // Xác định tab hiện tại từ URL query param, nếu không có hoặc giá trị lạ thì mặc định là 'plans'
   // [COMMENT]: Đổi cấu hình tab từ 'pricing' (Biểu giá cũ) thành 'tiers' (Biểu giá lũy tiến mới)
   const tabParam = searchParams.get("tab");
+  const allowedTabs: Array<"plans" | "tiers" | "subscriptions"> = [];
+  if (canReadPlans) allowedTabs.push("plans");
+  if (canReadTiers) allowedTabs.push("tiers");
+  if (canWriteSubscriptions) allowedTabs.push("subscriptions");
+  const requestedTab =
+    tabParam === "tiers" || tabParam === "subscriptions" || tabParam === "plans"
+      ? tabParam
+      : null;
   const activeTab: "plans" | "tiers" | "subscriptions" =
-    tabParam === "tiers" || tabParam === "subscriptions" ? tabParam : "plans";
+    requestedTab && allowedTabs.includes(requestedTab) ? requestedTab : allowedTabs[0] ?? "plans";
 
   // Hàm xử lý chuyển tab và cập nhật URL query string ?tab=...
   const handleTabChange = (newTab: "plans" | "tiers" | "subscriptions") => {
@@ -55,25 +70,31 @@ export default function PlanPage() {
   const [editPlan, setEditPlan] = useState<PlanItem | null>(null);
 
   // Fetch plans, zones, prices and current subscription status
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const planList = await billingApi.listPlans();
-      setPlans(planList.map(mapPlanResponseToItem));
-      const sub = await billingApi.getActiveSubscription();
-      setActiveSub(sub);
-      const zoneList = await billingApi.listZones();
-      setZones(zoneList);
+      if (canReadPlans) {
+        const planList = await billingApi.listPlans();
+        setPlans(planList.map(mapPlanResponseToItem));
+      }
+      if (canWriteSubscriptions) {
+        const sub = await billingApi.getActiveSubscription();
+        setActiveSub(sub);
+      }
+      if (canWritePlans) {
+        const zoneList = await billingApi.listZones();
+        setZones(zoneList);
+      }
     } catch (err) {
       console.error("Failed to load billing page data:", err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [canReadPlans, canWritePlans, canWriteSubscriptions]);
 
   useEffect(() => {
     loadData();
-  }, [refreshTrigger]);
+  }, [refreshTrigger, loadData]);
 
   const handleSavePlan = async (
     data: Omit<PlanItem, "id" | "status" | "effectiveFrom"> & { id?: string }
@@ -172,45 +193,51 @@ export default function PlanPage() {
 
           <div className="flex gap-2">
             {/* Tab Gói Cước -> ?tab=plans */}
-            <button
-              onClick={() => handleTabChange("plans")}
-              className={cn(
-                "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
-                activeTab === "plans"
-                  ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
-              )}
-            >
-              Gói Cước (Plans)
-            </button>
+            {canReadPlans && (
+              <button
+                onClick={() => handleTabChange("plans")}
+                className={cn(
+                  "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
+                  activeTab === "plans"
+                    ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
+                )}
+              >
+                Gói Cước (Plans)
+              </button>
+            )}
             {/* [COMMENT]: Đổi tab Biểu Giá cũ thành Biểu Giá Gốc (Tiers) tương ứng với cấu trúc mới */}
-            <button
-              onClick={() => handleTabChange("tiers")}
-              className={cn(
-                "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
-                activeTab === "tiers"
-                  ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
-              )}
-            >
-              Biểu Giá Gốc (Tiers)
-            </button>
+            {canReadTiers && (
+              <button
+                onClick={() => handleTabChange("tiers")}
+                className={cn(
+                  "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
+                  activeTab === "tiers"
+                    ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
+                )}
+              >
+                Biểu Giá Gốc (Tiers)
+              </button>
+            )}
             {/* Tab Gói Đăng Ký -> ?tab=subscriptions */}
-            <button
-              onClick={() => handleTabChange("subscriptions")}
-              className={cn(
-                "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
-                activeTab === "subscriptions"
-                  ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
-              )}
-            >
-              Gói Đăng Ký (Subscriptions)
-            </button>
+            {canWriteSubscriptions && (
+              <button
+                onClick={() => handleTabChange("subscriptions")}
+                className={cn(
+                  "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
+                  activeTab === "subscriptions"
+                    ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
+                )}
+              >
+                Gói Đăng Ký (Subscriptions)
+              </button>
+            )}
           </div>
         </div>
 
-        {activeTab === "plans" && (
+        {activeTab === "plans" && canWritePlans && (
           <button
             onClick={handleCreateClick}
             className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3.5 py-2 rounded-md shadow-sm transition-colors cursor-pointer"
@@ -222,7 +249,7 @@ export default function PlanPage() {
       </div>
 
       {/* Tab Contents */}
-      {activeTab === "plans" && (
+      {activeTab === "plans" && canReadPlans && (
         <div className="flex flex-col lg:flex-row gap-6 w-full relative items-stretch">
           {/* Left Column (Master List) */}
           <div className={cn(
@@ -265,25 +292,28 @@ export default function PlanPage() {
               onEdit={handleEditClick}
               onToggleStatus={handleToggleStatus}
               isSubscribed={activeSub?.plan_id === selectedPlan.id}
-              onSubscribe={handleSubscribe}
+              onSubscribe={canWriteSubscriptions ? handleSubscribe : undefined}
+              canManage={canWritePlans}
             />
           )}
 
           {/* Plan Creation / Edit Modal */}
-          <PlanModal
-            isOpen={modalOpen}
-            onClose={() => setModalOpen(false)}
-            onSave={handleSavePlan}
-            editPlan={editPlan}
-            zones={zones}
-          />
+          {canWritePlans && (
+            <PlanModal
+              isOpen={modalOpen}
+              onClose={() => setModalOpen(false)}
+              onSave={handleSavePlan}
+              editPlan={editPlan}
+              zones={zones}
+            />
+          )}
         </div>
       )}
 
       {/* [COMMENT]: Render bảng Tiers mới khi activeTab là 'tiers' */}
-      {activeTab === "tiers" && <TierTable />}
+      {activeTab === "tiers" && canReadTiers && <TierTable canPublish={canPublishTiers} />}
 
-      {activeTab === "subscriptions" && (
+      {activeTab === "subscriptions" && canWriteSubscriptions && (
         <div className="space-y-4">
           <SubscriptionPanel
             refreshTrigger={refreshTrigger}

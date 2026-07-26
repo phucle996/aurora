@@ -180,6 +180,16 @@ resources:
               value: true
             max_age: "86400"
         routes:
+          # Cost Console reuses the IAM five-level Render Context. ACR accepts the
+          # host-bound Billing Alias only for this narrow self-context branch.
+          - match: { path: "/api/v1/me/iam/context/read" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 5s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 2s
           - match: { prefix: "/api/" }
             route:
               cluster: cost_manager_cluster

@@ -71,8 +71,22 @@ pub fn extract_cookie_value(cookie_header: &str, cookie_name: &str) -> Option<St
     None
 }
 
-fn is_billing_alias_path(path: &str) -> bool {
-    path.starts_with("/api/v1/billing") && !path.starts_with("/api/v1/billing/me/")
+fn authority_matches_origin(authority: &str, configured_origin: &str) -> bool {
+    let Ok(origin) = url::Url::parse(configured_origin) else {
+        return false;
+    };
+    let Ok(request) = url::Url::parse(&format!("{}://{}", origin.scheme(), authority)) else {
+        return false;
+    };
+    origin.host_str() == request.host_str()
+        && origin.port_or_known_default() == request.port_or_known_default()
+}
+
+fn is_billing_alias_path(method: &str, path: &str, is_billing_console_authority: bool) -> bool {
+    (path.starts_with("/api/v1/billing") && !path.starts_with("/api/v1/billing/me/"))
+        || (is_billing_console_authority
+            && method == "GET"
+            && path == "/api/v1/me/iam/context/read")
 }
 
 pub fn sha256_hash(secret: &str) -> String {
@@ -162,6 +176,16 @@ impl Authorization for ExtAuthzService {
             .or_else(|| client_headers.get(":method").map(|s| s.as_str()))
             .unwrap_or("GET");
         let method = method_str;
+        let authority = http_req
+            .map(|h| h.host.as_str())
+            .filter(|host| !host.is_empty())
+            .or_else(|| client_headers.get(":authority").map(String::as_str))
+            .or_else(|| client_headers.get("host").map(String::as_str))
+            .unwrap_or("");
+        // The same IAM self-context endpoint is consumed by both consoles. Host-aware selection
+        // prevents a Cost alias from becoming a general-purpose Cloud IAM credential.
+        let is_billing_console_authority =
+            authority_matches_origin(authority, &self.config.billing_console_origin);
 
         let client_ip = client_headers
             .get("x-forwarded-for")
@@ -465,9 +489,10 @@ impl Authorization for ExtAuthzService {
 
         // [COMMENT]: Đã trích xuất cookie_header ở đầu hàm check cho Phase 1 Rate Limiting nên không cần trích xuất lại tại đây.
 
-        // `/billing/me/*` is a self-scoped read branch used by Cloud Console. Keep it on the
-        // normal IAM session path; operator Billing Console routes remain alias-protected.
-        let is_billing = is_billing_alias_path(path);
+        // `/billing/me/*` stays on the normal IAM session path while Cost Console may reuse the
+        // existing IAM render-context endpoint through its host-bound opaque alias.
+        let is_billing =
+            is_billing_alias_path(method, path_without_query, is_billing_console_authority);
         let is_sre = path.starts_with("/admin");
 
         let mut claims: Option<Claims> = None;
@@ -1148,17 +1173,60 @@ impl Authorization for ExtAuthzService {
 
 #[cfg(test)]
 mod tests {
-    use super::is_billing_alias_path;
+    use super::{authority_matches_origin, is_billing_alias_path};
 
     #[test]
     fn billing_me_stays_on_normal_iam_session() {
-        assert!(!is_billing_alias_path("/api/v1/billing/me/wallet/summary"));
         assert!(!is_billing_alias_path(
-            "/api/v1/billing/me/estimate/storage?capacity_bytes=1"
+            "GET",
+            "/api/v1/billing/me/wallet/summary",
+            false
         ));
-        assert!(is_billing_alias_path("/api/v1/billing/tiers"));
+        assert!(is_billing_alias_path("GET", "/api/v1/billing/tiers", true));
         assert!(is_billing_alias_path(
-            "/api/v1/billing/critical/tiers/STORAGE/CODE"
+            "POST",
+            "/api/v1/billing/critical/tiers/STORAGE/CODE",
+            true
+        ));
+    }
+
+    #[test]
+    fn iam_render_context_uses_alias_only_on_cost_console_authority() {
+        assert!(is_billing_alias_path(
+            "GET",
+            "/api/v1/me/iam/context/read",
+            true
+        ));
+        assert!(!is_billing_alias_path(
+            "GET",
+            "/api/v1/me/iam/context/read",
+            false
+        ));
+        assert!(!is_billing_alias_path(
+            "POST",
+            "/api/v1/me/iam/context/read",
+            true
+        ));
+        assert!(!is_billing_alias_path(
+            "GET",
+            "/api/v1/me/iam/profile/read",
+            true
+        ));
+    }
+
+    #[test]
+    fn authority_comparison_is_scheme_and_port_aware() {
+        assert!(authority_matches_origin(
+            "cost-manager.aurora.local:443",
+            "https://cost-manager.aurora.local"
+        ));
+        assert!(!authority_matches_origin(
+            "cloud.aurora.local:443",
+            "https://cost-manager.aurora.local"
+        ));
+        assert!(!authority_matches_origin(
+            "cost-manager.aurora.local:8443",
+            "https://cost-manager.aurora.local"
         ));
     }
 }

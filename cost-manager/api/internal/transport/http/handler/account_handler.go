@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	billingSvcInterface "cost-manager/api/internal/domain/service"
@@ -13,6 +14,7 @@ import (
 	"cost-manager/api/pkg/pkgcontext"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type AccountHandler struct {
@@ -30,11 +32,24 @@ func (h *AccountHandler) ActivatePersonalFreeTier(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
+	// [COMMENT]: Trích xuất và validate userID từ context (do middleware identity xử lý)
 	userID, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
+	if !ok || userID == uuid.Nil {
+		// [COMMENT]: Phản hồi BadRequest nếu userID không hợp lệ hoặc rỗng
+		apires.RespondBadRequest(c, "valid x-user-id header is required")
 		return
 	}
-	account, err := h.service.ActivatePersonalFreeTier(ctx, userID.String(), c.GetHeader("idempotency-key"))
+
+	// [COMMENT]: Validate idempotency-key header trực tiếp tại HTTP handler layer
+	idempotencyKey := strings.TrimSpace(c.GetHeader("idempotency-key"))
+	if idempotencyKey == "" || len(idempotencyKey) > 128 {
+		// [COMMENT]: Yêu cầu idempotency-key không rỗng và độ dài tối đa 128 ký tự
+		apires.RespondBadRequest(c, "valid idempotency-key header is required (1-128 chars)")
+		return
+	}
+
+	// [COMMENT]: Truyền userID đã chuẩn hóa kiểu uuid.UUID và idempotencyKey sạch xuống service layer
+	account, err := h.service.ActivatePersonalFreeTier(ctx, userID, idempotencyKey)
 	if err != nil {
 		switch {
 		case errors.Is(err, billingTaxonomy.ErrInvalidArgument):

@@ -19,6 +19,7 @@
 | Target refresh token | Không phát |
 | Target JWT | Không phát |
 | Cookie scope | Hai `__Host-*` cookie, host-only, `Secure`, `HttpOnly`, `SameSite=Lax` |
+| UI Render Context | Reuse `GET /api/v1/me/iam/context/read` của IAM; permission source giữ nguyên 5 bậc |
 | Authorization transport | Cost L1 → Auth Redis projection → Shared Redis request/reply IAM |
 | Critical proof | Cost-origin Ed25519 key + one-time nonce |
 
@@ -54,6 +55,10 @@ Ba endpoint sau là local interceptor của ACR, không forward tới Cost API:
 - `POST /api/v1/billing/auth/exchange`;
 - `GET /api/v1/billing/auth/session`;
 - `POST /api/v1/billing/auth/logout`.
+
+Cost Console không có Render Context API riêng trong Cost Manager. Envoy route exact
+`/api/v1/me/iam/context/read` trên đúng Cost authority tới Controlplane; ACR chỉ cho Billing Alias gọi
+`GET /api/v1/me/iam/context/read`. Alias không được dùng để gọi profile, device, role hoặc IAM mutation khác.
 
 ## 2. Authorization-code + PKCE handoff
 
@@ -170,9 +175,52 @@ x-authz-revision
 
 Cost `RequireIdentity` chỉ parse identity/routing context. `Authorize` tự resolve permission server-side. Envoy phải xóa/overwrite các identity/proof header client gửi và NetworkPolicy chỉ cho Envoy gọi Cost pod.
 
-## 4. Billing permission resolution
+### 3.1 IAM Render Context dùng chung cho hai console
 
-Canonical output cho Cost luôn là key ba phần:
+IAM vẫn đọc canonical permission 5 bậc:
+
+```text
+identity:workspace:module:object:behavior
+```
+
+`GetRenderContext` chỉ tạo projection presentation:
+
+```text
+navigation.key = module:object
+actions        = [behavior...]
+capabilities   = full permission 5 bậc
+```
+
+```mermaid
+sequenceDiagram
+    participant CostUI as Cost Console
+    participant Envoy
+    participant ACR
+    participant IAM as Controlplane IAM
+    participant Cache as IAM RoleEntry L1/L2
+
+    CostUI->>Envoy: GET /api/v1/me/iam/context/read
+    Envoy->>ACR: Cost authority + host-only Billing Alias
+    ACR->>ACR: Verify alias + source IAM session
+    ACR->>IAM: Forward existing endpoint + overwrite trusted identity
+    IAM->>Cache: GetOrLoad user RoleEntry 5-level
+    Cache-->>IAM: Current RoleEntry
+    IAM->>IAM: Group module:object, dedupe/sort behaviors
+    IAM-->>CostUI: navigation + capabilities + is_personal
+```
+
+Invariants:
+
+- Cloud authority gọi cùng endpoint bằng IAM Trinity; Cost authority gọi bằng Billing Alias.
+- Render Context không nằm trong handoff code, alias cookie hoặc local storage.
+- Cost Console dùng context để không mount navigation/route/component thiếu quyền.
+- Render Context không thay Cost API `Authorize`; request trực tiếp vẫn phải bị backend chặn.
+- Role/context load lỗi phải fail-closed, không render admin fallback.
+
+## 4. Cost API authorization projection
+
+Phần này độc lập với UI Render Context. Canonical IAM permission vẫn là key 5 bậc; projection hiện tại
+cho Cost API chỉ rút gọn quyền Billing global thành key ba phần:
 
 ```text
 billing:{object}:{behavior}
@@ -323,6 +371,7 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 - [ ] Mỗi IAM replica subscribe Shared Redis request channel; request lock + bounded slot ngăn query PostgreSQL nhân N.
 - [ ] Shared Redis invalidation là fan-out tới mọi Cost replica; generation chỉ tăng đúng một lần ở IAM mutation path.
 - [ ] `BILLING_CONSOLE_ORIGIN` là constant HTTPS allowlist, không lấy redirect URI từ client.
+- [ ] Cost vhost route exact `/api/v1/me/iam/context/read` tới Controlplane trước generic Cost `/api/`; ACR bind alias theo đúng authority + exact GET context path.
 - [ ] Envoy overwrite/remove identity, permission legacy và proof headers.
 - [ ] K8s NetworkPolicy cấm direct public traffic tới Cost API/ACR.
 - [ ] Metrics có handoff issue/exchange/replay, alias verification, L1/L2 hit, lock contention, generation reject, IAM timeout và authorization deny.
@@ -338,13 +387,16 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 | Opaque alias + reverse index | `acr/src/billing/session.rs` |
 | Alias/source verification | `acr/src/billing/verify.rs` |
 | ACR dispatch/header overwrite | `acr/src/gateway/ext_authz.rs` |
+| IAM five-level Render Context | `controlplane/internal/iam/service/rbac_platform_service.go` |
+| Cost vhost IAM context branch | `controlplane/dev/envoy/routes/cost_manager_vhost.yaml`, `https_routes.yaml` |
 | Redis role split config | `acr/src/config.rs`, `acr/src/main.rs` |
 | IAM Shared Redis responder + Auth Redis writer | `controlplane/internal/iam/transport/pubsub/handler/billing_authorization_redis.go` |
 | IAM RBAC invalidation | `controlplane/internal/iam/service/rbac_platform_service.go`, `user_service.go` |
 | Cost L1/Auth Redis/Shared Redis resolver | `cost-manager/api/internal/service/authorization_resolver.go` |
 | Cost identity/permission middleware | `cost-manager/api/internal/transport/middleware/identity.go` |
 | Cloud authorize bridge | `cloud-console/src/app/billing/authorize/page.tsx` |
-| Cost PKCE/session bootstrap | `cost-console/src/lib/store/useAuthStore.ts` |
+| Cost PKCE/session + Render Context bootstrap | `cost-console/src/lib/store/useAuthStore.ts`, `src/session/render-context.ts` |
+| Cost permission-driven shell | `cost-console/src/components/Header.tsx`, `src/components/RouteGuard.tsx` |
 | Cost critical base | `cost-console/src/lib/api/criticalFetcher.ts` |
 
 ## 10. Change rule

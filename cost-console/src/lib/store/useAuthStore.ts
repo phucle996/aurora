@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { request } from '../api/fetcher';
+import { queryClient } from '../queryClient';
 import { ensureDevicePublicKey } from '../security/deviceKey';
+import { getRenderContext, type RenderContext } from '../../session/render-context';
 
 export interface UserProfile {
   id: string;
@@ -16,22 +18,43 @@ interface BillingSessionResponse {
 interface AuthState {
   isAuthenticated: boolean;
   user: UserProfile | null;
+  renderContext: RenderContext | null;
   isLoading: boolean;
   error: string | null;
   logout: () => Promise<void>;
   checkSession: () => Promise<void>;
   clearError: () => void;
+  checkPermission: (key: string, action: string) => boolean;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+let sessionAttempt = 0;
+let sessionAbort: AbortController | null = null;
+
+export const useAuthStore = create<AuthState>((set, get) => ({
   isAuthenticated: false,
   user: null,
+  renderContext: null,
   isLoading: false,
   error: null,
 
   clearError: () => set({ error: null }),
+  checkPermission: (key, action) => {
+    const { isAuthenticated, renderContext } = get();
+    if (!isAuthenticated || !renderContext) return false;
+    const expected = key.split(':');
+    if (expected.length !== 2) return false;
+
+    return renderContext.navigation.some((entry) => {
+      const actual = entry.key.split(':');
+      return actual.length === 2
+        && expected.every((part, index) => part === '*' || part === actual[index])
+        && entry.actions.includes(action);
+    });
+  },
 
   logout: async () => {
+    sessionAttempt += 1;
+    sessionAbort?.abort();
     set({ isLoading: true });
     try {
       await request<void>('/billing/auth/logout', { method: 'POST' });
@@ -40,12 +63,34 @@ export const useAuthStore = create<AuthState>((set) => ({
     } finally {
       sessionStorage.removeItem('billing.pkce.verifier');
       sessionStorage.removeItem('billing.pkce.state');
-      set({ isAuthenticated: false, user: null, isLoading: false, error: null });
+      sessionStorage.removeItem('billing.authorization.redirecting');
+      queryClient.clear();
+      set({
+        isAuthenticated: false,
+        user: null,
+        renderContext: null,
+        isLoading: false,
+        error: null,
+      });
     }
   },
 
   checkSession: async () => {
-    set({ isLoading: true, error: null });
+    const attempt = sessionAttempt + 1;
+    sessionAttempt = attempt;
+    sessionAbort?.abort();
+    const controller = new AbortController();
+    sessionAbort = controller;
+    const previousUserID = get().user?.id;
+    // Session verification is a principal boundary. Unmount protected UI while
+    // both the alias and IAM Render Context are being refreshed.
+    set({
+      isAuthenticated: false,
+      user: null,
+      renderContext: null,
+      isLoading: true,
+      error: null,
+    });
     try {
       if (window.location.pathname === '/auth/start') {
         sessionStorage.setItem('billing.authorization.redirecting', '1');
@@ -94,6 +139,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         }
         await request<void>('/billing/auth/exchange', {
           method: 'POST',
+          signal: controller.signal,
           body: JSON.stringify({
             handoff_code: handoffCode,
             code_verifier: verifier,
@@ -105,16 +151,39 @@ export const useAuthStore = create<AuthState>((set) => ({
         sessionStorage.removeItem('billing.authorization.redirecting');
       }
 
-      const session = await request<BillingSessionResponse>('/billing/auth/session', { method: 'GET' });
+      const [session, renderContext] = await Promise.all([
+        request<BillingSessionResponse>('/billing/auth/session', {
+          method: 'GET',
+          signal: controller.signal,
+        }),
+        getRenderContext(controller.signal),
+      ]);
       if (!session.authenticated) throw new Error('Billing session is not authenticated');
+      if (controller.signal.aborted || attempt !== sessionAttempt) return;
+
       sessionStorage.removeItem('billing.authorization.redirecting');
+      if (previousUserID && previousUserID !== session.user.id) {
+        // An opaque alias may point to a different IAM principal after logout/login.
+        // Clear every completed query before publishing the new render context.
+        queryClient.clear();
+      }
       set({
         isAuthenticated: true,
         user: session.user,
+        renderContext,
         isLoading: false,
         error: null,
       });
     } catch (error) {
+      if (attempt !== sessionAttempt || controller.signal.aborted) return;
+      queryClient.clear();
+      set({
+        isAuthenticated: false,
+        user: null,
+        renderContext: null,
+        isLoading: false,
+        error: error instanceof Error ? error.message : 'Billing session is unavailable',
+      });
       if (
         window.location.pathname !== '/auth/start' &&
         window.location.pathname !== '/auth/handoff' &&
@@ -125,12 +194,8 @@ export const useAuthStore = create<AuthState>((set) => ({
         window.location.replace('/auth/start');
         return;
       }
-      set({
-        isAuthenticated: false,
-        user: null,
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Billing session is unavailable',
-      });
+    } finally {
+      if (sessionAbort === controller) sessionAbort = null;
     }
   },
 }));

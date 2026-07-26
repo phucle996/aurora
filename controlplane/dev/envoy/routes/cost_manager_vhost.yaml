@@ -15,6 +15,16 @@ typed_per_filter_config:
       value: true
     max_age: "86400"
 routes:
+  # Cost Console reuses IAM's existing five-level Render Context through its
+  # host-bound Billing Alias. Keep this narrow branch before the Cost API prefix.
+  - match: { path: "/api/v1/me/iam/context/read" }
+    route:
+      cluster: controlplane_cluster
+      timeout: 5s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 2s
   # [COMMENT]: Route chuyển tiếp API quản lý chi phí tới Cost Manager Cluster
   - match: { prefix: "/api/" }
     route:

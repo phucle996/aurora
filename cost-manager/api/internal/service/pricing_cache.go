@@ -137,9 +137,23 @@ func (c *pricingCache) get(ctx context.Context, serviceType entity.ServiceType) 
 					effectiveNow := time.Now()
 					if cacheValid && snapshot.ServiceType == serviceType &&
 						!snapshot.EffectiveFrom.After(effectiveNow) &&
-						(snapshot.EffectiveTo == nil || effectiveNow.Before(*snapshot.EffectiveTo)) &&
-						c.putL1IfCurrent(serviceType, snapshot, loadGeneration) {
-						return snapshot, nil
+						(snapshot.EffectiveTo == nil || effectiveNow.Before(*snapshot.EffectiveTo)) {
+						ttl := pricingCacheL1TTL
+						if snapshot.EffectiveTo != nil && snapshot.EffectiveTo.Sub(effectiveNow) < ttl {
+							ttl = snapshot.EffectiveTo.Sub(effectiveNow)
+						}
+						retained := false
+						if ttl > 0 {
+							c.mu.Lock()
+							if c.generation == loadGeneration {
+								c.l1[serviceType] = pricingCacheItem{snapshot: snapshot, expiresAt: effectiveNow.Add(ttl)}
+								retained = true
+							}
+							c.mu.Unlock()
+						}
+						if retained {
+							return snapshot, nil
+						}
 					}
 				}
 			}
@@ -171,7 +185,18 @@ func (c *pricingCache) get(ctx context.Context, serviceType entity.ServiceType) 
 			}
 		}
 		// If invalidation raced this load, serve the already-started request but do not retain stale L1 state.
-		c.putL1IfCurrent(serviceType, snapshot, loadGeneration)
+		now = time.Now()
+		ttl := pricingCacheL1TTL
+		if snapshot.EffectiveTo != nil && snapshot.EffectiveTo.Sub(now) < ttl {
+			ttl = snapshot.EffectiveTo.Sub(now)
+		}
+		if ttl > 0 {
+			c.mu.Lock()
+			if c.generation == loadGeneration {
+				c.l1[serviceType] = pricingCacheItem{snapshot: snapshot, expiresAt: now.Add(ttl)}
+			}
+			c.mu.Unlock()
+		}
 		return snapshot, nil
 	})
 	if err != nil {
@@ -182,22 +207,6 @@ func (c *pricingCache) get(ctx context.Context, serviceType entity.ServiceType) 
 		return nil, fmt.Errorf("pricing cache returned unexpected value %T", value)
 	}
 	return snapshot, nil
-}
-
-func (c *pricingCache) putL1IfCurrent(serviceType entity.ServiceType, snapshot *entity.PricingSnapshot, generation uint64) bool {
-	now := time.Now()
-	ttl := pricingCacheL1TTL
-	if snapshot.EffectiveTo != nil && snapshot.EffectiveTo.Sub(now) < ttl {
-		ttl = snapshot.EffectiveTo.Sub(now)
-	}
-	expiresAt := now.Add(ttl)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.generation != generation {
-		return false
-	}
-	c.l1[serviceType] = pricingCacheItem{snapshot: snapshot, expiresAt: expiresAt}
-	return true
 }
 
 func (c *pricingCache) invalidate(ctx context.Context) {

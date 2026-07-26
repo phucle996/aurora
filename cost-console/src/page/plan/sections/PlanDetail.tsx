@@ -9,6 +9,7 @@ interface PlanDetailProps {
   onToggleStatus: (plan: PlanItem) => void;
   isSubscribed?: boolean;
   onSubscribe?: (plan: PlanItem) => void;
+  canManage: boolean;
 }
 
 export function PlanDetail({
@@ -18,6 +19,7 @@ export function PlanDetail({
   onToggleStatus,
   isSubscribed = false,
   onSubscribe,
+  canManage,
 }: PlanDetailProps) {
   const getResourceTypeLabel = (type: string) => {
     switch (type) {
@@ -152,25 +154,27 @@ export function PlanDetail({
       </div>
 
       {/* Footer Actions */}
-      <div className="pt-4 border-t border-slate-200 dark:border-slate-800/80 flex items-center justify-between gap-2.5 select-none mt-auto">
-        <button
-          onClick={() => onToggleStatus(plan)}
-          className={cn(
-            "h-8 px-3 rounded-md text-[11px] font-bold cursor-pointer transition-colors flex-1 flex items-center justify-center border",
-            plan.status === "active"
-              ? "bg-white hover:bg-slate-50 border-slate-200 text-slate-700 dark:bg-slate-900 dark:border-slate-800 dark:hover:bg-slate-800 dark:text-slate-300"
-              : "bg-emerald-600 hover:bg-emerald-700 border-transparent text-white"
-          )}
-        >
-          {plan.status === "active" ? "Tạm ngưng gói" : "Kích hoạt gói"}
-        </button>
-        <button
-          onClick={() => onEdit(plan)}
-          className="h-8 px-3 rounded-md text-[11px] font-bold bg-blue-600 hover:bg-blue-700 text-white cursor-pointer transition-colors flex-1 flex items-center justify-center"
-        >
-          Cập nhật cấu hình
-        </button>
-      </div>
+      {canManage && (
+        <div className="pt-4 border-t border-slate-200 dark:border-slate-800/80 flex items-center justify-between gap-2.5 select-none mt-auto">
+          <button
+            onClick={() => onToggleStatus(plan)}
+            className={cn(
+              "h-8 px-3 rounded-md text-[11px] font-bold cursor-pointer transition-colors flex-1 flex items-center justify-center border",
+              plan.status === "active"
+                ? "bg-white hover:bg-slate-50 border-slate-200 text-slate-700 dark:bg-slate-900 dark:border-slate-800 dark:hover:bg-slate-800 dark:text-slate-300"
+                : "bg-emerald-600 hover:bg-emerald-700 border-transparent text-white"
+            )}
+          >
+            {plan.status === "active" ? "Tạm ngưng gói" : "Kích hoạt gói"}
+          </button>
+          <button
+            onClick={() => onEdit(plan)}
+            className="h-8 px-3 rounded-md text-[11px] font-bold bg-blue-600 hover:bg-blue-700 text-white cursor-pointer transition-colors flex-1 flex items-center justify-center"
+          >
+            Cập nhật cấu hình
+          </button>
+        </div>
+      )}
     </div>
   );
 }

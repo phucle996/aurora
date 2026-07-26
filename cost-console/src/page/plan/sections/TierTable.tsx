@@ -16,7 +16,7 @@ function defaultEffectiveTime(latestEffectiveFrom?: string): string {
   return date.toISOString().slice(0, 16);
 }
 
-export function TierTable() {
+export function TierTable({ canPublish }: { canPublish: boolean }) {
   const [tiers, setTiers] = useState<TierItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -241,14 +241,16 @@ export function TierTable() {
                       {dateStr}
                     </td>
                     <td className="py-3.5 px-4 text-right">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(tier)}
-                        disabled={editLoading}
-                        className="inline-flex items-center gap-1 rounded border border-slate-700 px-2 py-1 text-[10px] font-semibold text-slate-300 hover:border-emerald-600 hover:text-emerald-400 disabled:opacity-50"
-                      >
-                        <Pencil size={11} /> Edit
-                      </button>
+                      {canPublish && (
+                        <button
+                          type="button"
+                          onClick={() => openEdit(tier)}
+                          disabled={editLoading}
+                          className="inline-flex items-center gap-1 rounded border border-slate-700 px-2 py-1 text-[10px] font-semibold text-slate-300 hover:border-emerald-600 hover:text-emerald-400 disabled:opacity-50"
+                        >
+                          <Pencil size={11} /> Edit
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -291,7 +293,7 @@ export function TierTable() {
       )}
 
       {/* [COMMENT]: Modal publish full immutable snapshot; code/service type chỉ hiển thị read-only. */}
-      {editing && (
+      {canPublish && editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-lg border border-slate-700 bg-[#0b111a] shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">

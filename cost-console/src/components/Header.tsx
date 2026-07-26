@@ -1,44 +1,29 @@
 import {
   TrendingUp,
   Bell,
-  LayoutDashboard,
-  Coins,
-  Receipt,
-  CreditCard,
-  History,
   LogOut
 } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { useAuthStore } from "../lib/store/useAuthStore";
-
-// Interface định nghĩa cho từng item trên thanh điều hướng Header
-export interface NavigationItem {
-  id: string;
-  name: string;
-  path: string; // Đường dẫn tương ứng với route của trang (ví dụ /plan, /)
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-}
+import { navigationItems } from "../navigation";
 
 interface HeaderProps {
   currency: string;
   setCurrency: (currency: string) => void;
 }
 
-// Danh sách các mục menu trên Navigation Header
-export const navigationItems: NavigationItem[] = [
-  { id: 'dashboard', name: 'Dashboard', path: '/', icon: LayoutDashboard },
-  { id: 'plans', name: 'Gói Cước & Giá', path: '/plan', icon: Coins },
-  { id: 'invoices', name: 'Hóa Đơn Kế Toán', path: '/invoices', icon: Receipt },
-  { id: 'gateways', name: 'Cổng Nạp Tiền', path: '/gateways', icon: CreditCard },
-  { id: 'history', name: 'Lịch Sử Giao Dịch', path: '/history', icon: History },
-];
-
 export function Header({ currency, setCurrency }: HeaderProps) {
   // Sử dụng hook của react-router-dom để điều hướng đường dẫn URL
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, logout } = useAuthStore();
+  const { user, logout, checkPermission } = useAuthStore();
+  const visibleNavigation = navigationItems.filter((item) => {
+    if (item.anyPermission) {
+      return item.anyPermission.some(({ key, action }) => checkPermission(key, action));
+    }
+    return !item.permission || checkPermission(item.permission.key, item.permission.action);
+  });
 
   // Kiểm tra đường dẫn hiện tại để highlight tab tương ứng
   const currentPath = location.pathname;
@@ -63,7 +48,7 @@ export function Header({ currency, setCurrency }: HeaderProps) {
 
         {/* Top Navbar Menu điều hướng các Route */}
         <nav className="flex items-center gap-1">
-          {navigationItems.map((item) => {
+          {visibleNavigation.map((item) => {
             const Icon = item.icon;
             // Xác định xem mục menu này có đang active dựa trên URL path hiện tại không
             const isActive = item.path === '/' 

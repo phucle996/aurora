@@ -3,14 +3,14 @@ package iamSvcImpl
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
-
-	"strings"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -161,10 +161,18 @@ func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.
 		}
 	}
 
-	var navigation []iamEntity.NavigationItem
-	for k, actions := range groupMap {
+	keys := make([]string, 0, len(groupMap))
+	for key := range groupMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	navigation := make([]iamEntity.NavigationItem, 0, len(keys))
+	for _, key := range keys {
+		actions := groupMap[key]
+		sort.Strings(actions)
 		navigation = append(navigation, iamEntity.NavigationItem{
-			Key:     k,
+			Key:     key,
 			Actions: actions,
 		})
 	}

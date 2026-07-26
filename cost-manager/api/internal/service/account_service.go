@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"cost-manager/api/internal/domain/entity"
@@ -33,21 +32,18 @@ func NewAccountService(
 }
 
 // [COMMENT]: ActivatePersonalFreeTier không nhận owner từ body, tránh IDOR giữa các wallet.
-func (s *accountService) ActivatePersonalFreeTier(ctx context.Context, rawOwnerID string, rawIdempotencyKey string) (*entity.FreeTierAccount, error) {
-	ownerID, err := uuid.Parse(strings.TrimSpace(rawOwnerID))
-	if err != nil || ownerID == uuid.Nil {
-		return nil, billingTaxonomy.ErrInvalidArgument
-	}
-	idempotencyKey := strings.TrimSpace(rawIdempotencyKey)
-	if idempotencyKey == "" || len(idempotencyKey) > 128 {
-		return nil, billingTaxonomy.ErrInvalidArgument
-	}
+// [COMMENT]: Nhận ownerID đã được type-check bằng uuid.UUID từ transport/domain contract.
+func (s *accountService) ActivatePersonalFreeTier(ctx context.Context, ownerID uuid.UUID, rawIdempotencyKey string) (*entity.FreeTierAccount, error) {
+
+	// [COMMENT]: Gọi repository thực thi transaction kích hoạt free tier và ghi nhận credit
 	account, err := s.repo.ActivateFreeTier(ctx, entity.FreeTierActivation{
 		OwnerID: ownerID, OwnerType: entity.OwnerTypePersonal, IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// [COMMENT]: Ghi log audit event bất đồng bộ qua shared Redis stream nếu được cấu hình
 	if s.sharedRedis != nil {
 		if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
 			EventID: uuid.New().String(), UserID: ownerID.String(), Category: "billing",
