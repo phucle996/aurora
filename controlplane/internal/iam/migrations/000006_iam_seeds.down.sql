@@ -60,6 +60,7 @@ WHERE (module, object, behavior) IN (
         ('billing', 'tier', 'read'),
         ('billing', 'tier', 'publish'),
         ('billing', 'wallet', 'read'),
+        ('billing', 'wallet', 'top_up'),
         ('billing', 'ledger', 'read'),
         ('billing', 'subscription', 'write'),
         ('billing', 'credit', 'adjust')

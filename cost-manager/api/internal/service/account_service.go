@@ -6,72 +6,75 @@ import (
 
 	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
-	billingTaxonomy "cost-manager/api/internal/taxonomy"
-	"cost-manager/api/internal/useractivity"
-	"cost-manager/api/pkg/logger"
 
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 )
 
 type accountService struct {
-	repo        billingRepoInterface.AccountRepository
-	sharedRedis *goredis.Client
+	repo   billingRepoInterface.AccountRepository
+	policy entity.PaymentPolicy
 }
 
-// [COMMENT]: NewAccountService tạo service activation với campaign cố định phía server.
 func NewAccountService(
 	repo billingRepoInterface.AccountRepository,
-	sharedRedis ...*goredis.Client,
+	policy entity.PaymentPolicy,
 ) *accountService {
-	var client *goredis.Client
-	if len(sharedRedis) > 0 {
-		client = sharedRedis[0]
+	return &accountService{
+		repo:   repo,
+		policy: policy,
 	}
-	return &accountService{repo: repo, sharedRedis: client}
 }
 
-// [COMMENT]: ActivatePersonalFreeTier không nhận owner từ body, tránh IDOR giữa các wallet.
-// [COMMENT]: Nhận ownerID đã được type-check bằng uuid.UUID từ transport/domain contract.
-func (s *accountService) ActivatePersonalFreeTier(ctx context.Context, ownerID uuid.UUID, rawIdempotencyKey string) (*entity.FreeTierAccount, error) {
-
-	// [COMMENT]: Gọi repository thực thi transaction kích hoạt free tier và ghi nhận credit
-	account, err := s.repo.ActivateFreeTier(ctx, entity.FreeTierActivation{
-		OwnerID: ownerID, OwnerType: entity.OwnerTypePersonal, IdempotencyKey: idempotencyKey,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// [COMMENT]: Ghi log audit event bất đồng bộ qua shared Redis stream nếu được cấu hình
-	if s.sharedRedis != nil {
-		if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
-			EventID: uuid.New().String(), UserID: ownerID.String(), Category: "billing",
-			Action: "billing.free_tier.activate", ActorType: "self", Outcome: "succeeded",
-			Source: "cost-manager", ResourceType: "wallet", ResourceID: account.WalletID.String(),
-			OperationID: idempotencyKey, Title: "Free tier activated",
-			Summary: "A personal free-tier wallet was activated", OccurredAt: time.Now().UTC(),
-			Metadata: map[string]any{"currency": account.Currency},
-		}); activityErr != nil {
-			// Billing transaction is already committed; history failure must not
-			// make the idempotent activation appear unsuccessful to the client.
-			logger.SysError("billing.user_activity.free_tier", activityErr.Error())
-		}
-	}
-	return account, nil
-}
-
-func (s *accountService) ProvisionPersonalWallet(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error {
-	if eventID == uuid.Nil || ownerID == uuid.Nil || payloadHash == "" {
-		return billingTaxonomy.ErrInvalidArgument
-	}
+func (s *accountService) ProvisionPersonalWallet(
+	ctx context.Context,
+	eventID uuid.UUID,
+	ownerID uuid.UUID,
+	payloadHash string,
+) error {
 	return s.repo.ApplyPersonalWalletProvision(ctx, eventID, ownerID, payloadHash)
 }
 
-// GetPersonalWalletSummary giữ owner boundary ở server; UI không thể chọn wallet khác.
-func (s *accountService) GetPersonalWalletSummary(ctx context.Context, ownerID uuid.UUID) (*entity.WalletSummary, error) {
-	if ownerID == uuid.Nil {
-		return nil, billingTaxonomy.ErrInvalidArgument
-	}
-	return s.repo.GetPersonalWalletSummary(ctx, ownerID)
+func (s *accountService) ProvisionTenantWallet(
+	ctx context.Context,
+	eventID uuid.UUID,
+	tenantID uuid.UUID,
+	actorID uuid.UUID,
+	payloadHash string,
+) error {
+	return s.repo.ApplyTenantWalletProvision(ctx, eventID, tenantID, actorID, payloadHash)
+}
+
+func (s *accountService) GetOnboarding(
+	ctx context.Context,
+	ownerID uuid.UUID,
+) (*entity.OnboardingSnapshot, error) {
+	return s.repo.GetOnboarding(ctx, ownerID, s.policy.MinimumTopUp)
+}
+
+func (s *accountService) ReserveReferral(
+	ctx context.Context,
+	command entity.ReserveReferralCommand,
+) (*entity.ReferralReservation, error) {
+	command.ExpiresAt = time.Now().UTC().Add(s.policy.ReferralTTL)
+	return s.repo.ReserveReferral(ctx, command)
+}
+
+func (s *accountService) ListReferralCampaigns(
+	ctx context.Context,
+) ([]entity.ReferralCampaign, error) {
+	return s.repo.ListReferralCampaigns(ctx)
+}
+
+func (s *accountService) CreateReferralCampaign(
+	ctx context.Context,
+	command entity.CreateReferralCampaignCommand,
+) (*entity.ReferralCampaign, error) {
+	return s.repo.CreateReferralCampaign(ctx, command)
+}
+
+func (s *accountService) UpdateReferralCampaignStatus(
+	ctx context.Context,
+	command entity.UpdateReferralCampaignStatusCommand,
+) (*entity.ReferralCampaign, error) {
+	return s.repo.UpdateReferralCampaignStatus(ctx, command)
 }

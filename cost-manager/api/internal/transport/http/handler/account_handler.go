@@ -3,90 +3,41 @@ package handler
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"cost-manager/api/internal/domain/entity"
 	billingSvcInterface "cost-manager/api/internal/domain/service"
 	billingTaxonomy "cost-manager/api/internal/taxonomy"
+	"cost-manager/api/internal/transport/http/dto"
 	"cost-manager/api/pkg/apires"
 	"cost-manager/api/pkg/logger"
 	"cost-manager/api/pkg/pkgcontext"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
+var referralCodePattern = regexp.MustCompile(`^[A-Z0-9][A-Z0-9_-]{3,31}$`)
+
 type AccountHandler struct {
-	service billingSvcInterface.AccountService
+	service      billingSvcInterface.AccountService
+	minimumTopUp int64
 }
 
-// [COMMENT]: NewAccountHandler khởi tạo HTTP adapter cho subscription/wallet activation.
-func NewAccountHandler(service billingSvcInterface.AccountService) *AccountHandler {
-	return &AccountHandler{service: service}
+func NewAccountHandler(
+	service billingSvcInterface.AccountService,
+	minimumTopUp int64,
+) *AccountHandler {
+	return &AccountHandler{
+		service:      service,
+		minimumTopUp: minimumTopUp,
+	}
 }
 
-// ActivatePersonalFreeTier lấy identity từ trusted edge headers và yêu cầu idempotency key rõ ràng.
-func (h *AccountHandler) ActivatePersonalFreeTier(c *gin.Context) {
-	const op = "handler.account.activate_personal_free_tier"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	// [COMMENT]: Trích xuất và validate userID từ context (do middleware identity xử lý)
-	userID, ok := pkgcontext.GetUserID(c, op)
-	if !ok || userID == uuid.Nil {
-		// [COMMENT]: Phản hồi BadRequest nếu userID không hợp lệ hoặc rỗng
-		apires.RespondBadRequest(c, "valid x-user-id header is required")
-		return
-	}
-
-	// [COMMENT]: Validate idempotency-key header trực tiếp tại HTTP handler layer
-	idempotencyKey := strings.TrimSpace(c.GetHeader("idempotency-key"))
-	if idempotencyKey == "" || len(idempotencyKey) > 128 {
-		// [COMMENT]: Yêu cầu idempotency-key không rỗng và độ dài tối đa 128 ký tự
-		apires.RespondBadRequest(c, "valid idempotency-key header is required (1-128 chars)")
-		return
-	}
-
-	// [COMMENT]: Truyền userID đã chuẩn hóa kiểu uuid.UUID và idempotencyKey sạch xuống service layer
-	account, err := h.service.ActivatePersonalFreeTier(ctx, userID, idempotencyKey)
-	if err != nil {
-		switch {
-		case errors.Is(err, billingTaxonomy.ErrInvalidArgument):
-			apires.RespondBadRequest(c, "valid x-user-id and idempotency-key headers are required")
-		case errors.Is(err, billingTaxonomy.ErrAlreadySubscribed), errors.Is(err, billingTaxonomy.ErrConflict):
-			apires.RespondConflict(c, "free tier activation conflicts with an existing subscription")
-		case errors.Is(err, billingTaxonomy.ErrPackNotActive):
-			apires.RespondServiceUnavailable(c, "free tier campaign is not active")
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "failed to activate free tier")
-		}
-		return
-	}
-
-	data := gin.H{
-		"subscription_id":                 account.SubscriptionID,
-		"wallet_id":                       account.WalletID,
-		"credit_grant_id":                 account.CreditGrantID,
-		"owner_id":                        account.OwnerID,
-		"owner_type":                      account.OwnerType,
-		"currency":                        account.Currency,
-		"promotional_balance_micro_units": account.PromotionalBalance,
-		"granted_micro_units":             account.GrantedMicroUnits,
-		"subscription_started_at":         account.SubscriptionStarted,
-	}
-	if account.Created {
-		apires.RespondCreated(c, data, "free tier activated")
-		return
-	}
-	apires.RespondSuccess(c, data, "free tier activation replayed idempotently")
-}
-
-// GetPersonalWalletSummary trả về snapshot wallet của actor đã được Envoy xác minh.
-// Các micro-unit serialize thành string để browser không làm tròn số tiền qua Number.
-func (h *AccountHandler) GetPersonalWalletSummary(c *gin.Context) {
-	const op = "handler.account.get_personal_wallet_summary"
+func (h *AccountHandler) GetOnboarding(c *gin.Context) {
+	const op = "handler.account.get_onboarding"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 3*time.Second)
 	defer cancel()
 
@@ -94,22 +45,82 @@ func (h *AccountHandler) GetPersonalWalletSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	summary, err := h.service.GetPersonalWalletSummary(ctx, userID)
+	snapshot, err := h.service.GetOnboarding(ctx, userID)
 	if err != nil {
 		switch {
 		case errors.Is(err, billingTaxonomy.ErrWalletNotFound):
-			apires.RespondNotFound(c, "personal wallet is not provisioned")
-		case errors.Is(err, billingTaxonomy.ErrInvalidArgument):
-			apires.RespondBadRequest(c, "valid trusted billing identity is required")
+			apires.RespondNotFound(c, "personal wallet is still being provisioned")
 		default:
-			// A stale/unavailable balance must never be presented as zero to the user.
 			logger.HandlerError(c, op, err)
-			apires.RespondServiceUnavailable(c, "wallet balance is temporarily unavailable")
+			apires.RespondServiceUnavailable(c, "billing onboarding is temporarily unavailable")
 		}
 		return
 	}
 
-	apires.RespondSuccess(c, gin.H{
+	data := gin.H{
+		"wallet":                     walletSummaryResponse(snapshot.Wallet),
+		"minimum_top_up_micro_units": strconv.FormatInt(snapshot.MinimumTopUp, 10),
+		"referral":                   nil,
+		"latest_payment_intent":      nil,
+	}
+	if snapshot.Referral != nil {
+		data["referral"] = referralReservationResponse(*snapshot.Referral)
+	}
+	if snapshot.LatestPaymentIntent != nil {
+		data["latest_payment_intent"] = paymentIntentResponse(*snapshot.LatestPaymentIntent)
+	}
+	apires.RespondSuccess(c, data, "billing onboarding state")
+}
+
+func (h *AccountHandler) ReserveReferral(c *gin.Context) {
+	const op = "handler.account.reserve_referral"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	idempotencyKey := strings.TrimSpace(c.GetHeader("idempotency-key"))
+	if idempotencyKey == "" || len(idempotencyKey) > 128 {
+		apires.RespondBadRequest(c, "valid idempotency-key header is required")
+		return
+	}
+	// [COMMENT]: Sử dụng DTO struct từ package dto để bind payload mã giới thiệu
+	var request dto.ReserveReferralRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		apires.RespondBadRequest(c, "referral code is required")
+		return
+	}
+	code := strings.ToUpper(strings.TrimSpace(request.Code))
+	if !referralCodePattern.MatchString(code) {
+		apires.RespondBadRequest(c, "referral code must be 4-32 uppercase letters, digits, '-' or '_'")
+		return
+	}
+	reservation, err := h.service.ReserveReferral(ctx, entity.ReserveReferralCommand{
+		OwnerID: userID, Code: code, IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, billingTaxonomy.ErrReferralNotFound):
+			apires.RespondNotFound(c, "referral code is invalid or inactive")
+		case errors.Is(err, billingTaxonomy.ErrReferralUnavailable):
+			apires.RespondConflict(c, "referral campaign has no remaining capacity")
+		case errors.Is(err, billingTaxonomy.ErrReferralAlreadyReserved),
+			errors.Is(err, billingTaxonomy.ErrReferralAlreadyRedeemed),
+			errors.Is(err, billingTaxonomy.ErrWalletAlreadyActive):
+			apires.RespondConflict(c, err.Error())
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "failed to reserve referral")
+		}
+		return
+	}
+	apires.RespondCreated(c, referralReservationResponse(*reservation), "referral reserved")
+}
+
+func walletSummaryResponse(summary entity.WalletSummary) gin.H {
+	return gin.H{
 		"wallet_id":                       summary.WalletID.String(),
 		"currency":                        summary.Currency,
 		"cash_balance_micro_units":        strconv.FormatInt(summary.CashBalanceMicroUnits, 10),
@@ -118,5 +129,41 @@ func (h *AccountHandler) GetPersonalWalletSummary(c *gin.Context) {
 		"status":                          summary.Status,
 		"version":                         strconv.FormatInt(summary.Version, 10),
 		"updated_at":                      summary.UpdatedAt.UTC().Format(time.RFC3339Nano),
-	}, "personal wallet summary")
+	}
+}
+
+func referralReservationResponse(reservation entity.ReferralReservation) gin.H {
+	data := gin.H{
+		"id":                         reservation.ID.String(),
+		"code":                       reservation.Code,
+		"status":                     reservation.Status,
+		"grant_amount_micro_units":   strconv.FormatInt(reservation.GrantAmountMicroUnits, 10),
+		"minimum_top_up_micro_units": strconv.FormatInt(reservation.MinimumTopUpMicroUnits, 10),
+		"currency":                   reservation.Currency,
+		"expires_at":                 reservation.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		"rejection_reason":           reservation.RejectionReason,
+	}
+	if reservation.RedeemedAt != nil {
+		data["redeemed_at"] = reservation.RedeemedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return data
+}
+
+func paymentIntentResponse(intent entity.PaymentIntent) gin.H {
+	data := gin.H{
+		"id":                 intent.ID.String(),
+		"amount_micro_units": strconv.FormatInt(intent.AmountMicroUnits, 10),
+		"currency":           intent.Currency,
+		"status":             intent.Status,
+		"activates_wallet":   intent.ActivatesWallet,
+		"expires_at":         intent.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		"created_at":         intent.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if intent.CheckoutURL != "" {
+		data["checkout_url"] = intent.CheckoutURL
+	}
+	if intent.SettledAt != nil {
+		data["settled_at"] = intent.SettledAt.UTC().Format(time.RFC3339Nano)
+	}
+	return data
 }

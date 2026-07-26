@@ -66,7 +66,10 @@ func ContextInjector() gin.HandlerFunc {
 
 		// 4. Tenant ID (X-Tenant-ID)
 		if idStr := strings.TrimSpace(c.GetHeader("X-Tenant-ID")); idStr != "" {
-			if id, err := uuid.Parse(idStr); err == nil {
+			if strings.EqualFold(idStr, "platform") {
+				// [COMMENT]: `platform` is the verified personal sentinel, not
+				// a malformed tenant UUID. Absence in context means personal.
+			} else if id, err := uuid.Parse(idStr); err == nil {
 				c.Set(CtxTenantID, id)
 			} else {
 				c.Set(CtxTenantID, err)

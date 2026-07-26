@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -154,4 +155,98 @@ func (r *RbacTenantRepository) GetRoleIDByTenantID(ctx context.Context, tenantID
 	}
 
 	return roleIDStr, roleLevel, nil
+}
+
+func (r *RbacTenantRepository) GetUserTenantBillingPermissions(
+	ctx context.Context,
+	userID uuid.UUID,
+	tenantID uuid.UUID,
+) ([]byte, error) {
+	query := fmt.Sprintf(`
+		SELECT tr.list_perm
+		FROM %s.tenant_memberships tm
+		JOIN %s.tenants t
+		  ON t.id=tm.tenant_id AND t.status='active'
+		JOIN %s.users u
+		  ON u.id=tm.user_id AND u.status='active'
+		JOIN %s.roles r
+		  ON r.code=tm.role AND r.scope='tenant'
+		JOIN %s.tenant_role tr
+		  ON tr.tenant_id=tm.tenant_id
+		 AND tr.workspace_id='00000000-0000-0000-0000-000000000000'
+		 AND tr.role_id=r.id
+		WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.status='active'
+		LIMIT 1
+	`, r.cfg.SchemaSQL.Hierarchy, r.cfg.SchemaSQL.Hierarchy, r.schema, r.schema, r.schema)
+
+	var binaryData []byte
+	if err := r.db.QueryRow(ctx, query, tenantID, userID).Scan(&binaryData); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, iamTaxonomy.ErrActionNotAllowed
+		}
+		return nil, fmt.Errorf("rbac tenant repo: query user tenant Billing permissions: %w", err)
+	}
+	var source iamproto.RoleEntry
+	if err := proto.Unmarshal(binaryData, &source); err != nil {
+		return nil, fmt.Errorf("rbac tenant repo: decode user tenant Billing permissions: %w", err)
+	}
+
+	prefix := tenantID.String() + ":00000000-0000-0000-0000-000000000000:billing:"
+	filtered := make([]string, 0, len(source.Permissions))
+	for _, permission := range source.Permissions {
+		if len(permission) > len(prefix) && permission[:len(prefix)] == prefix {
+			filtered = append(filtered, permission)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, iamTaxonomy.ErrActionNotAllowed
+	}
+	result, err := proto.Marshal(&iamproto.RoleEntry{Permissions: filtered})
+	if err != nil {
+		return nil, fmt.Errorf("rbac tenant repo: encode user tenant Billing permissions: %w", err)
+	}
+	return result, nil
+}
+
+func (r *RbacTenantRepository) GetUserTenantRolePermissions(
+	ctx context.Context,
+	userID uuid.UUID,
+	tenantID uuid.UUID,
+) ([]byte, error) {
+	query := fmt.Sprintf(`
+		SELECT tr.list_perm
+		FROM %s.tenant_memberships tm
+		JOIN %s.tenants t
+		  ON t.id=tm.tenant_id AND t.status='active'
+		JOIN %s.users u
+		  ON u.id=tm.user_id AND u.status='active'
+		JOIN %s.roles r
+		  ON r.code=tm.role AND r.scope='tenant'
+		JOIN %s.tenant_role tr
+		  ON tr.tenant_id=tm.tenant_id
+		 AND tr.workspace_id='00000000-0000-0000-0000-000000000000'
+		 AND tr.role_id=r.id
+		WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.status='active'
+		LIMIT 1
+	`, r.cfg.SchemaSQL.Hierarchy, r.cfg.SchemaSQL.Hierarchy, r.schema, r.schema, r.schema)
+
+	var binaryData []byte
+	if err := r.db.QueryRow(ctx, query, tenantID, userID).Scan(&binaryData); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, iamTaxonomy.ErrActionNotAllowed
+		}
+		return nil, fmt.Errorf("rbac tenant repo: query user tenant role permissions: %w", err)
+	}
+	var entry iamproto.RoleEntry
+	if err := proto.Unmarshal(binaryData, &entry); err != nil {
+		return nil, fmt.Errorf("rbac tenant repo: decode user tenant role permissions: %w", err)
+	}
+	expectedPrefix := tenantID.String() + ":"
+	for _, permission := range entry.Permissions {
+		parts := strings.Split(permission, ":")
+		if len(parts) != 5 || parts[0] != tenantID.String() || !strings.HasPrefix(permission, expectedPrefix) {
+			return nil, fmt.Errorf("rbac tenant repo: invalid tenant role permission %q", permission)
+		}
+	}
+	return binaryData, nil
 }

@@ -106,6 +106,9 @@ func NewGlobalModules(cfg *config.Config,
 	if iamModule == nil {
 		return nil, errors.New("app: init critical iam module: iam module is nil")
 	}
+	if err := coreModule.SetTenantBillingOutboxNotifier(iamModule.NotifyBillingOutbox); err != nil {
+		return nil, fmt.Errorf("app: wire tenant billing outbox notifier: %w", err)
+	}
 
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 3: KHỞI TẠO CÁC PHÂN HỆ TIER-1 (NON-CRITICAL) - SAI LÀ DEGRADE GRACEFUL

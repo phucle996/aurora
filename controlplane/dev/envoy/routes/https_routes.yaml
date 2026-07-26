@@ -133,8 +133,9 @@ resources:
               upgrade_configs:
                 - upgrade_type: websocket
           # Cloud Console self-scoped Billing reads use one extensible route branch.
-          # Keep it before generic /api/ so new /api/v1/billing/me/* endpoints do not hit Controlplane.
-          - match: { prefix: "/api/v1/billing/me/" }
+          # Keep the neutral Billing branch before generic /api/. ACR rewrites
+          # owner scope without requiring a new Envoy route per endpoint.
+          - match: { prefix: "/api/v1/billing/" }
             route:
               cluster: cost_manager_cluster
               timeout: 5s

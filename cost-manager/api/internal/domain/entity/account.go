@@ -6,7 +6,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: OwnerType là principal chịu trách nhiệm thanh toán, không phải actor thực hiện request.
 type OwnerType string
 
 const (
@@ -14,29 +13,13 @@ const (
 	OwnerTypeTenant   OwnerType = "TENANT"
 )
 
-// [COMMENT]: FreeTierActivation là command idempotent do trusted edge gắn owner identity.
-type FreeTierActivation struct {
-	OwnerID        uuid.UUID
-	OwnerType      OwnerType
-	IdempotencyKey string
-}
+const (
+	WalletStatusPendingActivation = "PENDING_ACTIVATION"
+	WalletStatusActive            = "ACTIVE"
+	WalletStatusSuspended         = "SUSPENDED"
+	WalletStatusClosed            = "CLOSED"
+)
 
-// [COMMENT]: FreeTierAccount là snapshot trả về sau transaction subscription-wallet-grant.
-type FreeTierAccount struct {
-	SubscriptionID      uuid.UUID
-	WalletID            uuid.UUID
-	CreditGrantID       uuid.UUID
-	OwnerID             uuid.UUID
-	OwnerType           OwnerType
-	Currency            string
-	PromotionalBalance  int64
-	GrantedMicroUnits   int64
-	SubscriptionStarted time.Time
-	Created             bool
-}
-
-// WalletSummary là read model tối thiểu cho UI. Các số tiền giữ nguyên micro-unit
-// dạng int64; HTTP adapter sẽ serialize thành string để không mất chính xác qua JSON/JS.
 type WalletSummary struct {
 	WalletID                     uuid.UUID
 	Currency                     string
@@ -46,4 +29,145 @@ type WalletSummary struct {
 	Status                       string
 	Version                      int64
 	UpdatedAt                    time.Time
+}
+
+type ReferralReservation struct {
+	ID                     uuid.UUID
+	CampaignID             uuid.UUID
+	Code                   string
+	Status                 string
+	GrantAmountMicroUnits  int64
+	MinimumTopUpMicroUnits int64
+	Currency               string
+	ExpiresAt              time.Time
+	GrantExpiresAt         *time.Time
+	RedeemedAt             *time.Time
+	RejectionReason        string
+}
+
+type OnboardingSnapshot struct {
+	Wallet              WalletSummary
+	MinimumTopUp        int64
+	Referral            *ReferralReservation
+	LatestPaymentIntent *PaymentIntent
+}
+
+type ReserveReferralCommand struct {
+	OwnerID        uuid.UUID
+	Code           string
+	IdempotencyKey string
+	ExpiresAt      time.Time
+}
+
+type CreatePersonalPaymentIntentCommand struct {
+	OwnerID        uuid.UUID
+	Amount         int64
+	Currency       string
+	Provider       string
+	IdempotencyKey string
+	ExpiresAt      time.Time
+}
+
+type CreateTenantPaymentIntentCommand struct {
+	TenantID       uuid.UUID
+	ActorID        uuid.UUID
+	Amount         int64
+	Currency       string
+	Provider       string
+	IdempotencyKey string
+	ExpiresAt      time.Time
+}
+
+type PaymentIntent struct {
+	ID                    uuid.UUID
+	OwnerID               uuid.UUID
+	OwnerType             OwnerType
+	ActorID               uuid.UUID
+	WalletID              uuid.UUID
+	AmountMicroUnits      int64
+	Currency              string
+	Provider              string
+	ProviderPaymentID     string
+	Status                string
+	ActivatesWallet       bool
+	ReferralReservationID *uuid.UUID
+	ExpiresAt             time.Time
+	SettledAt             *time.Time
+	CreatedAt             time.Time
+	CheckoutURL           string
+	Created               bool
+}
+
+type PaymentSettlement struct {
+	Provider          string
+	ProviderEventID   string
+	ProviderPaymentID string
+	PaymentIntentID   uuid.UUID
+	OwnerType         OwnerType
+	Amount            int64
+	Currency          string
+	SettledAt         time.Time
+	PayloadHash       string
+}
+
+type SettlementResult struct {
+	PaymentIntentID      uuid.UUID
+	WalletID             uuid.UUID
+	OwnerID              uuid.UUID
+	OwnerType            OwnerType
+	ActorID              uuid.UUID
+	WalletStatus         string
+	CashBalance          int64
+	PromotionalBalance   int64
+	ReferralApplied      bool
+	ReferralRejectReason string
+	WalletActivated      bool
+	Replayed             bool
+}
+
+type ReferralCampaign struct {
+	ID                     uuid.UUID
+	Code                   string
+	Name                   string
+	AmountMicroUnits       int64
+	MinimumTopUpMicroUnits int64
+	Currency               string
+	Status                 string
+	MaxRedemptions         *int64
+	Redemptions            int64
+	ActiveReservations     int64
+	Version                int64
+	StartsAt               time.Time
+	EndsAt                 *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type CreateReferralCampaignCommand struct {
+	Code                   string
+	Name                   string
+	AmountMicroUnits       int64
+	MinimumTopUpMicroUnits int64
+	Currency               string
+	MaxRedemptions         *int64
+	StartsAt               time.Time
+	EndsAt                 *time.Time
+}
+
+type UpdateReferralCampaignStatusCommand struct {
+	ID              uuid.UUID
+	Status          string
+	ExpectedVersion int64
+}
+
+type PaymentPolicy struct {
+	Provider           string
+	CheckoutBaseURL    string
+	ReturnBaseURL      string
+	CheckoutSigningKey string
+	WebhookSigningKey  string
+	MinimumTopUp       int64
+	IntentTTL          time.Duration
+	ReferralTTL        time.Duration
+	WebhookTolerance   time.Duration
 }

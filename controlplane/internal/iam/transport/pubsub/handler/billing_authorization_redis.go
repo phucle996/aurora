@@ -26,9 +26,10 @@ const (
 // BillingAuthorizationRedisHandler resolves Cost authorization cache misses through the
 // central Shared Redis bus. Auth Redis remains the security-state projection store.
 type BillingAuthorizationRedisHandler struct {
-	sharedRedis *goredis.Client
-	authRedis   *goredis.Client
-	repo        iamRepoInterface.RbacPlatformRepository
+	sharedRedis  *goredis.Client
+	authRedis    *goredis.Client
+	platformRepo iamRepoInterface.RbacPlatformRepository
+	tenantRepo   iamRepoInterface.RbacTenantRepository
 
 	cancel context.CancelFunc
 	pubsub *goredis.PubSub
@@ -40,15 +41,17 @@ type BillingAuthorizationRedisHandler struct {
 func NewBillingAuthorizationRedisHandler(
 	sharedRedis *goredis.Client,
 	authRedis *goredis.Client,
-	repo iamRepoInterface.RbacPlatformRepository,
+	platformRepo iamRepoInterface.RbacPlatformRepository,
+	tenantRepo iamRepoInterface.RbacTenantRepository,
 ) (*BillingAuthorizationRedisHandler, error) {
-	if sharedRedis == nil || authRedis == nil || repo == nil {
-		return nil, errors.New("billing authorization Redis handler requires Shared Redis, Auth Redis and RBAC repository")
+	if sharedRedis == nil || authRedis == nil || platformRepo == nil || tenantRepo == nil {
+		return nil, errors.New("billing authorization Redis handler requires Shared Redis, Auth Redis and both RBAC repositories")
 	}
 	return &BillingAuthorizationRedisHandler{
-		sharedRedis: sharedRedis,
-		authRedis:   authRedis,
-		repo:        repo,
+		sharedRedis:  sharedRedis,
+		authRedis:    authRedis,
+		platformRepo: platformRepo,
+		tenantRepo:   tenantRepo,
 		// [COMMENT]: Bound DB concurrency per replica; overload becomes a short Cost timeout instead of exhausting PostgreSQL.
 		slots: make(chan struct{}, 32),
 	}, nil
@@ -99,14 +102,24 @@ func (h *BillingAuthorizationRedisHandler) Start() error {
 }
 
 func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
-	// [COMMENT]: Wire request is exactly request UUID + user UUID; fixed width prevents parser ambiguity and payload amplification.
-	if len(payload) != 32 {
+	// [COMMENT]: Platform wire is request+user UUID; tenant wire appends the
+	// edge-verified tenant UUID. Fixed widths prevent parser ambiguity and
+	// payload amplification on the Shared Redis security bridge.
+	if len(payload) != 32 && len(payload) != 48 {
 		return
 	}
 	requestID, requestErr := uuid.FromBytes(payload[:16])
-	userID, userErr := uuid.FromBytes(payload[16:])
+	userID, userErr := uuid.FromBytes(payload[16:32])
 	if requestErr != nil || userErr != nil || requestID == uuid.Nil || userID == uuid.Nil {
 		return
+	}
+	tenantID := uuid.Nil
+	if len(payload) == 48 {
+		parsedTenantID, tenantErr := uuid.FromBytes(payload[32:48])
+		if tenantErr != nil || parsedTenantID == uuid.Nil {
+			return
+		}
+		tenantID = parsedTenantID
 	}
 	replyChannel := billingAuthorizationReplyPrefix + requestID.String()
 	respond := func(ok bool, response []byte) {
@@ -138,6 +151,51 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 		`, []string{lockKey}, lockToken).Err()
 	}()
 
+	if tenantID != uuid.Nil {
+		binaryEntry, loadErr := h.tenantRepo.GetUserTenantBillingPermissions(ctx, userID, tenantID)
+		if loadErr != nil {
+			respond(false, []byte("tenant billing permission is required"))
+			return
+		}
+		var roleEntry iamproto.RoleEntry
+		if proto.Unmarshal(binaryEntry, &roleEntry) != nil {
+			respond(false, []byte("authorization snapshot is invalid"))
+			return
+		}
+
+		expectedPrefix := tenantID.String() + ":" + uuid.Nil.String() + ":billing:"
+		permissions := make([]string, 0, len(roleEntry.Permissions))
+		seen := make(map[string]struct{}, len(roleEntry.Permissions))
+		for _, permission := range roleEntry.Permissions {
+			parts := strings.Split(permission, ":")
+			if len(parts) != 5 || !strings.HasPrefix(permission, expectedPrefix) ||
+				parts[3] == "" || parts[4] == "" {
+				// [COMMENT]: Never flatten a tenant permission into a platform
+				// permission; an invalid snapshot fails the whole decision closed.
+				respond(false, []byte("authorization snapshot is invalid"))
+				return
+			}
+			if _, exists := seen[permission]; !exists {
+				seen[permission] = struct{}{}
+				permissions = append(permissions, permission)
+			}
+		}
+		if len(permissions) == 0 {
+			respond(false, []byte("tenant billing permission is required"))
+			return
+		}
+		sort.Strings(permissions)
+		responseBinary, marshalErr := proto.Marshal(&iamproto.RoleEntry{Permissions: permissions})
+		if marshalErr != nil {
+			respond(false, []byte("authorization snapshot is invalid"))
+			return
+		}
+		// [COMMENT]: Critical tenant mutations bypass Cost caches, so this reply
+		// is deliberately not projected into the platform authorization keys.
+		respond(true, responseBinary)
+		return
+	}
+
 	dataKey := fmt.Sprintf("authz:billing:{%s}:data", userID)
 	generationKey := fmt.Sprintf("authz:billing:{%s}:generation", userID)
 	dataGenerationKey := fmt.Sprintf("authz:billing:{%s}:data_generation", userID)
@@ -150,7 +208,7 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 			return
 		}
 
-		binaryEntry, loadErr := h.repo.GetUserRolePermissions(ctx, userID)
+		binaryEntry, loadErr := h.platformRepo.GetUserRolePermissions(ctx, userID)
 		if loadErr != nil {
 			logger.SysError("redis.BillingAuthorization", "Failed to load user authorization")
 			respond(false, []byte("authorization service unavailable"))

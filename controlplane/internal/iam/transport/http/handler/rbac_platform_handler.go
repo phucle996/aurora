@@ -248,8 +248,22 @@ func (h *RbacPlatformHandler) GetRenderContext(c *gin.Context) {
 	if !ok {
 		return
 	}
+	tenantID := uuid.Nil
+	if rawTenantID, exists := c.Get(pkgcontext.CtxTenantID); exists {
+		switch value := rawTenantID.(type) {
+		case uuid.UUID:
+			tenantID = value
+		case error:
+			logger.HandlerWarn(c, op, value, "invalid tenant render context")
+			apires.RespondBadRequest(c, "invalid tenant context")
+			return
+		default:
+			apires.RespondBadRequest(c, "invalid tenant context")
+			return
+		}
+	}
 
-	renderContext, err := h.rbacPlatformSvc.GetRenderContext(ctx, userID)
+	renderContext, err := h.rbacPlatformSvc.GetRenderContext(ctx, userID, tenantID)
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal error occurred")

@@ -1,0 +1,14 @@
+syntax = "proto3";
+package billing.wallet.v1;
+option go_package = "cost-manager/api/internal/genproto/billing/wallet/v1;walletv1";
+
+// Tenant creation binds the wallet owner and the founding human actor. Owner
+// type is encoded by the message itself and is not accepted from a browser.
+message TenantWalletProvisionRequestedV1 {
+  bytes event_id = 1;
+  int32 schema_version = 2;
+  bytes tenant_id = 3;
+  bytes actor_user_id = 4;
+  string currency = 5;
+  string occurred_at = 6;
+}

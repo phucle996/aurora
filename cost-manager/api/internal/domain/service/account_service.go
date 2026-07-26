@@ -8,9 +8,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: AccountService cung cấp activation contract không cho caller chọn campaign hoặc số tiền.
 type AccountService interface {
-	ActivatePersonalFreeTier(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*entity.FreeTierAccount, error)
 	ProvisionPersonalWallet(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error
-	GetPersonalWalletSummary(ctx context.Context, ownerID uuid.UUID) (*entity.WalletSummary, error)
+	ProvisionTenantWallet(ctx context.Context, eventID uuid.UUID, tenantID uuid.UUID, actorID uuid.UUID, payloadHash string) error
+	GetOnboarding(ctx context.Context, ownerID uuid.UUID) (*entity.OnboardingSnapshot, error)
+	ReserveReferral(ctx context.Context, command entity.ReserveReferralCommand) (*entity.ReferralReservation, error)
+	ListReferralCampaigns(ctx context.Context) ([]entity.ReferralCampaign, error)
+	CreateReferralCampaign(ctx context.Context, command entity.CreateReferralCampaignCommand) (*entity.ReferralCampaign, error)
+	UpdateReferralCampaignStatus(ctx context.Context, command entity.UpdateReferralCampaignStatusCommand) (*entity.ReferralCampaign, error)
 }

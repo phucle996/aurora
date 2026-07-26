@@ -7,9 +7,9 @@
 | Thuộc tính | AS-IS contract |
 |---|---|
 | Public host | `https://cost-manager.aurora.local` |
-| Read routes | `GET /api/v1/billing/tiers`, `GET /api/v1/billing/tiers/:service_type/:code`, self-scoped `GET /api/v1/billing/me/*` |
+| Read routes | `GET /api/v1/billing/tiers`, `GET /api/v1/billing/tiers/:service_type/:code`, owner-scoped `GET /api/v1/billing/wallet/*` |
 | Critical write routes | `PATCH /api/v1/billing/critical/tiers/:service_type/:code/metadata`, `POST /api/v1/billing/critical/tiers/:service_type/:code/versions` |
-| Identity | Operator routes: IAM user → ACR Billing domain Trinity; `/billing/me/*`: normal IAM self scope |
+| Identity | Operator routes: IAM user → ACR Billing Alias; `/billing/wallet/*`: host-aware verified owner scope |
 | Read permission | `billing:tier:read` |
 | Write permission | `billing:tier:publish` + verified Ed25519 session proof |
 | Stable identity | `(service_type, code)`; cả hai immutable |
@@ -68,7 +68,7 @@ flowchart LR
 |---|---|---|
 | `GET /api/v1/billing/tiers` | identity + `billing:tier:read` | `ListTiers` |
 | `GET /api/v1/billing/tiers/:service_type/:code` | identity + `billing:tier:read` | `GetTierDetail` |
-| `GET /api/v1/billing/me/*` | normal IAM identity, fixed self scope | read-only personal Cost projections |
+| `GET /api/v1/billing/wallet/*` | host-aware identity + ACR owner rewrite | personal/tenant Cost projections |
 | `PATCH /api/v1/billing/critical/tiers/:service_type/:code/metadata` | identity + proof + `billing:tier:publish` | `UpdateTierMetadata` |
 | `POST /api/v1/billing/critical/tiers/:service_type/:code/versions` | identity + proof + `billing:tier:publish` | `CreateTierVersion` |
 

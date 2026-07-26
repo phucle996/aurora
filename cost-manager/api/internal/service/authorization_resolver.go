@@ -33,6 +33,7 @@ type AuthorizationResolver struct {
 	sharedRedis  *redis.Client
 	l1Mu         sync.RWMutex
 	l1           map[uuid.UUID]authorizationCacheEntry
+	tenantL1     map[string]authorizationCacheEntry
 	loads        singleflight.Group
 	invalidation *redis.PubSub
 	cancel       context.CancelFunc
@@ -48,6 +49,7 @@ func NewAuthorizationResolver(authRedisClient, sharedRedisClient *redis.Client) 
 		authRedis:   authRedisClient,
 		sharedRedis: sharedRedisClient,
 		l1:          make(map[uuid.UUID]authorizationCacheEntry),
+		tenantL1:    make(map[string]authorizationCacheEntry),
 		cancel:      cancel,
 	}
 	pubsub := sharedRedisClient.Subscribe(ctx, billingAuthorizationInvalidation)
@@ -77,6 +79,15 @@ func NewAuthorizationResolver(authRedisClient, sharedRedisClient *redis.Client) 
 				// [COMMENT]: CP already fenced Auth Redis; every Cost replica only drops its process-local L1.
 				resolver.l1Mu.Lock()
 				delete(resolver.l1, userID)
+				// Tenant role/membership mutations currently publish the same
+				// user invalidation. Remove every scoped entry for that user;
+				// the map is hard-capped below to bound this scan.
+				suffix := ":" + userID.String()
+				for key := range resolver.tenantL1 {
+					if strings.HasSuffix(key, suffix) {
+						delete(resolver.tenantL1, key)
+					}
+				}
 				resolver.l1Mu.Unlock()
 			}
 		}
@@ -362,4 +373,183 @@ func (r *AuthorizationResolver) Resolve(ctx context.Context, userID uuid.UUID, c
 	r.l1[userID] = authorizationCacheEntry{permissions: permissions, expiresAt: time.Now().Add(5 * time.Second)}
 	r.l1Mu.Unlock()
 	return permissions, nil
+}
+
+// ResolveTenant preserves exact five-part permissions and uses a short scoped
+// cache. Financial mutations pass critical=true and always resolve fresh from
+// IAM, so membership revocation cannot hide behind cache TTL.
+func (r *AuthorizationResolver) ResolveTenant(
+	ctx context.Context,
+	userID uuid.UUID,
+	tenantID uuid.UUID,
+	critical bool,
+) (map[string]struct{}, error) {
+	cacheKey := tenantID.String() + ":" + userID.String()
+	if !critical {
+		r.l1Mu.RLock()
+		entry, exists := r.tenantL1[cacheKey]
+		r.l1Mu.RUnlock()
+		if exists && time.Now().Before(entry.expiresAt) {
+			return entry.permissions, nil
+		}
+
+		dataKey := fmt.Sprintf("authz:billing:tenant:{%s}:%s:data", tenantID, userID)
+		if binary, err := r.authRedis.Get(ctx, dataKey).Bytes(); err == nil {
+			permissions, parseErr := parseTenantBillingPermissions(binary, tenantID)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			r.cacheTenantPermissions(cacheKey, permissions)
+			return permissions, nil
+		} else if !errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("read tenant authorization L2: %w", err)
+		}
+	}
+
+	loadKey := "tenant:" + cacheKey
+	if critical {
+		loadKey += ":critical"
+	}
+	value, err, _ := r.loads.Do(loadKey, func() (any, error) {
+		binary, permissions, requestErr := r.requestTenantAuthorization(ctx, userID, tenantID)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+		if !critical {
+			dataKey := fmt.Sprintf("authz:billing:tenant:{%s}:%s:data", tenantID, userID)
+			if writeErr := r.authRedis.Set(ctx, dataKey, binary, 5*time.Second).Err(); writeErr != nil {
+				return nil, fmt.Errorf("write tenant authorization L2: %w", writeErr)
+			}
+		}
+		return permissions, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	permissions := value.(map[string]struct{})
+	if !critical {
+		r.cacheTenantPermissions(cacheKey, permissions)
+	}
+	return permissions, nil
+}
+
+func (r *AuthorizationResolver) requestTenantAuthorization(
+	ctx context.Context,
+	userID uuid.UUID,
+	tenantID uuid.UUID,
+) ([]byte, map[string]struct{}, error) {
+	requestContext, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
+	defer cancel()
+	requestID := uuid.New()
+	replyChannel := billingAuthorizationReplyPrefix + requestID.String()
+	pubsub := r.sharedRedis.Subscribe(requestContext, replyChannel)
+	defer pubsub.Close()
+	if _, err := pubsub.Receive(requestContext); err != nil {
+		return nil, nil, fmt.Errorf("subscribe tenant Billing authorization reply: %w", err)
+	}
+	replies := pubsub.Channel(redis.WithChannelSize(1))
+
+	// Fixed-width wire is request UUID + user UUID + tenant UUID. Tenant identity
+	// is already edge-verified and never comes from the HTTP body.
+	request := make([]byte, 0, 48)
+	request = append(request, requestID[:]...)
+	request = append(request, userID[:]...)
+	request = append(request, tenantID[:]...)
+	subscribers, err := r.sharedRedis.Publish(
+		requestContext,
+		billingAuthorizationRequestChannel,
+		request,
+	).Result()
+	if err != nil {
+		return nil, nil, fmt.Errorf("publish tenant IAM Billing authorization request: %w", err)
+	}
+	if subscribers == 0 {
+		return nil, nil, errors.New("IAM tenant Billing authorization resolver is unavailable")
+	}
+
+	select {
+	case <-requestContext.Done():
+		return nil, nil, fmt.Errorf("request tenant IAM Billing authorization: %w", requestContext.Err())
+	case response, ok := <-replies:
+		if !ok {
+			return nil, nil, errors.New("IAM tenant Billing authorization reply subscription closed")
+		}
+		payload := []byte(response.Payload)
+		if len(payload) == 0 {
+			return nil, nil, errors.New("IAM returned an empty tenant Billing authorization response")
+		}
+		if payload[0] != 1 {
+			return nil, nil, errors.New(string(payload[1:]))
+		}
+		permissions, parseErr := parseTenantBillingPermissions(payload[1:], tenantID)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		return payload[1:], permissions, nil
+	}
+}
+
+func parseTenantBillingPermissions(
+	binary []byte,
+	tenantID uuid.UUID,
+) (map[string]struct{}, error) {
+	permissions := make(map[string]struct{})
+	expectedPrefix := tenantID.String() + ":00000000-0000-0000-0000-000000000000:billing:"
+	for len(binary) > 0 {
+		number, wireType, consumed := protowire.ConsumeTag(binary)
+		if consumed < 0 {
+			return nil, errors.New("invalid IAM tenant RoleEntry tag")
+		}
+		binary = binary[consumed:]
+		if number != 1 || wireType != protowire.BytesType {
+			skipped := protowire.ConsumeFieldValue(number, wireType, binary)
+			if skipped < 0 {
+				return nil, errors.New("invalid IAM tenant RoleEntry field")
+			}
+			binary = binary[skipped:]
+			continue
+		}
+		value, size := protowire.ConsumeBytes(binary)
+		if size < 0 {
+			return nil, errors.New("invalid IAM tenant RoleEntry permission")
+		}
+		permission := string(value)
+		parts := strings.Split(permission, ":")
+		if len(parts) != 5 || !strings.HasPrefix(permission, expectedPrefix) ||
+			parts[3] == "" || parts[4] == "" {
+			return nil, fmt.Errorf("IAM returned invalid tenant Billing permission %q", permission)
+		}
+		permissions[permission] = struct{}{}
+		binary = binary[size:]
+	}
+	if len(permissions) == 0 {
+		return nil, errors.New("IAM returned no tenant Billing permission")
+	}
+	return permissions, nil
+}
+
+func (r *AuthorizationResolver) cacheTenantPermissions(
+	key string,
+	permissions map[string]struct{},
+) {
+	r.l1Mu.Lock()
+	defer r.l1Mu.Unlock()
+	if len(r.tenantL1) >= maxAuthorizationL1Entries {
+		now := time.Now()
+		for cachedKey, entry := range r.tenantL1 {
+			if now.After(entry.expiresAt) {
+				delete(r.tenantL1, cachedKey)
+			}
+		}
+		if len(r.tenantL1) >= maxAuthorizationL1Entries {
+			for cachedKey := range r.tenantL1 {
+				delete(r.tenantL1, cachedKey)
+				break
+			}
+		}
+	}
+	r.tenantL1[key] = authorizationCacheEntry{
+		permissions: permissions,
+		expiresAt:   time.Now().Add(2 * time.Second),
+	}
 }

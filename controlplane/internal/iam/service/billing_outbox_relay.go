@@ -18,6 +18,8 @@ import (
 
 const personalWalletProvisionEventType = "billing.wallet.personal.provision.requested.v1"
 const personalWalletProvisionStream = "billing:wallet:personal:provision-requests"
+const tenantWalletProvisionEventType = "billing.wallet.tenant.provision.requested.v1"
+const tenantWalletProvisionStream = "billing:wallet:tenant:provision-requests"
 
 const (
 	billingOutboxClaimBatch       = 50
@@ -30,6 +32,7 @@ const (
 var billingEventStreams = map[string]string{
 	// [COMMENT]: Stream không đọc trực tiếp từ row; event mới phải được review và thêm vào allowlist này.
 	personalWalletProvisionEventType: personalWalletProvisionStream,
+	tenantWalletProvisionEventType:   tenantWalletProvisionStream,
 }
 
 type BillingOutboxRelay struct {
@@ -237,6 +240,18 @@ func validBillingEvent(event iamEntity.BillingOutboxEvent) bool {
 		wireOwnerID, ownerErr := uuid.FromBytes(wire.GetOwnerId())
 		return eventErr == nil && ownerErr == nil && wireEventID == event.EventID &&
 			wireOwnerID == event.OwnerID && wire.GetOwnerType() == event.OwnerType &&
+			wire.GetSchemaVersion() == 1 && wire.GetCurrency() == "USD"
+	case tenantWalletProvisionEventType:
+		wire := &iamproto.TenantWalletProvisionRequestedV1{}
+		if err := proto.Unmarshal(event.Payload, wire); err != nil {
+			return false
+		}
+		wireEventID, eventErr := uuid.FromBytes(wire.GetEventId())
+		wireTenantID, tenantErr := uuid.FromBytes(wire.GetTenantId())
+		wireActorID, actorErr := uuid.FromBytes(wire.GetActorUserId())
+		return eventErr == nil && tenantErr == nil && actorErr == nil &&
+			wireEventID == event.EventID && wireTenantID == event.OwnerID &&
+			wireActorID != uuid.Nil && event.OwnerType == "TENANT" &&
 			wire.GetSchemaVersion() == 1 && wire.GetCurrency() == "USD"
 	default:
 		return false

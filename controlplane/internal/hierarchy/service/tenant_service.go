@@ -21,7 +21,15 @@ import (
 
 // [COMMENT]: TenantService triển khai TenantService interface với repo dependency
 type TenantService struct {
-	repo coreRepoInterface.TenantRepository
+	repo                coreRepoInterface.TenantRepository
+	notifyBillingOutbox func()
+}
+
+// SetBillingOutboxNotifier is wired once by the app composition root before
+// HTTP serving starts. The notifier is only a latency hint; the PostgreSQL
+// outbox and relay reconciliation remain the recovery boundary.
+func (s *TenantService) SetBillingOutboxNotifier(notify func()) {
+	s.notifyBillingOutbox = notify
 }
 
 // [COMMENT]: NewTenantService tạo instance mới của TenantService
@@ -62,6 +70,9 @@ func (s *TenantService) CreateTenant(ctx context.Context, tenant coreEntity.Tena
 	// [COMMENT]: Ghi nhận thành công
 	coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateTenant", coreMetric.OutcomeSuccess, duration, nil)
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	if s.notifyBillingOutbox != nil {
+		s.notifyBillingOutbox()
+	}
 	return result, nil
 }
 

@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { authAPI } from "@/features/auth/api";
+import { billingStartURL } from "@/shell/navigation";
 
 type ActivationSecret = { user_id: string; event_id: string; token: string };
 
@@ -12,6 +13,7 @@ export default function ActivateAccountPage() {
 	const [secret, setSecret] = useState<ActivationSecret | null>(null);
 	const [state, setState] = useState<"ready" | "submitting" | "success" | "invalid" | "failed">("ready");
 	const [message, setMessage] = useState("");
+	const walletSetupURL = billingStartURL();
 
 	useEffect(() => {
 		// [COMMENT]: Fragment không được gửi tới Envoy/ACR; đọc một lần rồi xóa khỏi address bar/browser history.
@@ -42,7 +44,7 @@ export default function ActivateAccountPage() {
 			await authAPI.verifyAccount(secret);
 			setSecret(null);
 			setState("success");
-			setMessage("Your Aurora account is active. You can now sign in.");
+			setMessage("Your Aurora account is active. Continue to Cost Console to fund and activate the wallet.");
 		} catch (error) {
 			const apiError = error as { message?: string };
 			setSecret(null);
@@ -63,6 +65,13 @@ export default function ActivateAccountPage() {
 					<Button className="w-full" disabled={state === "submitting"} onClick={confirmActivation}>
 						{state === "submitting" ? "Activating…" : "Confirm activation"}
 					</Button>
+				) : state === "success" && walletSetupURL ? (
+					<a
+						href={walletSetupURL}
+						className="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						Continue to wallet setup
+					</a>
 				) : (
 					<Link
 						href="/signin"

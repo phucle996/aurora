@@ -24,7 +24,9 @@ routes:
       upgrade_configs:
         - upgrade_type: websocket
   # All Cloud Console self-scoped Billing reads share one extensible Cost route branch.
-  - match: { prefix: "/api/v1/billing/me/" }
+  # Neutral owner Billing API; ACR rewrites to the verified personal/tenant
+  # internal path after ext_authz, while the cluster choice stays Cost Manager.
+  - match: { prefix: "/api/v1/billing/" }
     route:
       cluster: cost_manager_cluster
       timeout: 5s

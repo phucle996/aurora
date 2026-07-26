@@ -1,34 +1,15 @@
 import { Receipt, Plus, Download } from "lucide-react";
+import { WalletOnboarding } from "../onboarding/WalletOnboarding";
 
 interface DashboardPageProps {
   currency: string;
   admin: boolean;
+  personal: boolean;
 }
 
-export default function DashboardPage({ currency, admin }: DashboardPageProps) {
+export default function DashboardPage({ currency, admin, personal }: DashboardPageProps) {
   if (!admin) {
-    return (
-      <div className="space-y-6 text-xs">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">Cost & Billing</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Manage your personal wallet, payments, invoices, and promotional credits.
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-8 dark:border-slate-800 dark:bg-slate-900">
-          <div className="mx-auto flex max-w-md flex-col items-center text-center">
-            <Receipt className="h-9 w-9 text-blue-500" />
-            <h3 className="mt-4 text-sm font-bold text-slate-900 dark:text-white">
-              Personal billing workspace
-            </h3>
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">
-              IAM Render Context has hidden every operator-only feature. Wallet activation and
-              minimum top-up onboarding will be rendered here from durable Cost Manager state.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return <WalletOnboarding personal={personal} />;
   }
 
   return (

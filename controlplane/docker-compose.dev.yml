@@ -291,6 +291,17 @@ services:
       - REDIS_URL=redis://controlplane-cp-redis:6379/0
       # [COMMENT]: Cost chỉ thấy authz/proof namespace qua ACL, không thể đọc Trinity session của ACR.
       - AUTH_REDIS_URL=redis://cost:aurora-dev-cost-secret@controlplane-acr-redis:6379/0
+      # Development contract for the external checkout gateway. Production injects
+      # both signing keys from Secret and points at the real payment provider.
+      - PAYMENT_PROVIDER=aurora-payment-gateway
+      - PAYMENT_CHECKOUT_BASE_URL=https://payments.aurora.local/checkout
+      - PAYMENT_RETURN_BASE_URL=https://cost-manager.aurora.local/
+      - PAYMENT_CHECKOUT_SIGNING_SECRET=dev-checkout-signing-key-change-before-production-2026
+      - PAYMENT_WEBHOOK_SIGNING_SECRET=dev-webhook-signing-key-change-before-production-2026
+      - PAYMENT_MINIMUM_TOP_UP_MICRO_UNITS=1000000
+      - PAYMENT_INTENT_TTL=30m
+      - PAYMENT_REFERRAL_RESERVATION_TTL=24h
+      - PAYMENT_WEBHOOK_TOLERANCE=5m
     volumes:
       - ../cost-manager/api:/app/api
     depends_on:
@@ -784,11 +795,13 @@ services:
         - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
         # [COMMENT]: WebSocket đi qua Envoy (wss://) để TLS terminate và proxy sang centrifugo:8000 nội bộ
         - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
+        - NEXT_PUBLIC_COST_CONSOLE_URL=https://cost-manager.aurora.local
     container_name: cloud-console-dev
     environment:
       - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
       # [COMMENT]: Giá trị này được baked vào bundle lúc build, runtime env không có tác dụng với NEXT_PUBLIC_ nhưng để tham chiếu
       - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
+      - NEXT_PUBLIC_COST_CONSOLE_URL=https://cost-manager.aurora.local
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     restart: unless-stopped
 

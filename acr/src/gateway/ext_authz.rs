@@ -83,10 +83,42 @@ fn authority_matches_origin(authority: &str, configured_origin: &str) -> bool {
 }
 
 fn is_billing_alias_path(method: &str, path: &str, is_billing_console_authority: bool) -> bool {
-    (path.starts_with("/api/v1/billing") && !path.starts_with("/api/v1/billing/me/"))
-        || (is_billing_console_authority
-            && method == "GET"
-            && path == "/api/v1/me/iam/context/read")
+    is_billing_console_authority
+        && (path.starts_with("/api/v1/billing/")
+            || (method == "GET" && path == "/api/v1/me/iam/context/read"))
+}
+
+fn is_neutral_owner_billing_path(path: &str) -> bool {
+    path == "/api/v1/billing/wallet" || path.starts_with("/api/v1/billing/wallet/")
+}
+
+fn is_internal_owner_billing_path(path: &str) -> bool {
+    path == "/api/v1/personal/billing"
+        || path.starts_with("/api/v1/personal/billing/")
+        || path == "/api/v1/tenant/billing"
+        || path.starts_with("/api/v1/tenant/billing/")
+}
+
+fn is_payment_webhook_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/billing/webhooks/personal/payment-settled"
+            | "/api/v1/billing/webhooks/tenant/payment-settled"
+    )
+}
+
+fn rewrite_owner_billing_path(path: &str, tenant_id: Option<&str>) -> Option<String> {
+    let path_without_query = path.split('?').next().unwrap_or(path);
+    if !is_neutral_owner_billing_path(path_without_query) {
+        return None;
+    }
+    let suffix = &path["/api/v1/billing".len()..];
+    let scope = if tenant_id.is_some_and(|value| !value.is_empty() && value != "platform") {
+        "tenant"
+    } else {
+        "personal"
+    };
+    Some(format!("/api/v1/{scope}/billing{suffix}"))
 }
 
 pub fn sha256_hash(secret: &str) -> String {
@@ -272,11 +304,49 @@ impl Authorization for ExtAuthzService {
             }
         });
         if is_public_route {
+            if is_payment_webhook_path(path_without_query) && !is_billing_console_authority {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("Payment webhook authority mismatch"),
+                )));
+            }
             let mut response = CheckResponse::with_status(Status::ok("public route authorized"));
             response.set_http_response(
                 envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
             );
             return Ok(Response::new(response));
+        }
+
+        // [COMMENT]: Internal owner routes are reachable only through the
+        // rewrite below. Rejecting a direct request prevents a caller from
+        // choosing PERSONAL/TENANT by path before identity verification.
+        if is_internal_owner_billing_path(path_without_query) {
+            Logger::authz_log(
+                "system",
+                method,
+                path,
+                "DENIED",
+                "Direct internal Billing owner route",
+            );
+            return Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Internal Billing route"),
+            )));
+        }
+        if path_without_query.starts_with("/api/v1/billing/")
+            && !is_neutral_owner_billing_path(path_without_query)
+            && !is_billing_console_authority
+        {
+            // [COMMENT]: Cloud may use only the neutral owner wallet surface.
+            // Operator/auth Billing routes remain bound to the Cost authority.
+            Logger::authz_log(
+                "system",
+                method,
+                path,
+                "DENIED",
+                "Billing route is not available on this authority",
+            );
+            return Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Billing authority mismatch"),
+            )));
         }
 
         // 1. User Login: POST /api/v1/auth/login
@@ -489,8 +559,9 @@ impl Authorization for ExtAuthzService {
 
         // [COMMENT]: Đã trích xuất cookie_header ở đầu hàm check cho Phase 1 Rate Limiting nên không cần trích xuất lại tại đây.
 
-        // `/billing/me/*` stays on the normal IAM session path while Cost Console may reuse the
-        // existing IAM render-context endpoint through its host-bound opaque alias.
+        // Cost Console uses its host-bound Billing alias. Cloud Console keeps
+        // Trinity even for the neutral Billing surface, so the same URL cannot
+        // turn a Billing alias into a general Cloud credential.
         let is_billing =
             is_billing_alias_path(method, path_without_query, is_billing_console_authority);
         let is_sre = path.starts_with("/admin");
@@ -894,33 +965,45 @@ impl Authorization for ExtAuthzService {
         // [COMMENT]: Khởi tạo biến lưu trữ đường dẫn đã ghi đè (nếu có)
         let mut rewritten_path_opt = None;
 
-        if !is_billing && !is_sre {
-            if let Some(ref c) = claims {
-                // [COMMENT]: Chỉ áp dụng rewrite đối với các endpoint nghiệp vụ chung /api/v1/...
-                // Loại trừ các endpoint thuộc cụm hệ thống, định danh hoặc billing
-                if path.starts_with("/api/v1/")
-                    && !path.starts_with("/api/v1/me/")
-                    && !path.starts_with("/api/v1/auth/")
-                    && !path.starts_with("/api/v1/tenant/")
-                    && !path.starts_with("/api/v1/personal/")
-                    && !path.starts_with("/api/v1/billing/")
-                {
-                    // [COMMENT]: Trích xuất tenant_id từ phía Client (cookie hoặc header)
-                    let client_tenant_id = extract_cookie_value(&cookie_header, COOKIE_TENANT_ID)
-                        .or_else(|| client_headers.get("x-tenant-id").cloned())
-                        .or_else(|| client_headers.get("X-Tenant-ID").cloned());
+        if !is_sre {
+            let verified_tenant_id = billing_alias
+                .as_ref()
+                .map(|alias| alias.tenant_id.as_str())
+                .or_else(|| claims.as_ref().and_then(|value| value.tenant_id.as_deref()));
+            if let Some(rewritten) = rewrite_owner_billing_path(path, verified_tenant_id) {
+                Logger::sys_debug(
+                    "ext_authz.billing_owner_rewrite",
+                    &format!("Rewriting owner Billing path: {} -> {}", path, rewritten),
+                );
+                rewritten_path_opt = Some(rewritten);
+            } else if !is_billing {
+                if let Some(ref c) = claims {
+                    // [COMMENT]: Chỉ áp dụng rewrite đối với các endpoint nghiệp vụ chung /api/v1/...
+                    // Loại trừ các endpoint thuộc cụm hệ thống, định danh hoặc billing
+                    if path.starts_with("/api/v1/")
+                        && !path.starts_with("/api/v1/me/")
+                        && !path.starts_with("/api/v1/auth/")
+                        && !path.starts_with("/api/v1/tenant/")
+                        && !path.starts_with("/api/v1/personal/")
+                        && !path.starts_with("/api/v1/billing/")
+                    {
+                        // [COMMENT]: Trích xuất tenant_id từ phía Client (cookie hoặc header)
+                        let client_tenant_id =
+                            extract_cookie_value(&cookie_header, COOKIE_TENANT_ID)
+                                .or_else(|| client_headers.get("x-tenant-id").cloned())
+                                .or_else(|| client_headers.get("X-Tenant-ID").cloned());
 
-                    let client_has_tenant = client_tenant_id
-                        .as_ref()
-                        .map_or(false, |t| !t.is_empty() && t != "platform");
-                    let session_has_tenant = c
-                        .tenant_id
-                        .as_ref()
-                        .map_or(false, |t| !t.is_empty() && t != "platform");
+                        let client_has_tenant = client_tenant_id
+                            .as_ref()
+                            .map_or(false, |t| !t.is_empty() && t != "platform");
+                        let session_has_tenant = c
+                            .tenant_id
+                            .as_ref()
+                            .map_or(false, |t| !t.is_empty() && t != "platform");
 
-                    // [COMMENT]: Cơ chế bảo mật CHẶN CHÉO - Ngăn cản sự sai lệch giữa ngữ cảnh Client yêu cầu và Session thực tế
-                    if client_has_tenant != session_has_tenant {
-                        Logger::authz_log(
+                        // [COMMENT]: Cơ chế bảo mật CHẶN CHÉO - Ngăn cản sự sai lệch giữa ngữ cảnh Client yêu cầu và Session thực tế
+                        if client_has_tenant != session_has_tenant {
+                            Logger::authz_log(
                             &c.sub,
                             method,
                             path,
@@ -930,44 +1013,45 @@ impl Authorization for ExtAuthzService {
                                 client_has_tenant, session_has_tenant
                             ),
                         );
-                        return Ok(Response::new(CheckResponse::with_status(
-                            Status::permission_denied("Tenant context mismatch"),
-                        )));
-                    }
-
-                    // [COMMENT]: So khớp chính xác Tenant ID của client và session để tránh giả mạo
-                    if client_has_tenant {
-                        let c_tenant = client_tenant_id.as_deref().unwrap();
-                        let s_tenant = c.tenant_id.as_deref().unwrap();
-                        if c_tenant != s_tenant {
-                            Logger::authz_log(
-                                &c.sub,
-                                method,
-                                path,
-                                "DENIED",
-                                &format!(
-                                    "Tenant ID mismatch for routing: client='{}', session='{}'",
-                                    c_tenant, s_tenant
-                                ),
-                            );
                             return Ok(Response::new(CheckResponse::with_status(
-                                Status::permission_denied("Tenant mismatch"),
+                                Status::permission_denied("Tenant context mismatch"),
                             )));
                         }
-                    }
 
-                    // [COMMENT]: Xác định tiền tố route group tương ứng: /api/v1/tenant hoặc /api/v1/personal
-                    let prefix = if client_has_tenant {
-                        "/api/v1/tenant"
-                    } else {
-                        "/api/v1/personal"
-                    };
-                    let new_path = format!("{}{}", prefix, &path[7..]);
-                    Logger::sys_debug(
-                        "ext_authz.path_rewrite",
-                        &format!("Rewriting path: {} -> {}", path, new_path),
-                    );
-                    rewritten_path_opt = Some(new_path);
+                        // [COMMENT]: So khớp chính xác Tenant ID của client và session để tránh giả mạo
+                        if client_has_tenant {
+                            let c_tenant = client_tenant_id.as_deref().unwrap();
+                            let s_tenant = c.tenant_id.as_deref().unwrap();
+                            if c_tenant != s_tenant {
+                                Logger::authz_log(
+                                    &c.sub,
+                                    method,
+                                    path,
+                                    "DENIED",
+                                    &format!(
+                                        "Tenant ID mismatch for routing: client='{}', session='{}'",
+                                        c_tenant, s_tenant
+                                    ),
+                                );
+                                return Ok(Response::new(CheckResponse::with_status(
+                                    Status::permission_denied("Tenant mismatch"),
+                                )));
+                            }
+                        }
+
+                        // [COMMENT]: Xác định tiền tố route group tương ứng: /api/v1/tenant hoặc /api/v1/personal
+                        let prefix = if client_has_tenant {
+                            "/api/v1/tenant"
+                        } else {
+                            "/api/v1/personal"
+                        };
+                        let new_path = format!("{}{}", prefix, &path[7..]);
+                        Logger::sys_debug(
+                            "ext_authz.path_rewrite",
+                            &format!("Rewriting path: {} -> {}", path, new_path),
+                        );
+                        rewritten_path_opt = Some(new_path);
+                    }
                 }
             }
         }
@@ -1086,6 +1170,7 @@ impl Authorization for ExtAuthzService {
                                     key: key.to_string(),
                                     value: val,
                                 });
+                            h.append_action = 2;
                             ok.headers.push(h);
                         }
                     }
@@ -1134,26 +1219,29 @@ impl Authorization for ExtAuthzService {
                                 });
                             ok.headers.push(h);
                         }
-
-                        // [COMMENT]: Nạp các header rewrite đường dẫn chuyển tiếp cho Envoy
-                        if let Some(ref rewritten_path) = rewritten_path_opt {
-                            let mut h_orig = HeaderValueOption::default();
-                            h_orig.header =
-                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                    key: "x-original-path".to_string(),
-                                    value: path.to_string(),
-                                });
-                            ok.headers.push(h_orig);
-
-                            let mut h_path = HeaderValueOption::default();
-                            h_path.header =
-                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                    key: ":path".to_string(),
-                                    value: rewritten_path.clone(),
-                                });
-                            ok.headers.push(h_path);
-                        }
                     }
+                }
+
+                // [COMMENT]: Rewrite headers are emitted after both identity
+                // branches so Trinity and Billing Alias follow the same
+                // neutral public contract. OVERWRITE removes client copies.
+                if let Some(ref rewritten_path) = rewritten_path_opt {
+                    let mut original = HeaderValueOption::default();
+                    original.header = Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                        key: "x-original-path".to_string(),
+                        value: path.to_string(),
+                    });
+                    original.append_action = 2;
+                    ok.headers.push(original);
+
+                    let mut rewritten = HeaderValueOption::default();
+                    rewritten.header =
+                        Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                            key: ":path".to_string(),
+                            value: rewritten_path.clone(),
+                        });
+                    rewritten.append_action = 2;
+                    ok.headers.push(rewritten);
                 }
 
                 for cookie_str in cookies_to_set {
@@ -1173,20 +1261,60 @@ impl Authorization for ExtAuthzService {
 
 #[cfg(test)]
 mod tests {
-    use super::{authority_matches_origin, is_billing_alias_path};
+    use super::{
+        authority_matches_origin, is_billing_alias_path, is_internal_owner_billing_path,
+        rewrite_owner_billing_path,
+    };
 
     #[test]
-    fn billing_me_stays_on_normal_iam_session() {
+    fn billing_surface_selects_session_by_console_authority() {
         assert!(!is_billing_alias_path(
             "GET",
-            "/api/v1/billing/me/wallet/summary",
+            "/api/v1/billing/wallet/summary",
             false
+        ));
+        assert!(is_billing_alias_path(
+            "GET",
+            "/api/v1/billing/wallet/onboarding",
+            true
         ));
         assert!(is_billing_alias_path("GET", "/api/v1/billing/tiers", true));
         assert!(is_billing_alias_path(
             "POST",
             "/api/v1/billing/critical/tiers/STORAGE/CODE",
             true
+        ));
+    }
+
+    #[test]
+    fn owner_billing_rewrite_uses_only_verified_tenant_context() {
+        assert_eq!(
+            rewrite_owner_billing_path("/api/v1/billing/wallet/summary?fresh=1", None),
+            Some("/api/v1/personal/billing/wallet/summary?fresh=1".to_string())
+        );
+        assert_eq!(
+            rewrite_owner_billing_path(
+                "/api/v1/billing/wallet/top-ups",
+                Some("019f3d3e-997d-7894-9236-c5122634cb4f")
+            ),
+            Some("/api/v1/tenant/billing/wallet/top-ups".to_string())
+        );
+        assert_eq!(
+            rewrite_owner_billing_path("/api/v1/billing/tiers", Some("tenant")),
+            None
+        );
+    }
+
+    #[test]
+    fn internal_owner_billing_routes_are_not_public_inputs() {
+        assert!(is_internal_owner_billing_path(
+            "/api/v1/personal/billing/wallet/summary"
+        ));
+        assert!(is_internal_owner_billing_path(
+            "/api/v1/tenant/billing/wallet/top-ups"
+        ));
+        assert!(!is_internal_owner_billing_path(
+            "/api/v1/billing/wallet/summary"
         ));
     }
 

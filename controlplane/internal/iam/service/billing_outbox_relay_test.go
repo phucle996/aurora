@@ -57,3 +57,34 @@ func TestValidBillingEventRejectsOwnerMismatch(t *testing.T) {
 		t.Fatal("expected matching billing event to be accepted")
 	}
 }
+
+func TestValidBillingEventAcceptsTenantWalletProvision(t *testing.T) {
+	eventID := uuid.New()
+	tenantID := uuid.New()
+	actorID := uuid.New()
+	payload, err := proto.Marshal(&iamproto.TenantWalletProvisionRequestedV1{
+		EventId:       eventID[:],
+		SchemaVersion: 1,
+		TenantId:      tenantID[:],
+		ActorUserId:   actorID[:],
+		Currency:      "USD",
+		OccurredAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := iamEntity.BillingOutboxEvent{
+		EventID:   eventID,
+		EventType: tenantWalletProvisionEventType,
+		OwnerID:   tenantID,
+		OwnerType: "TENANT",
+		Payload:   payload,
+	}
+	if !validBillingEvent(event) {
+		t.Fatal("expected matching tenant wallet event to be accepted")
+	}
+	event.OwnerID = uuid.New()
+	if validBillingEvent(event) {
+		t.Fatal("expected tenant owner mismatch to be rejected")
+	}
+}

@@ -13,7 +13,12 @@ package app
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
+	"time"
 
+	"cost-manager/api/internal/config"
+	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	billingSvcInterface "cost-manager/api/internal/domain/service"
 	"cost-manager/api/internal/repository"
@@ -32,6 +37,14 @@ type Module struct {
 	AccountService                  billingSvcInterface.AccountService
 	AccountHandler                  *handler.AccountHandler
 	PersonalWalletProvisionConsumer *redisHandler.PersonalWalletProvisionConsumer
+	TenantWalletProvisionConsumer   *redisHandler.TenantWalletProvisionConsumer
+
+	PersonalPaymentRepo    billingRepoInterface.PersonalPaymentRepository
+	TenantPaymentRepo      billingRepoInterface.TenantPaymentRepository
+	PersonalPaymentService billingSvcInterface.PersonalPaymentService
+	TenantPaymentService   billingSvcInterface.TenantPaymentService
+	PersonalPaymentHandler *handler.PersonalPaymentHandler
+	TenantPaymentHandler   *handler.TenantPaymentHandler
 
 	PlanRepo    billingRepoInterface.PlanRepository
 	PlanService billingSvcInterface.PlanService
@@ -60,6 +73,7 @@ func NewModule(
 	dbPool *pgxpool.Pool,
 	redisClient *redis.Client,
 	authRedisClient *redis.Client,
+	paymentCfg config.PaymentCfg,
 ) (*Module, error) {
 	if dbPool == nil {
 		return nil, fmt.Errorf("dbPool infrastructure connection cannot be nil")
@@ -76,12 +90,50 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize AccountRepository: instance is nil")
 	}
 
-	accountService := service.NewAccountService(accountRepo, redisClient)
-	if accountService == nil {
-		return nil, fmt.Errorf("failed to initialize AccountService: instance is nil")
+	intentTTL, err := time.ParseDuration(paymentCfg.IntentTTL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PAYMENT_INTENT_TTL: %w", err)
 	}
+	referralTTL, err := time.ParseDuration(paymentCfg.ReferralReservationTTL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PAYMENT_REFERRAL_RESERVATION_TTL: %w", err)
+	}
+	webhookTolerance, err := time.ParseDuration(paymentCfg.WebhookTolerance)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PAYMENT_WEBHOOK_TOLERANCE: %w", err)
+	}
+	paymentPolicy := entity.PaymentPolicy{
+		Provider:           paymentCfg.Provider,
+		CheckoutBaseURL:    paymentCfg.CheckoutBaseURL,
+		ReturnBaseURL:      paymentCfg.ReturnBaseURL,
+		CheckoutSigningKey: paymentCfg.CheckoutSigningSecret,
+		WebhookSigningKey:  paymentCfg.WebhookSigningSecret,
+		MinimumTopUp:       paymentCfg.MinimumTopUpMicroUnits,
+		IntentTTL:          intentTTL,
+		ReferralTTL:        referralTTL,
+		WebhookTolerance:   webhookTolerance,
+	}
+	checkoutURL, checkoutURLErr := url.Parse(paymentPolicy.CheckoutBaseURL)
+	if checkoutURLErr != nil || checkoutURL.Scheme != "https" || checkoutURL.Host == "" {
+		return nil, fmt.Errorf("PAYMENT_CHECKOUT_BASE_URL must be an absolute HTTPS URL")
+	}
+	returnURL, returnURLErr := url.Parse(paymentPolicy.ReturnBaseURL)
+	if returnURLErr != nil || returnURL.Scheme != "https" || returnURL.Host == "" {
+		return nil, fmt.Errorf("PAYMENT_RETURN_BASE_URL must be an absolute HTTPS URL")
+	}
+	if strings.TrimSpace(paymentPolicy.Provider) == "" ||
+		len(paymentPolicy.CheckoutSigningKey) < 32 ||
+		len(paymentPolicy.WebhookSigningKey) < 32 ||
+		paymentPolicy.CheckoutSigningKey == paymentPolicy.WebhookSigningKey ||
+		paymentPolicy.MinimumTopUp <= 0 ||
+		paymentPolicy.IntentTTL <= 0 ||
+		paymentPolicy.ReferralTTL <= 0 ||
+		paymentPolicy.WebhookTolerance <= 0 {
+		return nil, fmt.Errorf("payment configuration is incomplete or uses weak signing keys")
+	}
+	accountService := service.NewAccountService(accountRepo, paymentPolicy)
 
-	accountHandler := handler.NewAccountHandler(accountService)
+	accountHandler := handler.NewAccountHandler(accountService, paymentPolicy.MinimumTopUp)
 	if accountHandler == nil {
 		return nil, fmt.Errorf("failed to initialize AccountHandler: instance is nil")
 	}
@@ -89,6 +141,29 @@ func NewModule(
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionConsumer: %w", err)
 	}
+	tenantWalletProvisionConsumer, err := redisHandler.NewTenantWalletProvisionConsumer(redisClient, accountService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize TenantWalletProvisionConsumer: %w", err)
+	}
+
+	personalPaymentRepository := repository.NewPersonalPaymentRepository(dbPool)
+	tenantPaymentRepository := repository.NewTenantPaymentRepository(dbPool)
+	personalPaymentService := service.NewPersonalPaymentService(
+		personalPaymentRepository,
+		redisClient,
+		paymentPolicy,
+		*checkoutURL,
+		*returnURL,
+	)
+	tenantPaymentService := service.NewTenantPaymentService(
+		tenantPaymentRepository,
+		redisClient,
+		paymentPolicy,
+		*checkoutURL,
+		*returnURL,
+	)
+	personalPaymentHandler := handler.NewPersonalPaymentHandler(personalPaymentService, paymentPolicy)
+	tenantPaymentHandler := handler.NewTenantPaymentHandler(tenantPaymentService, paymentPolicy)
 
 	// 2. Plan Domain DI
 	planRepo := repository.NewPlanRepository(dbPool)
@@ -179,6 +254,13 @@ func NewModule(
 		AccountService:                  accountService,
 		AccountHandler:                  accountHandler,
 		PersonalWalletProvisionConsumer: personalWalletProvisionConsumer,
+		TenantWalletProvisionConsumer:   tenantWalletProvisionConsumer,
+		PersonalPaymentRepo:             personalPaymentRepository,
+		TenantPaymentRepo:               tenantPaymentRepository,
+		PersonalPaymentService:          personalPaymentService,
+		TenantPaymentService:            tenantPaymentService,
+		PersonalPaymentHandler:          personalPaymentHandler,
+		TenantPaymentHandler:            tenantPaymentHandler,
 		PlanRepo:                        planRepo,
 		PlanService:                     planService,
 		PlanHandler:                     planHandler,

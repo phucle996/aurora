@@ -33,7 +33,7 @@ sequenceDiagram
     participant L2 as Shared L2 Redis
     participant PG as Billing PostgreSQL
 
-    UI->>Edge: GET /api/v1/billing/me/estimate/storage?capacity_bytes=N
+    UI->>Edge: GET /api/v1/billing/wallet/estimate/storage?capacity_bytes=N
     Edge->>Edge: verify IAM session + strip/inject trusted identity
     Edge->>Cost: exact self-service route
     Cost->>L1: active STORAGE pricing snapshot
@@ -57,9 +57,9 @@ Invariants:
   effective tier snapshot duy nhất, không ghép ranges từ nhiều version.
 - Pricing publish phát một cache-invalidation hint riêng; TTL là safety net khi Pub/Sub hint bị mất. Hint không
   tham gia durable activation/ledger transaction.
-- `/api/v1/billing/me` dùng IAM session thường của Cloud Console; ACR chỉ dùng Billing alias cho operator routes
+- `/api/v1/billing/wallet` dùng IAM session thường của Cloud Console; ACR chỉ dùng Billing alias cho Cost authority
   (`/billing/tiers`, `/billing/critical/*`, `/billing/auth/*`). Browser không gửi `owner_id`, tier, unit price hoặc
-  Cost credential. Envoy route prefix `/api/v1/billing/me/` phải nằm trước generic Controlplane `/api/` route.
+  Cost credential. Envoy route prefix `/api/v1/billing/` phải nằm trước generic Controlplane `/api/` route.
 - Final charge vẫn dựa trên metered usage và immutable tier version do billing run pin. Estimate có thể stale
   trong bounded cache window và không được dùng là ledger evidence.
 

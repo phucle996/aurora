@@ -76,7 +76,7 @@ func (a *App) Init() error {
 
 	// 5. Initialize Modules. Ownership is Central-internal and uses Shared Redis;
 	// Cost Manager no longer receives a cross-boundary NATS credential.
-	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient)
+	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment)
 	if err != nil {
 		return err
 	}
@@ -96,8 +96,19 @@ func (a *App) Start() error {
 			return fmt.Errorf("start personal wallet provision consumer: %w", err)
 		}
 	}
+	if a.module != nil && a.module.TenantWalletProvisionConsumer != nil {
+		if err := a.module.TenantWalletProvisionConsumer.Start(); err != nil {
+			if a.module.PersonalWalletProvisionConsumer != nil {
+				a.module.PersonalWalletProvisionConsumer.Stop()
+			}
+			return fmt.Errorf("start tenant wallet provision consumer: %w", err)
+		}
+	}
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		if err := a.module.ResourceOwnershipConsumer.Start(); err != nil {
+			if a.module.TenantWalletProvisionConsumer != nil {
+				a.module.TenantWalletProvisionConsumer.Stop()
+			}
 			if a.module.PersonalWalletProvisionConsumer != nil {
 				a.module.PersonalWalletProvisionConsumer.Stop()
 			}
@@ -212,6 +223,9 @@ func (a *App) Stop() {
 
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		a.module.ResourceOwnershipConsumer.Stop()
+	}
+	if a.module != nil && a.module.TenantWalletProvisionConsumer != nil {
+		a.module.TenantWalletProvisionConsumer.Stop()
 	}
 	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
 		a.module.PersonalWalletProvisionConsumer.Stop()

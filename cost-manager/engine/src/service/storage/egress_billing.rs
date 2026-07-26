@@ -209,6 +209,24 @@ impl BillingTask for StorageEgressBillingTask {
                 continue;
             };
 
+            if status == "PENDING_ACTIVATION" {
+                // Account verification only provisions identity and a zero-balance wallet.
+                // Usage cannot make that wallet spendable or create pre-activation debt.
+                let _ = tx.rollback().await;
+                persist_unrated_usage(
+                    &self.pg_pool,
+                    transaction_id,
+                    &row,
+                    Some(owner.resource_id),
+                    usage_quantity,
+                    "WALLET_PENDING_ACTIVATION",
+                    Some(format!("{}:{}", owner.owner_type, owner.owner_id)),
+                )
+                .await?;
+                processed_records += 1;
+                continue;
+            }
+
             // [COMMENT]: Promotional credit được tiêu trước; phần còn lại mới debit cash/overdraft.
             let promo_debit = promotional_balance.min(cost);
             let new_promotional_balance = promotional_balance - promo_debit;
@@ -227,7 +245,7 @@ impl BillingTask for StorageEgressBillingTask {
 
             sqlx::query(
                 "UPDATE billing.wallets \
-                 SET cash_balance=$1, promotional_balance=$2, status=$3::billing.wallet_status, \
+                 SET cash_balance=$1, promotional_balance=$2, status=$3::billing.wallet_lifecycle_status, \
                      version=version+1, updated_at=NOW() WHERE id=$4",
             )
             .bind(new_cash_balance)

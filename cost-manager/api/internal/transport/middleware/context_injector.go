@@ -44,10 +44,22 @@ func ContextInjector() gin.HandlerFunc {
 
 		// [COMMENT]: 4. Inject Tenant ID (x-tenant-id) nếu có
 		if tenantID := strings.TrimSpace(c.GetHeader("x-tenant-id")); tenantID != "" {
-			c.Set(pkgcontext.CtxTenantID, tenantID)
+			if tenantID == "platform" {
+				c.Set(pkgcontext.CtxTenantID, tenantID)
+			} else if id, err := uuid.Parse(tenantID); err == nil && id != uuid.Nil {
+				c.Set(pkgcontext.CtxTenantID, id)
+			} else {
+				c.Set(pkgcontext.CtxTenantID, errInvalidTenantContext{})
+			}
 		}
 
 		// [COMMENT]: Chuyển tiếp request sang các handler/middleware kế tiếp trong chuỗi xử lý
 		c.Next()
 	}
+}
+
+type errInvalidTenantContext struct{}
+
+func (errInvalidTenantContext) Error() string {
+	return "invalid tenant identity context"
 }

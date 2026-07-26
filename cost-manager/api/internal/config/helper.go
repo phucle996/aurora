@@ -52,6 +52,21 @@ func getEnvAsInt(key string, defaultVal int) int {
 	return i
 }
 
+func getEnvAsInt64(key string, defaultVal int64) int64 {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return defaultVal
+	}
+	if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+		val = val[1 : len(val)-1]
+	}
+	i, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return i
+}
+
 // [COMMENT]: getEnvAsBool đọc biến môi trường và ép kiểu về boolean an toàn.
 func getEnvAsBool(key string, defaultVal bool) bool {
 	val := os.Getenv(key)

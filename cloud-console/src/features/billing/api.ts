@@ -80,12 +80,12 @@ function decodeStorageEstimate(value: unknown): StorageEstimate {
 
 /** The API derives the personal owner from the trusted edge identity. */
 export async function getPersonalWalletSummary(signal?: AbortSignal): Promise<PersonalWalletSummary> {
-  const response = await fetchJSON<{ data?: unknown }>("/api/v1/billing/me/wallet/summary", { signal });
+  const response = await fetchJSON<{ data?: unknown }>("/api/v1/billing/wallet/summary", { signal });
   return decodeWalletSummary(response.data);
 }
 
 export async function getStorageEstimate(capacityBytes: string, signal?: AbortSignal): Promise<StorageEstimate> {
   const query = new URLSearchParams({ capacity_bytes: capacityBytes });
-  const response = await fetchJSON<{ data?: unknown }>(`/api/v1/billing/me/estimate/storage?${query}`, { signal });
+  const response = await fetchJSON<{ data?: unknown }>(`/api/v1/billing/wallet/estimate/storage?${query}`, { signal });
   return decodeStorageEstimate(response.data);
 }

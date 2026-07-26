@@ -1,11 +1,8 @@
-import {
-  TrendingUp,
-  Bell,
-  LogOut
-} from "lucide-react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { cn } from "../lib/utils";
+import { Bell, LogOut, TrendingUp } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+
 import { useAuthStore } from "../lib/store/useAuthStore";
+import { cn } from "../lib/utils";
 import { navigationItems } from "../navigation";
 
 interface HeaderProps {
@@ -14,7 +11,6 @@ interface HeaderProps {
 }
 
 export function Header({ currency, setCurrency }: HeaderProps) {
-  // Sử dụng hook của react-router-dom để điều hướng đường dẫn URL
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout, checkPermission } = useAuthStore();
@@ -25,117 +21,91 @@ export function Header({ currency, setCurrency }: HeaderProps) {
     return !item.permission || checkPermission(item.permission.key, item.permission.action);
   });
 
-  // Kiểm tra đường dẫn hiện tại để highlight tab tương ứng
-  const currentPath = location.pathname;
-
   return (
-    <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between px-8 select-none shrink-0 w-full z-40 text-xs">
-      {/* Left: Logo & Top Navigation */}
-      <div className="flex items-center gap-8">
-        {/* Logo ứng dụng Aurora Cost */}
-        <div 
-          className="flex items-center gap-2.5 cursor-pointer"
-          onClick={() => navigate('/')} // Bấm vào logo chuyển về trang chủ /
-        >
-          <div className="bg-blue-600 text-white p-1.5 rounded-[4px] shrink-0">
-            <TrendingUp size={16} />
-          </div>
-          <div>
-            <h1 className="font-extrabold text-sm leading-none text-slate-900 dark:text-white tracking-tight">Aurora Cost</h1>
-            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mt-0.5">Management Plane</span>
-          </div>
+    <header className="z-40 flex min-h-16 w-full shrink-0 flex-wrap items-center gap-3 border-b border-slate-800/80 bg-slate-900 px-4 py-3 text-xs select-none lg:flex-nowrap lg:px-8">
+      <button
+        type="button"
+        className="order-1 flex shrink-0 items-center gap-2.5 text-left"
+        onClick={() => navigate("/")}
+      >
+        <span className="rounded bg-blue-600 p-1.5 text-white">
+          <TrendingUp size={16} />
+        </span>
+        <span>
+          <span className="block text-sm leading-none font-extrabold tracking-tight text-white">Aurora Cost</span>
+          <span className="mt-0.5 block text-[9px] font-bold tracking-wider text-slate-400 uppercase">
+            Management Plane
+          </span>
+        </span>
+      </button>
+
+      <nav className="order-3 flex w-full items-center gap-1 overflow-x-auto pb-0.5 lg:order-2 lg:w-auto lg:flex-1 lg:pl-5">
+        {visibleNavigation.map((item) => {
+          const Icon = item.icon;
+          const active = item.path === "/"
+            ? location.pathname === "/" || location.pathname === "/dashboard"
+            : location.pathname.startsWith(item.path);
+          return (
+            <button
+              type="button"
+              key={item.id}
+              onClick={() => navigate(item.path)}
+              className={cn(
+                "flex shrink-0 items-center rounded px-3 py-2 text-[11px] font-bold transition-colors",
+                active
+                  ? "bg-slate-800 text-blue-400"
+                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200",
+              )}
+            >
+              <Icon size={14} className="mr-1.5 shrink-0" />
+              {item.name}
+            </button>
+          );
+        })}
+      </nav>
+
+      <div className="order-2 ml-auto flex shrink-0 items-center gap-2 sm:gap-3 lg:order-3">
+        <div className="hidden rounded border border-slate-800 bg-slate-800/40 p-0.5 sm:flex">
+          {["VND", "USD"].map((option) => (
+            <button
+              type="button"
+              key={option}
+              onClick={() => setCurrency(option)}
+              className={cn(
+                "rounded px-2.5 py-1 text-[10px] font-bold",
+                currency === option ? "bg-slate-700 text-blue-400 shadow-sm" : "text-slate-500",
+              )}
+            >
+              {option}
+            </button>
+          ))}
         </div>
-
-        {/* Top Navbar Menu điều hướng các Route */}
-        <nav className="flex items-center gap-1">
-          {visibleNavigation.map((item) => {
-            const Icon = item.icon;
-            // Xác định xem mục menu này có đang active dựa trên URL path hiện tại không
-            const isActive = item.path === '/' 
-              ? (currentPath === '/' || currentPath === '/dashboard') 
-              : currentPath.startsWith(item.path);
-
-            return (
-              <button
-                key={item.id}
-                onClick={() => navigate(item.path)} // Điều hướng đến path được định nghĩa
-                className={cn(
-                  "flex items-center px-3.5 py-2 rounded font-bold transition-colors cursor-pointer text-[12px]",
-                  isActive
-                    ? "bg-slate-100 dark:bg-slate-800 text-blue-600 dark:text-blue-400"
-                    : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40 hover:text-slate-800 dark:hover:text-slate-200"
-                )}
-              >
-                <Icon size={14} className="mr-1.5 shrink-0" />
-                <span>{item.name}</span>
-              </button>
-            );
-          })}
-        </nav>
-      </div>
-
-      {/* Right: Currency, Notifications & User Info */}
-      <div className="flex items-center gap-5">
-        {/* Currency Switcher */}
-        <div className="flex border border-slate-200 dark:border-slate-800 rounded p-0.5 bg-slate-50 dark:bg-slate-800/40 shrink-0">
-          <button
-            onClick={() => setCurrency('VND')}
-            className={cn(
-              "px-2.5 py-1 text-[11px] font-bold rounded transition-all cursor-pointer",
-              currency === 'VND'
-                ? "bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400"
-                : "text-slate-400"
-            )}
-          >
-            VND
-          </button>
-          <button
-            onClick={() => setCurrency('USD')}
-            className={cn(
-              "px-2.5 py-1 text-[11px] font-bold rounded transition-all cursor-pointer",
-              currency === 'USD'
-                ? "bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400"
-                : "text-slate-400"
-            )}
-          >
-            USD
-          </button>
-        </div>
-
-        {/* Notifications */}
-        <button className="p-2 border border-slate-200 dark:border-slate-800 rounded hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 relative cursor-pointer outline-none">
-          <Bell size={16} />
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-rose-500 rounded-full"></span>
-        </button>
-
-        {/* Divider */}
-        <div className="h-5 w-[1px] bg-slate-200 dark:bg-slate-800 shrink-0"></div>
-
-        {/* Accountant Profile */}
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded bg-blue-50 dark:bg-blue-950/40 border border-blue-100/50 dark:border-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-xs">
-            {user ? user.username.substring(0, 2).toUpperCase() : 'AU'}
-          </div>
-          <div className="hidden md:block">
-            <p className="text-[11px] font-extrabold text-slate-800 dark:text-slate-200 leading-none">
-              {user ? user.username : 'Aurora User'}
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium mt-0.5">
-              IAM Billing Session
-            </p>
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="h-5 w-[1px] bg-slate-200 dark:bg-slate-800 shrink-0"></div>
-
-        {/* Logout Button */}
         <button
+          type="button"
+          aria-label="Notifications"
+          className="relative hidden rounded border border-slate-800 p-2 text-slate-400 hover:bg-slate-800/40 hover:text-slate-200 sm:block"
+        >
+          <Bell size={16} />
+          <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
+        </button>
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded border border-blue-900/30 bg-blue-950/40 text-xs font-bold text-blue-400">
+            {user ? user.username.substring(0, 2).toUpperCase() : "AU"}
+          </span>
+          <span className="hidden xl:block">
+            <span className="block text-[11px] leading-none font-extrabold text-slate-200">
+              {user?.username ?? "Aurora User"}
+            </span>
+            <span className="mt-0.5 block text-[9px] text-slate-500">IAM Billing Session</span>
+          </span>
+        </div>
+        <button
+          type="button"
           onClick={async () => {
             await logout();
-            navigate('/');
+            navigate("/");
           }}
-          className="p-2 border border-slate-200 dark:border-slate-800 rounded hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/20 dark:hover:text-red-400 text-slate-400 cursor-pointer outline-none transition-colors duration-200 flex items-center justify-center"
+          className="rounded border border-slate-800 p-2 text-slate-400 transition-colors hover:bg-red-950/20 hover:text-red-400"
           title="Đăng xuất"
         >
           <LogOut size={14} />

@@ -23,17 +23,6 @@ export interface PlanItem {
   created_at?: string;
 }
 
-export interface Subscription {
-  id: string;
-  owner_id: string;
-  owner_type: string;
-  plan_id: string;
-  status: string;
-  started_at: string;
-  expires_at?: string;
-  plan?: PlanItem;
-}
-
 export interface ZoneItem {
   id: string;
   code: string;
@@ -56,49 +45,128 @@ export interface PriceItem {
   created_at: string;
 }
 
-// Đảm bảo có owner_id duy nhất trong session để đối soát/subscribe thử nghiệm
-export function getDemoOwner(): { id: string; type: string } {
-  let id = localStorage.getItem('demo_owner_id');
-  if (!id) {
-    id = '019f3d3e-0000-7894-9236-c5122634cb4f'; // Default demo UUID
-    localStorage.setItem('demo_owner_id', id);
-  }
-  return { id, type: 'personal' };
+export interface WalletSummary {
+  wallet_id: string;
+  currency: string;
+  cash_balance_micro_units: string;
+  promotional_balance_micro_units: string;
+  overdraft_limit_micro_units: string;
+  status: 'PENDING_ACTIVATION' | 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+  version: string;
+  updated_at: string;
+  minimum_top_up_micro_units?: string;
+}
+
+export interface ReferralReservation {
+  id: string;
+  code: string;
+  status: 'RESERVED' | 'REDEEMED' | 'REJECTED' | 'CANCELLED';
+  grant_amount_micro_units: string;
+  minimum_top_up_micro_units: string;
+  currency: string;
+  expires_at: string;
+  redeemed_at?: string;
+  rejection_reason?: string;
+}
+
+export interface PaymentIntent {
+  id: string;
+  amount_micro_units: string;
+  currency: string;
+  status: 'PENDING' | 'SETTLED' | 'EXPIRED' | 'CANCELLED';
+  activates_wallet: boolean;
+  expires_at: string;
+  created_at: string;
+  settled_at?: string;
+  checkout_url?: string;
+}
+
+export interface BillingOnboarding {
+  wallet: WalletSummary;
+  minimum_top_up_micro_units: string;
+  referral: ReferralReservation | null;
+  latest_payment_intent: PaymentIntent | null;
+}
+
+export interface ReferralCampaign {
+  id: string;
+  code: string;
+  name: string;
+  amount_micro_units: string;
+  minimum_top_up_micro_units: string;
+  currency: string;
+  status: 'ACTIVE' | 'PAUSED' | 'ENDED';
+  max_redemptions?: string;
+  redemptions: string;
+  active_reservations: string;
+  version: string;
+  starts_at: string;
+  ends_at?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export const billingApi = {
-  // Get active subscription for current demo owner
-  async getActiveSubscription(): Promise<Subscription | null> {
-    const owner = getDemoOwner();
-    try {
-      return await request<Subscription | null>(
-        `/billing/subscriptions/active?owner_id=${owner.id}&owner_type=${owner.type}`
-      );
-    } catch (e) {
-      console.error('Failed to fetch active subscription:', e);
-      return null;
-    }
+  async getWalletSummary(signal?: AbortSignal): Promise<WalletSummary> {
+    return request<WalletSummary>('/billing/wallet/summary', { method: 'GET', signal });
   },
 
-  // Subscribe current demo owner to a plan
-  async subscribe(planId: string): Promise<Subscription> {
-    const owner = getDemoOwner();
-    return await request<Subscription>('/billing/subscriptions', {
+  async getOnboarding(signal?: AbortSignal): Promise<BillingOnboarding> {
+    return request<BillingOnboarding>('/billing/wallet/onboarding', { method: 'GET', signal });
+  },
+
+  async reserveReferral(code: string, idempotencyKey: string): Promise<ReferralReservation> {
+    return request<ReferralReservation>('/billing/wallet/referral', {
       method: 'POST',
-      body: JSON.stringify({
-        owner_id: owner.id,
-        owner_type: owner.type,
-        plan_id: planId,
-      }),
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ code }),
     });
   },
 
-  // Cancel subscription for current demo owner
-  async cancelSubscription(): Promise<void> {
-    const owner = getDemoOwner();
-    await request<void>(`/billing/subscriptions/active?owner_id=${owner.id}&owner_type=${owner.type}`, {
-      method: 'DELETE',
+  async createTopUp(amountMicroUnits: string, idempotencyKey: string): Promise<PaymentIntent> {
+    return request<PaymentIntent>('/billing/wallet/top-ups', {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ amount_micro_units: amountMicroUnits }),
     });
+  },
+
+  async getTopUp(id: string, signal?: AbortSignal): Promise<PaymentIntent> {
+    return request<PaymentIntent>(`/billing/wallet/top-ups/${encodeURIComponent(id)}`, { method: 'GET', signal });
+  },
+
+  async listReferralCampaigns(signal?: AbortSignal): Promise<ReferralCampaign[]> {
+    return request<ReferralCampaign[]>('/billing/referrals', { method: 'GET', signal });
+  },
+
+  async createReferralCampaign(payload: {
+    code: string;
+    name: string;
+    amount_micro_units: string;
+    minimum_top_up_micro_units: string;
+    currency: 'USD';
+    max_redemptions?: string;
+    starts_at: string;
+    ends_at?: string;
+  }): Promise<ReferralCampaign> {
+    return criticalFetcher<ReferralCampaign>('/billing/critical/referrals', {
+      method: 'POST',
+      body: payload,
+    });
+  },
+
+  async updateReferralCampaignStatus(
+    id: string,
+    status: ReferralCampaign['status'],
+    expectedVersion: string,
+  ): Promise<ReferralCampaign> {
+    return criticalFetcher<ReferralCampaign>(
+      `/billing/critical/referrals/${encodeURIComponent(id)}/status`,
+      {
+        method: 'PATCH',
+        body: { status, expected_version: expectedVersion },
+      },
+    );
   },
 
   // List all available active plans

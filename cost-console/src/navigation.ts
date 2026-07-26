@@ -5,6 +5,7 @@ import {
   Receipt,
   CreditCard,
   History,
+  TicketPercent,
 } from "lucide-react";
 
 export interface NavigationItem {
@@ -28,7 +29,6 @@ export const navigationItems: NavigationItem[] = [
     anyPermission: [
       { key: "billing:plan", action: "read" },
       { key: "billing:tier", action: "read" },
-      { key: "billing:subscription", action: "write" },
     ],
   },
   {
@@ -51,5 +51,12 @@ export const navigationItems: NavigationItem[] = [
     path: "/history",
     icon: History,
     permission: { key: "billing:ledger", action: "read" },
+  },
+  {
+    id: "referrals",
+    name: "Referral",
+    path: "/referrals",
+    icon: TicketPercent,
+    permission: { key: "billing:credit", action: "adjust" },
   },
 ];

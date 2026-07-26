@@ -172,6 +172,15 @@ func NewModule(
 	}, nil
 }
 
+func (m *Module) SetTenantBillingOutboxNotifier(notify func()) error {
+	tenantService, ok := m.TenantService.(*coreSvcImpl.TenantService)
+	if !ok || tenantService == nil {
+		return fmt.Errorf("hierarchy module: concrete tenant service is unavailable")
+	}
+	tenantService.SetBillingOutboxNotifier(notify)
+	return nil
+}
+
 // Stop hủy các background goroutine của module Core an toàn.
 func (m *Module) Stop() {
 	if m == nil {

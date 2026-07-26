@@ -10,10 +10,12 @@ WORKDIR /app
 # [COMMENT]: Khai báo ARG nhận các biến môi trường build-time cho Next.js Client-side
 ARG NEXT_PUBLIC_ENVOY_URL
 ARG NEXT_PUBLIC_CENTRIFUGO_WS_URL
+ARG NEXT_PUBLIC_COST_CONSOLE_URL
 
 # [COMMENT]: Xuất các ARG thành ENV để trình biên dịch 'next build' nhúng trực tiếp vào JS bundle client
 ENV NEXT_PUBLIC_ENVOY_URL=$NEXT_PUBLIC_ENVOY_URL
 ENV NEXT_PUBLIC_CENTRIFUGO_WS_URL=$NEXT_PUBLIC_CENTRIFUGO_WS_URL
+ENV NEXT_PUBLIC_COST_CONSOLE_URL=$NEXT_PUBLIC_COST_CONSOLE_URL
 
 COPY package*.json ./
 RUN npm install --legacy-peer-deps

@@ -94,7 +94,6 @@ export function consoleNavigation(
       label: "Cost Management",
       icon: Coins,
       breadcrumb: ["Console", "Cost Management"],
-      permission: { key: "billing:tier", action: "read" },
       external: "billing",
     },
   ];

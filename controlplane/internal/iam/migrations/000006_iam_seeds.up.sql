@@ -81,6 +81,7 @@ VALUES
     (gen_random_uuid(), 'billing', 'tier', 'read', 'Read billing tiers and immutable versions'),
     (gen_random_uuid(), 'billing', 'tier', 'publish', 'Publish immutable billing tier versions'),
     (gen_random_uuid(), 'billing', 'wallet', 'read', 'Read owner wallets'),
+    (gen_random_uuid(), 'billing', 'wallet', 'top_up', 'Fund a tenant wallet'),
     (gen_random_uuid(), 'billing', 'ledger', 'read', 'Read immutable billing ledger entries'),
     (gen_random_uuid(), 'billing', 'subscription', 'write', 'Activate or change an owner subscription'),
     (gen_random_uuid(), 'billing', 'credit', 'adjust', 'Post an audited wallet credit adjustment')
@@ -122,6 +123,7 @@ SELECT r.id, p.id
 FROM roles r
 CROSS JOIN permissions p
 WHERE r.code IN ('platform_root', 'platform_admin')
+  AND NOT (p.module='billing' AND p.object='wallet' AND p.behavior='top_up')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- [COMMENT]: Billing admin chỉ mang quyền billing; level 1 không mặc nhiên mở các module platform khác.
@@ -131,6 +133,7 @@ FROM roles r
 CROSS JOIN permissions p
 WHERE r.code = 'billing_admin'
   AND p.module = 'billing'
+  AND NOT (p.object='wallet' AND p.behavior='top_up')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- [COMMENT]: User thường chỉ được mutate subscription của chính mình qua owner context đã xác minh.
@@ -153,6 +156,18 @@ CROSS JOIN permissions p
 WHERE r.code IN ('platform_user', 'tenant_owner', 'tenant_admin', 'tenant_manager')
   AND p.module = 'email'
   AND p.object IN ('consumer', 'template')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+-- [COMMENT]: Tenant funding is an explicit tenant-scoped capability. Personal
+-- funding is self-service and never depends on this role permission.
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.code IN ('tenant_owner', 'tenant_admin')
+  AND p.module = 'billing'
+  AND p.object = 'wallet'
+  AND p.behavior IN ('read', 'top_up')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- [COMMENT]: Tenant member/viewer được quan sát cấu hình nhưng không được mutate resource.

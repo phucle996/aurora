@@ -11,265 +11,155 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-const freeTierCampaignCode = "FREE_TIER_100_USD"
-
-var promoLedgerNamespace = uuid.MustParse("b944fdea-ce29-5e4c-87cb-5cd8917b18b1")
 
 type accountRepository struct {
 	db *pgxpool.Pool
 }
 
-// [COMMENT]: NewAccountRepository khởi tạo repository quản lý money mutation.
 func NewAccountRepository(db *pgxpool.Pool) *accountRepository {
 	return &accountRepository{db: db}
 }
 
-type freeTierCatalog struct {
-	PackID             uuid.UUID
-	CampaignID         uuid.UUID
-	AmountMicroUnits   int64
-	Currency           string
-	CampaignExpiration *time.Time
-}
-
-// [COMMENT]: ActivateFreeTier serialize theo owner và commit subscription-wallet-grant-ledger cùng transaction.
-func (r *accountRepository) ActivateFreeTier(ctx context.Context, command entity.FreeTierActivation) (*entity.FreeTierAccount, error) {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
-	if err != nil {
-		return nil, fmt.Errorf("account repo: begin activation: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	// Advisory xact lock theo owner chặn hai idempotency key khác nhau cùng thắng trước unique index.
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, command.OwnerID.String()+":"+string(command.OwnerType)); err != nil {
-		return nil, fmt.Errorf("account repo: lock owner activation: %w", err)
-	}
-
-	var existing entity.FreeTierAccount
-	var rawOwnerType string
-	findErr := tx.QueryRow(ctx, `
-		SELECT s.id, w.id, g.id, s.owner_id, s.owner_type::text, w.currency,
-		       w.promotional_balance, g.amount_micro_units, s.started_at
-		FROM billing.subscriptions s
-		JOIN billing.packs p ON p.id = s.pack_id AND p.code = 'FREE_TIER'
-		JOIN billing.wallets w ON w.owner_id = s.owner_id AND w.owner_type = s.owner_type
-		JOIN billing.credit_grants g ON g.wallet_id = w.id
-		JOIN billing.promotion_campaigns c ON c.id = g.campaign_id AND c.code = $1
-		WHERE s.idempotency_key = $2 AND s.owner_id = $3 AND s.owner_type = $4::billing.owner_type
-	`, freeTierCampaignCode, command.IdempotencyKey, command.OwnerID, string(command.OwnerType)).Scan(
-		&existing.SubscriptionID, &existing.WalletID, &existing.CreditGrantID, &existing.OwnerID, &rawOwnerType,
-		&existing.Currency, &existing.PromotionalBalance, &existing.GrantedMicroUnits, &existing.SubscriptionStarted,
-	)
-	existing.OwnerType = entity.OwnerType(rawOwnerType)
-	if findErr == nil {
-		existing.Created = false
-		if commitErr := tx.Commit(ctx); commitErr != nil {
-			return nil, fmt.Errorf("account repo: commit idempotent activation: %w", commitErr)
-		}
-		return &existing, nil
-	} else if !errors.Is(findErr, pgx.ErrNoRows) {
-		return nil, findErr
-	}
-
-	var catalog freeTierCatalog
-	err = tx.QueryRow(ctx, `
-		SELECT p.id, c.id, c.amount_micro_units, c.currency,
-		       CASE WHEN c.ends_at IS NULL THEN NULL ELSE c.ends_at END
-		FROM billing.packs p
-		JOIN billing.promotion_campaigns c ON c.code = $1
-		WHERE p.code = 'FREE_TIER' AND p.status = 'ACTIVE'
-		  AND c.status = 'ACTIVE' AND c.starts_at <= NOW()
-		  AND (c.ends_at IS NULL OR NOW() < c.ends_at)
-		FOR SHARE OF p, c
-	`, freeTierCampaignCode).Scan(&catalog.PackID, &catalog.CampaignID, &catalog.AmountMicroUnits, &catalog.Currency, &catalog.CampaignExpiration)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, billingTaxonomy.ErrPackNotActive
-	}
-	if err != nil {
-		return nil, fmt.Errorf("account repo: load free tier catalog: %w", err)
-	}
-
-	now := time.Now().UTC()
-	subscriptionID := uuid.New()
-	_, err = tx.Exec(ctx, `
-		INSERT INTO billing.subscriptions
-			(id, owner_id, owner_type, pack_id, status, idempotency_key, started_at)
-		VALUES ($1, $2, $3::billing.owner_type, $4, 'ACTIVE', $5, $6)
-	`, subscriptionID, command.OwnerID, string(command.OwnerType), catalog.PackID, command.IdempotencyKey, now)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, billingTaxonomy.ErrAlreadySubscribed
-		}
-		return nil, fmt.Errorf("account repo: insert subscription: %w", err)
-	}
-
-	walletID := uuid.New()
-	var cashBalance, promotionalBalance int64
-	err = tx.QueryRow(ctx, `
-		INSERT INTO billing.wallets (id, owner_id, owner_type, currency)
-		VALUES ($1, $2, $3::billing.owner_type, $4)
-		ON CONFLICT (owner_id, owner_type, currency) DO UPDATE
-		SET updated_at = billing.wallets.updated_at
-		RETURNING id, cash_balance, promotional_balance
-	`, walletID, command.OwnerID, string(command.OwnerType), catalog.Currency).Scan(&walletID, &cashBalance, &promotionalBalance)
-	if err != nil {
-		return nil, fmt.Errorf("account repo: create wallet: %w", err)
-	}
-
-	grantID := uuid.New()
-	_, err = tx.Exec(ctx, `
-		INSERT INTO billing.credit_grants
-			(id, campaign_id, wallet_id, owner_id, owner_type, amount_micro_units, currency, expires_at, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5::billing.owner_type, $6, $7, $8, $9)
-	`, grantID,
-		catalog.CampaignID,
-		walletID,
-		command.OwnerID,
-		string(command.OwnerType),
-		catalog.AmountMicroUnits,
-		catalog.Currency,
-		catalog.CampaignExpiration,
-		command.IdempotencyKey,
-	)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, billingTaxonomy.ErrAlreadySubscribed
-		}
-		return nil, fmt.Errorf("account repo: insert promotional grant: %w", err)
-	}
-
-	promotionalBalance += catalog.AmountMicroUnits
-	var walletVersion int64
-	err = tx.QueryRow(ctx, `
-		UPDATE billing.wallets
-		SET promotional_balance = $1, version = version + 1, updated_at = $2
-		WHERE id = $3 AND status = 'ACTIVE'
-		RETURNING version
-	`, promotionalBalance, now, walletID).Scan(&walletVersion)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, billingTaxonomy.ErrInvalidWallet
-	}
-	if err != nil {
-		return nil, fmt.Errorf("account repo: credit promotional balance: %w", err)
-	}
-	_ = walletVersion // Version is persisted for OCC/reconciliation even though activation response does not expose it.
-
-	ledgerID := uuid.NewSHA1(promoLedgerNamespace, grantID[:])
-	_, err = tx.Exec(ctx, `
-		INSERT INTO billing.wallet_ledger_entries
-			(id, wallet_id, owner_id, owner_type, amount_micro_units, cash_balance_after,
-			 promotional_balance_after, currency, entry_type, reference_id, description, occurred_at)
-		VALUES ($1, $2, $3, $4::billing.owner_type, $5, $6, $7, $8,
-		        'PROMO_CREDIT', $9, $10, $11)
-	`, ledgerID, walletID, command.OwnerID, string(command.OwnerType), catalog.AmountMicroUnits,
-		cashBalance, promotionalBalance, catalog.Currency, grantID.String(), "Free Tier promotional credit", now)
-	if err != nil {
-		return nil, fmt.Errorf("account repo: insert promotional ledger: %w", err)
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01") {
-			return nil, billingTaxonomy.ErrConflict
-		}
-		return nil, fmt.Errorf("account repo: commit activation: %w", err)
-	}
-	return &entity.FreeTierAccount{
-		SubscriptionID:      subscriptionID,
-		WalletID:            walletID,
-		CreditGrantID:       grantID,
-		OwnerID:             command.OwnerID,
-		OwnerType:           command.OwnerType,
-		Currency:            catalog.Currency,
-		PromotionalBalance:  promotionalBalance,
-		GrantedMicroUnits:   catalog.AmountMicroUnits,
-		SubscriptionStarted: now,
-		Created:             true,
-	}, nil
-}
-
-// [COMMENT]: EnsurePersonalWallet khởi tạo ví PERSONAL với số dư 0 USD khi tài khoản được verified.
-// Thao tác này là idempotent, sử dụng ON CONFLICT DO NOTHING để chống đụng độ trong môi trường HA/Concurrent requests.
-func (r *accountRepository) EnsurePersonalWallet(ctx context.Context, ownerID uuid.UUID) (uuid.UUID, error) {
-	walletID := uuid.New()
-	var finalWalletID uuid.UUID
-
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO billing.wallets (id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
-		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'ACTIVE')
-		ON CONFLICT (owner_id, owner_type, currency) DO UPDATE
-		SET updated_at = NOW()
-		RETURNING id
-	`, walletID, ownerID).Scan(&finalWalletID)
-
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("account repo: ensure personal wallet: %w", err)
-	}
-
-	return finalWalletID, nil
-}
-
-// [COMMENT]: Inbox và wallet cùng transaction; ACK chỉ được phép sau khi hàm này commit.
-func (r *accountRepository) ApplyPersonalWalletProvision(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error {
+// ApplyPersonalWalletProvision commits the inbox row and zero-balance wallet
+// together. The wallet is not spendable until a verified settlement activates it.
+func (r *accountRepository) ApplyPersonalWalletProvision(
+	ctx context.Context,
+	eventID uuid.UUID,
+	ownerID uuid.UUID,
+	payloadHash string,
+) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("account repo: begin verified event tx: %w", err)
+		return fmt.Errorf("account repo: begin wallet provision: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var inserted bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.wallet_provision_inbox
-			(event_id, schema_version, owner_id, payload_hash)
-		VALUES ($1, 1, $2, $3)
+			(event_id, schema_version, owner_id, owner_type, payload_hash)
+		VALUES ($1, 1, $2, 'PERSONAL', $3)
 		ON CONFLICT (event_id) DO NOTHING
 		RETURNING TRUE
 	`, eventID, ownerID, payloadHash).Scan(&inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
-		var storedHash string
-		if err := tx.QueryRow(ctx, `SELECT payload_hash FROM billing.wallet_provision_inbox WHERE event_id=$1`, eventID).Scan(&storedHash); err != nil {
-			return err
+		var storedHash, storedOwnerType string
+		var storedOwnerID uuid.UUID
+		if err := tx.QueryRow(ctx,
+			`SELECT owner_id, owner_type::text, payload_hash FROM billing.wallet_provision_inbox WHERE event_id=$1`,
+			eventID,
+		).Scan(&storedOwnerID, &storedOwnerType, &storedHash); err != nil {
+			return fmt.Errorf("account repo: read wallet provision replay: %w", err)
 		}
-		if storedHash != payloadHash {
+		if storedOwnerID != ownerID || storedOwnerType != string(entity.OwnerTypePersonal) || storedHash != payloadHash {
 			return fmt.Errorf("account repo: event_id %s reused with different payload", eventID)
 		}
-		return nil
+		return tx.Commit(ctx)
 	}
 	if err != nil {
-		return fmt.Errorf("account repo: insert account inbox: %w", err)
+		return fmt.Errorf("account repo: insert wallet provision inbox: %w", err)
 	}
 
-	// [COMMENT]: Unique owner tuple là lớp idempotency thứ hai khi các event khác nhau cùng chỉ một user.
+	// The owner tuple is a second idempotency boundary when upstream emits two
+	// different event IDs for the same verified IAM principal.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO billing.wallets
 			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
-		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'ACTIVE')
+		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'PENDING_ACTIVATION')
 		ON CONFLICT (owner_id, owner_type, currency) DO NOTHING
 	`, uuid.New(), ownerID)
 	if err != nil {
-		return fmt.Errorf("account repo: ensure verified personal wallet: %w", err)
+		return fmt.Errorf("account repo: create pending personal wallet: %w", err)
 	}
-	_, err = tx.Exec(ctx, `UPDATE billing.wallet_provision_inbox SET status='APPLIED', processed_at=NOW() WHERE event_id=$1`, eventID)
-	if err != nil {
-		return err
+	if _, err = tx.Exec(ctx, `
+		UPDATE billing.wallet_provision_inbox
+		SET status='APPLIED', processed_at=NOW()
+		WHERE event_id=$1
+	`, eventID); err != nil {
+		return fmt.Errorf("account repo: mark wallet provision applied: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("account repo: commit wallet provision: %w", err)
+	}
+	return nil
 }
 
-// GetPersonalWalletSummary chỉ đọc đúng wallet PERSONAL của trusted actor.
-// Không nhận owner_type/currency từ HTTP để tránh caller biến endpoint thành wallet enumeration.
-func (r *accountRepository) GetPersonalWalletSummary(ctx context.Context, ownerID uuid.UUID) (*entity.WalletSummary, error) {
+// ApplyTenantWalletProvision is intentionally independent from personal
+// onboarding: tenant creation never reserves or grants promotional balance.
+func (r *accountRepository) ApplyTenantWalletProvision(
+	ctx context.Context,
+	eventID uuid.UUID,
+	tenantID uuid.UUID,
+	actorID uuid.UUID,
+	payloadHash string,
+) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("account repo: begin tenant wallet provision: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var inserted bool
+	err = tx.QueryRow(ctx, `
+		INSERT INTO billing.wallet_provision_inbox
+			(event_id, schema_version, owner_id, owner_type, actor_user_id, payload_hash)
+		VALUES ($1, 1, $2, 'TENANT', $3, $4)
+		ON CONFLICT (event_id) DO NOTHING
+		RETURNING TRUE
+	`, eventID, tenantID, actorID, payloadHash).Scan(&inserted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var storedOwnerID, storedActorID uuid.UUID
+		var storedOwnerType, storedHash string
+		if err := tx.QueryRow(ctx, `
+			SELECT owner_id, owner_type::text, actor_user_id, payload_hash
+			FROM billing.wallet_provision_inbox
+			WHERE event_id=$1
+		`, eventID).Scan(&storedOwnerID, &storedOwnerType, &storedActorID, &storedHash); err != nil {
+			return fmt.Errorf("account repo: read tenant wallet provision replay: %w", err)
+		}
+		if storedOwnerID != tenantID || storedOwnerType != string(entity.OwnerTypeTenant) ||
+			storedActorID != actorID || storedHash != payloadHash {
+			return fmt.Errorf("account repo: tenant event_id %s reused with different payload", eventID)
+		}
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return fmt.Errorf("account repo: insert tenant wallet provision inbox: %w", err)
+	}
+
+	// The owner tuple is the second fence when create-tenant delivery is retried
+	// with a different event ID after a relay crash.
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO billing.wallets
+			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
+		VALUES ($1, $2, 'TENANT', 'USD', 0, 0, 'PENDING_ACTIVATION')
+		ON CONFLICT (owner_id, owner_type, currency) DO NOTHING
+	`, uuid.New(), tenantID); err != nil {
+		return fmt.Errorf("account repo: create pending tenant wallet: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE billing.wallet_provision_inbox
+		SET status='APPLIED', processed_at=NOW()
+		WHERE event_id=$1
+	`, eventID); err != nil {
+		return fmt.Errorf("account repo: mark tenant wallet provision applied: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("account repo: commit tenant wallet provision: %w", err)
+	}
+	return nil
+}
+
+func (r *accountRepository) GetPersonalWalletSummary(
+	ctx context.Context,
+	ownerID uuid.UUID,
+) (*entity.WalletSummary, error) {
 	var summary entity.WalletSummary
-	var status string
 	err := r.db.QueryRow(ctx, `
 		SELECT id, currency, cash_balance, promotional_balance, overdraft_limit,
-		       status::text, version, updated_at
+		       status, version, updated_at
 		FROM billing.wallets
 		WHERE owner_id = $1
 		  AND owner_type = 'PERSONAL'::billing.owner_type
@@ -280,7 +170,7 @@ func (r *accountRepository) GetPersonalWalletSummary(ctx context.Context, ownerI
 		&summary.CashBalanceMicroUnits,
 		&summary.PromotionalBalanceMicroUnits,
 		&summary.OverdraftLimitMicroUnits,
-		&status,
+		&summary.Status,
 		&summary.Version,
 		&summary.UpdatedAt,
 	)
@@ -288,8 +178,94 @@ func (r *accountRepository) GetPersonalWalletSummary(ctx context.Context, ownerI
 		return nil, billingTaxonomy.ErrWalletNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("account repo: read personal wallet summary: %w", err)
+		return nil, fmt.Errorf("account repo: read personal wallet: %w", err)
 	}
-	summary.Status = status
 	return &summary, nil
+}
+
+func (r *accountRepository) GetOnboarding(
+	ctx context.Context,
+	ownerID uuid.UUID,
+	minimumTopUp int64,
+) (*entity.OnboardingSnapshot, error) {
+	wallet, err := r.GetPersonalWalletSummary(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &entity.OnboardingSnapshot{
+		Wallet:       *wallet,
+		MinimumTopUp: minimumTopUp,
+	}
+
+	var reservation entity.ReferralReservation
+	var redeemedAt *time.Time
+	err = r.db.QueryRow(ctx, `
+		SELECT id, campaign_id, code_snapshot,
+		       CASE WHEN status='RESERVED' AND expires_at <= NOW() THEN 'CANCELLED' ELSE status END,
+		       grant_amount_micro_units,
+		       minimum_top_up_micro_units, currency, expires_at, grant_expires_at, redeemed_at,
+		       COALESCE(rejection_reason,
+		                CASE WHEN status='RESERVED' AND expires_at <= NOW() THEN 'RESERVATION_EXPIRED' END,
+		                '')
+		FROM billing.referral_reservations
+		WHERE owner_id=$1 AND owner_type='PERSONAL'::billing.owner_type
+		  AND redemption_kind='ONBOARDING'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, ownerID).Scan(
+		&reservation.ID,
+		&reservation.CampaignID,
+		&reservation.Code,
+		&reservation.Status,
+		&reservation.GrantAmountMicroUnits,
+		&reservation.MinimumTopUpMicroUnits,
+		&reservation.Currency,
+		&reservation.ExpiresAt,
+		&reservation.GrantExpiresAt,
+		&redeemedAt,
+		&reservation.RejectionReason,
+	)
+	if err == nil {
+		reservation.RedeemedAt = redeemedAt
+		snapshot.Referral = &reservation
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("account repo: read referral reservation: %w", err)
+	}
+
+	var intent entity.PaymentIntent
+	var referralID *uuid.UUID
+	var settledAt *time.Time
+	err = r.db.QueryRow(ctx, `
+		SELECT id, wallet_id, amount_micro_units, currency, provider,
+		       COALESCE(provider_payment_id, ''),
+		       CASE WHEN status='PENDING' AND expires_at <= NOW() THEN 'EXPIRED' ELSE status END,
+		       activates_wallet,
+		       referral_reservation_id, expires_at, settled_at, created_at
+		FROM billing.payment_intents
+		WHERE owner_id=$1 AND owner_type='PERSONAL'::billing.owner_type
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, ownerID).Scan(
+		&intent.ID,
+		&intent.WalletID,
+		&intent.AmountMicroUnits,
+		&intent.Currency,
+		&intent.Provider,
+		&intent.ProviderPaymentID,
+		&intent.Status,
+		&intent.ActivatesWallet,
+		&referralID,
+		&intent.ExpiresAt,
+		&settledAt,
+		&intent.CreatedAt,
+	)
+	if err == nil {
+		intent.OwnerID = ownerID
+		intent.ReferralReservationID = referralID
+		intent.SettledAt = settledAt
+		snapshot.LatestPaymentIntent = &intent
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("account repo: read latest payment intent: %w", err)
+	}
+	return snapshot, nil
 }

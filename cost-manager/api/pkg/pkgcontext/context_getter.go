@@ -19,14 +19,6 @@ const (
 	CtxUserName = "ctx_username"
 )
 
-// [COMMENT]: Identity là struct đại diện cho bộ thông tin định danh tin cậy (trusted identity) được truyền từ Edge Gateway.
-type Identity struct {
-	UserID   uuid.UUID
-	Username string
-	ZoneID   uuid.UUID
-	TenantID string
-}
-
 // [COMMENT]: GetUserID trích xuất và validate User UUID từ Gin Context.
 // Nếu thiếu hoặc sai định dạng, tự động log warning và gửi HTTP response Unauthorized (401).
 func GetUserID(c *gin.Context, op string) (uuid.UUID, bool) {
@@ -96,44 +88,32 @@ func GetUserName(c *gin.Context, op string) (string, bool) {
 	return "", false
 }
 
-// [COMMENT]: GetTenantID trích xuất TenantID (tùy chọn) từ Gin Context.
-// Không bắt buộc phải có, nhưng nếu có thì không được vượt quá 128 ký tự. Trả về string rỗng nếu không có.
-func GetTenantID(c *gin.Context, op string) string {
+// [COMMENT]: GetTenantID trích xuất và validate Tenant UUID từ Gin Context (fail-closed).
+// Nếu thiếu hoặc sai định dạng context, tự động log warning và gửi HTTP response (403 Forbidden / 401 Unauthorized).
+func GetTenantID(c *gin.Context, op string) (uuid.UUID, bool) {
 	val, ok := c.Get(CtxTenantID)
 	if !ok {
-		return ""
+		// [COMMENT]: Log cảnh báo và phản hồi 403 Forbidden khi thiếu tenant context
+		logger.HandlerWarn(c, op, nil, "missing tenant identity context")
+		apires.RespondForbidden(c, "verified tenant context is required")
+		return uuid.Nil, false
 	}
-	if tenantID, isStr := val.(string); isStr {
-		trimmed := strings.TrimSpace(tenantID)
-		if len(trimmed) <= 128 {
-			return trimmed
+	if err, invalid := val.(error); invalid {
+		// [COMMENT]: Log cảnh báo và phản hồi 401 Unauthorized khi tenant context sai định dạng
+		logger.HandlerWarn(c, op, err, "invalid tenant identity context")
+		apires.RespondUnauthorized(c, "trusted billing identity is missing or invalid")
+		return uuid.Nil, false
+	}
+	if tenantID, isUUID := val.(uuid.UUID); isUUID && tenantID != uuid.Nil {
+		return tenantID, true
+	}
+	if tenantStr, isStr := val.(string); isStr {
+		if id, err := uuid.Parse(strings.TrimSpace(tenantStr)); err == nil && id != uuid.Nil {
+			return id, true
 		}
-		logger.HandlerWarn(c, op, nil, "oversized tenant id header ignored")
 	}
-	return ""
-}
-
-// [COMMENT]: GetIdentity gom toàn bộ bộ định danh đầy đủ từ Gin Context thành struct Identity.
-// Trả về false nếu bất kỳ trường thông tin bắt buộc nào (UserID, ZoneID, Username) bị thiếu/không hợp lệ.
-func GetIdentity(c *gin.Context, op string) (Identity, bool) {
-	userID, userOk := GetUserID(c, op)
-	if !userOk {
-		return Identity{}, false
-	}
-	zoneID, zoneOk := GetZoneID(c, op)
-	if !zoneOk {
-		return Identity{}, false
-	}
-	username, nameOk := GetUserName(c, op)
-	if !nameOk {
-		return Identity{}, false
-	}
-	tenantID := GetTenantID(c, op)
-
-	return Identity{
-		UserID:   userID,
-		Username: username,
-		ZoneID:   zoneID,
-		TenantID: tenantID,
-	}, true
+	// [COMMENT]: Log cảnh báo và phản hồi 403 Forbidden khi tenant identity không hợp lệ
+	logger.HandlerWarn(c, op, nil, "non-concrete tenant identity context")
+	apires.RespondForbidden(c, "verified tenant context is required")
+	return uuid.Nil, false
 }

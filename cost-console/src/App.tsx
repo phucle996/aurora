@@ -5,6 +5,7 @@ import { Header } from './components/Header';
 import { RouteGuard } from './components/RouteGuard';
 import PlanPage from './page/plan/page';
 import DashboardPage from './page/dashboard/page';
+import { ReferralCampaigns } from './page/referrals/ReferralCampaigns';
 import { queryClient } from './lib/queryClient';
 import { useAuthStore } from './lib/store/useAuthStore';
 import { navigationItems } from './navigation';
@@ -32,7 +33,7 @@ function FeatureInDevelopment() {
 function CostDashboardShell() {
   // State quản lý loại tiền tệ chính (VND / USD)
   const [currency, setCurrency] = useState('VND');
-  const { checkPermission } = useAuthStore();
+  const { checkPermission, renderContext } = useAuthStore();
   const hasAdminDashboard = [
     ['billing:tier', 'publish'],
     ['billing:credit', 'adjust'],
@@ -48,7 +49,7 @@ function CostDashboardShell() {
 
       {/* Khu vực nội dung hiển thị chính (Main Content Area) */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        <section className="flex-1 overflow-y-auto p-8">
+        <section className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
           <Routes>
             {/* Route chính /plan cho trang Quản lý Gói Cước & Giá */}
             <Route
@@ -58,7 +59,6 @@ function CostDashboardShell() {
                   customCheck={(check) =>
                     check('billing:plan', 'read')
                     || check('billing:tier', 'read')
-                    || check('billing:subscription', 'write')
                   }
                 >
                   <PlanPage />
@@ -69,8 +69,8 @@ function CostDashboardShell() {
             <Route path="/plans" element={<Navigate to="/plan" replace />} />
 
             {/* Route trang chủ / và /dashboard */}
-            <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} />} />
-            <Route path="/dashboard" element={<DashboardPage currency={currency} admin={hasAdminDashboard} />} />
+            <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.is_personal ?? true} />} />
+            <Route path="/dashboard" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.is_personal ?? true} />} />
             <Route
               path="/invoices"
               element={
@@ -92,6 +92,14 @@ function CostDashboardShell() {
               element={
                 <RouteGuard requiredKey="billing:ledger" requiredAction="read">
                   <FeatureInDevelopment />
+                </RouteGuard>
+              }
+            />
+            <Route
+              path="/referrals"
+              element={
+                <RouteGuard requiredKey="billing:credit" requiredAction="adjust">
+                  <ReferralCampaigns />
                 </RouteGuard>
               }
             />

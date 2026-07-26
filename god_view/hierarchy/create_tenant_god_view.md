@@ -13,6 +13,8 @@
 1. **No Tenant-in-Tenant Context**: Một tổ chức (Tenant) không được phép chứa hoặc tạo thêm tổ chức con bên trong nó. Yêu cầu tạo mới tenant chỉ hợp lệ từ ngữ cảnh cá nhân (khi header `X-Tenant-ID` trống hoặc không tồn tại).
 2. **Creator Member Binding**: Khi một người dùng (`owner_id`) tạo một tổ chức mới thành công, hệ thống phải tự động liên kết người dùng này làm thành viên đầu tiên ở trạng thái hoạt động (`active`) trong tổ chức đó.
 3. **Zone Independence**: Tổ chức (Tenant) chỉ mang tính cấu trúc logic (Logical Organization) nên độc lập hoàn toàn và không thuộc về bất kỳ phân vùng hạ tầng (`Zone`) nào ở mức vật lý.
+4. **Atomic Billing Intent**: Tenant, membership `tenant_owner`, năm role snapshot và tenant-wallet outbox phải commit
+   trong cùng PostgreSQL transaction. Shared Redis chỉ relay sau commit, không phải business SoT.
 
 ---
 
@@ -120,6 +122,10 @@ sequenceDiagram
     participant Svc as ⚙️ TenantService
     participant Repo as 🗄️ TenantRepository
     participant DB as 💾 PostgreSQL (SoT Database)
+    participant Relay as Billing Outbox Relay
+    participant Redis as Shared Redis Stream
+    participant Cost as Cost Manager
+    participant BillingPG as Billing PostgreSQL
 
     Envoy->>Handler: Forward POST /api/v1/tenants<br/>Headers: X-User-ID, X-Tenant-ID
     
@@ -143,8 +149,11 @@ sequenceDiagram
     
     Svc->>Repo: CreateTenant(ctx, tenant, ownerID)
     
-    Note over Repo: B6: Chạy atomic CTE SQL Statement
-    Repo->>DB: INSERT INTO tenants ... WITH inserted_tenant AS ... INSERT INTO tenant_memberships
+    Note over Repo: B6: Một PostgreSQL transaction
+    Repo->>DB: INSERT tenant
+    Repo->>DB: INSERT active membership role=tenant_owner
+    Repo->>DB: Seed five tenant_role protobuf snapshots
+    Repo->>DB: INSERT billing.wallet.tenant.provision.requested.v1 outbox
     
     alt DB Success (Event 2A)
         DB-->>Repo: 1 row inserted (id, code, name, status, created_at)
@@ -152,6 +161,11 @@ sequenceDiagram
         Note over Svc: Ghi nhận metric: OutcomeSuccess & Latency
         Svc-->>Handler: *coreEntity.Tenant, nil
         Handler-->>Envoy: HTTP 201 Created (JSON Payload)
+        Svc-->>Relay: Non-blocking wake hint after commit
+        Relay->>Redis: XADD billing:wallet:tenant:provision-requests + WAITAOF
+        Redis->>Cost: Consumer group at-least-once
+        Cost->>BillingPG: Inbox + zero USD TENANT wallet in one transaction
+        Cost-->>Redis: XACK only after Billing commit
     else DB Unique Violation Code 23505 (Event 2B)
         DB-->>Repo: Error 23505
         Repo-->>Svc: nil, ErrCodeAlreadyExists
@@ -202,3 +216,16 @@ Các ràng buộc chặt chẽ được thực thi tại database schema `hierar
 
 ### 3. Ràng buộc thành viên sáng lập (Atomic membership creation)
 * Việc tạo bản ghi tenant và bản ghi hội viên quản trị đầu tiên bắt buộc phải diễn ra đồng thời. Nếu một trong hai thất bại, toàn bộ hành động bị hủy bỏ (Rollback).
+* Membership sáng lập có `role='tenant_owner'`; tenant Billing authorization resolve role từ đúng membership
+  của user, không lấy một role bất kỳ bằng `LIMIT 1`.
+
+### 4. Tenant wallet provisioning
+
+* Event ID được sinh deterministic từ tenant ID; duplicate relay/delivery là hợp lệ.
+* Protobuf chứa `event_id`, `schema_version=1`, `tenant_id`, `actor_user_id`, `currency=USD`, `occurred_at`.
+* Outbox row và tenant aggregate cùng commit. Relay failure để row `PENDING/PUBLISHING` cho cold-start/periodic
+  reconciliation; không rollback tenant sau khi HTTP đã trả thành công.
+* Cost `wallet_provision_inbox` kiểm tra event ID + payload hash trước khi upsert unique
+  `(owner_id, owner_type='TENANT', currency='USD')`.
+* Tenant không có referral/promo onboarding. Verified tenant top-up cần exact
+  `{tenant}:nil:billing:wallet:top_up`.

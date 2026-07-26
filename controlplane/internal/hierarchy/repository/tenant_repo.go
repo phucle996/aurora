@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/hierarchy/domain/entity"
@@ -23,6 +24,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 )
+
+var tenantWalletProvisionEventNamespace = uuid.MustParse("24bbad2a-d35b-5e77-b548-31b81dbac82c")
 
 // [COMMENT]: TenantRepoImpl triển khai TenantRepository
 type TenantRepoImpl struct {
@@ -74,8 +77,9 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant coreEntity.Ten
 
 	// 2. Insert tenant_membership cho Owner, đánh dấu is_ownership = true
 	queryMembership := fmt.Sprintf(`
-		INSERT INTO %s.tenant_memberships (id, tenant_id, user_id, status, is_ownership, created_at, updated_at)
-		VALUES (gen_random_uuid(), $1, $2, 'active', true, now(), now())
+		INSERT INTO %s.tenant_memberships
+			(id, tenant_id, user_id, role, status, is_ownership, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, 'tenant_owner', 'active', true, now(), now())
 	`, r.hierarchySchema)
 
 	if _, err := tx.Exec(ctx, queryMembership, m.ID, ownerID); err != nil {
@@ -165,7 +169,34 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant coreEntity.Ten
 		}
 	}
 
-	// 5. Commit Transaction
+	// 5. Persist the tenant wallet intent in the same transaction. Shared Redis
+	// is only a bounded relay after commit; the outbox row is the durability
+	// boundary if either Controlplane or Cost Manager is unavailable.
+	occurredAt := time.Now().UTC()
+	eventID := uuid.NewSHA1(tenantWalletProvisionEventNamespace, m.ID[:])
+	eventPayload, err := proto.Marshal(&iamproto.TenantWalletProvisionRequestedV1{
+		EventId:       eventID[:],
+		SchemaVersion: 1,
+		TenantId:      m.ID[:],
+		ActorUserId:   ownerID[:],
+		Currency:      "USD",
+		OccurredAt:    occurredAt.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tenant repo: marshal tenant wallet provision event: %w", err)
+	}
+	if _, err = tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s.billing_outbox_records
+			(event_id, event_type, schema_version, aggregate_type, aggregate_id, aggregate_version,
+			 owner_id, owner_type, actor_user_id, payload, occurred_at)
+		VALUES ($1, 'billing.wallet.tenant.provision.requested.v1', 1, 'TENANT', $2, 1,
+		        $2, 'TENANT', $3, $4, $5)
+		ON CONFLICT (event_id) DO NOTHING
+	`, r.iamSchema), eventID, m.ID, ownerID, eventPayload, occurredAt); err != nil {
+		return nil, fmt.Errorf("tenant repo: insert wallet provision outbox: %w", err)
+	}
+
+	// 6. Commit tenant, owner membership, role snapshots and billing intent atomically.
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("tenant repo: commit tx: %w", err)
 	}

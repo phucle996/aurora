@@ -152,6 +152,10 @@ impl Config {
                     "GET /api/v1/health/startup".to_string(),
                     "POST /api/v1/auth/register".to_string(),
                     "POST /api/v1/auth/verify".to_string(),
+                    // Payment providers have no browser session. Cost Manager verifies an HMAC
+                    // over the exact body and persists an idempotent webhook inbox.
+                    "POST /api/v1/billing/webhooks/personal/payment-settled".to_string(),
+                    "POST /api/v1/billing/webhooks/tenant/payment-settled".to_string(),
                 ]
             });
 

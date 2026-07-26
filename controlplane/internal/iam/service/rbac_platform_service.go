@@ -14,11 +14,13 @@ import (
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: RbacPlatformService thực thi interface quản lý vai trò và phân quyền cấp hệ thống (platform)
 type RbacPlatformService struct {
 	repo        iamRepoInterface.RbacPlatformRepository
+	tenantRepo  iamRepoInterface.RbacTenantRepository
 	cacheEngine *cacheengine.CacheRegistry
 	authRedis   *goredis.Client
 	sharedRedis *goredis.Client
@@ -27,12 +29,14 @@ type RbacPlatformService struct {
 // [COMMENT]: NewRbacPlatformService khởi tạo một thể hiện mới của RbacPlatformService
 func NewRbacPlatformService(
 	repo iamRepoInterface.RbacPlatformRepository,
+	tenantRepo iamRepoInterface.RbacTenantRepository,
 	cacheEngine *cacheengine.CacheRegistry,
 	authRedis *goredis.Client,
 	sharedRedis *goredis.Client,
 ) iamSvcInterface.RbacPlatformService {
 	return &RbacPlatformService{
 		repo:        repo,
+		tenantRepo:  tenantRepo,
 		cacheEngine: cacheEngine,
 		authRedis:   authRedis,
 		sharedRedis: sharedRedis,
@@ -106,19 +110,38 @@ func (s *RbacPlatformService) GetUserRolePermissions(ctx context.Context, userID
 }
 
 // [COMMENT]: GetRenderContext sinh cấu hình Navigation và Capabilities từ bytes/object RBAC L1 cache theo user id
-func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.UUID) (*iamEntity.RenderContext, error) {
-	// [COMMENT]: 1. Truy vấn object RoleEntry từ CacheRegistry L1/L2
-	val, err := s.cacheEngine.GetOrLoad(ctx, "user_role", userID.String())
-	if err != nil {
-		return nil, fmt.Errorf("rbac platform service: get user render permissions: %w", err)
-	}
-
-	entry, ok := val.(*iamproto.RoleEntry)
-	if !ok || entry == nil {
-		return &iamEntity.RenderContext{
-			Navigation:   []iamEntity.NavigationItem{},
-			Capabilities: map[string]bool{},
-		}, nil
+func (s *RbacPlatformService) GetRenderContext(
+	ctx context.Context,
+	userID uuid.UUID,
+	tenantID uuid.UUID,
+) (*iamEntity.RenderContext, error) {
+	var entry *iamproto.RoleEntry
+	if tenantID != uuid.Nil {
+		// [COMMENT]: Tenant render context is resolved from the exact active
+		// membership role; platform permissions must not leak into tenant UI.
+		binaryEntry, err := s.tenantRepo.GetUserTenantRolePermissions(ctx, userID, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("rbac platform service: get tenant render permissions: %w", err)
+		}
+		entry = &iamproto.RoleEntry{}
+		if err := proto.Unmarshal(binaryEntry, entry); err != nil {
+			return nil, fmt.Errorf("rbac platform service: decode tenant render permissions: %w", err)
+		}
+	} else {
+		// [COMMENT]: Personal/platform role keeps the existing bounded cache.
+		val, err := s.cacheEngine.GetOrLoad(ctx, "user_role", userID.String())
+		if err != nil {
+			return nil, fmt.Errorf("rbac platform service: get user render permissions: %w", err)
+		}
+		var ok bool
+		entry, ok = val.(*iamproto.RoleEntry)
+		if !ok || entry == nil {
+			return &iamEntity.RenderContext{
+				Navigation:   []iamEntity.NavigationItem{},
+				Capabilities: map[string]bool{},
+				IsPersonal:   true,
+			}, nil
+		}
 	}
 
 	// [COMMENT]: 2. Trích xuất danh sách permissions thô (permissions string)
@@ -126,7 +149,7 @@ func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.
 
 	capabilities := make(map[string]bool)
 	groupMap := make(map[string][]string)
-	isPersonal := true
+	isPersonal := tenantID == uuid.Nil
 
 	for _, p := range rawPerms {
 		capabilities[p] = true
@@ -136,11 +159,6 @@ func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.
 		// định nghĩa trong rbac_god_view_workflow.md.
 		if len(parts) != 5 {
 			continue
-		}
-
-		// [COMMENT]: Phát hiện Tenant context bằng cách kiểm tra Bậc 1 (Identity) có phải là UUID hay không.
-		if _, err := uuid.Parse(parts[0]); err == nil {
-			isPersonal = false
 		}
 
 		// [COMMENT]: Key chỉ chứa Module và Object (Module:Object) để giấu sạch Identity và Workspace ID

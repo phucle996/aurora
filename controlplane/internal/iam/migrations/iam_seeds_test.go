@@ -174,6 +174,22 @@ func TestIAMSeedRollbackCoversPermissionCatalog(t *testing.T) {
 	}
 }
 
+func TestTenantWalletTopUpIsNotAPlatformPermission(t *testing.T) {
+	sql, err := Files.ReadFile("000006_iam_seeds.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM bootstrap seed: %v", err)
+	}
+	source := string(sql)
+	if !strings.Contains(source, "r.code IN ('tenant_owner', 'tenant_admin')") ||
+		!strings.Contains(source, "p.behavior IN ('read', 'top_up')") {
+		t.Fatal("tenant owner/admin wallet permission mapping is missing")
+	}
+	if !strings.Contains(source, "AND NOT (p.module='billing' AND p.object='wallet' AND p.behavior='top_up')") ||
+		!strings.Contains(source, "AND NOT (p.object='wallet' AND p.behavior='top_up')") {
+		t.Fatal("platform bootstrap roles must not receive tenant wallet top_up")
+	}
+}
+
 func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
 	sql, err := Files.ReadFile("000002_iam_tables.up.sql")
 	if err != nil {

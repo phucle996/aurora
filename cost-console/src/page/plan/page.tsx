@@ -4,9 +4,8 @@ import { Plus, Coins, Info, RefreshCw } from "lucide-react";
 import { PlanTable, type PlanItem } from "./sections/PlanTable";
 import { PlanDetail } from "./sections/PlanDetail";
 import { PlanModal } from "./sections/PlanModal";
-import { SubscriptionPanel } from "./sections/SubscriptionPanel";
 import { TierTable } from "./sections/TierTable"; // [COMMENT]: Import thêm component bảng cước lũy tiến Tiers mới
-import { billingApi, type Subscription, type ZoneItem } from "../../lib/api/billing";
+import { billingApi, type ZoneItem } from "../../lib/api/billing";
 import { useAuthStore } from "../../lib/store/useAuthStore";
 import { cn } from "../../lib/utils";
 
@@ -29,7 +28,6 @@ export default function PlanPage() {
   const canWritePlans = checkPermission("billing:plan", "write");
   const canReadTiers = checkPermission("billing:tier", "read");
   const canPublishTiers = checkPermission("billing:tier", "publish");
-  const canWriteSubscriptions = checkPermission("billing:subscription", "write");
   const [plans, setPlans] = useState<PlanItem[]>([]);
   const [zones, setZones] = useState<ZoneItem[]>([]);
 
@@ -39,25 +37,23 @@ export default function PlanPage() {
   // Xác định tab hiện tại từ URL query param, nếu không có hoặc giá trị lạ thì mặc định là 'plans'
   // [COMMENT]: Đổi cấu hình tab từ 'pricing' (Biểu giá cũ) thành 'tiers' (Biểu giá lũy tiến mới)
   const tabParam = searchParams.get("tab");
-  const allowedTabs: Array<"plans" | "tiers" | "subscriptions"> = [];
+  const allowedTabs: Array<"plans" | "tiers"> = [];
   if (canReadPlans) allowedTabs.push("plans");
   if (canReadTiers) allowedTabs.push("tiers");
-  if (canWriteSubscriptions) allowedTabs.push("subscriptions");
   const requestedTab =
-    tabParam === "tiers" || tabParam === "subscriptions" || tabParam === "plans"
+    tabParam === "tiers" || tabParam === "plans"
       ? tabParam
       : null;
-  const activeTab: "plans" | "tiers" | "subscriptions" =
+  const activeTab: "plans" | "tiers" =
     requestedTab && allowedTabs.includes(requestedTab) ? requestedTab : allowedTabs[0] ?? "plans";
 
   // Hàm xử lý chuyển tab và cập nhật URL query string ?tab=...
-  const handleTabChange = (newTab: "plans" | "tiers" | "subscriptions") => {
+  const handleTabChange = (newTab: "plans" | "tiers") => {
     setSearchParams({ tab: newTab });
   };
 
   const [loading, setLoading] = useState(true);
   const [selectedPlan, setSelectedPlan] = useState<PlanItem | null>(null);
-  const [activeSub, setActiveSub] = useState<Subscription | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Filter states
@@ -77,10 +73,6 @@ export default function PlanPage() {
         const planList = await billingApi.listPlans();
         setPlans(planList.map(mapPlanResponseToItem));
       }
-      if (canWriteSubscriptions) {
-        const sub = await billingApi.getActiveSubscription();
-        setActiveSub(sub);
-      }
       if (canWritePlans) {
         const zoneList = await billingApi.listZones();
         setZones(zoneList);
@@ -90,7 +82,7 @@ export default function PlanPage() {
     } finally {
       setLoading(false);
     }
-  }, [canReadPlans, canWritePlans, canWriteSubscriptions]);
+  }, [canReadPlans, canWritePlans]);
 
   useEffect(() => {
     loadData();
@@ -152,19 +144,6 @@ export default function PlanPage() {
     }
   };
 
-  const handleSubscribe = async (plan: PlanItem) => {
-    if (!window.confirm(`Bạn có chắc chắn muốn đăng ký gói cước "${plan.name}" với giá ${plan.priceVnd.toLocaleString("vi-VN")} ₫/tháng?`)) {
-      return;
-    }
-    try {
-      await billingApi.subscribe(plan.id);
-      alert("Đăng ký gói cước thành công!");
-      setRefreshTrigger((prev) => prev + 1);
-    } catch (err: any) {
-      alert("Đăng ký gói thất bại: " + err.message);
-    }
-  };
-
   const handleCreateClick = () => {
     setEditPlan(null);
     setModalOpen(true);
@@ -218,20 +197,6 @@ export default function PlanPage() {
                 )}
               >
                 Biểu Giá Gốc (Tiers)
-              </button>
-            )}
-            {/* Tab Gói Đăng Ký -> ?tab=subscriptions */}
-            {canWriteSubscriptions && (
-              <button
-                onClick={() => handleTabChange("subscriptions")}
-                className={cn(
-                  "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
-                  activeTab === "subscriptions"
-                    ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
-                )}
-              >
-                Gói Đăng Ký (Subscriptions)
               </button>
             )}
           </div>
@@ -291,8 +256,6 @@ export default function PlanPage() {
               onClose={() => setSelectedPlan(null)}
               onEdit={handleEditClick}
               onToggleStatus={handleToggleStatus}
-              isSubscribed={activeSub?.plan_id === selectedPlan.id}
-              onSubscribe={canWriteSubscriptions ? handleSubscribe : undefined}
               canManage={canWritePlans}
             />
           )}
@@ -312,15 +275,6 @@ export default function PlanPage() {
 
       {/* [COMMENT]: Render bảng Tiers mới khi activeTab là 'tiers' */}
       {activeTab === "tiers" && canReadTiers && <TierTable canPublish={canPublishTiers} />}
-
-      {activeTab === "subscriptions" && canWriteSubscriptions && (
-        <div className="space-y-4">
-          <SubscriptionPanel
-            refreshTrigger={refreshTrigger}
-            onSubscribeSuccess={() => setRefreshTrigger((prev) => prev + 1)}
-          />
-        </div>
-      )}
     </div>
   );
 }

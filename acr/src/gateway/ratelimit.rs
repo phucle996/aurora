@@ -16,6 +16,7 @@ pub enum RouteGroup {
     UserMe,
     UserTenant,
     Billing,
+    PaymentWebhook,
     AuthPublic,
     General,
 }
@@ -30,6 +31,7 @@ impl RouteGroup {
             RouteGroup::UserMe => "user_me",
             RouteGroup::UserTenant => "user_tenant",
             RouteGroup::Billing => "billing",
+            RouteGroup::PaymentWebhook => "payment_webhook",
             RouteGroup::AuthPublic => "auth_public",
             RouteGroup::General => "general",
         }
@@ -46,6 +48,11 @@ pub fn detect_route_group(path: &str) -> RouteGroup {
         RouteGroup::UserCritical
     } else if path.starts_with("/api/v1/auth/") {
         RouteGroup::AuthPublic
+    } else if path.split('?').next().is_some_and(|value| {
+        value == "/api/v1/billing/webhooks/personal/payment-settled"
+            || value == "/api/v1/billing/webhooks/tenant/payment-settled"
+    }) {
+        RouteGroup::PaymentWebhook
     } else if path.starts_with("/api/v1/billing") {
         RouteGroup::Billing
     } else if path.contains("/personal") {
@@ -102,6 +109,9 @@ impl RateLimiter {
             RouteGroup::SreGeneral => (200, 1, 15, 1),
             RouteGroup::UserCritical => (20, 60, 6, 60),
             RouteGroup::Billing => (300, 1, 30, 1),
+            // Provider traffic may share a small set of egress IPs. HMAC and the
+            // 64 KiB body cap remain the authentication/CPU boundary.
+            RouteGroup::PaymentWebhook => (1_000, 1, 1_000, 1),
             // [COMMENT]: Argon2/register/login là CPU-expensive; limit thấp theo IP và device trước khi vào handler.
             RouteGroup::AuthPublic => (30, 60, 8, 60),
             RouteGroup::UserPersonal => (300, 1, 20, 1),
@@ -119,6 +129,7 @@ impl RateLimiter {
             RouteGroup::SreGeneral => (30, 1, 30, 1),
             RouteGroup::UserCritical => (30, 60, 20, 60),
             RouteGroup::Billing => (80, 1, 80, 1),
+            RouteGroup::PaymentWebhook => (1_000, 1, 1_000, 1),
             RouteGroup::AuthPublic => (20, 60, 20, 60),
             RouteGroup::UserPersonal => (60, 1, 60, 1),
             RouteGroup::UserMe => (100, 1, 100, 1),
@@ -238,5 +249,26 @@ impl RateLimiter {
                 true // Fail open
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_route_group, RouteGroup};
+
+    #[test]
+    fn payment_webhook_uses_bounded_public_rate_group() {
+        assert_eq!(
+            detect_route_group("/api/v1/billing/webhooks/personal/payment-settled"),
+            RouteGroup::PaymentWebhook
+        );
+        assert_eq!(
+            detect_route_group("/api/v1/billing/webhooks/tenant/payment-settled?attempt=2"),
+            RouteGroup::PaymentWebhook
+        );
+        assert_eq!(
+            detect_route_group("/api/v1/billing/webhooks/other"),
+            RouteGroup::Billing
+        );
     }
 }

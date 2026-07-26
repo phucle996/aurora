@@ -60,6 +60,15 @@ Cost Console không có Render Context API riêng trong Cost Manager. Envoy rout
 `/api/v1/me/iam/context/read` trên đúng Cost authority tới Controlplane; ACR chỉ cho Billing Alias gọi
 `GET /api/v1/me/iam/context/read`. Alias không được dùng để gọi profile, device, role hoặc IAM mutation khác.
 
+Các owner Billing API dưới `/api/v1/billing/wallet/*` cũng host-aware: Cloud authority dùng IAM Trinity,
+Cost authority dùng Billing Alias. ACR chọn internal personal/tenant route từ tenant context đã xác minh và
+không chấp nhận client gọi trực tiếp internal route. Payment settlement chỉ bypass identity tại hai exact route:
+
+- `POST /api/v1/billing/webhooks/personal/payment-settled`;
+- `POST /api/v1/billing/webhooks/tenant/payment-settled`.
+
+Cost Manager vẫn bắt buộc xác minh HMAC trên exact raw body.
+
 ## 2. Authorization-code + PKCE handoff
 
 ```mermaid
@@ -203,8 +212,12 @@ sequenceDiagram
     Envoy->>ACR: Cost authority + host-only Billing Alias
     ACR->>ACR: Verify alias + source IAM session
     ACR->>IAM: Forward existing endpoint + overwrite trusted identity
-    IAM->>Cache: GetOrLoad user RoleEntry 5-level
-    Cache-->>IAM: Current RoleEntry
+    alt verified tenant context
+        IAM->>IAM: Resolve active membership.role + tenant_role snapshot
+    else personal/platform context
+        IAM->>Cache: GetOrLoad user RoleEntry 5-level
+        Cache-->>IAM: Current platform RoleEntry
+    end
     IAM->>IAM: Group module:object, dedupe/sort behaviors
     IAM-->>CostUI: navigation + capabilities + is_personal
 ```
@@ -212,6 +225,8 @@ sequenceDiagram
 Invariants:
 
 - Cloud authority gọi cùng endpoint bằng IAM Trinity; Cost authority gọi bằng Billing Alias.
+- `x-tenant-id=platform` được hiểu là personal sentinel; concrete UUID bắt buộc resolve đúng active membership
+  của user. IAM không suy tenant UI từ một platform role hoặc một tenant role bất kỳ.
 - Render Context không nằm trong handoff code, alias cookie hoặc local storage.
 - Cost Console dùng context để không mount navigation/route/component thiếu quyền.
 - Render Context không thay Cost API `Authorize`; request trực tiếp vẫn phải bị backend chặn.
@@ -219,8 +234,8 @@ Invariants:
 
 ## 4. Cost API authorization projection
 
-Phần này độc lập với UI Render Context. Canonical IAM permission vẫn là key 5 bậc; projection hiện tại
-cho Cost API chỉ rút gọn quyền Billing global thành key ba phần:
+Phần này độc lập với UI Render Context. Canonical IAM permission vẫn là key 5 bậc. Platform operator projection
+rút gọn quyền Billing global thành key ba phần:
 
 ```text
 billing:{object}:{behavior}
@@ -232,6 +247,17 @@ IAM chấp nhận hai dạng source:
 - bootstrap role: `identity:*:billing:object:behavior` hoặc `identity:<nil-uuid>:billing:object:behavior`.
 
 Key năm phần có workspace UUID cụ thể bị bỏ. Contract của writer là workspace-scoped permission luôn phải giữ prefix năm phần; không được ghi key ba phần vào workspace row.
+
+Tenant wallet authorization không dùng projection ba phần. Cost gửi fixed-width
+`request_uuid + user_uuid + tenant_uuid`; IAM đối chiếu active user, active tenant membership, membership role
+và `tenant_role` snapshot rồi trả exact key:
+
+```text
+{tenant_uuid}:00000000-0000-0000-0000-000000000000:billing:wallet:{behavior}
+```
+
+Tenant read dùng bounded L1/L2 tối đa 2/5 giây. Tenant top-up dùng critical resolution và luôn request IAM mới,
+không đọc cache. Không suy luận tenant quyền từ role/level trong alias.
 
 ```mermaid
 sequenceDiagram
@@ -293,6 +319,8 @@ Lock chỉ chống stampede. Generation mới là correctness fence. Waiter dùn
 |---|---|
 | Normal read/write | L1 5 giây → Auth Redis projection → IAM |
 | `/api/v1/billing/critical/*` | Bỏ L1/projection hit, buộc Shared Redis request IAM mới; vẫn dùng distributed lock và generation-fenced write |
+| Tenant wallet read | scoped L1 2 giây → scoped Auth Redis 5 giây → IAM exact five-part |
+| Tenant wallet top-up | bỏ scoped L1/L2 → IAM active membership/role exact five-part |
 
 Critical flow không được dùng permission snapshot cũ. Nếu IAM/Shared Redis/Auth Redis unavailable, Cost trả `503`, không fail-open.
 
@@ -321,6 +349,13 @@ Cost match exact string, không suy luận bằng role name/level:
 | `billing:wallet:read` | Wallet read surface tương lai |
 | `billing:ledger:read` | Ledger read surface tương lai |
 | `billing:credit:adjust` | Credit adjustment critical surface tương lai |
+
+Tenant wallet permissions are not flattened:
+
+| Exact tenant permission | API |
+|---|---|
+| `{tenant}:nil:billing:wallet:read` | Tenant wallet summary and payment intent read |
+| `{tenant}:nil:billing:wallet:top_up` | Create tenant payment intent |
 
 ## 6. Critical session proof
 
@@ -360,6 +395,8 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 | Role đổi trong lúc IAM load | Generation-fenced Lua | Snapshot cũ không ghi lại |
 | N pod cache miss | token lock + jitter + singleflight | Một loader chính |
 | Workspace role có Billing key | Chỉ wildcard/nil platform prefix được rút gọn | Không global escalation |
+| Tenant header/path bị client giả mạo | ACR internal route deny + verified-context rewrite | Không đổi owner |
+| Tenant membership bị revoke trước top-up | Critical request IAM mới | `403`, không tạo intent |
 | User disabled | Active-user join + invalidation | Không permission |
 | Shared Redis/IAM/Auth Redis lỗi | Fail closed | `503` |
 | Cost cookie mất/hết hạn | `/auth/start` PKCE lại | Không login form |
@@ -394,6 +431,7 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 | IAM RBAC invalidation | `controlplane/internal/iam/service/rbac_platform_service.go`, `user_service.go` |
 | Cost L1/Auth Redis/Shared Redis resolver | `cost-manager/api/internal/service/authorization_resolver.go` |
 | Cost identity/permission middleware | `cost-manager/api/internal/transport/middleware/identity.go` |
+| Owner route rewrite | `acr/src/gateway/ext_authz.rs` |
 | Cloud authorize bridge | `cloud-console/src/app/billing/authorize/page.tsx` |
 | Cost PKCE/session + Render Context bootstrap | `cost-console/src/lib/store/useAuthStore.ts`, `src/session/render-context.ts` |
 | Cost permission-driven shell | `cost-console/src/components/Header.tsx`, `src/components/RouteGuard.tsx` |

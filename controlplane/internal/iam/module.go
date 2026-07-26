@@ -52,6 +52,13 @@ type IAMModule struct {
 	deviceRedisHandler               *iamPubsubHandler.DeviceRedisHandler
 }
 
+func (m *IAMModule) NotifyBillingOutbox() {
+	if m == nil || m.billingOutboxRelay == nil {
+		return
+	}
+	m.billingOutboxRelay.Notify()
+}
+
 // NewModule khởi tạo phân hệ IAM. Thiết lập cơ chế Fail-Fast chặt chẽ ở cấp độ biên khởi chạy.
 func NewModule(
 	cfg *config.Config,
@@ -139,6 +146,7 @@ func NewModule(
 		rds,
 		authRedis,
 		rbacPlatformRepo,
+		rbacTenantRepo,
 	)
 	if err != nil {
 		return nil, err
@@ -249,7 +257,13 @@ func NewModule(
 	}
 
 	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ platform/tenant RBAC
-	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine, authRedis, rds)
+	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(
+		rbacPlatformRepo,
+		rbacTenantRepo,
+		cacheEngine,
+		authRedis,
+		rds,
+	)
 	if rbacPlatformSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC platform service")
 	}

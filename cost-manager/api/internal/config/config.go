@@ -20,6 +20,7 @@ type Config struct {
 	Redis     RedisCfg
 	AuthRedis RedisCfg
 	GRPC      GRPCCfg
+	Payment   PaymentCfg
 }
 
 // [COMMENT]: AppCfg lưu trữ thông tin cấu hình dịch vụ web và HTTP REST Server.
@@ -72,6 +73,20 @@ type GRPCCfg struct {
 	TLSCertPath      string
 	TLSKeyPath       string
 	ClientCACertPath string
+}
+
+// PaymentCfg defines the contract with the external checkout gateway. Signing
+// secrets and the gateway endpoint are required infrastructure, never defaults.
+type PaymentCfg struct {
+	Provider               string
+	CheckoutBaseURL        string
+	ReturnBaseURL          string
+	CheckoutSigningSecret  string
+	WebhookSigningSecret   string
+	MinimumTopUpMicroUnits int64
+	IntentTTL              string
+	ReferralReservationTTL string
+	WebhookTolerance       string
 }
 
 // [COMMENT]: LoadConfig đọc và parse toàn bộ biến môi trường hệ thống.
@@ -134,6 +149,17 @@ func LoadConfig() *Config {
 			TLSCertPath:      getEnv("GRPC_TLS_CERT_PATH", ""),
 			TLSKeyPath:       getEnv("GRPC_TLS_KEY_PATH", ""),
 			ClientCACertPath: getEnv("GRPC_CLIENT_CA_CERT_PATH", ""),
+		},
+		Payment: PaymentCfg{
+			Provider:               getEnv("PAYMENT_PROVIDER", ""),
+			CheckoutBaseURL:        getEnv("PAYMENT_CHECKOUT_BASE_URL", ""),
+			ReturnBaseURL:          getEnv("PAYMENT_RETURN_BASE_URL", ""),
+			CheckoutSigningSecret:  getEnv("PAYMENT_CHECKOUT_SIGNING_SECRET", ""),
+			WebhookSigningSecret:   getEnv("PAYMENT_WEBHOOK_SIGNING_SECRET", ""),
+			MinimumTopUpMicroUnits: getEnvAsInt64("PAYMENT_MINIMUM_TOP_UP_MICRO_UNITS", 1_000_000),
+			IntentTTL:              getEnv("PAYMENT_INTENT_TTL", "30m"),
+			ReferralReservationTTL: getEnv("PAYMENT_REFERRAL_RESERVATION_TTL", "24h"),
+			WebhookTolerance:       getEnv("PAYMENT_WEBHOOK_TOLERANCE", "5m"),
 		},
 	}
 }

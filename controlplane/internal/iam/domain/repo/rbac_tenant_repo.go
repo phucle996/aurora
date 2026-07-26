@@ -21,4 +21,9 @@ type RbacTenantRepository interface {
 
 	// [COMMENT]: GetRoleIDByTenantID lấy role_id và level của tenant tại platform scope (nil UUID) phục vụ check session
 	GetRoleIDByTenantID(ctx context.Context, tenantID uuid.UUID) (string, int32, error)
+
+	// GetUserTenantBillingPermissions resolves the active membership role for
+	// one user+tenant tuple and returns canonical five-part keys.
+	GetUserTenantBillingPermissions(ctx context.Context, userID uuid.UUID, tenantID uuid.UUID) ([]byte, error)
+	GetUserTenantRolePermissions(ctx context.Context, userID uuid.UUID, tenantID uuid.UUID) ([]byte, error)
 }

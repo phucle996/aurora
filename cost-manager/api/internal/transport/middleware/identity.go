@@ -11,22 +11,43 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: Alias kiểu dữ liệu Identity từ pkgcontext để duy trì tương thích ngược cho middleware package.
-type Identity = pkgcontext.Identity
-
 // [COMMENT]: AuthorizationResolver giữ middleware độc lập với Redis/cache implementation.
 type AuthorizationResolver interface {
 	Resolve(ctx context.Context, userID uuid.UUID, critical bool) (map[string]struct{}, error)
+	ResolveTenant(ctx context.Context, userID uuid.UUID, tenantID uuid.UUID, critical bool) (map[string]struct{}, error)
 }
 
-// [COMMENT]: RequireIdentity chặn direct-to-service/bypass-ACR và header malformed trước khi vào handler.
-// Sử dụng pkgcontext getter để lấy thông tin định danh an toàn đã được nạp bởi ContextInjector.
-func RequireIdentity() gin.HandlerFunc {
+// AuthorizeTenant preserves the canonical five-part permission. Dropping the
+// tenant/workspace prefix here would let authority from one tenant escape into
+// another tenant's wallet.
+func AuthorizeTenant(
+	resolver AuthorizationResolver,
+	permission string,
+	critical bool,
+) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		const op = "middleware.require_identity"
-		// [COMMENT]: Kiểm tra bộ identity hợp lệ từ context. Nếu thiếu hoặc invalid, GetIdentity tự động log & respond 401.
-		_, ok := pkgcontext.GetIdentity(c, op)
+		const op = "middleware.authorize_tenant"
+		userID, ok := pkgcontext.GetUserID(c, op)
 		if !ok {
+			c.Abort()
+			return
+		}
+		// [COMMENT]: Lấy tenantID đã validate UUID từ context
+		tenantID, ok := pkgcontext.GetTenantID(c, op)
+		if !ok {
+			apires.RespondForbidden(c, "verified tenant context is required")
+			c.Abort()
+			return
+		}
+		permissions, err := resolver.ResolveTenant(c.Request.Context(), userID, tenantID, critical)
+		if err != nil {
+			apires.RespondServiceUnavailable(c, "IAM tenant authorization is temporarily unavailable")
+			c.Abort()
+			return
+		}
+		required := tenantID.String() + ":00000000-0000-0000-0000-000000000000:" + permission
+		if _, allowed := permissions[required]; !allowed {
+			apires.RespondForbidden(c, "tenant billing permission is required")
 			c.Abort()
 			return
 		}
@@ -74,10 +95,4 @@ func RequireSessionProof() gin.HandlerFunc {
 		}
 		c.Next()
 	}
-}
-
-// [COMMENT]: IdentityFromContext là hàm tiện ích bổ trợ để lấy Identity struct từ context.
-func IdentityFromContext(c *gin.Context) (Identity, bool) {
-	const op = "middleware.identity_from_context"
-	return pkgcontext.GetIdentity(c, op)
 }
