@@ -23,10 +23,10 @@ export class StorageGatewayError extends Error {
   }
 }
 
-export class StorageTransferUnavailableError extends StorageGatewayError {
+export class StorageDataTicketUnavailableError extends StorageGatewayError {
   constructor() {
-    super(501, "Zone transfer tickets are not enabled for this deployment.", "unavailable");
-    this.name = "StorageTransferUnavailableError";
+    super(501, "Presigned data-tickets are not enabled for this deployment.", "unavailable");
+    this.name = "StorageDataTicketUnavailableError";
   }
 }
 
@@ -42,7 +42,7 @@ function objectPath(bucketName: string, objectKey?: string): string {
   const key = objectKey
     ? `/objects/${objectKey.split("/").map(encodePathSegment).join("/")}`
     : "/objects";
-  return `/storage/v1/buckets/${bucket}${key}`;
+  return `/zone-control/v1/storage/buckets/${bucket}${key}`;
 }
 
 function assertSafeBucketName(bucketName: string): void {
@@ -97,8 +97,8 @@ async function gatewayRequest(
         code === "forbidden"
           ? "Storage access is not ready or the operation is forbidden."
           : code === "unavailable"
-            ? "Zone Storage Gateway is unavailable."
-            : "Storage Gateway rejected the request.",
+            ? "Zone Control Edge Gateway is unavailable."
+            : "Zone Control Edge Gateway rejected the request.",
         code,
       );
     }
@@ -180,15 +180,15 @@ export async function bulkDeleteGatewayObjects(bucketName: string, keys: string[
   if (keys.length === 0 || keys.length > 1_000) throw new StorageGatewayError(400, "Select between 1 and 1000 objects.", "invalid");
   const body = `<Delete>${keys.map((key) => `<Object><Key>${escapeXml(key)}</Key></Object>`).join("")}</Delete>`;
   assertSafeBucketName(bucketName);
-  await gatewayRequest(`/storage/v1/buckets/${encodePathSegment(bucketName)}/bulk-delete`, accessSessionId, { method: "POST", body, signal });
+  await gatewayRequest(`/zone-control/v1/storage/buckets/${encodePathSegment(bucketName)}/bulk-delete`, accessSessionId, { method: "POST", body, signal });
 }
 
 function escapeXml(value: string): string {
   return value.replace(/[<>&'\"]/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[character] ?? character);
 }
 
-export async function transferTicket(): Promise<never> {
-  throw new StorageTransferUnavailableError();
+export async function requestDataTicket(): Promise<never> {
+  throw new StorageDataTicketUnavailableError();
 }
 
 export { sleep };

@@ -52,6 +52,12 @@ resources:
                 retry_on: "5xx,connect-failure,refused-stream,reset"
                 num_retries: 1
                 per_try_timeout: 1s
+          # One private Zone control branch; capability allow-listing happens
+          # again at the Zone Control Edge Gateway.
+          - match: { prefix: "/zone-control/v1/" }
+            route:
+              cluster: zone_control_edge_gateway_cluster
+              timeout: 15s
           - match: { prefix: "/" }
             route:
               cluster: controlplane_cluster
@@ -79,6 +85,10 @@ resources:
               value: true
             max_age: "86400"
         routes:
+          - match: { prefix: "/zone-control/v1/" }
+            route:
+              cluster: zone_control_edge_gateway_cluster
+              timeout: 15s
           - match: { prefix: "/admin/" }
             route:
               cluster: controlplane_cluster
@@ -132,6 +142,10 @@ resources:
               timeout: 0s
               upgrade_configs:
                 - upgrade_type: websocket
+          - match: { prefix: "/zone-control/v1/" }
+            route:
+              cluster: zone_control_edge_gateway_cluster
+              timeout: 15s
           # Cloud Console self-scoped Billing reads use one extensible route branch.
           # Keep the neutral Billing branch before generic /api/. ACR rewrites
           # owner scope without requiring a new Envoy route per endpoint.

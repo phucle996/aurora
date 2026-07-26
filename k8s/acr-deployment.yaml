@@ -94,6 +94,12 @@ spec:
                 secretKeyRef:
                   name: acr-secrets
                   key: vault-token
+            # Dedicated asymmetric signer. The private key remains in Vault;
+            # Zones receive only the versioned public key.
+            - name: VAULT_ZONE_CONTROL_ASSERTION_KEY_PATH
+              value: "transit/keys/zone-control-assertion"
+            - name: VAULT_ZONE_CONTROL_ASSERTION_KEY_ID
+              value: "zone-control-assertion:v1"
             - name: NATS_ADDR
               value: "nats://controlplane-nats.controlplane.svc.cluster.local:4222"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

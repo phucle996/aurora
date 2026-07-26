@@ -1,0 +1,172 @@
+# Zone-local template. Overlay the namespace, identities and Zone-specific
+# NATS endpoint; Central Redis/Vault credentials are forbidden here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zone-control-authorizer
+  namespace: zone-z1
+  labels:
+    app.kubernetes.io/name: zone-control-authorizer
+    app.kubernetes.io/component: zone-control-security
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: zone-control-authorizer }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zone-control-authorizer
+        app.kubernetes.io/component: zone-control-security
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: zone-control-authorizer }
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: zone-control-authorizer }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: authorizer
+          image: aurora/zone-control-authorizer:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - { name: grpc, containerPort: 50052 }
+            - { name: telemetry, containerPort: 9090 }
+          env:
+            - { name: ZONE_CONTROL_AUTHORIZER_LISTEN, value: "0.0.0.0:50052" }
+            - { name: ZONE_CONTROL_TELEMETRY_LISTEN, value: "0.0.0.0:9090" }
+            - { name: RUST_LOG, value: "info" }
+            - name: ZONE_ID
+              valueFrom: { configMapKeyRef: { name: zone-identity, key: zone_id } }
+            - name: NATS_ZONE_URL
+              valueFrom: { configMapKeyRef: { name: zone-identity, key: nats_zone_url } }
+            - name: ZONE_CONTROL_ASSERTION_PUBLIC_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: zone-control-assertion-public-keys
+                  key: keys.json
+            - { name: ZONE_CONTROL_AUTHORIZER_TLS_CERT, value: /etc/aurora/tls/tls.crt }
+            - { name: ZONE_CONTROL_AUTHORIZER_TLS_KEY, value: /etc/aurora/tls/tls.key }
+            - { name: ZONE_CONTROL_AUTHORIZER_TLS_CLIENT_CA, value: /etc/aurora/tls/client-ca.crt }
+            - { name: NATS_ZONE_TLS_CA, value: /etc/aurora/nats/ca.crt }
+            - { name: NATS_ZONE_TLS_CERT, value: /etc/aurora/nats/tls.crt }
+            - { name: NATS_ZONE_TLS_KEY, value: /etc/aurora/nats/tls.key }
+            - { name: NATS_ZONE_CREDS, value: /etc/aurora/nats/zone-control-authorizer.creds }
+            - { name: ZONE_ACCESS_REQUIRED_REPLICAS, value: "3" }
+            - { name: ZONE_CONTROL_MAX_INFLIGHT_CHECKS, value: "512" }
+          volumeMounts:
+            - { name: authorizer-tls, mountPath: /etc/aurora/tls, readOnly: true }
+            - { name: nats-tls, mountPath: /etc/aurora/nats, readOnly: true }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: telemetry }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /health/live, port: telemetry }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+      volumes:
+        - name: authorizer-tls
+          secret: { secretName: zone-control-authorizer-tls }
+        - name: nats-tls
+          secret: { secretName: zone-nats-client-control-authorizer }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zone-control-authorizer
+  namespace: zone-z1
+spec:
+  type: ClusterIP
+  ports:
+    - { name: grpc, port: 50052, targetPort: grpc }
+  selector: { app.kubernetes.io/name: zone-control-authorizer }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zone-control-authorizer
+  namespace: zone-z1
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: zone-control-authorizer }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zone-control-authorizer
+  namespace: zone-z1
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zone-control-authorizer
+  minReplicas: 3
+  maxReplicas: 20
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zone-control-authorizer
+  namespace: zone-z1
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: zone-control-authorizer }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: zone-control-edge-gateway }
+      ports: [{ protocol: TCP, port: 50052 }]
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: observability }
+      ports: [{ protocol: TCP, port: 9090 }]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: nats-zone }
+      ports: [{ protocol: TCP, port: 4222 }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

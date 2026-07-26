@@ -47,7 +47,7 @@ function formatDate(value: string): string {
 function gatewayMessage(error: unknown): string {
   const gateway = error as Partial<StorageGatewayError>;
   if (gateway?.status === 403) return "Storage access is preparing, expired, revoked, or forbidden. Try again after the Zone projection catches up.";
-  if (gateway?.status === 404 || gateway?.status === 501) return "Zone Storage Gateway is not enabled for this deployment.";
+  if (gateway?.status === 404 || gateway?.status === 501) return "Zone Control Edge Gateway is not enabled for this deployment.";
   return error instanceof Error ? error.message : "Storage Gateway request failed.";
 }
 
@@ -158,7 +158,7 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
             <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={objectsQuery.isFetching} aria-label="Refresh objects">
               <RefreshCw className={cn("h-3.5 w-3.5", objectsQuery.isFetching && "animate-spin")} />
             </Button>
-            <Button variant="outline" size="sm" onClick={() => toast.info("Download transfer tickets are not enabled yet.")} disabled={!selectedItems.length}>
+            <Button variant="outline" size="sm" onClick={() => toast.info("Download data-tickets are not enabled yet.")} disabled={!selectedItems.length}>
               <Download className="h-3.5 w-3.5" /> Download
             </Button>
             <Button variant="outline" size="sm" onClick={() => setDeleteOpen(true)} disabled={!selectedItems.length} className="text-red-600 dark:text-red-400">
@@ -171,7 +171,7 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
         </div>
 
         {objectsQuery.isLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground"><Loader2 className="mb-2 h-7 w-7 animate-spin text-blue-500" /><span className="text-xs">Preparing Zone Storage Gateway…</span></div>
+          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground"><Loader2 className="mb-2 h-7 w-7 animate-spin text-blue-500" /><span className="text-xs">Preparing Zone Control Edge Gateway…</span></div>
         ) : objectsQuery.error ? (
           <div className="border border-dashed border-red-500/30 bg-red-500/5 p-10 text-center text-sm text-red-500"><p className="font-semibold">Storage Gateway unavailable</p><p className="mt-1 text-xs">{gatewayMessage(objectsQuery.error)}</p><Button className="mt-4" variant="outline" onClick={() => void refresh()}>Retry</Button></div>
         ) : (
@@ -194,7 +194,7 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
         )}
       </div>
 
-      {selectedFile && <ObjectDetailPanel selectedFile={selectedFile} fileDetails={fileDetails} metadataLoading={metadataLoading} onClose={() => { setSelectedFile(null); setFileDetails(null); }} onSaveTags={saveTags} onDelete={async () => { await deleteSelected(); setSelectedFile(null); }} onDownload={() => toast.info("Download transfer tickets are not enabled yet.")} />}
+      {selectedFile && <ObjectDetailPanel selectedFile={selectedFile} fileDetails={fileDetails} metadataLoading={metadataLoading} onClose={() => { setSelectedFile(null); setFileDetails(null); }} onSaveTags={saveTags} onDelete={async () => { await deleteSelected(); setSelectedFile(null); }} onDownload={() => toast.info("Download data-tickets are not enabled yet.")} />}
       <UploadModal isOpen={uploadOpen} onClose={() => setUploadOpen(false)} />
       <DeleteConfirmModal isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} onConfirm={() => void deleteSelected()} items={selectedItems} isDeleting={false} />
     </div>

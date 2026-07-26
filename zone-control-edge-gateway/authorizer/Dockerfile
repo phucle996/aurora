@@ -6,8 +6,8 @@ COPY src ./src
 RUN cargo build --release --locked
 
 FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=builder /app/target/release/zone-storage-authz /usr/local/bin/zone-storage-authz
+COPY --from=builder /app/target/release/zone-control-authorizer /usr/local/bin/zone-control-authorizer
 USER 65532:65532
 EXPOSE 50052
-ENTRYPOINT ["/usr/local/bin/zone-storage-authz"]
-
+EXPOSE 9090
+ENTRYPOINT ["/usr/local/bin/zone-control-authorizer"]

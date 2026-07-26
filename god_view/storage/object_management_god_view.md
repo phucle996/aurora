@@ -60,15 +60,15 @@ Bucket size is a separate periodic snapshot workflow documented in
 - Bucket list/size: [`bucket_list_god_view.md`](bucket_list_god_view.md)
 - Ownership: [`resource_ownership_god_view.md`](../billing/resource_ownership_god_view.md)
 
-## 6. Zone Storage Gateway access-session path (staged)
+## 6. Zone Edge Gateway access-session path (staged)
 
 The non-secret access-session path is the only backend authorization flow for
 Console object operations. The legacy STS endpoint, command, executor and
 secret-bearing result have been removed. Cloud Console now uses the opaque
-access-session handle and fails closed when the Gateway/transfer-ticket route
+access-session handle and fails closed when the data-ticket route
 is not enabled; it never constructs a browser S3 client. The path is not
 release-ready until Zone mTLS certificates, assertion public keys, the Envoy
-route/S3 signing adapter and upload/download transfer-ticket endpoints are
+route/S3 signing adapter and upload/download presigned data-ticket endpoints are
 complete.
 
 ```mermaid
@@ -80,7 +80,9 @@ sequenceDiagram
     participant JO as Job Orchestrator
     participant K as Kafka
     participant DP as Dataplane Zone
-    participant ZG as Zone Storage Authz
+    participant ZKV as Zone NATS KV
+    participant ZC as Zone Control Edge Gateway
+    participant ZA as Zone Control Authorizer
     participant S3 as Private MinIO/S3
 
     B->>E: POST /api/v1/storage/buckets/{id}/access-sessions
@@ -91,12 +93,13 @@ sequenceDiagram
     PG-->>JO: WAL/changefeed
     JO->>K: durable command to exact Zone
     K->>DP: prepare access projection
-    DP->>DP: CAS AURORA_ZONE_ACCESS/{session_id}
-    B->>E: storage request + Trinity + access_session_id
+    DP->>ZKV: CAS AURORA_ZONE_ACCESS/{session_id}
+    B->>E: /zone-control/v1/storage request + Trinity + access_session_id
     E->>R: verify central projection
-    E->>ZG: signed assertion over mTLS
-    ZG->>DP: read matching Zone access record
-    ZG->>S3: authorized private S3 request
+    E->>ZC: original request + signed assertion over mTLS
+    ZC->>ZA: ExtAuthz Check over mTLS
+    ZA->>ZKV: read matching Zone access record
+    ZC->>S3: authorized private S3 request
     S3-->>B: object/list/tag response
 ```
 
@@ -109,11 +112,15 @@ Invariants:
 - ACR signs with the dedicated Vault Transit asymmetric key; Zones receive only
   the versioned public key. Missing key material, Redis, KV or mTLS fails closed.
 - The Zone verifier compares session, binding hash, actor, resource, workspace,
-  Zone, action, policy revision, canonical path/body hashes and expiry. The
-  assertion `jti` is atomically replay-fenced in a bounded cache.
+  Zone, action, policy revision, canonical path/body hashes and expiry.
+- The assertion `jti` cache fences replay only inside one replica. Mutations
+  remain idempotent by stable `operation_id`; no cross-replica exactly-once
+  claim is made.
 - There is no STS/notification-secret fallback. Rollback is limited to
   deployment and route configuration, and object traffic remains disabled when
   the Gateway trust chain is incomplete.
 
 Implementation detail and rollout gates are tracked in
-[`zone_storage_gateway_access_refactor_plan.md`](zone_storage_gateway_access_refactor_plan.md).
+[`zone_edge_gateway_storage_access_plan.md`](zone_edge_gateway_storage_access_plan.md).
+The two-edge topology is authoritative in
+[`zone_edge_gateway_god_view.md`](../platform/zone_edge_gateway_god_view.md).

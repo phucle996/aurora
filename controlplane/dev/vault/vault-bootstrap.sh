@@ -8,7 +8,7 @@
 #
 # Chức năng:
 #   - Enable Transit Engine
-#   - Tạo Transit Key: jwt-signer
+#   - Tạo Transit Keys: jwt-signer, zone-control-assertion
 #   - Cấu hình Auto Rotation
 #   - Enable KV-v2
 #   - Cấu hình Metadata
@@ -212,14 +212,14 @@ transit/keys/jwt-signer/config \
 }'
 
 ##############################################################################
-# Create asymmetric Zone Storage assertion key
+# Create the asymmetric Zone Control Edge assertion key.
 ##############################################################################
 
 # [COMMENT]: The private Ed25519 material stays inside Vault. Deployments must
 # distribute only the versioned public key returned by Transit to each Zone.
 request \
 POST \
-transit/keys/storage-assertion \
+transit/keys/zone-control-assertion \
 '{
     "type":"ed25519"
 }'
@@ -303,5 +303,6 @@ echo "=============================================================="
 echo
 echo "Vault Address : $VAULT_ADDR"
 echo "Transit Key   : jwt-signer"
+echo "Control Key   : zone-control-assertion"
 echo "Secret Path   : secret/controlplane"
 echo

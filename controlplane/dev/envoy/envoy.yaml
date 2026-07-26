@@ -99,7 +99,10 @@ static_resources:
                           cluster_name: acr_cluster
                         timeout: 2s
                       with_request_body:
-                        max_request_bytes: 10240
+                        # Storage bulk control requests are capped at the same
+                        # 64 KiB boundary enforced by the Zone Control Edge.
+                        max_request_bytes: 65536
+                        allow_partial_message: false
                         pack_as_bytes: true
                       transport_api_version: V3
                   - name: envoy.filters.http.rbac
@@ -228,6 +231,56 @@ static_resources:
                     socket_address:
                       address: cloud-console
                       port_value: 3000
+
+    # Base single-Zone cluster. Production renders one allow-listed cluster per
+    # Zone through CDS/xDS; it must never accept a client-provided host.
+    - name: zone_control_edge_gateway_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 128
+            max_pending_requests: 256
+            max_requests: 1024
+      outlier_detection:
+        consecutive_5xx: 3
+        interval: 5s
+        base_ejection_time: 15s
+        max_ejection_percent: 50
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: zone-control-edge-gateway
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: /etc/envoy/zone-control/tls.crt
+                private_key:
+                  filename: /etc/envoy/zone-control/tls.key
+            validation_context:
+              trusted_ca:
+                filename: /etc/envoy/zone-control/ca.crt
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher:
+                    exact: zone-control-edge-gateway
+      load_assignment:
+        cluster_name: zone_control_edge_gateway_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: zone-control-edge-gateway.zone-z1.svc.cluster.local
+                      port_value: 8080
 
     # [COMMENT]: Cụm cluster gRPC trỏ sang Rust acr container phục vụ việc kiểm tra và xử lý phiên
     - name: acr_cluster

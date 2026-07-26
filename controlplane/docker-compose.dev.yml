@@ -160,7 +160,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   envoy:
-    image: envoyproxy/envoy:v1.33.2
+    image: envoyproxy/envoy:v1.38.3
     container_name: controlplane-envoy
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
     volumes:
@@ -170,6 +170,11 @@ services:
       # Cung cấp chứng chỉ SSL chất lượng cao phục vụ TLS termination tại Edge.
       - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
       - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
+      # Local single-Zone mTLS material. Production uses a dedicated workload
+      # identity Secret and a private Zone endpoint.
+      - ./dev/tls/grpc-server.crt:/etc/envoy/zone-control/tls.crt:ro
+      - ./dev/tls/grpc-server.key:/etc/envoy/zone-control/tls.key:ro
+      - ./dev/tls/grpc-server.crt:/etc/envoy/zone-control/ca.crt:ro
     ports:
       - "80:8080" # Cổng HTTP tiêu chuẩn định tuyến đến Cloud UI/Admin UI
       - "443:443" # Cổng HTTPS bảo mật terminate TLS cho các giao tiếp an toàn (đã chuyển listener port của container sang 443)
@@ -188,16 +193,16 @@ services:
           - controlplane.aurora.local
     restart: unless-stopped
 
-  storage-envoy:
-    image: envoyproxy/envoy:v1.33.2
-    container_name: storage-envoy
+  zone-public-edge-gateway:
+    image: envoyproxy/envoy:v1.38.3
+    container_name: zone-public-edge-gateway
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
     volumes:
-      - ./dev/envoy/envoy-storage.yaml:/etc/envoy/envoy.yaml:ro
-      - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
-      - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
+      - ../zone-public-edge-gateway/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./dev/tls/grpc-server.crt:/etc/aurora/tls/tls.crt:ro
+      - ./dev/tls/grpc-server.key:/etc/aurora/tls/tls.key:ro
     ports:
-      - "29000:8080" # Cổng S3 Gateway proxy qua Envoy hướng đến MinIO
+      - "29000:8080" # HTTPS data path; MinIO validates presigned/SigV4 requests.
     depends_on:
       - minio
     restart: unless-stopped
@@ -894,10 +899,10 @@ services:
       VAULT_ADDR: "http://vault:8200"
       VAULT_TOKEN: "hvs.bmEYXu28616H11YtER7uuejz"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
-      # Enable only after the corresponding v1 public key has been provisioned
-      # into the Zone Storage Authz deployment.
-      VAULT_STORAGE_ASSERTION_KEY_PATH: "transit/keys/storage-assertion"
-      VAULT_STORAGE_ASSERTION_KEY_ID: "storage-assertion:v1"
+      # Enable only after the matching public key has been provisioned into
+      # every Zone Control Authorizer deployment.
+      VAULT_ZONE_CONTROL_ASSERTION_KEY_PATH: "transit/keys/zone-control-assertion"
+      VAULT_ZONE_CONTROL_ASSERTION_KEY_ID: "zone-control-assertion:v1"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
       VAULT_TIMEOUT_SECS: "5"

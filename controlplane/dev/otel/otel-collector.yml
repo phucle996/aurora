@@ -179,7 +179,6 @@ processors:
           - set(attributes["container_name"], "dataplane-zone-z1-nats") where IsMatch(attributes["container_id"], "^e1660272af97")
           - set(attributes["container_name"], "minio") where IsMatch(attributes["container_id"], "^613eb1bbd2c5")
           - set(attributes["container_name"], "stalwart") where IsMatch(attributes["container_id"], "^227967eb4fab")
-          - set(attributes["container_name"], "storage-envoy") where IsMatch(attributes["container_id"], "^f3bd0f67d164")
           # [COMMENT]: Nếu container_name chưa có (fallback), gán ngắn theo short container_id (12 ký tự)
           - set(attributes["container_name"], Substring(attributes["container_id"], 0, 12)) where attributes["container_name"] == nil and attributes["container_id"] != nil
           # Xóa các thuộc tính siêu dữ liệu dư thừa từ filelog receiver và Docker để giữ log sạch

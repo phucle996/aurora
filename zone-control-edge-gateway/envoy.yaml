@@ -1,0 +1,239 @@
+static_resources:
+  listeners:
+    - name: zone_control_edge_gateway
+      per_connection_buffer_limit_bytes: 131072
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: true
+              common_tls_context:
+                alpn_protocols: ["h2", "http/1.1"]
+                tls_certificates:
+                  - certificate_chain: { filename: /etc/aurora/tls/tls.crt }
+                    private_key: { filename: /etc/aurora/tls/tls.key }
+                validation_context:
+                  # Only the Central Envoy workload identity CA belongs here.
+                  trusted_ca: { filename: /etc/aurora/tls/central-client-ca.crt }
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher: { exact: central-envoy }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: zone_control_edge
+                generate_request_id: true
+                use_remote_address: true
+                normalize_path: false
+                merge_slashes: false
+                path_with_escaped_slashes_action: REJECT_REQUEST
+                request_timeout: 15s
+                stream_idle_timeout: 30s
+                common_http_protocol_options:
+                  idle_timeout: 60s
+                  max_headers_count: 64
+                route_config:
+                  name: zone_control_routes
+                  virtual_hosts:
+                    - name: zone_control
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            safe_regex:
+                              regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects(\\?.*)?$"
+                          route:
+                            cluster: minio
+                            regex_rewrite:
+                              pattern:
+                                regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects(\\?.*)?$"
+                              substitution: "/\\1\\2"
+                            timeout: 15s
+                        - match:
+                            safe_regex:
+                              regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects/(.+)/tags$"
+                          route:
+                            cluster: minio
+                            regex_rewrite:
+                              pattern:
+                                regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects/(.+)/tags$"
+                              substitution: "/\\1/\\2?tagging"
+                            timeout: 15s
+                        - match:
+                            safe_regex:
+                              regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects/(.+)$"
+                          route:
+                            cluster: minio
+                            regex_rewrite:
+                              pattern:
+                                regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects/(.+)$"
+                              substitution: "/\\1/\\2"
+                            timeout: 15s
+                        - match:
+                            safe_regex:
+                              regex: "^/zone-control/v1/storage/buckets/([^/]+)/bulk-delete$"
+                          route:
+                            cluster: minio
+                            regex_rewrite:
+                              pattern:
+                                regex: "^/zone-control/v1/storage/buckets/([^/]+)/bulk-delete$"
+                              substitution: "/\\1?delete"
+                            timeout: 15s
+                http_filters:
+                  - name: envoy.filters.http.lua
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                      default_source_code:
+                        inline_string: |
+                          function envoy_on_request(handle)
+                            local assertion_headers = {
+                              ["x-aurora-access-session-id"] = true,
+                              ["x-aurora-control-assertion"] = true,
+                              ["x-aurora-control-signature"] = true,
+                              ["x-aurora-control-key-id"] = true
+                            }
+                            local remove = {}
+                            for key, _ in pairs(handle:headers()) do
+                              local lower = string.lower(key)
+                              if (string.sub(lower, 1, 9) == "x-aurora-" and not assertion_headers[lower])
+                                  or string.sub(lower, 1, 6) == "x-amz-"
+                                  or string.sub(lower, 1, 8) == "x-minio-" then
+                                table.insert(remove, key)
+                              end
+                            end
+                            for _, key in ipairs(remove) do
+                              handle:headers():remove(key)
+                            end
+                            handle:headers():remove("authorization")
+                            handle:headers():remove("cookie")
+                            handle:headers():remove("x-csrf-token")
+                          end
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      failure_mode_allow: false
+                      status_on_error: { code: ServiceUnavailable }
+                      validate_mutations: true
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc: { cluster_name: zone_control_authorizer }
+                        timeout: 500ms
+                      with_request_body:
+                        # Control requests are bounded. Object/image bytes must
+                        # use a presigned route through the Public Edge Gateway.
+                        max_request_bytes: 65536
+                        allow_partial_message: false
+                        pack_as_bytes: true
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          log_type: zone-control-edge-access
+                          timestamp: "%START_TIME%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                          operation_id: "%REQ(X-AURORA-OPERATION-ID)%"
+                          resource_id: "%REQ(X-AURORA-RESOURCE-ID)%"
+                          capability: "%REQ(X-AURORA-CONTROL-CAPABILITY)%"
+                          action: "%REQ(X-AURORA-CONTROL-ACTION)%"
+                          status: "%RESPONSE_CODE%"
+                          response_flags: "%RESPONSE_FLAGS%"
+                          bytes_received: "%BYTES_RECEIVED%"
+                          bytes_sent: "%BYTES_SENT%"
+                          duration_ms: "%DURATION%"
+  clusters:
+    - name: zone_control_authorizer
+      connect_timeout: 250ms
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 128
+            max_pending_requests: 256
+            max_requests: 1024
+      outlier_detection:
+        consecutive_5xx: 3
+        interval: 5s
+        base_ejection_time: 15s
+        max_ejection_percent: 50
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: zone-control-authorizer
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain: { filename: /etc/aurora/tls/authorizer-client.crt }
+                private_key: { filename: /etc/aurora/tls/authorizer-client.key }
+            validation_context:
+              trusted_ca: { filename: /etc/aurora/tls/authorizer-server-ca.crt }
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher: { exact: zone-control-authorizer }
+      load_assignment:
+        cluster_name: zone_control_authorizer
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: zone-control-authorizer
+                      port_value: 50052
+    - name: minio
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      per_connection_buffer_limit_bytes: 131072
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http_protocol_options: {}
+          http_filters:
+            # Signing must run after route/path rewrites. Signing in the
+            # downstream chain would bind the wrong S3 canonical request.
+            - name: envoy.filters.http.aws_request_signing
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.http.aws_request_signing.v3.AwsRequestSigning
+                service_name: s3
+                region: us-east-1
+                host_rewrite: minio:9000
+                use_unsigned_payload: false
+            - name: envoy.filters.http.upstream_codec
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 256
+            max_pending_requests: 256
+            max_requests: 2048
+      outlier_detection:
+        consecutive_5xx: 5
+        interval: 5s
+        base_ejection_time: 15s
+        max_ejection_percent: 50
+      load_assignment:
+        cluster_name: minio
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: minio, port_value: 9000 }
+
+admin:
+  access_log_path: /dev/null
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }

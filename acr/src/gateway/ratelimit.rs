@@ -18,6 +18,7 @@ pub enum RouteGroup {
     Billing,
     PaymentWebhook,
     AuthPublic,
+    ZoneControl,
     General,
 }
 
@@ -33,6 +34,7 @@ impl RouteGroup {
             RouteGroup::Billing => "billing",
             RouteGroup::PaymentWebhook => "payment_webhook",
             RouteGroup::AuthPublic => "auth_public",
+            RouteGroup::ZoneControl => "zone_control",
             RouteGroup::General => "general",
         }
     }
@@ -48,6 +50,8 @@ pub fn detect_route_group(path: &str) -> RouteGroup {
         RouteGroup::UserCritical
     } else if path.starts_with("/api/v1/auth/") {
         RouteGroup::AuthPublic
+    } else if path.starts_with("/zone-control/v1/") {
+        RouteGroup::ZoneControl
     } else if path.split('?').next().is_some_and(|value| {
         value == "/api/v1/billing/webhooks/personal/payment-settled"
             || value == "/api/v1/billing/webhooks/tenant/payment-settled"
@@ -114,6 +118,9 @@ impl RateLimiter {
             RouteGroup::PaymentWebhook => (1_000, 1, 1_000, 1),
             // [COMMENT]: Argon2/register/login là CPU-expensive; limit thấp theo IP và device trước khi vào handler.
             RouteGroup::AuthPublic => (30, 60, 8, 60),
+            // Vault signing and private Zone fan-out use a dedicated budget so
+            // generic API traffic cannot consume the same limiter namespace.
+            RouteGroup::ZoneControl => (1_000, 1, 100, 1),
             RouteGroup::UserPersonal => (300, 1, 20, 1),
             RouteGroup::UserMe => (500, 1, 30, 1),
             RouteGroup::UserTenant => (200, 1, 15, 1),
@@ -131,6 +138,7 @@ impl RateLimiter {
             RouteGroup::Billing => (80, 1, 80, 1),
             RouteGroup::PaymentWebhook => (1_000, 1, 1_000, 1),
             RouteGroup::AuthPublic => (20, 60, 20, 60),
+            RouteGroup::ZoneControl => (200, 1, 200, 1),
             RouteGroup::UserPersonal => (60, 1, 60, 1),
             RouteGroup::UserMe => (100, 1, 100, 1),
             RouteGroup::UserTenant => (40, 1, 40, 1),
@@ -269,6 +277,14 @@ mod tests {
         assert_eq!(
             detect_route_group("/api/v1/billing/webhooks/other"),
             RouteGroup::Billing
+        );
+    }
+
+    #[test]
+    fn zone_control_uses_an_isolated_rate_group() {
+        assert_eq!(
+            detect_route_group("/zone-control/v1/storage/buckets/a/objects?list-type=2"),
+            RouteGroup::ZoneControl
         );
     }
 }

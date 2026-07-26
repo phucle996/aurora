@@ -2,6 +2,7 @@
 pub enum AuthzError {
     Configuration(String),
     Dependency(String),
+    NotReady(&'static str),
     Denied(&'static str),
 }
 
@@ -11,7 +12,7 @@ impl std::fmt::Display for AuthzError {
             Self::Configuration(message) | Self::Dependency(message) => {
                 formatter.write_str(message)
             }
-            Self::Denied(code) => formatter.write_str(code),
+            Self::NotReady(code) | Self::Denied(code) => formatter.write_str(code),
         }
     }
 }

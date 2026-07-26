@@ -1,10 +1,10 @@
-# [DRAFT PLAN] Zone Storage Gateway Access Refactor
+# [DRAFT PLAN] Zone Edge Gateway Storage Access Refactor
 
 > Temporary implementation-tracking artifact. This is not the final God View contract.  
 > Visual/UI rules remain in `cloud-console/DESIGN.md`. Workflow/topology becomes authoritative only after the corresponding God View and deployed contracts are updated.  
 > Created: 2026-07-26
 
-## Implementation status (2026-07-26)
+## Implementation status (2026-07-27)
 
 - **Shipped:** Central access-session endpoint, protobuf-encoded Auth-State Redis projection,
   `storage.access.prepare`/`StorageAccessRecord` protobuf contracts and JO
@@ -14,29 +14,38 @@
   fencing. The legacy Controlplane `RequestSts`, JO `storage.object.sts`
   lifecycle, Dataplane STS executor, STS protobufs and public-MinIO endpoint
   configuration have been removed.
-- **Staged but not enabled:** Zone Envoy deployment/config and Central
-  assertion signing key distribution. The existing Docker storage listener is
-  not an authorization fallback now that the secret-bearing STS producer has
-  been removed; production traffic must remain disabled until public keys,
-  mTLS identities and the S3 signing adapter are provisioned and tested.
-- **Still required:** Zone route activation/transfer-ticket endpoints, usage-
+- **Staged but not enabled:** Zone Envoy deployment/config, upstream S3 signing
+  filter and Central assertion signing contract are checked in. The existing
+  Docker storage listener is not an authorization fallback now that the
+  secret-bearing STS producer has been removed; production traffic must remain
+  disabled until public keys, mTLS identities, the dedicated Zone-local MinIO
+  signer Secret and end-to-end signing behavior are provisioned and tested.
+- **Still required:** Zone route activation/presigned data-ticket endpoints, usage-
   event/byte evidence wiring, revoke/revision command, multi-Zone route discovery and the full
   performance/failover gates below.
+- **Shipped topology refactor:** The Zone ingress is split into
+  `Zone Public Edge Gateway` and `Zone Control Edge Gateway`; the Rust service
+  is now `zone-control-authorizer`. ACR uses the generic v1 Zone control
+  audience/header envelope, and each workload has a separate Deployment,
+  identity, PDB, HPA and NetworkPolicy template.
+- **Still a release gate:** The checked-in Central Envoy upstream is a
+  single-Zone `zone-z1` base. Production requires allow-listed per-Zone
+  CDS/xDS routing and private mTLS/DNS provisioning before activation.
 - **Console migration status:** Cloud Console no longer calls `/sts-token`,
   decodes credential-bearing notifications or persists presigned URLs. It
   creates an opaque access session, routes list/head/tag/bulk calls through the
   Gateway contract and presents an explicit disabled state for upload/download
-  until transfer-ticket routes are deployed. Object browsing is still not
+  until presigned data-ticket routes are deployed. Object browsing is still not
   release-ready until the Gateway activation gates are complete.
 
 ## 1. Objective
 
-Replace the current browser-to-S3 STS/notification path with a Zone-local Storage Gateway path that:
+Replace the current browser-to-S3 STS/notification path with the two Zone Edge Gateway boundaries that:
 
 - keeps Trinity authentication and ownership authorization in Central;
 - does not expose S3 access key, secret key or session token to Cloud Console for list/metadata/tag/bulk operations;
 - does not place storage credentials in `job.notification`, Centrifugo, notification history, logs or Redis;
-- lets the Zone Gateway call the S3/MinIO endpoint in its own Zone;
+- lets the Zone Control Edge Gateway call the S3/MinIO endpoint in its own Zone;
 - verifies a Central authorization assertion and a Zone-local access record before executing a request;
 - meters resource/actor/byte usage without calling Controlplane on the storage hot path;
 - remains safe under duplicate jobs, out-of-order delivery, replay, Zone failover and rolling deployment;
@@ -44,7 +53,7 @@ Replace the current browser-to-S3 STS/notification path with a Zone-local Storag
 
 ## 2. Non-goals
 
-- Do not make Zone Storage Gateway a second ownership Source of Truth.
+- Do not make either Zone Edge Gateway a second ownership Source of Truth.
 - Do not forward Trinity cookies or Central Redis credentials into a Zone.
 - Do not use NATS KV as a per-request business database or as a replacement for Controlplane ownership.
 - Do not use a bearer assertion delivered through notification as a disguised STS credential.
@@ -57,7 +66,7 @@ Replace the current browser-to-S3 STS/notification path with a Zone-local Storag
 
 ### 3.1 Current storage ingress
 
-`controlplane/dev/envoy/envoy-storage.yaml` currently defines a standalone `storage-envoy` that:
+The former standalone development storage proxy has been removed. It previously:
 
 - proxies directly to the local `minio` service in the Central Docker Compose environment;
 - expects client SigV4/STS credentials;
@@ -65,7 +74,8 @@ Replace the current browser-to-S3 STS/notification path with a Zone-local Storag
 - writes `envoy-storage-access` JSON access logs containing the extracted access key;
 - does not perform Aurora resource authorization itself.
 
-This is a development topology and must not be copied as a Zone production topology without an explicit Zone route, mTLS boundary and private S3 endpoint.
+Docker Compose now mounts `zone-public-edge-gateway/envoy.yaml`; it does not
+restore STS/access-key extraction or provide a Control Edge fallback.
 
 ### 3.2 Removed STS flow and current UI gap
 
@@ -73,8 +83,8 @@ The backend no longer exposes `RequestSts`, publishes or accepts
 `storage.object.sts`, invokes MinIO STS, or serializes credentials through job
 results. `ObjectStsRequest`/`ObjectStsResponse` are removed from all storage
 protobuf copies. Cloud Console now requests an opaque access-session handle
-and routes list/head/tag/bulk through the Zone Gateway. Upload/download remain
-explicitly disabled until the short-lived transfer-ticket routes are deployed;
+and routes list/head/tag/bulk through the Zone Control Edge Gateway. Upload/download remain
+explicitly disabled until short-lived presigned data-ticket routes are deployed;
 there is no compatibility STS path.
 
 ### 3.3 Current Zone KV contract
@@ -107,24 +117,24 @@ Central Envoy
 ACR / Central Storage Access Authorizer
   | signed internal assertion, mTLS-only
   v
-Zone Storage Envoy
+Zone Control Edge Gateway
   | local ExtAuthz gRPC Check
   v
-zone-storage-authz (Rust)
+zone-control-authorizer (Rust)
   | read-only/restricted access to AURORA_ZONE_ACCESS
   v
-Zone Storage Envoy
+Zone Control Edge Gateway
   | upstream S3 signing or trusted Rust storage adapter
   v
 S3/MinIO in the same Zone
 
-Zone Storage Gateway -------------------------------> Kafka storage usage topic
+Zone Control Edge Gateway --------------------------> Kafka storage usage topic
                                                        |
                                                        v
                                                 Cost inbox / Cost Engine
 ```
 
-The browser never connects to Zone NATS, S3 admin endpoints, Zone Storage Authz or the Dataplane job result channel.
+The browser never connects to Zone NATS, S3 admin endpoints, Zone Control Authorizer or the Dataplane job result channel.
 
 ## 5. Trust and ownership model
 
@@ -181,7 +191,7 @@ The CP database transaction/outbox remains the durable source for the access int
 Dataplane creates a separate Zone record after consuming the Central command:
 
 ```text
-AURORA_ZONE_ACCESS/access.{access_session_id}
+AURORA_ZONE_ACCESS/{access_session_id}
 
 {
   "access_session_id": "uuid",
@@ -203,25 +213,33 @@ For each list/head/tag/bulk request, Central ACR/authorizer creates an internal 
 
 ```text
 {
+  "schema_version": 1,
   "jti": "uuid",
+  "operation_id": "uuid",
   "access_session_id": "uuid",
+  "binding_hash": "sha256",
   "actor_id": "uuid",
   "resource_id": "bucket-uuid",
+  "resource_name": "physical-bucket-name",
+  "workspace_id": "uuid",
   "zone_id": "uuid",
+  "capability": "storage.object",
   "action": "list|head|tag_read|tag_write|bulk_delete",
   "method": "GET|HEAD|PUT|POST|DELETE",
   "path_hash": "sha256",
-  "body_hash": "sha256|null",
+  "body_hash": "sha256",
+  "scope": "optional/object/prefix",
   "policy_revision": 42,
   "issued_at": "timestamp",
   "expires_at": "timestamp + a few seconds",
-  "audience": "zone-storage-gateway",
+  "issuer": "aurora-acr",
+  "audience": "zone-control-edge-gateway",
   "key_id": "central-signing-key-id",
   "signature": "..."
 }
 ```
 
-The Zone Gateway authorizes only if the Central assertion and Zone Access Record have matching session/resource/Zone/action/revision/binding values.
+The Zone Control Authorizer authorizes only if the Central assertion and Zone Access Record have matching session/resource/Zone/action/revision/binding values.
 
 ## 6. Request flow
 
@@ -242,8 +260,8 @@ The Zone Gateway authorizes only if the Central assertion and Zone Access Record
 1. Browser sends the existing Trinity cookie and `access_session_id` to Central Envoy.
 2. Central ExtAuthz checks the Central Access Record and the requested path/action.
 3. ACR signs the per-request internal assertion.
-4. Central Envoy strips client-provided internal headers and forwards the assertion over mTLS to the Zone Storage Envoy.
-5. Zone Envoy calls `zone-storage-authz` using Envoy ExtAuthz gRPC.
+4. Central Envoy strips client-provided internal headers and forwards the assertion over mTLS to the Zone Control Edge Gateway.
+5. Zone Control Edge Gateway calls `zone-control-authorizer` using Envoy ExtAuthz gRPC.
 6. Rust verifier validates signature, canonical method/path/body, expiry, audience and Zone identity.
 7. Rust verifier checks the Zone Access Record (local watch cache first, KV read on miss) and fails closed on mismatch/stale/missing state.
 8. Zone Envoy forwards the allowed request to S3/MinIO through a trusted upstream signing/adapter path.
@@ -251,9 +269,9 @@ The Zone Gateway authorizes only if the Central assertion and Zone Access Record
 
 ### 6.3 Upload/download
 
-1. Browser asks the Zone Storage Gateway for a scoped upload/download ticket using the same Central assertion path.
+1. Browser asks through the Zone Control Edge Gateway for a scoped upload/download ticket using the same Central assertion path.
 2. Gateway verifies the assertion and returns a short-lived presigned URL.
-3. Browser transfers bytes directly to the private Zone S3 endpoint through the approved public route.
+3. Browser transfers bytes through the Zone Public Edge Gateway to the private Zone S3 endpoint.
 4. Provider-side access logs/usage collector provide actual byte evidence. A browser callback is never billing evidence.
 
 ### 6.4 Revocation and expiry
@@ -271,18 +289,18 @@ The Zone Gateway authorizes only if the Central assertion and Zone Access Record
 Create a new Rust service:
 
 ```text
-zone-storage-authz/
+zone-control-edge-gateway/authorizer/
 ├── Cargo.toml
 └── src/
     ├── main.rs
     ├── app.rs
     ├── config.rs
-    ├── check.rs
-    ├── assertion.rs
-    ├── canonical.rs
-    ├── access_store.rs
+    ├── authorization.rs
+    ├── control_assertion.rs
+    ├── request_binding.rs
+    ├── zone_access.rs
     ├── keys.rs
-    ├── metrics.rs
+    ├── telemetry.rs
     └── error.rs
 ```
 
@@ -290,7 +308,7 @@ It implements `envoy.service.auth.v3.Authorization/Check` over mTLS gRPC. It is 
 
 ### 7.2 Rust service tasks
 
-- [x] **ZSG-3001 — Bootstrap the Rust ExtAuthz service** *(mTLS gRPC service shipped; readiness wiring remains deployment-specific)*
+- [x] **ZSG-3001 — Bootstrap the Rust ExtAuthz service** *(mTLS gRPC, graceful shutdown and health endpoints shipped)*
   - Create the standalone Cargo package with pinned dependency versions and reproducible lockfile.
   - Implement graceful shutdown, readiness and liveness endpoints.
   - Fail fast when Zone ID, NATS Zone URL, key set or TLS identity is missing.
@@ -304,7 +322,8 @@ It implements `envoy.service.auth.v3.Authorization/Check` over mTLS gRPC. It is 
 - [x] **ZSG-3003 — Assertion verification**
   - Verify Ed25519/signing key ID, audience, issuer, expiry, issued-at skew and signature.
   - Verify `zone_id`, `resource_id`, action and path/body hashes.
-  - Reject duplicate/conflicting assertion headers and all client-supplied `x-aurora-*` headers that bypass the central Envoy.
+  - Central Envoy/ACR overwrites assertion headers; the mTLS-only Zone boundary
+    accepts exactly the resulting single header map and removes it before upstream.
   - Support overlapping public keys during rotation and reject unknown key IDs.
 
 - [x] **ZSG-3004 — Canonical request hashing**
@@ -477,7 +496,7 @@ Goal: add the required Rust verifier as an independent, least-privileged Zone se
 
 - [ ] **ZSG-3011 — Security review**
   - Verify mTLS peer identity, header stripping, assertion rotation, replay window, clock skew, path canonicalization and log redaction.
-  - Prove that Zone Gateway cannot be reached directly from the public network.
+- Prove that Zone Control Edge Gateway cannot be reached directly from the public network.
 
 **Phase gate:** Rust ExtAuthz denies every forged/mismatched request in tests and remains within the agreed p99/CPU/memory budget under load.
 
@@ -491,7 +510,7 @@ Goal: replace the current Central Docker-only proxy with a Zone-local, authentic
   - MinIO/S3 data ports are private; direct bypass is blocked by NetworkPolicy and firewall.
 
 - [ ] **ZSG-4002 — Envoy ExtAuthz wiring**
-  - Invoke `zone-storage-authz` before S3 routing.
+- Invoke `zone-control-authorizer` before S3 routing.
   - Set `failure_mode_allow=false`.
   - Configure bounded body buffering only for bulk operations.
   - Strip client `x-aurora-*`, `x-owner-*`, `x-zone-*` and metering headers.
@@ -549,7 +568,7 @@ Goal: remove browser STS/notification coupling.
   - Scope query keys by Trinity/session, Zone, workspace and bucket.
 
 - [x] **ZSG-6002 — Object list/actions** *(Console metadata slice shipped; backend transfer and full failure-test gate remain)*
-  - Use Zone Gateway HTTP contracts for list, head, metadata, tag and bulk.
+- Use Zone Control Edge Gateway HTTP contracts for list, head, metadata, tag and bulk.
   - Apply abort, pagination, bounded concurrency and idempotency semantics.
   - Display `not ready`, `stale`, `forbidden` and `degraded` distinctly.
 
@@ -613,12 +632,13 @@ Goal: remove browser STS/notification coupling.
 
 | From | To | Allowed |
 | --- | --- | --- |
-| Central Envoy | Zone Storage Envoy | mTLS, signed internal assertion only |
-| Zone Storage Envoy | `zone-storage-authz` | Envoy ExtAuthz gRPC over mTLS |
-| `zone-storage-authz` | Zone NATS | Read `AURORA_ZONE_ACCESS`, public assertion-key projection only |
+| Central Envoy | Zone Control Edge Gateway | mTLS, signed internal assertion only |
+| Zone Control Edge Gateway | `zone-control-authorizer` | Envoy ExtAuthz gRPC over mTLS |
+| `zone-control-authorizer` | Zone NATS | Read `AURORA_ZONE_ACCESS`, public assertion-key projection only |
 | Dataplane | Zone NATS | Write access record and revoke/consume namespace only |
-| Zone Storage Envoy | S3/MinIO | Same-Zone endpoint, trusted upstream signing/adapter |
-| Zone Storage Gateway | Controlplane DB/Redis/Vault | Forbidden |
+| Zone Control Edge Gateway | S3/MinIO | Same-Zone endpoint, trusted upstream signing/adapter |
+| Zone Public Edge Gateway | S3/MinIO | Presigned streaming request only |
+| Zone Edge Gateways | Controlplane DB/Redis/Vault | Forbidden |
 | Browser | Zone NATS/MinIO admin/Authz service | Forbidden |
 | Notification Service | STS/access assertion secret | Forbidden |
 
@@ -641,15 +661,17 @@ The new Rust service must not receive credentials to `AURORA_ZONE_CONFIG`, `AURO
 
 ## 11. Definition of done
 
-- `zone-storage-authz` is a tested, least-privilege Rust Envoy ExtAuthz service.
+- `zone-control-authorizer` is a tested, least-privilege Rust Envoy ExtAuthz service.
 - Trinity never leaves Central as a raw cookie or secret.
 - Browser never receives S3 STS credentials for the new path.
 - Central ownership check creates the only authorization decision; Zone KV only gates Zone readiness/revocation.
-- Zone Gateway rejects forged, stale, replayed and cross-resource assertions.
+- Zone Control Authorizer rejects forged, stale and cross-resource assertions;
+  local `jti` fencing is defense in depth and mutation idempotency remains the
+  cross-replica replay boundary.
 - NATS access bucket sizing and failover are measured for the agreed active-record ceiling.
 - S3 direct ports cannot bypass Envoy/authz/metering.
 - Cost usage has stable resource lineage and idempotent delivery.
-- Cloud Console uses list/metadata/tag/bulk Gateway contracts and presigned transfer tickets.
+- Cloud Console uses list/metadata/tag/bulk Gateway contracts and presigned data-tickets.
 - Relevant God Views, protobuf copies, Envoy routes, NetworkPolicies and deployment manifests are updated together.
 - Legacy STS backend/transport is absent, and the completed Cloud Console
   migration contains no STS endpoint, decoder or notification handling.

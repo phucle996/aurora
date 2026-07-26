@@ -1,12 +1,12 @@
-mod access_store;
 mod app;
-mod assertion;
-mod canonical;
-mod check;
+mod authorization;
 mod config;
+mod control_assertion;
 mod error;
 mod keys;
-mod metrics;
+mod request_binding;
+mod telemetry;
+mod zone_access;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -430,6 +430,6 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		"zone_id":           zoneID.String(),
 		"bucket_id":         bucketID.String(),
 		"expires_at":        time.Unix(int64(session.ExpiresAtUnixSeconds), 0).UTC().Format(time.RFC3339),
-		"gateway_path":      "/storage/v1/",
+		"gateway_path":      "/zone-control/v1/storage/",
 	}, "storage access session is being prepared")
 }

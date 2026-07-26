@@ -68,7 +68,7 @@ impl TokenManager {
         self.generate_vault_token(claims, "user").await
     }
 
-    pub async fn sign_storage_assertion(
+    pub async fn sign_zone_control_assertion(
         &self,
         key_path: &str,
         payload: &[u8],

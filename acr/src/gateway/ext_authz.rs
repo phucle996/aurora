@@ -202,6 +202,18 @@ impl Authorization for ExtAuthzService {
             .or_else(|| client_headers.get(":path").map(|s| s.as_str()))
             .unwrap_or("/");
         let path = path_str;
+        // Object names and query values are high-cardinality customer data.
+        // Authorization logs retain the capability route without emitting them.
+        let authz_log_path = if path
+            .split('?')
+            .next()
+            .unwrap_or(path)
+            .starts_with("/zone-control/v1/storage/")
+        {
+            "/zone-control/v1/storage/[redacted]"
+        } else {
+            path
+        };
 
         let method_str = http_req
             .map(|h| h.method.as_str())
@@ -239,7 +251,7 @@ impl Authorization for ExtAuthzService {
                 Logger::authz_log(
                     "system",
                     method,
-                    path,
+                    authz_log_path,
                     "DENIED",
                     &format!("CORS origin '{}' not allowed", origin),
                 );
@@ -323,7 +335,7 @@ impl Authorization for ExtAuthzService {
             Logger::authz_log(
                 "system",
                 method,
-                path,
+                authz_log_path,
                 "DENIED",
                 "Direct internal Billing owner route",
             );
@@ -340,7 +352,7 @@ impl Authorization for ExtAuthzService {
             Logger::authz_log(
                 "system",
                 method,
-                path,
+                authz_log_path,
                 "DENIED",
                 "Billing route is not available on this authority",
             );
@@ -647,7 +659,13 @@ impl Authorization for ExtAuthzService {
         if (claims.is_some() || sre_claims.is_some() || billing_alias.is_some())
             && !verify_csrf_protection(method, client_headers)
         {
-            Logger::authz_log("system", method, path, "DENIED", "CSRF validation failed");
+            Logger::authz_log(
+                "system",
+                method,
+                authz_log_path,
+                "DENIED",
+                "CSRF validation failed",
+            );
             return Ok(Response::new(CheckResponse::with_status(
                 Status::permission_denied("CSRF validation failed"),
             )));
@@ -825,7 +843,7 @@ impl Authorization for ExtAuthzService {
                 {
                     Ok(challenge_id) => session_proof_challenge_id = Some(challenge_id),
                     Err(error) => {
-                        Logger::authz_log(&c.uid, method, path, "DENIED", &error);
+                        Logger::authz_log(&c.uid, method, authz_log_path, "DENIED", &error);
                         return Ok(Response::new(CheckResponse::with_status(
                             Status::permission_denied("Invalid session proof"),
                         )));
@@ -862,7 +880,7 @@ impl Authorization for ExtAuthzService {
                 {
                     Ok(challenge_id) => session_proof_challenge_id = Some(challenge_id),
                     Err(error) => {
-                        Logger::authz_log(&alias.user_id, method, path, "DENIED", &error);
+                        Logger::authz_log(&alias.user_id, method, authz_log_path, "DENIED", &error);
                         return Ok(Response::new(CheckResponse::with_status(
                             Status::permission_denied("Invalid billing session proof"),
                         )));
@@ -907,7 +925,7 @@ impl Authorization for ExtAuthzService {
                 Logger::authz_log(
                     "sre",
                     method,
-                    path,
+                    authz_log_path,
                     "DENIED",
                     &format!("SRE Signature failed: {}", err_msg),
                 );
@@ -917,48 +935,64 @@ impl Authorization for ExtAuthzService {
             }
         }
 
-        let storage_signed_headers = if path_without_query.starts_with("/storage/v1/") {
-            let Some(ref storage_claims) = claims else {
-                return Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Storage Gateway requires a user Trinity session"),
-                )));
-            };
-            let raw_body = req
-                .attributes
-                .as_ref()
-                .and_then(|attributes| attributes.request.as_ref())
-                .and_then(|request| request.http.as_ref())
-                .map(|http| {
-                    if http.body.is_empty() {
-                        http.raw_body.clone()
-                    } else {
-                        http.body.as_bytes().to_vec()
-                    }
-                })
-                .unwrap_or_default();
-            match crate::storage::assertion::authorize_and_sign(
-                &self.session_mgr,
-                &self.token_mgr,
-                &self.config,
-                storage_claims,
-                client_headers,
-                method,
-                path,
-                &raw_body,
-            )
-            .await
-            {
-                Ok(headers) => Some(headers),
-                Err(reason) => {
-                    Logger::authz_log(&storage_claims.uid, method, path, "DENIED", reason);
+        let zone_control_signed_headers =
+            if path_without_query.starts_with("/zone-control/v1/storage/") {
+                let Some(ref storage_claims) = claims else {
                     return Ok(Response::new(CheckResponse::with_status(
-                        Status::permission_denied(reason),
+                        Status::permission_denied(
+                            "Zone Control Edge Gateway requires a user Trinity session",
+                        ),
                     )));
+                };
+                let raw_body = req
+                    .attributes
+                    .as_ref()
+                    .and_then(|attributes| attributes.request.as_ref())
+                    .and_then(|request| request.http.as_ref())
+                    .map(|http| {
+                        if http.body.is_empty() {
+                            http.raw_body.clone()
+                        } else {
+                            http.body.as_bytes().to_vec()
+                        }
+                    })
+                    .unwrap_or_default();
+                match crate::storage::control_assertion::authorize_storage_and_sign(
+                    &self.session_mgr,
+                    &self.token_mgr,
+                    &self.config,
+                    storage_claims,
+                    client_headers,
+                    method,
+                    path,
+                    &raw_body,
+                )
+                .await
+                {
+                    Ok(headers) => Some(headers),
+                    Err(reason) => {
+                        Logger::authz_log(
+                            &storage_claims.uid,
+                            method,
+                            authz_log_path,
+                            "DENIED",
+                            reason,
+                        );
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied(reason),
+                        )));
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else if path_without_query.starts_with("/zone-control/v1/") {
+                // The Central route is intentionally generic, but ACR must
+                // fail closed until a capability has an explicit signer and
+                // policy. Otherwise a new path could inherit client headers.
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("Zone control capability is not allowed"),
+                )));
+            } else {
+                None
+            };
 
         cookies_to_set.extend(cookies_to_set_zone);
 
@@ -1004,15 +1038,15 @@ impl Authorization for ExtAuthzService {
                         // [COMMENT]: Cơ chế bảo mật CHẶN CHÉO - Ngăn cản sự sai lệch giữa ngữ cảnh Client yêu cầu và Session thực tế
                         if client_has_tenant != session_has_tenant {
                             Logger::authz_log(
-                            &c.sub,
-                            method,
-                            path,
-                            "DENIED",
-                            &format!(
-                                "Routing context mismatch: client_has_tenant={}, session_has_tenant={}. Platform fallback blocked.",
-                                client_has_tenant, session_has_tenant
-                            ),
-                        );
+                                &c.sub,
+                                method,
+                                authz_log_path,
+                                "DENIED",
+                                &format!(
+                                    "Routing context mismatch: client_has_tenant={}, session_has_tenant={}. Platform fallback blocked.",
+                                    client_has_tenant, session_has_tenant
+                                ),
+                            );
                             return Ok(Response::new(CheckResponse::with_status(
                                 Status::permission_denied("Tenant context mismatch"),
                             )));
@@ -1026,7 +1060,7 @@ impl Authorization for ExtAuthzService {
                                 Logger::authz_log(
                                     &c.sub,
                                     method,
-                                    path,
+                                    authz_log_path,
                                     "DENIED",
                                     &format!(
                                         "Tenant ID mismatch for routing: client='{}', session='{}'",
@@ -1068,7 +1102,7 @@ impl Authorization for ExtAuthzService {
                 .map(|c| c.sub.as_str())
                 .unwrap_or("anonymous")
         };
-        Logger::authz_log(sub, method, path, "ALLOWED", "Authorized");
+        Logger::authz_log(sub, method, authz_log_path, "ALLOWED", "Authorized");
 
         let mut ok_response = CheckResponse::with_status(Status::ok("authorized"));
         ok_response.set_http_response(
@@ -1080,12 +1114,12 @@ impl Authorization for ExtAuthzService {
             if let HttpResponse::OkResponse(ref mut ok) = http_resp {
                 use envoy_types::pb::envoy::config::core::v3::HeaderValueOption;
 
-                if let Some(signed) = storage_signed_headers {
+                if let Some(signed) = zone_control_signed_headers {
                     for (key, value) in [
                         ("x-aurora-access-session-id", signed.access_session_id),
-                        ("x-aurora-storage-assertion", signed.assertion),
-                        ("x-aurora-storage-signature", signed.signature),
-                        ("x-aurora-storage-key-id", signed.key_id),
+                        ("x-aurora-control-assertion", signed.assertion),
+                        ("x-aurora-control-signature", signed.signature),
+                        ("x-aurora-control-key-id", signed.key_id),
                     ] {
                         let mut header = HeaderValueOption::default();
                         header.header =

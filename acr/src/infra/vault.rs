@@ -380,7 +380,8 @@ impl VaultClient {
             [key] => ("transit", *key),
             _ => {
                 return Err(AcrError::ConfigError(
-                    "VAULT_STORAGE_ASSERTION_KEY_PATH must identify one Transit key".to_string(),
+                    "VAULT_ZONE_CONTROL_ASSERTION_KEY_PATH must identify one Transit key"
+                        .to_string(),
                 ))
             }
         };
@@ -394,34 +395,36 @@ impl VaultClient {
             .send()
             .await
             .map_err(|error| {
-                AcrError::Internal(format!("Vault storage assertion sign failed: {error}"))
+                AcrError::Internal(format!("Vault Zone control assertion sign failed: {error}"))
             })?;
         let status = response.status();
         let body: serde_json::Value = response.json().await.map_err(|error| {
-            AcrError::Internal(format!("Vault storage assertion response invalid: {error}"))
+            AcrError::Internal(format!(
+                "Vault Zone control assertion response invalid: {error}"
+            ))
         })?;
         if !status.is_success() {
             return Err(AcrError::Internal(format!(
-                "Vault storage assertion sign HTTP {status}"
+                "Vault Zone control assertion sign HTTP {status}"
             )));
         }
         let signature = body["data"]["signature"].as_str().ok_or_else(|| {
-            AcrError::Internal("Vault storage assertion signature missing".to_string())
+            AcrError::Internal("Vault Zone control assertion signature missing".to_string())
         })?;
         let mut signature_parts = signature.splitn(3, ':');
         if signature_parts.next() != Some("vault") {
             return Err(AcrError::Internal(
-                "Vault storage assertion signature format invalid".to_string(),
+                "Vault Zone control assertion signature format invalid".to_string(),
             ));
         }
         let version = signature_parts.next().ok_or_else(|| {
-            AcrError::Internal("Vault storage assertion version missing".to_string())
+            AcrError::Internal("Vault Zone control assertion version missing".to_string())
         })?;
         let encoded = signature_parts
             .next()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                AcrError::Internal("Vault storage assertion bytes missing".to_string())
+                AcrError::Internal("Vault Zone control assertion bytes missing".to_string())
             })?;
         Ok((format!("{key}:{version}"), encoded.to_string()))
     }

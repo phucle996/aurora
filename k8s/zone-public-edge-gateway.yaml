@@ -1,0 +1,139 @@
+# Public data-plane template. The Zone overlay must provision the public DNS,
+# certificate and provider-specific LoadBalancer/DDoS controls.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zone-public-edge-gateway
+  namespace: zone-z1
+  labels:
+    app.kubernetes.io/name: zone-public-edge-gateway
+    app.kubernetes.io/component: public-zone-edge
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: zone-public-edge-gateway }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zone-public-edge-gateway
+        app.kubernetes.io/component: public-zone-edge
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 930
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: zone-public-edge-gateway }
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: zone-public-edge-gateway }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.38.3
+          args: ["-c", "/etc/envoy/envoy.yaml", "-l", "info", "--drain-time-s", "900"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - { name: public, containerPort: 8080 }
+            - { name: admin, containerPort: 9901 }
+          volumeMounts:
+            - { name: envoy-config, mountPath: /etc/envoy, readOnly: true }
+            - { name: gateway-tls, mountPath: /etc/aurora/tls, readOnly: true }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { cpu: "4", memory: 2Gi }
+          readinessProbe:
+            httpGet: { path: /ready, port: admin }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /server_info, port: admin }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+      volumes:
+        - name: envoy-config
+          configMap: { name: zone-public-edge-gateway-config }
+        - name: gateway-tls
+          secret: { secretName: zone-public-edge-gateway-tls }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zone-public-edge-gateway
+  namespace: zone-z1
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+    - { name: https, port: 443, targetPort: public }
+  selector: { app.kubernetes.io/name: zone-public-edge-gateway }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zone-public-edge-gateway
+  namespace: zone-z1
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: zone-public-edge-gateway }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zone-public-edge-gateway
+  namespace: zone-z1
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zone-public-edge-gateway
+  minReplicas: 3
+  maxReplicas: 50
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 60 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zone-public-edge-gateway
+  namespace: zone-z1
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: zone-public-edge-gateway }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: minio }
+      ports: [{ protocol: TCP, port: 9000 }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

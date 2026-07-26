@@ -70,7 +70,7 @@ This document is a delivery plan, not a workflow contract. `DESIGN.md` remains t
 - The backend STS endpoint/command/executor and secret-bearing notification
   transport have been removed. The object browser now uses an opaque
   access-session handle for Gateway list/head/tag/bulk operations; upload and
-  download remain visibly disabled until the short-lived transfer-ticket
+  download remain visibly disabled until the short-lived presigned data-ticket
   routes are deployed. There is no browser S3 client or STS fallback.
 - Realtime uses string event names and `unknown` payloads; decoding, dedupe and reconciliation are spread across callsites.
 - Several hand-written modals, drawers, tables and filter bars duplicate existing UI primitives.
@@ -91,7 +91,7 @@ This document is a delivery plan, not a workflow contract. `DESIGN.md` remains t
 | ADR-CC-08 | Shared abstractions are promoted only after real reuse. Do not create `helpers.ts`, `common.ts` or `misc.ts`. |
 | ADR-CC-09 | Route `page.tsx` files compose a feature and its access boundary; they do not own a complete feature implementation. |
 | ADR-CC-10 | A frontend permission check may hide/disable UI but cannot authorize an operation. Envoy/ACR/backend remain authoritative. |
-| ADR-CC-11 | Storage list/head/metadata/tag/bulk operations use the Central access-session handle and Zone Gateway. Upload/download use short-lived presigned transfer tickets. Browser code never receives or reconstructs S3 credentials. |
+| ADR-CC-11 | Storage list/head/metadata/tag/bulk operations use the Central access-session handle and Zone Gateway. Upload/download use short-lived presigned data-tickets. Browser code never receives or reconstructs S3 credentials. |
 
 ## 5. Target source layout
 
@@ -183,7 +183,7 @@ Goal: remove cross-principal cache leakage and secrets from the notification pat
   - Make teardown idempotent so concurrent 401 responses do not race or emit repeated user-visible notifications.
   - Ensure a late response from the previous principal cannot repopulate cache after teardown.
 
-- [ ] **CC-1003 — Adopt the non-secret storage access contract** *(Console list/head/tag/bulk slice shipped; transfer-ticket deployment and E2E remain)*
+- [ ] **CC-1003 — Adopt the non-secret storage access contract** *(Console list/head/tag/bulk slice shipped; presigned data-ticket deployment and E2E remain)*
   - Remove the retired STS API call, protobuf hex decoder, credential state and
     `storage.object.sts` notification special case from Console code.
   - Create a short-lived access session through
@@ -365,14 +365,14 @@ Goal: migrate in vertical slices so each completed slice is simpler and independ
   - Remove dead custom toast state and use one toast system.
   - Keep notifications and self-activity as separate data contracts/views.
 
-- [ ] **CC-5002 — Object Storage** *(Gateway metadata slice shipped; transfer-ticket route and failure tests remain)*
+- [ ] **CC-5002 — Object Storage** *(Gateway metadata slice shipped; presigned data-ticket route and failure tests remain)*
   - Split `ObjectsTab` into object query/actions, selection/navigation state and focused components.
   - Add a typed access-session API client and a bounded in-memory session owner;
     refresh before expiry without racing a principal/Zone/workspace switch.
   - Route list, head, metadata, tag read/write and bulk operations through the
     Zone Gateway with the opaque access-session handle. Do not send actor,
     owner, workspace or Zone values as authorization claims.
-  - Use presigned transfer tickets for upload/download; bind each ticket to the
+  - Use presigned data-tickets for upload/download; bind each ticket to the
     bucket, object key, method, content constraints and short expiry.
   - Remove `requestBucketStsToken`, `decodeObjectStsResponse`, credential state,
     direct authenticated `S3Client` construction and the
@@ -511,7 +511,7 @@ Goal: remove transitional debt and ship with observable, reversible rollout beha
 | Dependency | Required work |
 | --- | --- |
 | ACR / Envoy | Verified session behavior, CSRF/origin enforcement, internal-header stripping, Centrifugo auth/channel authorization and security headers. |
-| Controlplane / Zone Storage Gateway | Deploy and verify access-session projection, Gateway list/head/tag/bulk routes and short-lived presigned transfer-ticket routes. |
+| Controlplane / Zone Edge Gateways | Deploy and verify access-session projection, Control Edge list/head/tag/bulk routes and short-lived Public Edge presigned data-ticket routes. |
 | JO / Notification Service | Notification events must exclude secrets and preserve stable operation/event identifiers. |
 | Centrifugo | Principal-bound channels, disconnect/reconnect behavior and payload-size limits. |
 | God Views | Update every changed STS, notification, runtime or session/cache workflow in the same change-set. |

@@ -10,7 +10,10 @@ Billing DB không bao giờ kết nối trực tiếp vào Controlplane DB.
 
 ```mermaid
 flowchart LR
-    SDK[Browser + access session / presigned URL] --> ENV[Zone Storage Gateway]
+    SDK[Browser + access session] --> CTRL[Zone Control Edge Gateway]
+    SDK -->|presigned data request| PUB[Zone Public Edge Gateway]
+    CTRL --> ENV[Trusted storage operation]
+    PUB --> MINIO
     ENV --> AUTHZ[Central assertion + Zone access record]
     ENV --> MINIO[Private MinIO/S3]
     ENV --> CH[(ClickHouse hourly usage evidence)]
@@ -56,9 +59,9 @@ owner is `personal_workspaces.owner_id`; for tenant buckets it is `tenant_bucket
 
 The staged gateway path emits trusted `resource_id`, `actor_id`, action and response/byte metadata after
 the Zone ExtAuthz decision. It never accepts client `x-owner-*` or identity headers as billing evidence.
-Legacy Docker STS ingress still extracts a credential identifier for rollback compatibility; it must be
-drained before the new usage event becomes the sole chargeable source. Only successful chargeable
-responses enter aggregates. MinIO direct data-plane ports remain private.
+The legacy Docker storage proxy is not an authorization or billing fallback and
+must not emit chargeable usage. Only successful chargeable responses from the
+Zone Edge path enter aggregates. MinIO direct data-plane ports remain private.
 
 ## 5. Source map
 
@@ -71,8 +74,9 @@ responses enter aggregates. MinIO direct data-plane ports remain private.
 | Billing inbox schema | `cost-manager/api/migrations/000002_tables.up.sql` |
 | Ownership consumer | `cost-manager/api/internal/transport/redis/handler/resource_ownership_handler.go` |
 | Billing projection schema | `cost-manager/api/migrations/000002_tables.up.sql` |
-| Storage ingress metering identity | `controlplane/dev/envoy/envoy-storage.yaml` |
-| Staged Zone assertion verifier | `zone-storage-authz/src/check.rs` |
+| Control request metering identity | `zone-control-edge-gateway/envoy.yaml` |
+| Presigned data ingress | `zone-public-edge-gateway/envoy.yaml` |
+| Staged Zone assertion verifier | `zone-control-edge-gateway/authorizer/src/authorization.rs` |
 | Staged access projection | `dataplane/src/infra/zone_kv.rs` (`AURORA_ZONE_ACCESS`) |
 | Hourly usage schema | `controlplane/dev/clickhouse/init.sql` |
 | Owner resolution and debit | `cost-manager/engine/src/service/storage/egress_billing.rs` |
