@@ -27,6 +27,52 @@ BEGIN
             shared_outbox_count;
     END IF;
 
+    IF (
+        SELECT array_agg(enum_value.enumlabel::text ORDER BY enum_value.enumsortorder)
+        FROM pg_enum enum_value
+        JOIN pg_type enum_type ON enum_type.oid = enum_value.enumtypid
+        JOIN pg_namespace namespace ON namespace.oid = enum_type.typnamespace
+        WHERE namespace.nspname = 'hypervisor'
+          AND enum_type.typname = 'hypervisor_vm_status'
+    ) IS DISTINCT FROM ARRAY['PROVISIONING', 'READY']::text[] THEN
+        RAISE EXCEPTION 'personal VM enum must contain exactly PROVISIONING and READY';
+    END IF;
+
+    IF (
+        SELECT array_agg(enum_value.enumlabel::text ORDER BY enum_value.enumsortorder)
+        FROM pg_enum enum_value
+        JOIN pg_type enum_type ON enum_type.oid = enum_value.enumtypid
+        JOIN pg_namespace namespace ON namespace.oid = enum_type.typnamespace
+        WHERE namespace.nspname = 'hypervisor'
+          AND enum_type.typname = 'hypervisor_image_state'
+    ) IS DISTINCT FROM ARRAY[
+        'UPLOADING',
+        'IMPORTING',
+        'AVAILABLE',
+        'QUARANTINED',
+        'FAILED',
+        'DELETING'
+    ]::text[] THEN
+        RAISE EXCEPTION 'hypervisor image enum labels are not the clean baseline';
+    END IF;
+
+    IF (
+        SELECT array_agg(enum_value.enumlabel::text ORDER BY enum_value.enumsortorder)
+        FROM pg_enum enum_value
+        JOIN pg_type enum_type ON enum_type.oid = enum_value.enumtypid
+        JOIN pg_namespace namespace ON namespace.oid = enum_type.typnamespace
+        WHERE namespace.nspname = 'hypervisor'
+          AND enum_type.typname = 'hypervisor_outbox_status'
+    ) IS DISTINCT FROM ARRAY[
+        'PENDING',
+        'PROCESSING',
+        'SUCCEEDED',
+        'FAILED',
+        'DEAD'
+    ]::text[] THEN
+        RAISE EXCEPTION 'hypervisor outbox enum labels are not the clean baseline';
+    END IF;
+
     IF EXISTS (
         SELECT 1
         FROM information_schema.columns

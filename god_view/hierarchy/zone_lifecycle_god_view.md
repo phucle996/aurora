@@ -46,7 +46,7 @@ Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zon
 [ZoneStatusGateway] → PRODUCE ZoneReport (Protobuf) → [Kafka zone reports]
 [JO zone_state worker] → manual poll → validate → ZoneDrainPolicy.evaluate()
 [JO] → timestamp-fenced UPDATE actual_state/observed_at → [PostgreSQL]
-[JO] → UPSERT hypervisor.nodes → [PostgreSQL]
+[JO] → validate then discard physical-node telemetry; no PostgreSQL node table
 ```
 
 ## 2. State Machine
@@ -1126,28 +1126,27 @@ sequenceDiagram
 
 ---
 
-### 13.2 Node-Level (45 giây)
+### 13.2 Physical-node telemetry
 
-Nếu một Hypervisor Node không báo cáo trạng thái sau 45 giây, Node đó sẽ được đánh dấu là mất kết nối bởi cluster-wide [`watchdog.rs`](../../job-orchestrator/src/zone_state/watchdog.rs) dưới Shared Redis leader lease.
+Physical Proxmox node là runtime topology của đúng Zone, không phải hierarchy
+business state. Dataplane leader probe và fence current snapshot; JO không lưu
+node vào PostgreSQL. [`watchdog.rs`](../../job-orchestrator/src/zone_state/watchdog.rs)
+chỉ hạ `zone_services.actual_state` theo durable observation timestamp dưới
+Shared Redis lease.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant JO_Loop as ⚙️ JO (listener.rs loop)
-    participant Cache as 🧠 RAM cache (node_heartbeats)
-    participant DB as 💾 PostgreSQL (SoT)
+    participant DP as Dataplane Zone leader
+    participant KV as Zone Health KV
+    participant Kafka as Kafka Zone report
+    participant JO as Job Orchestrator
 
-    loop Every 2 seconds
-        JO_Loop->>Cache: Quét danh sách node_heartbeats
-        alt now - last_seen > 45s (Hypervisor node down)
-            JO_Loop->>Cache: Xóa node khỏi RAM cache
-            JO_Loop->>DB: mark_hypervisor_nodes_disconnected(db, zone_id, [dead_nodes])
-            DB-->>JO_Loop: SQL UPDATE hypervisor.nodes status='disconnected'
-            Note over JO_Loop: Node chuyển sang trạng thái disconnected
-        else Node alive (now - last_seen <= 45s)
-            Note over JO_Loop: Tiếp tục giữ trạng thái
-        end
-    end
+    DP->>KV: Fenced PUT current hypervisor snapshot
+    DP->>Kafka: Produce bounded ZoneReport
+    Kafka-->>JO: Validate Zone/timestamp/payload
+    JO->>JO: Do not persist physical nodes
+    Note over DP,JO: Proxmox node OTel/Grafana export is a deferred observability rollout
 ```
 
 ---
@@ -1162,19 +1161,19 @@ sequenceDiagram
 | 4 | **CDC packet loss** khi Kafka path gián đoạn | Cold-start/hourly reconciliation từ PostgreSQL SoT | `dataplane/src/leader/zone_metadata.rs` |
 | 5 | **Replay Attack** (resend request đã bắt) | Redis SETNX `iam:nonce:{nonce}` EX 120 atomic | `signature.rs#L86-L113` |
 | 6 | **Clock Skew Attack** (timestamp cũ để bypass) | `|now - ts| ≤ 120s` check | `signature.rs#L56-L71` |
-| 7 | **Out-of-order Hypervisor heartbeat** | `WHERE last_active_at < sent_at` trong UPSERT | `db.rs#L312` |
+| 7 | **Zombie Hypervisor probe** | Zone leader ownership + fencing token chặn old leader ghi current snapshot | `leader/infra/hypervisor.rs` |
 | 8 | **Watchdog false-down sau Kafka rebalance** | Mỗi report advance durable observation timestamp; watchdog dùng cluster-wide Redis lease | `zone_state/{worker,watchdog}.rs` |
 | 9 | **HA out-of-order Zone report** | `zone_services.actual_observed_at` chỉ nhận timestamp mới hơn | `zone_state/store.rs` |
-| 9 | **Zone flapping** (active↔draining) | Typed policy + hysteresis: overload threshold > recovery threshold | `zone_state/policy.rs` |
-| 10 | **Miss CDC khi cold start** | Leader reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/leader/zone_metadata.rs` |
-| 11 | **Zombie generic Zone report** | Singleton watchdog hạ actual health bằng durable timestamp; không sửa desired state | `zone_state/watchdog.rs` |
-| 12 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
-| 13 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
-| 14 | **Duplicate zone code** | `UNIQUE (code)` → `ErrCodeAlreadyExists` | `zone_repo.go#L239-L244` |
-| 15 | **UpdateService khi zone không maintenance** | SQL `WHERE status = 'maintenance'` trong upsert CTE | `zone_repo.go#L142` |
-| 16 | **EnabledServicesMap bootstrap gap** | Changefeed bootstrap toàn bộ desired state bằng long-lived metadata connection | `changefeed/worker.rs` |
-| 17 | **Decision với enabled info stale** | Mỗi report đọc một typed policy snapshot từ PostgreSQL; không cache SRE state qua rebalance | `zone_state/{processor,store}.rs` |
-| 18 | **False draining** (service disabled bị tính là `down`) | Enabled-only typed policy: service disabled không tham gia trigger | `zone_state/policy.rs` |
+| 10 | **Zone flapping** (active↔draining) | Typed policy + hysteresis: overload threshold > recovery threshold | `zone_state/policy.rs` |
+| 11 | **Miss CDC khi cold start** | Leader reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/leader/zone_metadata.rs` |
+| 12 | **Zombie generic Zone report** | Singleton watchdog hạ actual health bằng durable timestamp; không sửa desired state | `zone_state/watchdog.rs` |
+| 13 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
+| 14 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
+| 15 | **Duplicate zone code** | `UNIQUE (code)` → `ErrCodeAlreadyExists` | `zone_repo.go#L239-L244` |
+| 16 | **UpdateService khi zone không maintenance** | SQL `WHERE status = 'maintenance'` trong upsert CTE | `zone_repo.go#L142` |
+| 17 | **EnabledServicesMap bootstrap gap** | Changefeed bootstrap toàn bộ desired state bằng long-lived metadata connection | `changefeed/worker.rs` |
+| 18 | **Decision với enabled info stale** | Mỗi report đọc một typed policy snapshot từ PostgreSQL; không cache SRE state qua rebalance | `zone_state/{processor,store}.rs` |
+| 19 | **False draining** (service disabled bị tính là `down`) | Enabled-only typed policy: service disabled không tham gia trigger | `zone_state/policy.rs` |
 
 ---
 

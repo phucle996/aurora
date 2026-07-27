@@ -11,8 +11,8 @@
 |---|---|
 | Cloud Console | Form và current view; không tự tạo identity/routing |
 | Envoy + ACR | Xác thực, authorize và rewrite route theo personal context |
-| Controlplane Hypervisor | Desired state, natural identity, VM lifecycle và outbox |
-| Controlplane PostgreSQL | Durable SoT của `personal_vms` và `hypervisor_outbox_records` |
+| Controlplane Hypervisor | Desired resource, natural identity và shared outbox |
+| Controlplane PostgreSQL | Durable SoT của live `personal_vms` và `hypervisor_outbox_records` |
 | Job Orchestrator | CDC bridge, allow-list contract, result settlement và realtime notification |
 | Kafka | Durable at-least-once transport Central-Zone |
 | Dataplane đúng Zone | Validate transport, lease/fence, gọi Proxmox và publish result |
@@ -63,7 +63,7 @@ constraint. Client không cần gửi idempotency key.
 | Cùng workspace, cùng name, cùng spec | Trả lại cùng VM/operation; không tạo outbox thứ hai |
 | Cùng workspace, cùng name, khác spec | `409 Conflict` |
 | Cùng name ở workspace khác | Hai VM độc lập |
-| Bản ghi trước đã `FAILED` | Không tái dùng ngầm; trả `409` để repair/delete rõ ràng |
+| Operation trước đã terminal `FAILED` | VM row đã bị xóa; name được phép dùng lại cho operation mới |
 
 `spec_hash = SHA-256(image_id || image_revision_be64 || image_sha256 || cpu_be64 ||
 memory_be64 || disk_be64 || ssh_public_key)`. Hash là execution identity bất
@@ -74,14 +74,16 @@ stateDiagram-v2
     [*] --> PROVISIONING: personal_vms + outbox commit
     PROVISIONING --> PROVISIONING: PROCESSING result
     PROVISIONING --> READY: verified SUCCEEDED result
-    PROVISIONING --> FAILED: terminal FAILED result
+    PROVISIONING --> [*]: terminal FAILED deletes VM row
     READY --> READY: duplicate terminal result
-    FAILED --> FAILED: duplicate terminal result
 ```
 
 `READY` chỉ được ghi sau khi JO xác minh result payload khớp `vm_id`,
 `provider_name` và `config_hash` authoritative. Realtime notification không
-được dùng để thay durable state này.
+được dùng để thay durable state này. `FAILED` là terminal state của outbox,
+không phải state của `personal_vms`: JO xóa VM row và settle outbox trong cùng
+transaction. Outbox giữ operation fence/error phục vụ duplicate settlement và
+bounded diagnostics; Cloud Console không render một VM thất bại còn kẹt lại.
 
 ## 4. End-to-end write flow
 
@@ -121,6 +123,11 @@ sequenceDiagram
 
     Kafka-->>JO: "jobs.results.v1"
     JO->>DB: Lock authoritative VM/outbox and atomically settle result
+    alt SUCCEEDED
+        JO->>DB: VM -> READY; outbox -> SUCCEEDED
+    else FAILED
+        JO->>DB: Hard-delete VM; outbox -> FAILED
+    end
     JO->>JO: Publish bounded job notification after DB commit
     JO->>Kafka: Manual commit result offset
     UI->>CP: Invalidate/refetch durable VM state after realtime wake-up
@@ -200,7 +207,9 @@ replica của Aurora cấp cùng VMID; inventory check bảo vệ trước VM đ
 trong Proxmox. Đây là idempotency boundary cho retry của external side effect,
 không phải exactly-once.
 
-Node placement chỉ chọn node online đủ CPU/RAM và ưu tiên tổng tải CPU+RAM thấp.
+Physical node không được persist hoặc expose bởi Controlplane. Node placement
+chỉ diễn ra trong đúng Dataplane: executor lấy inventory mới từ Proxmox, chọn
+node online đủ CPU/RAM và ưu tiên tổng tải CPU+RAM thấp.
 Clone là full clone từ template cấu hình theo image. Disk chỉ được grow; không
 shrink template disk. Task Proxmox có bounded timeout và polling interval. Mọi
 downstream operation có OTel client span theo URL template; API token, SSH key và
@@ -210,15 +219,15 @@ raw provider response body không được đưa vào span, log hoặc durable j
 
 | Failure point | Semantics |
 |---|---|
-| Workspace/Zone không authorized, inactive hoặc không có node khả dụng | Handler nhận scope failure, không tạo VM/outbox |
+| Workspace/Zone không authorized, inactive, service disabled hoặc image unavailable | Không tạo VM/outbox |
 | DB commit lỗi | Không có command |
 | Kafka publish lỗi | Không ACK WAL; reconnect/backoff và replay |
 | Duplicate Kafka command | Cùng resource lease/provider binding; adopt đúng VM hoặc retry |
-| Hết node capacity/template tạm unavailable/API timeout | Retryable, bounded backoff; sau budget đi DLQ/FAILED |
-| Schema/hash/provider collision | Permanent failure; không retry side effect |
+| Hết node capacity/template tạm unavailable/API timeout | Retryable, bounded backoff; terminal failure xóa VM và settle outbox FAILED |
+| Schema/hash/provider collision | Permanent failure; không retry side effect; xóa VM khi FAILED được settle |
 | Dataplane chết giữa clone và result | Kafka redelivery; inventory + immutable binding adopt VM |
 | JO chết sau DB settlement trước offset commit | Duplicate result no-op dưới row lock |
-| Realtime notification mất | UI refetch/list vẫn thấy durable state |
+| Realtime notification mất | UI refetch/list vẫn thấy READY/PROVISIONING; failed resource không còn trong list |
 
 Kafka production phải dùng topic provision trước, replication factor 3+, producer
 idempotent, `acks=all`, `min.insync.replicas>=2`, manual commit và durable DLQ.
@@ -230,12 +239,11 @@ commit partition đã mất ownership.
 
 ## 8. Runtime configuration
 
-Dataplane bắt buộc có Proxmox endpoint/token và template VMID tương ứng với image:
+Dataplane bắt buộc có Proxmox endpoint/token. Template VMID đến từ immutable
+image artifact đã được import trong đúng Zone và được pin trong command:
 
 - `PROXMOX_API_URL`
 - `PROXMOX_API_TOKEN`
-- `PROXMOX_UBUNTU_2404_TEMPLATE_VMID`
-- `PROXMOX_DEBIAN_12_TEMPLATE_VMID`
 - `PROXMOX_VM_STORAGE` (optional)
 - `PROXMOX_VM_POOL` (optional)
 - `PROXMOX_MAX_CONCURRENT_JOBS` (default 2, range 1-32)

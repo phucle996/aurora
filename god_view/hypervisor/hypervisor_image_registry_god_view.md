@@ -14,11 +14,30 @@
 | Job Orchestrator | CDC outbox, publish command Kafka và settle result trong PostgreSQL |
 | Dataplane của Zone | Đọc object ở Zone MinIO, import vào Proxmox và trả template VMID |
 | Cloud Console | Chỉ đọc `AVAILABLE` catalog trong Zone đã chọn để tạo VM |
-| Grafana | Visualize node/capacity/health telemetry; không phải Admin UI |
+| Grafana | Target node/capacity/health view; metric export/dashboard còn deferred |
 
 Image artifact là immutable theo `(zone_id, code, revision)`. `name` là display
 label tự do; `code` mới là stable identifier. Xóa thành công là hard delete sau
 Zone ACK, không có `deleted_at` hoặc trạng thái `DELETED`.
+
+## Migration baseline
+
+Hypervisor schema là clean baseline cho lần khởi tạo mới, tách theo dependency:
+
+```text
+000001_hypervisor_enums
+000002_hypervisor_tables
+000003_hypervisor_indexes
+000004_hypervisor_functions
+000005_hypervisor_triggers
+verification_hypervisor_post_migrate.sql
+```
+
+`image_artifacts` và `personal_vms` được tạo trước record table duy nhất
+`hypervisor_outbox_records`. Verification phải fail nếu còn `hypervisor.nodes`,
+split outbox, provider topology column, soft-delete column hoặc durable
+`personal_vms.FAILED`. Baseline không âm thầm chuyển đổi legacy schema; rollout
+database cũ phải được xử lý rõ ràng trước khi chạy verification.
 
 ## Luồng command
 

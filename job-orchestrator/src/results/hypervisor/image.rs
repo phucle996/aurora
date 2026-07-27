@@ -12,9 +12,11 @@ pub async fn apply_image_result(
     result_payload_schema_version: u32,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
     let tx = pg_client.transaction().await?;
+    // Custom PostgreSQL enums cross this driver boundary as text so every JO
+    // connection does not need mutable per-schema type registration.
     let authority = tx
         .query_opt(
-            "SELECT outbox.resource_id, outbox.status, image.revision, image.sha256 \
+            "SELECT outbox.resource_id, outbox.status::text, image.revision, image.sha256 \
              FROM hypervisor.hypervisor_outbox_records outbox \
              JOIN hypervisor.image_artifacts image ON image.id::text = outbox.resource_id \
              WHERE outbox.event_id = $1 AND outbox.job_topic = $2 \
@@ -49,7 +51,8 @@ pub async fn apply_image_result(
             tx.query_opt(
                 "WITH updated_image AS ( \
                      UPDATE hypervisor.image_artifacts \
-                     SET state = $1, error_code = NULL, error_message = NULL, updated_at = NOW() \
+                     SET state = $1::text::hypervisor.hypervisor_image_state, \
+                         error_code = NULL, error_message = NULL, updated_at = NOW() \
                      WHERE id = $2 \
                      RETURNING id \
                  ) \

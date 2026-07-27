@@ -12,9 +12,11 @@ pub async fn apply_vm_result(
     result_payload_schema_version: u32,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
     let tx = pg_client.transaction().await?;
+    // Custom PostgreSQL enums cross this driver boundary as text so every JO
+    // connection does not need mutable per-schema type registration.
     let authority = tx
         .query_opt(
-            "SELECT outbox.resource_id, outbox.status, vm.spec_hash, vm.provider_name \
+            "SELECT outbox.resource_id, outbox.status::text, vm.spec_hash, vm.provider_name \
              FROM hypervisor.hypervisor_outbox_records outbox \
              JOIN hypervisor.personal_vms vm ON vm.id::text = outbox.resource_id \
              WHERE outbox.event_id = $1 AND outbox.job_topic = $2 \
@@ -101,6 +103,9 @@ pub async fn apply_vm_result(
             if !result_payload.is_empty() || result_payload_schema_version != 0 {
                 return Err("FAILED hypervisor result must not carry a result payload".into());
             }
+            // Resource deletion and terminal fencing are one transaction:
+            // retries can reuse the natural name, while duplicate results
+            // still resolve through the retained outbox operation.
             tx.query_opt(
                 "WITH deleted_vm AS ( \
                      DELETE FROM hypervisor.personal_vms \

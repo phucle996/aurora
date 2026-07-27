@@ -116,8 +116,7 @@ pub struct Config {
     /// Bỏ qua TLS certificate verification (CHỈ dùng cho môi trường dev/test)
     /// Trên production bắt buộc phải đặt là false để đảm bảo an toàn kết nối
     pub proxmox_tls_insecure: bool,
-    pub proxmox_ubuntu_2404_template_vmid: u64,
-    pub proxmox_debian_12_template_vmid: u64,
+
     pub proxmox_storage: String,
     pub proxmox_pool: String,
     pub proxmox_max_concurrent_jobs: usize,
@@ -389,18 +388,6 @@ impl Config {
             proxmox_tls_insecure: env::var("PROXMOX_TLS_INSECURE")
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false),
-            proxmox_ubuntu_2404_template_vmid: env::var(
-                "PROXMOX_UBUNTU_2404_TEMPLATE_VMID",
-            )
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default(),
-            proxmox_debian_12_template_vmid: env::var(
-                "PROXMOX_DEBIAN_12_TEMPLATE_VMID",
-            )
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default(),
             proxmox_storage: env::var("PROXMOX_VM_STORAGE").unwrap_or_default(),
             proxmox_pool: env::var("PROXMOX_VM_POOL").unwrap_or_default(),
             proxmox_max_concurrent_jobs: env::var("PROXMOX_MAX_CONCURRENT_JOBS")

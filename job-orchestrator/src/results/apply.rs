@@ -290,7 +290,7 @@ async fn load_existing_hypervisor_result(
         .query_opt(
             "SELECT actor_user_id::text, job_topic, trace_id, resource_id \
              FROM hypervisor.hypervisor_outbox_records \
-             WHERE event_id = $1 AND job_topic = $2 AND status = $3",
+             WHERE event_id = $1 AND job_topic = $2 AND status::text = $3",
             &[&job_id, &job_topic, &status],
         )
         .await?;
