@@ -140,7 +140,7 @@ Command:
 - payload schema: `hypervisor.VmCreateV1`, version 1;
 - resource ID: VM UUID;
 - Kafka key: resource ID để preserve per-VM ordering;
-- routing scope: `zone:<zone_id>`.
+- immutable destination: typed `zone_id` UUID; không còn `routing_scope` string.
 
 Result:
 

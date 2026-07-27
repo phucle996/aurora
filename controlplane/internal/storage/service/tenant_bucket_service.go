@@ -120,14 +120,14 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + bucket.ZoneID.String(),
-		JobTopic:     "storage.bucket.create",
-		Payload:      payloadBytes,
-		OwnerID:      bucket.TenantID,
-		OwnerType:    storageEntity.StorageOwnerTypeTenant,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     eventID,
+		ZoneID:      bucket.ZoneID,
+		JobTopic:    "storage.bucket.create",
+		Payload:     payloadBytes,
+		OwnerID:     bucket.TenantID,
+		OwnerType:   storageEntity.StorageOwnerTypeTenant,
+		ActorUserID: &param.UserID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
@@ -201,13 +201,13 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + bucket.ZoneID.String(),
-		JobTopic:     "storage.bucket.resize",
-		Payload:      payloadBytes,
-		OwnerID:      bucket.TenantID,
-		OwnerType:    storageEntity.StorageOwnerTypeTenant,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:   eventID,
+		ZoneID:    bucket.ZoneID,
+		JobTopic:  "storage.bucket.resize",
+		Payload:   payloadBytes,
+		OwnerID:   bucket.TenantID,
+		OwnerType: storageEntity.StorageOwnerTypeTenant,
+		Status:    storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
@@ -261,14 +261,14 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 
 	// [COMMENT]: 3. Cấu hình outbox record cho tenant với zone_id từ param input
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + param.ZoneID.String(),
-		JobTopic:     "storage.bucket.delete",
-		Payload:      payloadBytes,
-		OwnerID:      bucket.TenantID,
-		OwnerType:    storageEntity.StorageOwnerTypeTenant,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     eventID,
+		ZoneID:      param.ZoneID,
+		JobTopic:    "storage.bucket.delete",
+		Payload:     payloadBytes,
+		OwnerID:     bucket.TenantID,
+		OwnerType:   storageEntity.StorageOwnerTypeTenant,
+		ActorUserID: &param.UserID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),

@@ -12,7 +12,7 @@ import (
 type StorageOutboxRecord struct {
 	ID                   int64      `db:"id"`
 	EventID              uuid.UUID  `db:"event_id"`
-	RoutingScope         string     `db:"routing_scope"`
+	ZoneID               uuid.UUID  `db:"zone_id"`
 	JobTopic             string     `db:"job_topic"`
 	Payload              []byte     `db:"payload"`
 	OwnerID              uuid.UUID  `db:"owner_id"`
@@ -37,7 +37,7 @@ func OutboxEntityToModel(e *storageEntity.StorageOutboxRecord) *StorageOutboxRec
 	return &StorageOutboxRecord{
 		ID:                   e.ID,
 		EventID:              e.EventID,
-		RoutingScope:         e.RoutingScope,
+		ZoneID:               e.ZoneID,
 		JobTopic:             e.JobTopic,
 		Payload:              e.Payload,
 		OwnerID:              e.OwnerID,

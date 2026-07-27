@@ -98,14 +98,14 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      uuid.New(),
-		RoutingScope: "zone:" + bucket.ZoneID.String(),
-		JobTopic:     "storage.credential.create",
-		Payload:      payloadBytes,
-		OwnerID:      bucket.TenantID,
-		OwnerType:    storageEntity.StorageOwnerTypeTenant,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     uuid.New(),
+		ZoneID:      bucket.ZoneID,
+		JobTopic:    "storage.credential.create",
+		Payload:     payloadBytes,
+		OwnerID:     bucket.TenantID,
+		OwnerType:   storageEntity.StorageOwnerTypeTenant,
+		ActorUserID: &param.UserID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           cred.ID.String(),
@@ -157,16 +157,16 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 		return apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
-	// [COMMENT]: RoutingScope được resolve trực tiếp từ zone_id trong context — không cần JOIN DB hay để trống.
+	// [COMMENT]: ZoneID được bind từ request context đã xác minh; outbox không tự suy luận lại route.
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      uuid.New(),
-		RoutingScope: "zone:" + param.ZoneID.String(),
-		JobTopic:     "storage.credential.delete",
-		Payload:      payloadBytes,
-		OwnerID:      bucket.TenantID,
-		OwnerType:    storageEntity.StorageOwnerTypeTenant,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     uuid.New(),
+		ZoneID:      param.ZoneID,
+		JobTopic:    "storage.credential.delete",
+		Payload:     payloadBytes,
+		OwnerID:     bucket.TenantID,
+		OwnerType:   storageEntity.StorageOwnerTypeTenant,
+		ActorUserID: &param.UserID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           param.CredentialID.String(),
@@ -176,7 +176,7 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 	}
 
 	// [COMMENT]: Thực thi xóa cứng Credential khỏi DB và chèn Outbox event nguyên tử.
-	// CTE tự validate scope chain và tự tính routing_scope từ zone_id.
+	// CTE tự validate ownership chain trước khi ghi immutable zone_id.
 	if err := s.repo.Delete(ctx, param, outbox); err != nil {
 		return apperr.Wrap(err, err, "delete_failed")
 	}

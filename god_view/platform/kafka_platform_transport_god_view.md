@@ -124,6 +124,17 @@ Crash windows:
 - JO chết sau ACK trước LSN advance: duplicate `JobCommandV1`; stable `job_id` và executor idempotency xử lý.
 - Kafka ACK không thay PostgreSQL commit. Outbox được tạo cùng business transaction trước changefeed.
 
+Mọi runtime outbox được JO theo dõi phải có `zone_id UUID NOT NULL` và không
+được dùng `routing_scope` hoặc prefix `zone:`. UUID nil bị database constraint
+và JO quarantine chặn độc lập. `target_zone_id` trong Kafka command là bản sao
+đã canonicalize của cột này.
+
+Đổi schema từ `routing_scope` sang `zone_id` là breaking cutover đối với
+Controlplane và JO đang chạy phiên bản cũ. Với cluster đã có dữ liệu, release
+phải tạm dừng Storage/Hypervisor mutation và JO changefeed, dừng toàn bộ old
+writer, chạy migration fail-fast, rồi mới bật đồng thời Controlplane/JO mới.
+Không rolling-mix hai contract. Fresh deployment chạy thẳng schema mới.
+
 Reconciler JO vẫn dùng Cache Redis cho bounded lock/generation/checkpoint. Sau lock, từng small batch được
 publish Kafka với cùng version/hash. Lock không làm Kafka exactly-once; generation/version fence mới chặn stale apply.
 

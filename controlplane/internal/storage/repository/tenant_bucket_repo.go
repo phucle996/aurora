@@ -57,7 +57,7 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		) VALUES ($14, $15, $16, $17, $18, $28, $19, $20, $21, $22, $23, $24, $25, $26, $27, $29)
@@ -81,7 +81,7 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		mc.UpdatedAt,
 		// [COMMENT]: $14-$27 — storage_outbox_records fields
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,
@@ -256,7 +256,7 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 	mo := storageModel.OutboxEntityToModel(outbox)
 	insertOutboxQuery := fmt.Sprintf(`
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, $10, $11, $12, $13, $14, $16)
@@ -264,7 +264,7 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 
 	_, err = tx.Exec(ctx, insertOutboxQuery,
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,
@@ -306,7 +306,7 @@ func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox 
 			FOR UPDATE
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		)
@@ -317,7 +317,7 @@ func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox 
 	res, err := r.db.Exec(ctx, query,
 		id,
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,

@@ -77,7 +77,7 @@ sequenceDiagram
     participant S3 as MinIO
 
     UI->>Edge: create bucket
-    Edge->>CP: verified identity/routing scope
+    Edge->>CP: verified identity + zone_id
     CP->>DB: BEGIN
     CP->>DB: authorize workspace + reserve bucket identity
     CP->>DB: INSERT storage_outbox_records

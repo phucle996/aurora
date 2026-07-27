@@ -164,7 +164,7 @@ func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
 	}
 
 	// [COMMENT]: Lấy zone_id từ context (middleware-injected từ workspace → zone mapping).
-	// Zone là thuộc tính cố định của workspace, dùng để xác định routing_scope cho Outbox.
+	// Zone là thuộc tính cố định của workspace và được ghi trực tiếp vào outbox.
 	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return

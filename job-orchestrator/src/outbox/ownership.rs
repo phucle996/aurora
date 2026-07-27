@@ -115,7 +115,7 @@ pub async fn publish_for_job(
     let row = client
         .query_opt(
             "SELECT event_id, job_topic, resource_id, owner_id, owner_type, \
-                    payload, routing_scope, completed_at \
+                    payload, zone_id, completed_at \
              FROM storage.storage_outbox_records \
              WHERE event_id = $1 AND job_topic = $2 AND status = 'SUCCEEDED' \
                AND ownership_published_at IS NULL",
@@ -229,12 +229,10 @@ fn build_intent(row: &Row) -> Result<OwnershipIntent, Box<dyn std::error::Error 
         return Err(format!("unsupported owner_type {owner_type}").into());
     }
     let source_payload: Vec<u8> = row.get(5);
-    let routing_scope: String = row.get(6);
-    let zone_id = Uuid::parse_str(
-        routing_scope
-            .strip_prefix("zone:")
-            .ok_or("ownership routing_scope must use zone:<uuid>")?,
-    )?;
+    let zone_id: Uuid = row.get(6);
+    if zone_id.is_nil() {
+        return Err("ownership source has a nil zone_id".into());
+    }
     let completed_at: DateTime<Utc> = row
         .get::<_, Option<DateTime<Utc>>>(7)
         .ok_or("terminal ownership source has no completed_at")?;

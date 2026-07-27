@@ -147,14 +147,14 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + param.ZoneID.String(),
-		JobTopic:     "storage.bucket.create",
-		Payload:      payloadBytes,
-		OwnerID:      param.UserID,
-		OwnerType:    storageEntity.StorageOwnerTypePersonal,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     eventID,
+		ZoneID:      param.ZoneID,
+		JobTopic:    "storage.bucket.create",
+		Payload:     payloadBytes,
+		OwnerID:     param.UserID,
+		OwnerType:   storageEntity.StorageOwnerTypePersonal,
+		ActorUserID: &param.UserID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
@@ -238,14 +238,14 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + bucket.ZoneID.String(),
-		JobTopic:     "storage.bucket.resize",
-		Payload:      payloadBytes,
-		OwnerID:      userID,
-		OwnerType:    storageEntity.StorageOwnerTypePersonal,
-		ActorUserID:  &userID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     eventID,
+		ZoneID:      bucket.ZoneID,
+		JobTopic:    "storage.bucket.resize",
+		Payload:     payloadBytes,
+		OwnerID:     userID,
+		OwnerType:   storageEntity.StorageOwnerTypePersonal,
+		ActorUserID: &userID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
@@ -293,14 +293,14 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 
 	// [COMMENT]: 3. Cấu hình outbox record với zone_id từ param input
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:      eventID,
-		RoutingScope: "zone:" + param.ZoneID.String(),
-		JobTopic:     "storage.bucket.delete",
-		Payload:      payloadBytes,
-		OwnerID:      param.UserID,
-		OwnerType:    storageEntity.StorageOwnerTypePersonal,
-		ActorUserID:  &param.UserID,
-		Status:       storageEntity.StorageOutboxStatusPending,
+		EventID:     eventID,
+		ZoneID:      param.ZoneID,
+		JobTopic:    "storage.bucket.delete",
+		Payload:     payloadBytes,
+		OwnerID:     param.UserID,
+		OwnerType:   storageEntity.StorageOwnerTypePersonal,
+		ActorUserID: &param.UserID,
+		Status:      storageEntity.StorageOutboxStatusPending,
 
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),
@@ -382,7 +382,7 @@ func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, 
 	}
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:              param.AccessSessionID,
-		RoutingScope:         "zone:" + param.ZoneID.String(),
+		ZoneID:               param.ZoneID,
 		JobTopic:             "storage.access.prepare",
 		Payload:              payloadBytes,
 		OwnerID:              param.ActorID,

@@ -54,7 +54,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		)
@@ -75,7 +75,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		now,                     // $7
 		now,                     // $8
 		mo.EventID,              // $9
-		mo.RoutingScope,         // $10
+		mo.ZoneID,               // $10
 		mo.JobTopic,             // $11
 		mo.Payload,              // $12
 		mo.OwnerID,              // $13
@@ -157,7 +157,7 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		)
@@ -165,14 +165,14 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
-	// [COMMENT]: routing_scope truyền trực tiếp từ outbox.RoutingScope (=zone_id từ context, đã có sẵn)
+	// [COMMENT]: ZoneID truyền trực tiếp từ outbox đã được handler/service bind với workspace.
 	res, err := r.db.Exec(ctx, query,
 		param.CredentialID,      // $1
 		param.BucketID,          // $2
 		param.UserID,            // $3
 		param.WorkspaceID,       // $4
 		mo.EventID,              // $5
-		mo.RoutingScope,         // $6
+		mo.ZoneID,               // $6
 		mo.JobTopic,             // $7
 		mo.Payload,              // $8
 		mo.OwnerID,              // $9

@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS storage_outbox_records (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID UNIQUE NOT NULL,
-    routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến (e.g. zone:vn)
+    zone_id UUID NOT NULL, -- Zone đích duy nhất của runtime command
     job_topic VARCHAR(100) NOT NULL,
     payload BYTEA NOT NULL,
     -- CÁC CỘT ĐỊNH DANH SỞ HỮU BILLING (SoT):
@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS storage_outbox_records (
     error_message TEXT,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    CONSTRAINT ck_storage_outbox_owner_type CHECK (owner_type IN ('PERSONAL', 'TENANT'))
+    CONSTRAINT ck_storage_outbox_owner_type CHECK (owner_type IN ('PERSONAL', 'TENANT')),
+    CONSTRAINT ck_storage_outbox_zone_id
+        CHECK (zone_id <> '00000000-0000-0000-0000-000000000000'::uuid)
 );
 
 -- Index for high-performance outbox polling

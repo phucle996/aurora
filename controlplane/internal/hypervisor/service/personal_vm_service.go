@@ -97,7 +97,7 @@ func (s *PersonalVMServiceImpl) Create(
 	}
 	outbox := &hypervisorEntity.HypervisorOutboxRecord{
 		EventID:              operationID,
-		RoutingScope:         "zone:" + input.ZoneID.String(),
+		ZoneID:               input.ZoneID,
 		JobTopic:             "hypervisor.vm.create",
 		Payload:              payload,
 		ActorUserID:          input.OwnerUserID,

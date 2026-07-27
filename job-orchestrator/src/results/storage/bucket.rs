@@ -36,7 +36,7 @@ pub async fn resolve_bucket_creation_tx(
                      completed_at = NOW(), \
                      updated_at = NOW() \
                  WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id, owner_id, owner_type, payload, routing_scope",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id, owner_id, owner_type, payload, zone_id",
                 &[&job_uuid, &job_topic],
             )
             .await?;
@@ -197,7 +197,7 @@ pub async fn resolve_bucket_resize(
 //   1. Capture owner/name/zone từ DB TRƯỚC khi DELETE (sau DELETE không còn data).
 //   2. DELETE credentials và bucket.
 //   3. UPDATE job outbox thành SUCCEEDED (không DELETE).
-//   4. Durable storage outbox giữ owner/payload/routing để ownership publisher
+//   4. Durable storage outbox giữ owner/payload/zone_id để ownership publisher
 //      reconstruct event sau commit, kể cả resource row đã bị xóa.
 // PROCESSING: UPDATE outbox sang PROCESSING.
 // FAILED: UPDATE outbox sang FAILED, giữ nguyên resource.
@@ -223,7 +223,7 @@ pub async fn resolve_bucket_deletion_tx(
         // có thể consume outbox nhưng không xóa được resource, làm mất lifecycle event.
         let outbox = tx
             .query_opt(
-                "SELECT resource_id, owner_type, payload, routing_scope \
+                "SELECT resource_id, owner_type, payload, zone_id \
                  FROM storage.storage_outbox_records \
                  WHERE event_id = $1::uuid AND job_topic = $2 \
                    AND status IN ('PENDING', 'PROCESSING') \
@@ -238,17 +238,14 @@ pub async fn resolve_bucket_deletion_tx(
         let resource_id = uuid::Uuid::parse_str(outbox.get::<_, String>(0).as_str())?;
         let owner_type: String = outbox.get(1);
         let payload: Vec<u8> = outbox.get(2);
-        let routing_scope: String = outbox.get(3);
+        let zone_id: uuid::Uuid = outbox.get(3);
         let sync_data = storage_proto::BucketDeleteSync::decode(payload.as_slice())?;
         if sync_data.name.trim().is_empty() {
             return Err("bucket delete outbox payload has an empty name".into());
         }
-        // [COMMENT]: Parse inline để contract `zone:<uuid>` minh bạch ngay tại delete flow.
-        let _zone_id = uuid::Uuid::parse_str(
-            routing_scope
-                .strip_prefix("zone:")
-                .ok_or_else(|| format!("invalid storage routing_scope: {routing_scope}"))?,
-        )?;
+        if zone_id.is_nil() {
+            return Err("bucket delete outbox has a nil zone_id".into());
+        }
 
         // Validate the immutable ownership source before deletion. A failure
         // rolls the resource deletion and terminal outbox transition back together.

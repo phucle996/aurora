@@ -32,7 +32,7 @@ Không tạo lifecycle outbox thứ hai. Chính `storage.storage_outbox_records`
 
 - `event_id`, `job_topic`, `job_version`;
 - `resource_id`, `owner_id`, `owner_type`;
-- immutable payload và `routing_scope`;
+- immutable payload và typed `zone_id`;
 - terminal status và `completed_at`.
 
 Ownership delivery chỉ bổ sung:
@@ -65,7 +65,7 @@ Retention không được xóa row thỏa điều kiện này.
 | `event_type` | create success → `RESOURCE_CREATED`; delete success → `RESOURCE_DELETED` |
 | `resource_id` | Storage outbox |
 | `owner_id`, `owner_type` | Storage outbox do Controlplane đóng dấu |
-| `zone_id` | `routing_scope=zone:<uuid>` |
+| `zone_id` | Cột UUID `zone_id` của durable storage outbox |
 | `resource_name` | decode immutable Storage command payload trong JO memory |
 | `source_version` | lifecycle version do platform sở hữu; create=1/delete=2 hiện tại |
 | `effective_at` | durable `completed_at`, không lấy clock của lần retry |

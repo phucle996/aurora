@@ -295,9 +295,9 @@ impl ChangefeedWorker {
         source_domain: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let event_id = fields.text("event_id").unwrap_or_default().to_string();
-        // [COMMENT]: Mail dùng UUID typed trực tiếp; Storage giữ routing_scope theo contract riêng của resource jobs.
-        let routing_scope = fields.text("routing_scope").unwrap_or_default().to_string();
-        let mail_zone_id = fields.text("zone_id").unwrap_or_default().to_string();
+        // [COMMENT]: Mọi durable runtime outbox đều định tuyến bằng UUID Zone
+        // typed trực tiếp; JO không còn diễn giải scope string theo từng domain.
+        let zone_id = fields.text("zone_id").unwrap_or_default().to_string();
         let job_topic = fields.text("job_topic").unwrap_or_default().to_string();
         let payload_hex = fields.text("payload").unwrap_or_default().to_string();
         let job_version_str = fields.text("job_version").unwrap_or_default().to_string();
@@ -324,14 +324,8 @@ impl ChangefeedWorker {
         let idle_str = fields.text("idle").unwrap_or_default().to_string();
         let source_domain = source_domain.trim().to_ascii_uppercase();
 
-        let route_missing = if source_domain == "MAIL" {
-            mail_zone_id.is_empty()
-        } else {
-            routing_scope.is_empty()
-        };
-
         if event_id.is_empty()
-            || route_missing
+            || zone_id.is_empty()
             || job_topic.is_empty()
             || source_domain.is_empty()
             || resource_id.is_empty()
@@ -366,8 +360,7 @@ impl ChangefeedWorker {
 
         let event_id_clone = event_id.clone();
         let job_topic_clone = job_topic.clone();
-        let routing_scope_clone = routing_scope.clone();
-        let mail_zone_id_clone = mail_zone_id.clone();
+        let zone_id_clone = zone_id.clone();
         let payload_hex_clone = payload_hex.clone();
         let job_version_str_clone = job_version_str.clone();
         let resource_id_clone = resource_id.clone();
@@ -429,12 +422,8 @@ impl ChangefeedWorker {
             // [COMMENT]: Durable runtime commands luôn thuộc đúng một Zone.
             // Platform/global routing không được fallback thành shared topic vì một consumer
             // bất kỳ có thể nhận side effect vốn thuộc Zone khác.
-            let target_zone_id = canonical_zone_route(
-                &source_domain_clone,
-                &routing_scope_clone,
-                &mail_zone_id_clone,
-            )
-            .map_err(PermanentChangeError)?;
+            let target_zone_id =
+                canonical_zone_route(&zone_id_clone).map_err(PermanentChangeError)?;
             let topic = self.kafka.zone_command_topic(&target_zone_id);
             {
                 use opentelemetry::trace::TraceContextExt;
@@ -643,17 +632,8 @@ impl ChangefeedWorker {
     }
 }
 
-fn canonical_zone_route(
-    source_domain: &str,
-    routing_scope: &str,
-    mail_zone_id: &str,
-) -> Result<String, String> {
-    let raw_zone_id = if source_domain == "MAIL" {
-        mail_zone_id
-    } else {
-        routing_scope.strip_prefix("zone:").unwrap_or(routing_scope)
-    };
-    let parsed_zone_id = uuid::Uuid::parse_str(raw_zone_id)
+fn canonical_zone_route(zone_id: &str) -> Result<String, String> {
+    let parsed_zone_id = uuid::Uuid::parse_str(zone_id)
         .map_err(|error| format!("runtime command requires a valid zone UUID: {error}"))?;
     if parsed_zone_id.is_nil() {
         return Err("runtime command requires a non-nil zone UUID".to_string());
@@ -697,18 +677,15 @@ mod tests {
     const ZONE_ID: &str = "019f3d3e-997d-7894-9236-c5122634cb4f";
 
     #[test]
-    fn canonical_zone_route_accepts_mail_and_scoped_storage_routes() {
-        assert_eq!(canonical_zone_route("MAIL", "", ZONE_ID).unwrap(), ZONE_ID);
-        assert_eq!(
-            canonical_zone_route("STORAGE", &format!("zone:{ZONE_ID}"), "").unwrap(),
-            ZONE_ID
-        );
+    fn canonical_zone_route_accepts_typed_zone_id() {
+        assert_eq!(canonical_zone_route(ZONE_ID).unwrap(), ZONE_ID);
     }
 
     #[test]
-    fn canonical_zone_route_rejects_shared_and_nil_routes() {
-        assert!(canonical_zone_route("STORAGE", "platform", "").is_err());
-        assert!(canonical_zone_route("STORAGE", "global", "").is_err());
-        assert!(canonical_zone_route("MAIL", "", "00000000-0000-0000-0000-000000000000").is_err());
+    fn canonical_zone_route_rejects_scope_strings_and_nil_zone() {
+        assert!(canonical_zone_route(&format!("zone:{ZONE_ID}")).is_err());
+        assert!(canonical_zone_route("platform").is_err());
+        assert!(canonical_zone_route("global").is_err());
+        assert!(canonical_zone_route("00000000-0000-0000-0000-000000000000").is_err());
     }
 }

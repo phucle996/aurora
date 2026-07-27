@@ -73,7 +73,7 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		),
 		inserted_outbox AS (
 			INSERT INTO %s.vm_outbox_records (
-				event_id, routing_scope, job_topic, payload, actor_user_id,
+				event_id, zone_id, job_topic, payload, actor_user_id,
 				status, job_version, resource_id, payload_schema_version,
 				trace_id, idle
 			)
@@ -111,7 +111,7 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		vm.CreatedAt,
 		vm.UpdatedAt,
 		outbox.EventID,
-		outbox.RoutingScope,
+		outbox.ZoneID,
 		outbox.JobTopic,
 		outbox.Payload,
 		outbox.ActorUserID,

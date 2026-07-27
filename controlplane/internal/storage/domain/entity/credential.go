@@ -80,19 +80,19 @@ type CreatedTenantCredential struct {
 // [COMMENT]: DeletePersonalCredential chứa các tham số dùng để xóa Access Key cá nhân có check chéo scope.
 type DeletePersonalCredential struct {
 	CredentialID uuid.UUID
-	AccessKey    string    // [COMMENT]: Access Key của MinIO user cần xóa — không cần query DB thêm
+	AccessKey    string // [COMMENT]: Access Key của MinIO user cần xóa — không cần query DB thêm
 	BucketID     uuid.UUID
 	WorkspaceID  uuid.UUID
 	UserID       uuid.UUID
-	ZoneID       uuid.UUID // [COMMENT]: Lấy từ request context (middleware-injected), dùng để build routing_scope cho Outbox
+	ZoneID       uuid.UUID // [COMMENT]: Lấy từ request context đã xác minh và ghi trực tiếp vào Outbox
 }
 
 // [COMMENT]: DeleteTenantCredential chứa các tham số dùng để xóa Access Key doanh nghiệp có check chéo scope.
 type DeleteTenantCredential struct {
 	CredentialID uuid.UUID
-	AccessKey    string    // [COMMENT]: Access Key của MinIO user cần xóa — không cần query DB thêm
+	AccessKey    string // [COMMENT]: Access Key của MinIO user cần xóa — không cần query DB thêm
 	BucketID     uuid.UUID
 	WorkspaceID  uuid.UUID
 	UserID       uuid.UUID
-	ZoneID       uuid.UUID // [COMMENT]: Lấy từ request context (middleware-injected), dùng để build routing_scope cho Outbox
+	ZoneID       uuid.UUID // [COMMENT]: Lấy từ request context đã xác minh và ghi trực tiếp vào Outbox
 }

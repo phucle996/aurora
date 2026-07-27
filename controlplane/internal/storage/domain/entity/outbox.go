@@ -26,15 +26,17 @@ const (
 
 // [COMMENT]: StorageOutboxRecord đại diện cho thực thể Transactional Outbox lưu lịch sử tác vụ bất đồng bộ.
 type StorageOutboxRecord struct {
-	ID           int64
-	EventID      uuid.UUID
-	RoutingScope string
-	JobTopic     string
-	Payload      []byte
-	OwnerID      uuid.UUID
-	OwnerType    StorageOwnerType
-	ActorUserID  *uuid.UUID
-	Status       StorageOutboxStatus
+	ID      int64
+	EventID uuid.UUID
+	// ZoneID is the immutable runtime destination. Outbox routing is
+	// zone-scoped; a generic scope string would allow ambiguous fan-out.
+	ZoneID      uuid.UUID
+	JobTopic    string
+	Payload     []byte
+	OwnerID     uuid.UUID
+	OwnerType   StorageOwnerType
+	ActorUserID *uuid.UUID
+	Status      StorageOutboxStatus
 
 	CompletedAt          *time.Time
 	JobVersion           uint32

@@ -42,7 +42,7 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 			) VALUES ($1, $2, $3, $4, $5, $6)
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		) VALUES ($7, $8, $9, $10, $11, $21, $12, $13, $14, $15, $16, $17, $18, $19, $20, $22)
@@ -56,7 +56,7 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 		m.CreatedAt,
 		m.UpdatedAt,
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,
@@ -135,7 +135,7 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		)
@@ -143,14 +143,14 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
-	// [COMMENT]: routing_scope truyền trực tiếp từ outbox.RoutingScope (=zone_id từ context, đã có sẵn)
+	// [COMMENT]: ZoneID truyền trực tiếp từ outbox đã được handler/service bind với workspace.
 	res, err := r.db.Exec(ctx, query,
 		param.CredentialID,      // $1
 		param.BucketID,          // $2
 		param.UserID,            // $3
 		param.WorkspaceID,       // $4
 		mo.EventID,              // $5
-		mo.RoutingScope,         // $6  ('zone:' + zoneID từ context)
+		mo.ZoneID,               // $6
 		mo.JobTopic,             // $7
 		mo.Payload,              // $8
 		mo.OwnerID,              // $9

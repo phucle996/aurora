@@ -52,8 +52,9 @@ type CreatePersonalVM struct {
 }
 
 type HypervisorOutboxRecord struct {
-	EventID              uuid.UUID
-	RoutingScope         string
+	EventID uuid.UUID
+	// ZoneID is the immutable dataplane destination for this VM command.
+	ZoneID               uuid.UUID
 	JobTopic             string
 	Payload              []byte
 	ActorUserID          uuid.UUID

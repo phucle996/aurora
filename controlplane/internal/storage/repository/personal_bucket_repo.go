@@ -68,7 +68,7 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		)
@@ -93,7 +93,7 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		mc.UpdatedAt,
 		// [COMMENT]: $13-$26 — storage_outbox_records fields
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,
@@ -281,7 +281,7 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 	mo := storageModel.OutboxEntityToModel(outbox)
 	insertOutboxQuery := fmt.Sprintf(`
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
@@ -289,7 +289,7 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 
 	_, err = tx.Exec(ctx, insertOutboxQuery,
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,
@@ -332,7 +332,7 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			FOR UPDATE
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message, actor_user_id
 		)
@@ -344,7 +344,7 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 		id,
 		userID,
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,
@@ -442,7 +442,7 @@ func (r *PersonalBucketRepoImpl) CreateAccessPrepare(ctx context.Context, sessio
 			  AND b.zone_id = $20 AND w.zone_id = $20
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message, actor_user_id
 		)
 		SELECT $4, $5, $6, $7, $8, $18, $9, $10, $11, $12, $13, $14, $15, $16, $17, $19
@@ -454,7 +454,7 @@ func (r *PersonalBucketRepoImpl) CreateAccessPrepare(ctx context.Context, sessio
 		session.WorkspaceID,
 		session.ActorID.String(),
 		mo.EventID,
-		mo.RoutingScope,
+		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
 		mo.OwnerID,

@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_hypervisor_personal_vms_scope
 CREATE TABLE IF NOT EXISTS vm_outbox_records (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID NOT NULL UNIQUE,
-    routing_scope TEXT NOT NULL,
+    zone_id UUID NOT NULL,
     job_topic VARCHAR(128) NOT NULL,
     payload BYTEA NOT NULL,
     actor_user_id UUID NOT NULL,
@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS vm_outbox_records (
     CONSTRAINT ck_hypervisor_vm_outbox_version CHECK (job_version > 0),
     CONSTRAINT ck_hypervisor_vm_outbox_payload_version CHECK (payload_schema_version > 0),
     CONSTRAINT ck_hypervisor_vm_outbox_trace
-        CHECK (trace_id IS NULL OR octet_length(trace_id) IN (0, 16))
+        CHECK (trace_id IS NULL OR octet_length(trace_id) IN (0, 16)),
+    CONSTRAINT ck_hypervisor_vm_outbox_zone_id
+        CHECK (zone_id <> '00000000-0000-0000-0000-000000000000'::uuid)
 );
 
 CREATE INDEX IF NOT EXISTS idx_hypervisor_vm_outbox_status
