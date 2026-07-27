@@ -95,7 +95,7 @@ pub(crate) async fn execute_vm_create(
     let occupied_vmids = inventory.iter().map(|vm| vm.vmid).collect::<HashSet<_>>();
     let provider_vmid = runtime
         .provider_bindings
-        .resolve_provider_vmid(
+        .resolve_vm_provider_vmid(
             resource_id,
             &command.provider_name,
             discovered.as_ref().map(|(vmid, _)| *vmid),
@@ -164,7 +164,7 @@ pub(crate) async fn execute_vm_create(
         // The permit starts immediately before the first heavy mutation.
         // Inventory, placement and Zone KV CAS do not consume clone slots.
         mutation_permit = runtime
-            .acquire_vm_mutation_permit()
+            .acquire_mutation_permit()
             .await
             .map_err(ExecutorError::Retryable)?;
         let task = runtime
@@ -187,7 +187,7 @@ pub(crate) async fn execute_vm_create(
             .map_err(ExecutorError::Retryable)?;
     } else {
         mutation_permit = runtime
-            .acquire_vm_mutation_permit()
+            .acquire_mutation_permit()
             .await
             .map_err(ExecutorError::Retryable)?;
     }

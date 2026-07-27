@@ -463,6 +463,244 @@ impl ProxmoxClient {
         Ok(response.data)
     }
 
+    pub async fn download_url_to_storage(
+        &self,
+        node: &str,
+        storage: &str,
+        filename: &str,
+        url: &str,
+        checksum_hex: &str,
+    ) -> Result<String, String> {
+        let endpoint = format!(
+            "{}/api2/json/nodes/{}/storage/{}/download-url",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node),
+            urlencoding::encode(storage)
+        );
+        let form = [
+            ("content", "iso".to_string()),
+            ("filename", filename.to_string()),
+            ("url", url.to_string()),
+            ("checksum", checksum_hex.to_string()),
+            ("checksum-algorithm", "sha256".to_string()),
+        ];
+        let request = self
+            .client
+            .post(&endpoint)
+            .header("Authorization", &self.api_token)
+            .form(&form);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "POST proxmox.image_download",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "POST"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new(
+                    "url.template",
+                    "/api2/json/nodes/{node}/storage/{storage}/download-url",
+                ),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_IMAGE_DOWNLOAD_TRANSPORT_FAILED".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "download image into Proxmox storage returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<ProxmoxApiResponse<String>>()
+            .await
+            .map(|response| response.data)
+            .map_err(|_| "PROXMOX_IMAGE_DOWNLOAD_RESPONSE_INVALID".to_string())
+    }
+
+    pub async fn create_vm_from_import(
+        &self,
+        node: &str,
+        vmid: u64,
+        provider_name: &str,
+        source_storage: &str,
+        filename: &str,
+        target_storage: &str,
+        checksum_hex: &str,
+    ) -> Result<String, String> {
+        let endpoint = format!(
+            "{}/api2/json/nodes/{}/qemu",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node)
+        );
+        let imported_volume = format!("{source_storage}:iso/{filename}");
+        let boot_volume = format!("{target_storage}:0,import-from={imported_volume}");
+        let description = format!("Managed by Aurora\\naurora-image-sha256={checksum_hex}");
+        let form = [
+            ("vmid", vmid.to_string()),
+            ("name", provider_name.to_string()),
+            ("scsihw", "virtio-scsi-single".to_string()),
+            ("scsi0", boot_volume),
+            ("boot", "order=scsi0".to_string()),
+            ("agent", "enabled=1".to_string()),
+            ("description", description),
+        ];
+        let request = self
+            .client
+            .post(&endpoint)
+            .header("Authorization", &self.api_token)
+            .form(&form);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "POST proxmox.image_import",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "POST"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new("url.template", "/api2/json/nodes/{node}/qemu"),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_IMAGE_IMPORT_TRANSPORT_FAILED".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "create Proxmox image VM returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<ProxmoxApiResponse<String>>()
+            .await
+            .map(|response| response.data)
+            .map_err(|_| "PROXMOX_IMAGE_IMPORT_RESPONSE_INVALID".to_string())
+    }
+
+    pub async fn convert_to_template(&self, node: &str, vmid: u64) -> Result<String, String> {
+        let endpoint = format!(
+            "{}/api2/json/nodes/{}/qemu/{}/template",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node),
+            vmid
+        );
+        let request = self
+            .client
+            .post(&endpoint)
+            .header("Authorization", &self.api_token);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "POST proxmox.image_template",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "POST"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new(
+                    "url.template",
+                    "/api2/json/nodes/{node}/qemu/{vmid}/template",
+                ),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_IMAGE_TEMPLATE_TRANSPORT_FAILED".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "convert Proxmox image VM to template returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<ProxmoxApiResponse<String>>()
+            .await
+            .map(|response| response.data)
+            .map_err(|_| "PROXMOX_IMAGE_TEMPLATE_RESPONSE_INVALID".to_string())
+    }
+
+    pub async fn delete_vm(&self, node: &str, vmid: u64) -> Result<String, String> {
+        let endpoint = format!(
+            "{}/api2/json/nodes/{}/qemu/{}",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node),
+            vmid
+        );
+        let form = [
+            ("purge", "1".to_string()),
+            ("destroy-unreferenced-disks", "1".to_string()),
+        ];
+        let request = self
+            .client
+            .delete(&endpoint)
+            .header("Authorization", &self.api_token)
+            .form(&form);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "DELETE proxmox.image_template",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "DELETE"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new("url.template", "/api2/json/nodes/{node}/qemu/{vmid}"),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_IMAGE_DELETE_TRANSPORT_FAILED".to_string())?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(String::new());
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "delete Proxmox image template returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<ProxmoxApiResponse<String>>()
+            .await
+            .map(|response| response.data)
+            .map_err(|_| "PROXMOX_IMAGE_DELETE_RESPONSE_INVALID".to_string())
+    }
+
+    pub async fn delete_storage_content(
+        &self,
+        node: &str,
+        storage: &str,
+        filename: &str,
+    ) -> Result<String, String> {
+        let volume = format!("{storage}:iso/{filename}");
+        let endpoint = format!(
+            "{}/api2/json/nodes/{}/storage/{}/content/{}",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node),
+            urlencoding::encode(storage),
+            urlencoding::encode(&volume)
+        );
+        let request = self
+            .client
+            .delete(&endpoint)
+            .header("Authorization", &self.api_token);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "DELETE proxmox.image_staging",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "DELETE"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new(
+                    "url.template",
+                    "/api2/json/nodes/{node}/storage/{storage}/content/{volume}",
+                ),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_IMAGE_STAGING_DELETE_TRANSPORT_FAILED".to_string())?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(String::new());
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "delete Proxmox staged image returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<ProxmoxApiResponse<String>>()
+            .await
+            .map(|response| response.data)
+            .map_err(|_| "PROXMOX_IMAGE_STAGING_DELETE_RESPONSE_INVALID".to_string())
+    }
+
     pub async fn wait_task(&self, node: &str, upid: &str) -> Result<(), String> {
         let deadline = tokio::time::Instant::now() + self.task_timeout;
         loop {

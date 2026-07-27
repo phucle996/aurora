@@ -24,27 +24,68 @@ struct ProviderBinding {
     resource_id: String,
     provider_name: String,
     provider_vmid: u64,
+    #[serde(default)]
+    kind: String,
 }
 
-pub(crate) struct VmProviderBindingRuntime {
+pub(crate) struct ProviderBindingRuntime {
     zone_kv: Arc<ZoneKvStore>,
 }
 
-impl VmProviderBindingRuntime {
+impl ProviderBindingRuntime {
     pub(crate) fn new(zone_kv: Arc<ZoneKvStore>) -> Self {
         Self { zone_kv }
     }
 
-    pub(crate) async fn resolve_provider_vmid(
+    pub(crate) async fn resolve_vm_provider_vmid(
         &self,
         resource_id: uuid::Uuid,
         provider_name: &str,
         discovered_vmid: Option<u64>,
         occupied_vmids: &HashSet<u64>,
     ) -> Result<u64, ExecutorError> {
-        let binding_key = format!("hypervisor.vm.provider.{resource_id}");
+        self.resolve_provider_vmid(
+            "vm",
+            resource_id.as_bytes(),
+            resource_id,
+            provider_name,
+            discovered_vmid,
+            occupied_vmids,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_image_template_vmid(
+        &self,
+        resource_id: uuid::Uuid,
+        provider_name: &str,
+        discovered_vmid: Option<u64>,
+        occupied_vmids: &HashSet<u64>,
+    ) -> Result<u64, ExecutorError> {
+        let owner_token = format!("image:{resource_id}");
+        self.resolve_provider_vmid(
+            "image",
+            owner_token.as_bytes(),
+            resource_id,
+            provider_name,
+            discovered_vmid,
+            occupied_vmids,
+        )
+        .await
+    }
+
+    async fn resolve_provider_vmid(
+        &self,
+        kind: &str,
+        owner_token: &[u8],
+        resource_id: uuid::Uuid,
+        provider_name: &str,
+        discovered_vmid: Option<u64>,
+        occupied_vmids: &HashSet<u64>,
+    ) -> Result<u64, ExecutorError> {
+        let binding_key = format!("hypervisor.{kind}.provider.{resource_id}");
         let stored_binding = self
-            .load_resource_binding(&binding_key, resource_id, provider_name)
+            .load_resource_binding(&binding_key, kind, resource_id, provider_name)
             .await?;
 
         let provider_vmid = if let Some(discovered_vmid) = discovered_vmid {
@@ -71,14 +112,14 @@ impl VmProviderBindingRuntime {
                 }
                 let reverse_key = format!("hypervisor.provider.vmid.{candidate}");
                 match self.load_vmid_owner(&reverse_key).await? {
-                    Some(owner) if owner.as_ref() == resource_id.as_bytes() => {
+                    Some(owner) if owner.as_ref() == owner_token => {
                         reserved_vmid = candidate;
                         break;
                     }
                     Some(_) => continue,
                     None => {
                         if self
-                            .create_vmid_owner(&reverse_key, resource_id)
+                            .create_vmid_owner(&reverse_key, owner_token)
                             .await
                             .is_ok()
                         {
@@ -88,7 +129,7 @@ impl VmProviderBindingRuntime {
                         if self
                             .load_vmid_owner(&reverse_key)
                             .await?
-                            .is_some_and(|owner| owner.as_ref() == resource_id.as_bytes())
+                            .is_some_and(|owner| owner.as_ref() == owner_token)
                         {
                             reserved_vmid = candidate;
                             break;
@@ -105,10 +146,11 @@ impl VmProviderBindingRuntime {
             reserved_vmid
         };
 
-        self.verify_or_create_vmid_owner(provider_vmid, resource_id)
+        self.verify_or_create_vmid_owner(provider_vmid, owner_token)
             .await?;
         self.verify_or_create_resource_binding(
             &binding_key,
+            kind,
             resource_id,
             provider_name,
             provider_vmid,
@@ -120,6 +162,7 @@ impl VmProviderBindingRuntime {
     async fn load_resource_binding(
         &self,
         binding_key: &str,
+        kind: &str,
         resource_id: uuid::Uuid,
         provider_name: &str,
     ) -> Result<Option<ProviderBinding>, ExecutorError> {
@@ -143,6 +186,7 @@ impl VmProviderBindingRuntime {
         if binding.schema_version != 1
             || binding.resource_id != resource_id.to_string()
             || binding.provider_name != provider_name
+            || (!binding.kind.is_empty() && binding.kind != kind)
             || binding.provider_vmid < VMID_MINIMUM
         {
             return Err(ExecutorError::ExecutionFailed(
@@ -165,12 +209,12 @@ impl VmProviderBindingRuntime {
     async fn create_vmid_owner(
         &self,
         reverse_key: &str,
-        resource_id: uuid::Uuid,
+        owner_token: &[u8],
     ) -> Result<(), ExecutorError> {
         tokio::time::timeout(
             PROVIDER_BINDING_IO_TIMEOUT,
             self.zone_kv
-                .config_create(reverse_key, Bytes::copy_from_slice(resource_id.as_bytes())),
+                .config_create(reverse_key, Bytes::copy_from_slice(owner_token)),
         )
         .await
         .map_err(|_| {
@@ -183,17 +227,17 @@ impl VmProviderBindingRuntime {
     async fn verify_or_create_vmid_owner(
         &self,
         provider_vmid: u64,
-        resource_id: uuid::Uuid,
+        owner_token: &[u8],
     ) -> Result<(), ExecutorError> {
         let reverse_key = format!("hypervisor.provider.vmid.{provider_vmid}");
         match self.load_vmid_owner(&reverse_key).await? {
-            Some(owner) if owner.as_ref() == resource_id.as_bytes() => Ok(()),
+            Some(owner) if owner.as_ref() == owner_token => Ok(()),
             Some(_) => Err(ExecutorError::ExecutionFailed(
                 "HYPERVISOR_PROVIDER_VMID_BINDING_COLLISION".to_string(),
             )),
             None => {
                 if self
-                    .create_vmid_owner(&reverse_key, resource_id)
+                    .create_vmid_owner(&reverse_key, owner_token)
                     .await
                     .is_ok()
                 {
@@ -202,7 +246,7 @@ impl VmProviderBindingRuntime {
                 if self
                     .load_vmid_owner(&reverse_key)
                     .await?
-                    .is_some_and(|owner| owner.as_ref() == resource_id.as_bytes())
+                    .is_some_and(|owner| owner.as_ref() == owner_token)
                 {
                     return Ok(());
                 }
@@ -216,12 +260,13 @@ impl VmProviderBindingRuntime {
     async fn verify_or_create_resource_binding(
         &self,
         binding_key: &str,
+        kind: &str,
         resource_id: uuid::Uuid,
         provider_name: &str,
         provider_vmid: u64,
     ) -> Result<(), ExecutorError> {
         if let Some(binding) = self
-            .load_resource_binding(binding_key, resource_id, provider_name)
+            .load_resource_binding(binding_key, kind, resource_id, provider_name)
             .await?
         {
             if binding.provider_vmid == provider_vmid {
@@ -237,6 +282,7 @@ impl VmProviderBindingRuntime {
             resource_id: resource_id.to_string(),
             provider_name: provider_name.to_string(),
             provider_vmid,
+            kind: kind.to_string(),
         })
         .map_err(|_| {
             ExecutorError::ExecutionFailed(
@@ -252,7 +298,7 @@ impl VmProviderBindingRuntime {
             return Ok(());
         }
         let winner = self
-            .load_resource_binding(binding_key, resource_id, provider_name)
+            .load_resource_binding(binding_key, kind, resource_id, provider_name)
             .await?
             .ok_or_else(|| {
                 ExecutorError::Retryable("HYPERVISOR_PROVIDER_BINDING_CAS_NOT_VISIBLE".to_string())
@@ -261,6 +307,54 @@ impl VmProviderBindingRuntime {
             return Err(ExecutorError::ExecutionFailed(
                 "HYPERVISOR_PROVIDER_BINDING_MISMATCH".to_string(),
             ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn remove_image_template_binding(
+        &self,
+        resource_id: uuid::Uuid,
+        provider_vmid: u64,
+    ) -> Result<(), ExecutorError> {
+        let binding_key = format!("hypervisor.image.provider.{resource_id}");
+        let owner_token = format!("image:{resource_id}");
+        let binding = self
+            .load_resource_binding(
+                &binding_key,
+                "image",
+                resource_id,
+                &format!("aurora-image-{resource_id}"),
+            )
+            .await?;
+        let Some(binding) = binding else {
+            return Ok(());
+        };
+        if binding.provider_vmid != provider_vmid {
+            return Err(ExecutorError::ExecutionFailed(
+                "HYPERVISOR_IMAGE_BINDING_MISMATCH".to_string(),
+            ));
+        }
+        self.zone_kv
+            .config_delete(&binding_key)
+            .await
+            .map_err(|_| {
+                ExecutorError::Retryable("HYPERVISOR_IMAGE_BINDING_DELETE_FAILED".to_string())
+            })?;
+
+        let reverse_key = format!("hypervisor.provider.vmid.{provider_vmid}");
+        if self
+            .load_vmid_owner(&reverse_key)
+            .await?
+            .is_some_and(|owner| owner.as_ref() == owner_token.as_bytes())
+        {
+            self.zone_kv
+                .config_delete(&reverse_key)
+                .await
+                .map_err(|_| {
+                    ExecutorError::Retryable(
+                        "HYPERVISOR_IMAGE_REVERSE_BINDING_DELETE_FAILED".to_string(),
+                    )
+                })?;
         }
         Ok(())
     }

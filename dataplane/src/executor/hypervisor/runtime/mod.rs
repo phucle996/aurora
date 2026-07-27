@@ -1,6 +1,6 @@
 mod provider_binding;
 
-pub(super) use provider_binding::VmProviderBindingRuntime;
+pub(super) use provider_binding::ProviderBindingRuntime;
 
 #[cfg(test)]
 #[path = "../test/provider_binding.rs"]

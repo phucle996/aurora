@@ -60,8 +60,11 @@ sequenceDiagram
     DB-->>JO: CDC shared hypervisor outbox
     JO->>K: hypervisor.image.import keyed by image_id
     K-->>DP: Zone-scoped command
-    DP->>S3: Verify object key, size and SHA-256
-    DP->>PVE: Import image and create/verify template
+    DP->>S3: HEAD + streamed GET verifies immutable key, size and SHA-256
+    DP->>S3: Create short-lived presigned GET URL in memory
+    DP->>PVE: download-url into Zone staging storage with SHA-256
+    DP->>PVE: Import VM, verify identity marker, convert to template
+    DP->>PVE: Delete staged ISO/content after template durability
     DP->>K: ImageImportResultV1(template_vmid, SHA)
     K-->>JO: Durable result
     JO->>DB: state=AVAILABLE + template VMID, settle same outbox
@@ -70,8 +73,8 @@ sequenceDiagram
     CP->>DB: state=DELETING + same shared outbox
     JO->>K: hypervisor.image.delete
     K-->>DP: Zone-scoped delete command
-    DP->>PVE: Remove template/image reference
-    DP->>S3: Remove object after provider delete succeeds
+    DP->>PVE: Remove template and staged content (idempotent)
+    DP->>S3: Remove object only after provider delete succeeds
     DP->>K: ImageDeleteResultV1
     JO->>DB: Hard delete image row, settle same outbox
 ```
@@ -81,4 +84,8 @@ metadata/command only and never embeds image bytes. Kafka uses at-least-once
 delivery, manual commit and DLQ. Image import/delete validates zone binding,
 image ID, revision and SHA before any Proxmox mutation. Duplicate commands are
 safe because the Dataplane adopts the existing template/object by immutable
-image identity.
+image identity. A retry after a crash re-discovers the provider name and
+checksum marker; it never trusts a name alone. The presigned URL is never
+placed in Kafka, Zone KV, logs or a result payload. The S3 client is disabled
+unless all dedicated `HYPERVISOR_IMAGE_S3_*` settings are present, and the
+Proxmox source/target storage names are explicit deployment configuration.

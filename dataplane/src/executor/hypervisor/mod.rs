@@ -18,7 +18,8 @@ pub mod hypervisor_proto {
 /// mutation backpressure and Zone-local provider identity have one owner.
 pub struct HypervisorRuntime {
     pub(crate) proxmox: Arc<processor::ProxmoxClient>,
-    pub(crate) provider_bindings: Arc<runtime::VmProviderBindingRuntime>,
+    pub(crate) provider_bindings: Arc<runtime::ProviderBindingRuntime>,
+    pub(crate) image_store: Option<Arc<processor::ImageObjectStore>>,
     mutation_limit: Arc<Semaphore>,
 }
 
@@ -26,12 +27,13 @@ impl HypervisorRuntime {
     pub fn new(config: &Config, zone_kv: Arc<ZoneKvStore>) -> Result<Arc<Self>, String> {
         Ok(Arc::new(Self {
             proxmox: Arc::new(processor::ProxmoxClient::new(config)?),
-            provider_bindings: Arc::new(runtime::VmProviderBindingRuntime::new(zone_kv)),
+            provider_bindings: Arc::new(runtime::ProviderBindingRuntime::new(zone_kv)),
+            image_store: processor::ImageObjectStore::from_config(config)?.map(Arc::new),
             mutation_limit: Arc::new(Semaphore::new(config.proxmox_max_concurrent_jobs)),
         }))
     }
 
-    pub(crate) async fn acquire_vm_mutation_permit(&self) -> Result<OwnedSemaphorePermit, String> {
+    pub(crate) async fn acquire_mutation_permit(&self) -> Result<OwnedSemaphorePermit, String> {
         self.mutation_limit
             .clone()
             .acquire_owned()

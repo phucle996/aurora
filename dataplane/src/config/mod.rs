@@ -118,9 +118,21 @@ pub struct Config {
     pub proxmox_tls_insecure: bool,
 
     pub proxmox_storage: String,
+    /// Storage visible to the selected Proxmox node for temporary image files.
+    /// It must support the `iso` content type and is never inferred silently.
+    pub proxmox_image_source_storage: String,
     pub proxmox_pool: String,
     pub proxmox_max_concurrent_jobs: usize,
     pub proxmox_task_timeout_seconds: u64,
+
+    /// Zone-local image registry endpoint and bucket. Empty values keep image
+    /// execution disabled for Zones that do not run the Hypervisor service.
+    pub hypervisor_image_s3_endpoint: Option<String>,
+    pub hypervisor_image_s3_bucket: Option<String>,
+    /// Dedicated least-privilege credentials for the Zone image bucket.
+    /// They are intentionally not inherited from the general MinIO client.
+    pub hypervisor_image_s3_access_key: Option<String>,
+    pub hypervisor_image_s3_secret_key: Option<String>,
 }
 
 use std::sync::OnceLock;
@@ -389,6 +401,8 @@ impl Config {
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false),
             proxmox_storage: env::var("PROXMOX_VM_STORAGE").unwrap_or_default(),
+            proxmox_image_source_storage: env::var("PROXMOX_IMAGE_SOURCE_STORAGE")
+                .unwrap_or_default(),
             proxmox_pool: env::var("PROXMOX_VM_POOL").unwrap_or_default(),
             proxmox_max_concurrent_jobs: env::var("PROXMOX_MAX_CONCURRENT_JOBS")
                 .ok()
@@ -400,6 +414,18 @@ impl Config {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(300)
                 .clamp(30, 900),
+            hypervisor_image_s3_endpoint: env::var("HYPERVISOR_IMAGE_S3_ENDPOINT")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            hypervisor_image_s3_bucket: env::var("HYPERVISOR_IMAGE_S3_BUCKET")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            hypervisor_image_s3_access_key: env::var("HYPERVISOR_IMAGE_S3_ACCESS_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            hypervisor_image_s3_secret_key: env::var("HYPERVISOR_IMAGE_S3_SECRET_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
         };
         if config.min_workers > config.max_workers {
             crate::observability::logger::Logger::sys_error(

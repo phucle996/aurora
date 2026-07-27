@@ -9,11 +9,12 @@ pub async fn dispatch_hypervisor_job(
     payload: Arc<ValidatedJob>,
     runtime: Arc<HypervisorRuntime>,
 ) -> Result<ExecutionResult, ExecutorError> {
-    if action == "vm.create" {
-        return processor::execute_vm_create(payload, runtime).await;
+    match action {
+        "vm.create" => processor::execute_vm_create(payload, runtime).await,
+        "image.import" => processor::execute_image_import(payload, runtime).await,
+        "image.delete" => processor::execute_image_delete(payload, runtime).await,
+        _ => Err(ExecutorError::ExecutionFailed(format!(
+            "Unsupported hypervisor action: {action}"
+        ))),
     }
-
-    Err(ExecutorError::ExecutionFailed(format!(
-        "Unsupported hypervisor action: {action}"
-    )))
 }

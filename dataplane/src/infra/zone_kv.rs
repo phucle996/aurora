@@ -320,6 +320,13 @@ impl ZoneKvStore {
             .map_err(|error| error.to_string())
     }
 
+    pub async fn config_delete(&self, key: impl AsRef<str>) -> Result<(), String> {
+        self.config
+            .delete(key)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn health_get(&self, key: impl Into<String>) -> Result<Option<Bytes>, String> {
         self.health
             .get(key)
