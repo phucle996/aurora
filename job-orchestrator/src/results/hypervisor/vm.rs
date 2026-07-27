@@ -15,7 +15,7 @@ pub async fn apply_vm_result(
     let authority = tx
         .query_opt(
             "SELECT outbox.resource_id, outbox.status, vm.spec_hash, vm.provider_name \
-             FROM hypervisor.vm_outbox_records outbox \
+             FROM hypervisor.hypervisor_outbox_records outbox \
              JOIN hypervisor.personal_vms vm ON vm.id::text = outbox.resource_id \
              WHERE outbox.event_id = $1 AND outbox.job_topic = $2 \
              FOR UPDATE OF outbox, vm",
@@ -45,10 +45,10 @@ pub async fn apply_vm_result(
             tx.query_opt(
                 "WITH updated_vm AS ( \
                      UPDATE hypervisor.personal_vms \
-                     SET status = 'PROVISIONING', error_code = NULL, error_message = NULL, updated_at = NOW() \
+                     SET status = 'PROVISIONING', updated_at = NOW() \
                      WHERE id = $1 \
                  ) \
-                 UPDATE hypervisor.vm_outbox_records \
+                 UPDATE hypervisor.hypervisor_outbox_records \
                  SET status = 'PROCESSING', error_code = NULL, error_message = NULL, updated_at = NOW() \
                  WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
@@ -83,24 +83,17 @@ pub async fn apply_vm_result(
             tx.query_opt(
                 "WITH updated_vm AS ( \
                      UPDATE hypervisor.personal_vms \
-                     SET status = 'READY', provider_node = $1, provider_vmid = $2, \
-                         ipv4_address = $3::inet, error_code = NULL, error_message = NULL, \
+                     SET status = 'READY', provider_vmid = $1, \
+                         ipv4_address = $2::inet, \
                          provisioned_at = COALESCE(provisioned_at, NOW()), updated_at = NOW() \
-                     WHERE id = $4 \
+                     WHERE id = $3 \
                  ) \
-                 UPDATE hypervisor.vm_outbox_records \
+                 UPDATE hypervisor.hypervisor_outbox_records \
                  SET status = 'SUCCEEDED', completed_at = NOW(), error_code = NULL, \
                      error_message = NULL, updated_at = NOW() \
-                 WHERE event_id = $5 AND job_topic = $6 AND status IN ('PENDING', 'PROCESSING') \
+                 WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
-                &[
-                    &result.provider_node,
-                    &provider_vmid,
-                    &ipv4_address,
-                    &vm_id,
-                    &job_id,
-                    &job_topic,
-                ],
+                &[&provider_vmid, &ipv4_address, &vm_id, &job_id, &job_topic],
             )
             .await?
         }
@@ -109,17 +102,19 @@ pub async fn apply_vm_result(
                 return Err("FAILED hypervisor result must not carry a result payload".into());
             }
             tx.query_opt(
-                "WITH updated_vm AS ( \
-                     UPDATE hypervisor.personal_vms \
-                     SET status = 'FAILED', error_code = $1, error_message = $2, updated_at = NOW() \
-                     WHERE id = $3 \
+                "WITH deleted_vm AS ( \
+                     DELETE FROM hypervisor.personal_vms \
+                     WHERE id = $1 AND status = 'PROVISIONING' \
+                     RETURNING id \
                  ) \
-                 UPDATE hypervisor.vm_outbox_records \
-                 SET status = 'FAILED', completed_at = NOW(), error_code = $1, \
-                     error_message = $2, updated_at = NOW() \
-                 WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
+                 UPDATE hypervisor.hypervisor_outbox_records \
+                 SET status = 'FAILED', completed_at = NOW(), error_code = $2, \
+                     error_message = $3, updated_at = NOW() \
+                 WHERE event_id = $4 AND job_topic = $5 \
+                   AND status IN ('PENDING', 'PROCESSING') \
+                   AND EXISTS (SELECT 1 FROM deleted_vm) \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
-                &[&error_code, &error_message, &vm_id, &job_id, &job_topic],
+                &[&vm_id, &error_code, &error_message, &job_id, &job_topic],
             )
             .await?
         }

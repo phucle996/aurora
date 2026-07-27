@@ -1,0 +1,49 @@
+DO $$
+DECLARE
+    shared_outbox_count INT;
+BEGIN
+    IF to_regclass('hypervisor.image_artifacts') IS NULL
+       OR to_regclass('hypervisor.personal_vms') IS NULL
+       OR to_regclass('hypervisor.hypervisor_outbox_records') IS NULL THEN
+        RAISE EXCEPTION 'hypervisor resource or outbox table is missing';
+    END IF;
+
+    IF to_regclass('hypervisor.nodes') IS NOT NULL
+       OR to_regclass('hypervisor.vm_outbox_records') IS NOT NULL
+       OR to_regclass('hypervisor.image_outbox_records') IS NOT NULL THEN
+        RAISE EXCEPTION 'legacy hypervisor node/split-outbox table still exists';
+    END IF;
+
+    SELECT count(*)
+    INTO shared_outbox_count
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'hypervisor'
+      AND relation.relkind = 'r'
+      AND relation.relname LIKE '%outbox_records';
+
+    IF shared_outbox_count <> 1 THEN
+        RAISE EXCEPTION 'hypervisor must have exactly one outbox table, found %',
+            shared_outbox_count;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'hypervisor'
+          AND (
+              (table_name = 'image_artifacts'
+               AND column_name IN (
+                   'provider_node', 'provider_storage', 'deleted_at'
+               ))
+              OR
+              (table_name = 'personal_vms'
+               AND column_name IN (
+                   'provider_node', 'error_code', 'error_message'
+               ))
+          )
+    ) THEN
+        RAISE EXCEPTION 'legacy provider topology or soft-delete column exists';
+    END IF;
+END
+$$;

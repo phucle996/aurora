@@ -21,5 +21,9 @@ pub fn verify_generated_contracts() {
     let _ = storage::StorageAccessRecord::default();
     let _ = hypervisor::VmCreateV1::default();
     let _ = hypervisor::VmCreateResultV1::default();
+    let _ = hypervisor::ImageImportV1::default();
+    let _ = hypervisor::ImageImportResultV1::default();
+    let _ = hypervisor::ImageDeleteV1::default();
+    let _ = hypervisor::ImageDeleteResultV1::default();
     let _ = mail::MailDispatchEnvelopeV1::default();
 }

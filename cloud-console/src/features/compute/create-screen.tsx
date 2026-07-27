@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Server } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createVirtualMachine,
+  listHypervisorImageCatalog,
   type CreateVirtualMachineInput,
   type VirtualMachine,
 } from "@/features/compute/api";
@@ -21,11 +22,18 @@ export function CreateComputeScreen() {
   const queryClient = useQueryClient();
   const scope = useConsoleQueryScope();
   const [name, setName] = useState("");
-  const [image, setImage] = useState<CreateVirtualMachineInput["image"]>("ubuntu-24.04");
+  const [imageID, setImageID] = useState("");
   const [cpuCores, setCpuCores] = useState(2);
   const [memoryMB, setMemoryMB] = useState(4096);
   const [diskGB, setDiskGB] = useState(32);
   const [sshPublicKey, setSSHPublicKey] = useState("");
+  const imageQuery = useQuery({
+    queryKey: [...scope, "compute", "image-catalog"],
+    queryFn: ({ signal }) => listHypervisorImageCatalog(signal),
+    staleTime: 60_000,
+  });
+  const images = imageQuery.data ?? [];
+  const selectedImage = images.find((image) => image.id === imageID) ?? images[0];
 
   const mutation = useMutation({
     mutationFn: (input: CreateVirtualMachineInput) => createVirtualMachine(input),
@@ -73,9 +81,13 @@ export function CreateComputeScreen() {
             toast.error("Enter a valid SSH public key.");
             return;
           }
+          if (!selectedImage) {
+            toast.error("Select an AVAILABLE image from the Zone catalog.");
+            return;
+          }
           mutation.mutate({
             name: normalizedName,
-            image,
+            image_id: selectedImage.id,
             cpu_cores: cpuCores,
             memory_mb: memoryMB,
             disk_gb: diskGB,
@@ -97,13 +109,21 @@ export function CreateComputeScreen() {
                 <Label htmlFor="vm-image">Operating system</Label>
                 <select
                   id="vm-image"
-                  value={image}
-                  onChange={(event) => setImage(event.target.value as CreateVirtualMachineInput["image"])}
+                  value={selectedImage?.id ?? ""}
+                  onChange={(event) => setImageID(event.target.value)}
+                  disabled={imageQuery.isLoading || images.length === 0}
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <option value="ubuntu-24.04">Ubuntu 24.04 LTS</option>
-                  <option value="debian-12">Debian 12</option>
+                  {images.map((image) => (
+                    <option key={image.id} value={image.id}>
+                      {image.name} · {image.distribution} {image.release} · r{image.revision}
+                    </option>
+                  ))}
                 </select>
+                {imageQuery.isError && <p className="text-xs text-red-500">Image catalog is unavailable.</p>}
+                {!imageQuery.isError && !imageQuery.isLoading && images.length === 0 && (
+                  <p className="text-xs text-amber-600">No AVAILABLE image exists in this Zone.</p>
+                )}
               </div>
             </div>
           </div>
@@ -146,14 +166,14 @@ export function CreateComputeScreen() {
           </div>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-3 p-5 text-[13px]">
             <dt className="text-muted-foreground">Name</dt><dd className="text-right font-medium">{name.trim().toLowerCase() || "—"}</dd>
-            <dt className="text-muted-foreground">Image</dt><dd className="text-right font-medium">{image}</dd>
+            <dt className="text-muted-foreground">Image</dt><dd className="text-right font-medium">{selectedImage?.name ?? "—"}</dd>
             <dt className="text-muted-foreground">vCPU</dt><dd className="text-right font-medium">{cpuCores}</dd>
             <dt className="text-muted-foreground">Memory</dt><dd className="text-right font-medium">{memoryMB} MiB</dd>
             <dt className="text-muted-foreground">Disk</dt><dd className="text-right font-medium">{diskGB} GiB</dd>
           </dl>
           <div className="flex gap-2 border-t border-border p-4">
             <Button type="button" variant="outline" className="flex-1" onClick={() => router.push("/compute")}>Cancel</Button>
-            <Button type="submit" className="flex-1" disabled={mutation.isPending}>
+            <Button type="submit" className="flex-1" disabled={mutation.isPending || !selectedImage || imageQuery.isLoading}>
               {mutation.isPending ? "Submitting…" : "Create VM"}
             </Button>
           </div>

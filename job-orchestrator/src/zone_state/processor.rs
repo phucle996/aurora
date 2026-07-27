@@ -1,13 +1,12 @@
 use crate::observability::logger::Logger;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::nodes as hypervisor_db;
 use super::policy::{ServiceSignal, ZoneDrainPolicy, ZoneSignals};
 use super::proto as zone_proto;
 
 /// [COMMENT]: Xử lý nghiệp vụ chính cho một ZoneReport nhận từ Kafka.
 /// Bao gồm: decode Protobuf, đo queue, đồng bộ cache từ DB, chạy Decision Engine,
-/// ghi durable observation theo timestamp fence và upsert hypervisor nodes.
+/// ghi durable Zone service observation theo timestamp fence.
 ///
 /// NGUYÊN TẮC ENABLED-ONLY: DecisionEngine chỉ nhận enabled_services từ zone_heartbeats cache.
 /// Service disabled không tham gia vào bất kỳ quyết định trạng thái nào.
@@ -141,40 +140,8 @@ pub async fn process_report(
         return Err(error.to_string());
     }
 
-    // Hypervisor observations use the same report timestamp race fence.
-    // Timestamp của bản tin stream được dùng làm sent_at để chống out-of-order heartbeats.
-    let sent_at = payload.timestamp;
-
-    for node_proto in &workloads.hypervisors {
-        let node_code = &node_proto.node_code;
-        if node_code.is_empty() {
-            continue; // node_code bắt buộc
-        }
-
-        let observation = hypervisor_db::HypervisorObservation {
-            node_code,
-            status: &node_proto.status,
-            cpu_cores_total: node_proto.cpu_cores_total,
-            cpu_cores_used: node_proto.cpu_cores_used,
-            ram_mb_total: node_proto.ram_mb_total,
-            ram_mb_used: node_proto.ram_mb_used,
-            storage_gb_total: node_proto.storage_gb_total,
-            storage_gb_used: node_proto.storage_gb_used,
-            observed_at: sent_at,
-        };
-        if let Err(e) =
-            hypervisor_db::upsert_hypervisor_node(pg_client, &zone_id, &observation).await
-        {
-            Logger::sys_error(
-                "backpressure_listener.hypervisor_upsert",
-                &format!(
-                    "Lỗi upsert hypervisor node '{}' của Zone {}",
-                    node_code, zone_id
-                ),
-                &e.to_string(),
-            );
-            return Err(e.to_string());
-        }
-    }
+    // Physical node telemetry is exported through OTel/Grafana. Zone reports
+    // may still carry the legacy field during rollout, but JO deliberately
+    // does not persist it as business state.
     Ok(())
 }

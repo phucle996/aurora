@@ -32,6 +32,10 @@ func (s *PersonalVMServiceImpl) Create(
 	ctx context.Context,
 	input *hypervisorEntity.CreatePersonalVM,
 ) (*hypervisorEntity.PersonalVMCreateResult, error) {
+	image, err := s.repo.GetAvailableImage(ctx, input.ImageID, input.ZoneID)
+	if err != nil {
+		return nil, err
+	}
 	vmID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
@@ -42,9 +46,11 @@ func (s *PersonalVMServiceImpl) Create(
 	}
 
 	spec := sha256.New()
-	spec.Write([]byte(input.Image))
-	spec.Write([]byte{0})
+	spec.Write(image.ID[:])
 	var number [8]byte
+	binary.BigEndian.PutUint64(number[:], uint64(image.Revision))
+	spec.Write(number[:])
+	spec.Write(image.SHA256)
 	binary.BigEndian.PutUint64(number[:], uint64(input.CPUCores))
 	spec.Write(number[:])
 	binary.BigEndian.PutUint64(number[:], uint64(input.MemoryMB))
@@ -57,34 +63,40 @@ func (s *PersonalVMServiceImpl) Create(
 	now := time.Now().UTC()
 	providerName := "aurora-" + vmID.String()
 	vm := &hypervisorEntity.PersonalVM{
-		ID:           vmID,
-		WorkspaceID:  input.WorkspaceID,
-		ZoneID:       input.ZoneID,
-		OwnerUserID:  input.OwnerUserID,
-		Name:         input.Name,
-		Image:        input.Image,
-		CPUCores:     input.CPUCores,
-		MemoryMB:     input.MemoryMB,
-		DiskGB:       input.DiskGB,
-		SSHPublicKey: input.SSHPublicKey,
-		SpecHash:     specHash,
-		Status:       hypervisorEntity.VMStatusProvisioning,
-		OperationID:  operationID,
-		ProviderName: providerName,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            vmID,
+		WorkspaceID:   input.WorkspaceID,
+		ZoneID:        input.ZoneID,
+		OwnerUserID:   input.OwnerUserID,
+		Name:          input.Name,
+		Image:         image.Name,
+		ImageID:       &image.ID,
+		ImageRevision: &image.Revision,
+		ImageSHA256:   image.SHA256,
+		CPUCores:      input.CPUCores,
+		MemoryMB:      input.MemoryMB,
+		DiskGB:        input.DiskGB,
+		SSHPublicKey:  input.SSHPublicKey,
+		SpecHash:      specHash,
+		Status:        hypervisorEntity.VMStatusProvisioning,
+		OperationID:   operationID,
+		ProviderName:  providerName,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	payload, err := proto.Marshal(&hypervisorproto.VmCreateV1{
-		SchemaVersion: 1,
-		VmId:          vmID[:],
-		ProviderName:  providerName,
-		Image:         input.Image,
-		CpuCores:      uint32(input.CPUCores),
-		MemoryMb:      uint64(input.MemoryMB),
-		DiskGb:        uint64(input.DiskGB),
-		SshPublicKey:  input.SSHPublicKey,
-		ConfigHash:    specHash,
+		SchemaVersion:        1,
+		VmId:                 vmID[:],
+		ProviderName:         providerName,
+		ImageId:              image.ID[:],
+		CpuCores:             uint32(input.CPUCores),
+		MemoryMb:             uint64(input.MemoryMB),
+		DiskGb:               uint64(input.DiskGB),
+		SshPublicKey:         input.SSHPublicKey,
+		ConfigHash:           specHash,
+		ImageRevision:        uint64(image.Revision),
+		ImageSha256:          image.SHA256,
+		ProviderTemplateVmid: uint64(*image.ProviderTemplateVMID),
 	})
 	if err != nil {
 		return nil, err
@@ -100,7 +112,7 @@ func (s *PersonalVMServiceImpl) Create(
 		ZoneID:               input.ZoneID,
 		JobTopic:             "hypervisor.vm.create",
 		Payload:              payload,
-		ActorUserID:          input.OwnerUserID,
+		ActorUserID:          &input.OwnerUserID,
 		Status:               "PENDING",
 		JobVersion:           1,
 		ResourceID:           vmID.String(),
@@ -115,9 +127,6 @@ func (s *PersonalVMServiceImpl) Create(
 	}
 	if !result.Created && !bytes.Equal(result.VM.SpecHash, specHash) {
 		return nil, hypervisorTaxonomy.ErrNameConflict
-	}
-	if !result.Created && result.VM.Status == hypervisorEntity.VMStatusFailed {
-		return nil, hypervisorTaxonomy.ErrProvisioningFailed
 	}
 	return result, nil
 }

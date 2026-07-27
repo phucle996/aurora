@@ -8,8 +8,8 @@ const LEASE_TTL_MS: u64 = 10_000;
 /// Runs a cluster-wide dead-man switch under a short Shared Redis lease.
 ///
 /// Kafka ownership is intentionally unrelated to watchdog ownership: reports
-/// may be processed by any replica, while only one replica scans durable
-/// observation timestamps. The SQL predicates fence a lease handoff, so an
+/// may be processed by any replica, while only one replica scans durable Zone
+/// service observation timestamps. The SQL predicates fence a lease handoff, so an
 /// expired leader can overlap safely with its successor.
 pub async fn run(
     config: Config,
@@ -57,35 +57,22 @@ pub async fn run(
                 &[],
             )
             .await;
-        let nodes = pg_client
-            .execute(
-                "UPDATE hypervisor.nodes \
-                 SET status = 'disconnected', updated_at = NOW() \
-                 WHERE last_active_at < NOW() - INTERVAL '45 seconds' \
-                   AND status != 'disconnected'",
-                &[],
-            )
-            .await;
-
-        match (services, nodes) {
-            (Ok(service_count), Ok(node_count)) => {
-                if service_count > 0 || node_count > 0 {
+        match services {
+            Ok(service_count) => {
+                if service_count > 0 {
                     Logger::sys_warn(
                         "zone_watchdog.timeout",
-                        &format!(
-                            "Marked {service_count} Zone services down and {node_count} hypervisor nodes disconnected"
-                        ),
+                        &format!("Marked {service_count} Zone services down"),
                         "HEARTBEAT_TIMEOUT",
                     );
                 }
             }
-            (service_result, node_result) => {
-                let error = service_result
-                    .err()
-                    .map(|value| value.to_string())
-                    .or_else(|| node_result.err().map(|value| value.to_string()))
-                    .unwrap_or_else(|| "unknown watchdog error".to_string());
-                Logger::sys_error("zone_watchdog.scan", "Cluster watchdog scan failed", &error);
+            Err(error) => {
+                Logger::sys_error(
+                    "zone_watchdog.scan",
+                    "Cluster watchdog scan failed",
+                    &error.to_string(),
+                );
             }
         }
 

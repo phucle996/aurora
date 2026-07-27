@@ -11,7 +11,6 @@ type VMStatus string
 const (
 	VMStatusProvisioning VMStatus = "PROVISIONING"
 	VMStatusReady        VMStatus = "READY"
-	VMStatusFailed       VMStatus = "FAILED"
 )
 
 type PersonalVM struct {
@@ -21,6 +20,9 @@ type PersonalVM struct {
 	OwnerUserID   uuid.UUID
 	Name          string
 	Image         string
+	ImageID       *uuid.UUID
+	ImageRevision *int64
+	ImageSHA256   []byte
 	CPUCores      int32
 	MemoryMB      int64
 	DiskGB        int64
@@ -29,11 +31,8 @@ type PersonalVM struct {
 	Status        VMStatus
 	OperationID   uuid.UUID
 	ProviderName  string
-	ProviderNode  *string
 	ProviderVMID  *int64
 	IPv4Address   *string
-	ErrorCode     *string
-	ErrorMessage  *string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	ProvisionedAt *time.Time
@@ -44,7 +43,7 @@ type CreatePersonalVM struct {
 	ZoneID       uuid.UUID
 	OwnerUserID  uuid.UUID
 	Name         string
-	Image        string
+	ImageID      uuid.UUID
 	CPUCores     int32
 	MemoryMB     int64
 	DiskGB       int64
@@ -57,7 +56,7 @@ type HypervisorOutboxRecord struct {
 	ZoneID               uuid.UUID
 	JobTopic             string
 	Payload              []byte
-	ActorUserID          uuid.UUID
+	ActorUserID          *uuid.UUID
 	Status               string
 	JobVersion           int32
 	ResourceID           string

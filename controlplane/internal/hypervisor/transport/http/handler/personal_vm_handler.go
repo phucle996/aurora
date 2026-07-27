@@ -61,11 +61,9 @@ func (h *PersonalVMHandler) Create(c *gin.Context) {
 		apires.RespondBadRequest(c, "name must be 1-63 lowercase letters, numbers or single hyphens")
 		return
 	}
-	image := strings.ToLower(strings.TrimSpace(request.Image))
-	switch image {
-	case "ubuntu-24.04", "debian-12":
-	default:
-		apires.RespondBadRequest(c, "image is not supported")
+	imageID, err := uuid.Parse(strings.TrimSpace(request.ImageID))
+	if err != nil {
+		apires.RespondBadRequest(c, "image_id is invalid")
 		return
 	}
 	if request.CPUCores < 1 || request.CPUCores > 64 {
@@ -94,7 +92,7 @@ func (h *PersonalVMHandler) Create(c *gin.Context) {
 		ZoneID:       zoneID,
 		OwnerUserID:  userID,
 		Name:         name,
-		Image:        image,
+		ImageID:      imageID,
 		CPUCores:     request.CPUCores,
 		MemoryMB:     request.MemoryMB,
 		DiskGB:       request.DiskGB,
@@ -104,10 +102,10 @@ func (h *PersonalVMHandler) Create(c *gin.Context) {
 		switch {
 		case errors.Is(err, hypervisorTaxonomy.ErrNameConflict):
 			apires.RespondConflict(c, "a VM with this name already exists with another specification")
-		case errors.Is(err, hypervisorTaxonomy.ErrProvisioningFailed):
-			apires.RespondConflict(c, "the previous provisioning attempt failed; delete or repair it before reusing the name")
 		case errors.Is(err, hypervisorTaxonomy.ErrScopeUnavailable):
 			apires.RespondConflict(c, "the selected workspace or zone is not accepting new VM workloads")
+		case errors.Is(err, hypervisorTaxonomy.ErrImageNotFound):
+			apires.RespondConflict(c, "the selected image is no longer available in this zone")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "VM_CREATE_FAILED")
@@ -120,16 +118,15 @@ func (h *PersonalVMHandler) Create(c *gin.Context) {
 		"operation_id":   result.VM.OperationID.String(),
 		"name":           result.VM.Name,
 		"image":          result.VM.Image,
+		"image_id":       result.VM.ImageID,
+		"image_revision": result.VM.ImageRevision,
 		"cpu_cores":      result.VM.CPUCores,
 		"memory_mb":      result.VM.MemoryMB,
 		"disk_gb":        result.VM.DiskGB,
 		"status":         result.VM.Status,
 		"zone_id":        result.VM.ZoneID.String(),
-		"provider_node":  result.VM.ProviderNode,
 		"provider_vmid":  result.VM.ProviderVMID,
 		"ipv4_address":   result.VM.IPv4Address,
-		"error_code":     result.VM.ErrorCode,
-		"error_message":  result.VM.ErrorMessage,
 		"created_at":     result.VM.CreatedAt,
 		"updated_at":     result.VM.UpdatedAt,
 		"provisioned_at": result.VM.ProvisionedAt,
@@ -183,16 +180,15 @@ func (h *PersonalVMHandler) List(c *gin.Context) {
 			"operation_id":   vm.OperationID.String(),
 			"name":           vm.Name,
 			"image":          vm.Image,
+			"image_id":       vm.ImageID,
+			"image_revision": vm.ImageRevision,
 			"cpu_cores":      vm.CPUCores,
 			"memory_mb":      vm.MemoryMB,
 			"disk_gb":        vm.DiskGB,
 			"status":         vm.Status,
 			"zone_id":        vm.ZoneID.String(),
-			"provider_node":  vm.ProviderNode,
 			"provider_vmid":  vm.ProviderVMID,
 			"ipv4_address":   vm.IPv4Address,
-			"error_code":     vm.ErrorCode,
-			"error_message":  vm.ErrorMessage,
 			"created_at":     vm.CreatedAt,
 			"updated_at":     vm.UpdatedAt,
 			"provisioned_at": vm.ProvisionedAt,
@@ -236,16 +232,15 @@ func (h *PersonalVMHandler) Get(c *gin.Context) {
 		"operation_id":   vm.OperationID.String(),
 		"name":           vm.Name,
 		"image":          vm.Image,
+		"image_id":       vm.ImageID,
+		"image_revision": vm.ImageRevision,
 		"cpu_cores":      vm.CPUCores,
 		"memory_mb":      vm.MemoryMB,
 		"disk_gb":        vm.DiskGB,
 		"status":         vm.Status,
 		"zone_id":        vm.ZoneID.String(),
-		"provider_node":  vm.ProviderNode,
 		"provider_vmid":  vm.ProviderVMID,
 		"ipv4_address":   vm.IPv4Address,
-		"error_code":     vm.ErrorCode,
-		"error_message":  vm.ErrorMessage,
 		"created_at":     vm.CreatedAt,
 		"updated_at":     vm.UpdatedAt,
 		"provisioned_at": vm.ProvisionedAt,

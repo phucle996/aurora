@@ -32,6 +32,54 @@ func NewPersonalVMRepo(
 	}
 }
 
+func (r *PersonalVMRepoPostgres) GetAvailableImage(
+	ctx context.Context,
+	imageID uuid.UUID,
+	zoneID uuid.UUID,
+) (*hypervisorEntity.ImageArtifact, error) {
+	query := fmt.Sprintf(`
+		SELECT id, zone_id, name, code, distribution, release, revision,
+		       architecture, format, size_bytes, sha256, object_key,
+		       state, created_by, provider_template_vmid, error_code, error_message,
+		       created_at, updated_at, available_at
+		FROM %s.image_artifacts
+		WHERE id = $1
+		  AND zone_id = $2
+		  AND state = 'AVAILABLE'
+		  AND provider_template_vmid IS NOT NULL
+	`, r.hypervisor)
+	image := &hypervisorEntity.ImageArtifact{}
+	err := r.db.QueryRow(ctx, query, imageID, zoneID).Scan(
+		&image.ID,
+		&image.ZoneID,
+		&image.Name,
+		&image.Code,
+		&image.Distribution,
+		&image.Release,
+		&image.Revision,
+		&image.Architecture,
+		&image.Format,
+		&image.SizeBytes,
+		&image.SHA256,
+		&image.ObjectKey,
+		&image.State,
+		&image.CreatedBy,
+		&image.ProviderTemplateVMID,
+		&image.ErrorCode,
+		&image.ErrorMessage,
+		&image.CreatedAt,
+		&image.UpdatedAt,
+		&image.AvailableAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, hypervisorTaxonomy.ErrImageNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hypervisor repository: resolve VM image: %w", err)
+	}
+	return image, nil
+}
+
 func (r *PersonalVMRepoPostgres) CreateOrGet(
 	ctx context.Context,
 	vm *hypervisorEntity.PersonalVM,
@@ -43,53 +91,60 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 			FROM %s.personal_workspaces workspace
 			JOIN %s.zones zone
 			  ON zone.id = workspace.zone_id
-			JOIN %s.zone_services service
-			  ON service.zone_id = zone.id
-			 AND service.service_type = 'hypervisor'
-			 AND service.desired_state = TRUE
+			JOIN %s.image_artifacts image
+			  ON image.id = $7
+			 AND image.zone_id = zone.id
+			 AND image.revision = $8
+			 AND image.sha256 = $9
+			 AND image.state = 'AVAILABLE'
+			 AND image.provider_template_vmid IS NOT NULL
 			WHERE workspace.id = $2
 			  AND workspace.owner_id = $4
 			  AND workspace.zone_id = $3
 			  AND zone.status = 'active'
 			  AND EXISTS (
-			      SELECT 1
-			      FROM %s.nodes node
-			      WHERE node.zone_id = zone.id
-			        AND node.status IN ('connected', 'degraded')
+				SELECT 1
+				FROM %s.zone_services service
+				WHERE service.zone_id = zone.id
+				  AND service.service_type = 'hypervisor'
+				  AND service.desired_state = TRUE
 			  )
 		),
 		inserted_vm AS (
 			INSERT INTO %s.personal_vms (
 				id, workspace_id, zone_id, owner_user_id, name, image,
+				image_id, image_revision, image_sha256,
 				cpu_cores, memory_mb, disk_gb, ssh_public_key, spec_hash,
 				status, operation_id, provider_name, created_at, updated_at
 			)
 			SELECT $1, $2, $3, $4, $5, $6,
-			       $7, $8, $9, $10, $11,
-			       $12, $13, $14, $15, $16
+			       $7, $8, $9,
+			       $10, $11, $12, $13, $14,
+			       $15, $16, $17, $18, $19
 			FROM authorized_scope
 			ON CONFLICT (workspace_id, name) DO NOTHING
 			RETURNING *
 		),
 		inserted_outbox AS (
-			INSERT INTO %s.vm_outbox_records (
+			INSERT INTO %s.hypervisor_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id,
 				status, job_version, resource_id, payload_schema_version,
 				trace_id, idle
 			)
-			SELECT $17, $18, $19, $20, $21,
-			       $22, $23, $24, $25, $26, $27
+			SELECT $20, $21, $22, $23, $24,
+			       $25, $26, $27, $28, $29, $30
 			FROM inserted_vm
 			RETURNING event_id
 		)
 		SELECT id, workspace_id, zone_id, owner_user_id, name, image,
+		       image_id, image_revision, image_sha256,
 		       cpu_cores, memory_mb, disk_gb, ssh_public_key, spec_hash,
-		       status, operation_id, provider_name, provider_node, provider_vmid,
-		       host(ipv4_address), error_code, error_message,
+		       status, operation_id, provider_name, provider_vmid,
+		       host(ipv4_address),
 		       created_at, updated_at, provisioned_at, TRUE AS created
 		FROM inserted_vm
 		JOIN inserted_outbox ON TRUE
-	`, r.hierarchy, r.hierarchy, r.hierarchy, r.hypervisor, r.hypervisor, r.hypervisor)
+	`, r.hierarchy, r.hierarchy, r.hypervisor, r.hierarchy, r.hypervisor, r.hypervisor)
 
 	row := r.db.QueryRow(
 		ctx,
@@ -100,6 +155,9 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		vm.OwnerUserID,
 		vm.Name,
 		vm.Image,
+		vm.ImageID,
+		vm.ImageRevision,
+		vm.ImageSHA256,
 		vm.CPUCores,
 		vm.MemoryMB,
 		vm.DiskGB,
@@ -132,6 +190,9 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		&current.OwnerUserID,
 		&current.Name,
 		&current.Image,
+		&current.ImageID,
+		&current.ImageRevision,
+		&current.ImageSHA256,
 		&current.CPUCores,
 		&current.MemoryMB,
 		&current.DiskGB,
@@ -140,11 +201,8 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		&current.Status,
 		&current.OperationID,
 		&current.ProviderName,
-		&current.ProviderNode,
 		&current.ProviderVMID,
 		&current.IPv4Address,
-		&current.ErrorCode,
-		&current.ErrorMessage,
 		&current.CreatedAt,
 		&current.UpdatedAt,
 		&current.ProvisionedAt,
@@ -157,12 +215,12 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 			existingQuery := fmt.Sprintf(`
 				SELECT current_vm.id, current_vm.workspace_id, current_vm.zone_id,
 				       current_vm.owner_user_id, current_vm.name, current_vm.image,
+				       current_vm.image_id, current_vm.image_revision, current_vm.image_sha256,
 				       current_vm.cpu_cores, current_vm.memory_mb, current_vm.disk_gb,
 				       current_vm.ssh_public_key, current_vm.spec_hash,
 				       current_vm.status, current_vm.operation_id, current_vm.provider_name,
-				       current_vm.provider_node, current_vm.provider_vmid,
-				       host(current_vm.ipv4_address), current_vm.error_code,
-				       current_vm.error_message, current_vm.created_at,
+				       current_vm.provider_vmid,
+				       host(current_vm.ipv4_address), current_vm.created_at,
 				       current_vm.updated_at, current_vm.provisioned_at
 				FROM %s.personal_vms current_vm
 				JOIN %s.personal_workspaces workspace
@@ -172,19 +230,16 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 				JOIN %s.zones zone
 				  ON zone.id = workspace.zone_id
 				 AND zone.status = 'active'
-				JOIN %s.zone_services service
-				  ON service.zone_id = zone.id
-				 AND service.service_type = 'hypervisor'
-				 AND service.desired_state = TRUE
 				WHERE current_vm.workspace_id = $1
 				  AND current_vm.name = $2
 				  AND EXISTS (
-				      SELECT 1
-				      FROM %s.nodes node
-				      WHERE node.zone_id = zone.id
-				        AND node.status IN ('connected', 'degraded')
+					SELECT 1
+					FROM %s.zone_services service
+					WHERE service.zone_id = zone.id
+					  AND service.service_type = 'hypervisor'
+					  AND service.desired_state = TRUE
 				  )
-			`, r.hypervisor, r.hierarchy, r.hierarchy, r.hierarchy, r.hypervisor)
+			`, r.hypervisor, r.hierarchy, r.hierarchy, r.hierarchy)
 			if existingErr := r.db.QueryRow(
 				ctx,
 				existingQuery,
@@ -199,6 +254,9 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 				&current.OwnerUserID,
 				&current.Name,
 				&current.Image,
+				&current.ImageID,
+				&current.ImageRevision,
+				&current.ImageSHA256,
 				&current.CPUCores,
 				&current.MemoryMB,
 				&current.DiskGB,
@@ -207,11 +265,8 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 				&current.Status,
 				&current.OperationID,
 				&current.ProviderName,
-				&current.ProviderNode,
 				&current.ProviderVMID,
 				&current.IPv4Address,
-				&current.ErrorCode,
-				&current.ErrorMessage,
 				&current.CreatedAt,
 				&current.UpdatedAt,
 				&current.ProvisionedAt,
@@ -247,9 +302,10 @@ func (r *PersonalVMRepoPostgres) List(
 ) ([]*hypervisorEntity.PersonalVM, error) {
 	query := fmt.Sprintf(`
 		SELECT vm.id, vm.workspace_id, vm.zone_id, vm.owner_user_id, vm.name, vm.image,
+		       vm.image_id, vm.image_revision, vm.image_sha256,
 		       vm.cpu_cores, vm.memory_mb, vm.disk_gb, vm.ssh_public_key, vm.spec_hash,
-		       vm.status, vm.operation_id, vm.provider_name, vm.provider_node,
-		       vm.provider_vmid, host(vm.ipv4_address), vm.error_code, vm.error_message,
+		       vm.status, vm.operation_id, vm.provider_name,
+		       vm.provider_vmid, host(vm.ipv4_address),
 		       vm.created_at, vm.updated_at, vm.provisioned_at
 		FROM %s.personal_vms vm
 		JOIN %s.personal_workspaces workspace
@@ -277,6 +333,9 @@ func (r *PersonalVMRepoPostgres) List(
 			&vm.OwnerUserID,
 			&vm.Name,
 			&vm.Image,
+			&vm.ImageID,
+			&vm.ImageRevision,
+			&vm.ImageSHA256,
 			&vm.CPUCores,
 			&vm.MemoryMB,
 			&vm.DiskGB,
@@ -285,11 +344,8 @@ func (r *PersonalVMRepoPostgres) List(
 			&vm.Status,
 			&vm.OperationID,
 			&vm.ProviderName,
-			&vm.ProviderNode,
 			&vm.ProviderVMID,
 			&vm.IPv4Address,
-			&vm.ErrorCode,
-			&vm.ErrorMessage,
 			&vm.CreatedAt,
 			&vm.UpdatedAt,
 			&vm.ProvisionedAt,
@@ -312,9 +368,10 @@ func (r *PersonalVMRepoPostgres) Get(
 ) (*hypervisorEntity.PersonalVM, error) {
 	query := fmt.Sprintf(`
 		SELECT vm.id, vm.workspace_id, vm.zone_id, vm.owner_user_id, vm.name, vm.image,
+		       vm.image_id, vm.image_revision, vm.image_sha256,
 		       vm.cpu_cores, vm.memory_mb, vm.disk_gb, vm.ssh_public_key, vm.spec_hash,
-		       vm.status, vm.operation_id, vm.provider_name, vm.provider_node,
-		       vm.provider_vmid, host(vm.ipv4_address), vm.error_code, vm.error_message,
+		       vm.status, vm.operation_id, vm.provider_name,
+		       vm.provider_vmid, host(vm.ipv4_address),
 		       vm.created_at, vm.updated_at, vm.provisioned_at
 		FROM %s.personal_vms vm
 		JOIN %s.personal_workspaces workspace
@@ -332,6 +389,9 @@ func (r *PersonalVMRepoPostgres) Get(
 		&vm.OwnerUserID,
 		&vm.Name,
 		&vm.Image,
+		&vm.ImageID,
+		&vm.ImageRevision,
+		&vm.ImageSHA256,
 		&vm.CPUCores,
 		&vm.MemoryMB,
 		&vm.DiskGB,
@@ -340,11 +400,8 @@ func (r *PersonalVMRepoPostgres) Get(
 		&vm.Status,
 		&vm.OperationID,
 		&vm.ProviderName,
-		&vm.ProviderNode,
 		&vm.ProviderVMID,
 		&vm.IPv4Address,
-		&vm.ErrorCode,
-		&vm.ErrorMessage,
 		&vm.CreatedAt,
 		&vm.UpdatedAt,
 		&vm.ProvisionedAt,

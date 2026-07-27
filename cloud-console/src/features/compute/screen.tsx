@@ -84,7 +84,6 @@ export function ComputeScreen() {
               <option value="ALL">Status: All</option>
               <option value="PROVISIONING">Status: Provisioning</option>
               <option value="READY">Status: Ready</option>
-              <option value="FAILED">Status: Failed</option>
             </select>
             {checkPermission("hypervisor:vm", "create") && (
               <Button size="sm" className="sm:ml-auto" onClick={() => router.push("/compute/new")}>
@@ -138,11 +137,8 @@ export function ComputeScreen() {
                       </td>
                       <td className="px-4 py-3">
                         <span className="inline-flex items-center gap-2 font-semibold">
-                          <span className={`h-2 w-2 rounded-full ${
-                            vm.status === "READY" ? "bg-emerald-500" :
-                              vm.status === "FAILED" ? "bg-red-500" : "bg-amber-500"
-                          }`} />
-                          {vm.status === "READY" ? "Ready" : vm.status === "FAILED" ? "Failed" : "Provisioning"}
+                          <span className={`h-2 w-2 rounded-full ${vm.status === "READY" ? "bg-emerald-500" : "bg-amber-500"}`} />
+                          {vm.status === "READY" ? "Ready" : "Provisioning"}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{vm.image}</td>
@@ -187,17 +183,10 @@ export function ComputeScreen() {
           <div className="border-b border-border/60 py-5">
             <p className="mb-3 text-[11px] font-bold uppercase tracking-wider">Runtime</p>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-[13px]">
-              <dt className="text-muted-foreground">Node</dt><dd className="text-right font-medium">{selected.provider_node || "Pending"}</dd>
               <dt className="text-muted-foreground">Provider VMID</dt><dd className="text-right font-medium">{selected.provider_vmid || "Pending"}</dd>
               <dt className="text-muted-foreground">IPv4</dt><dd className="text-right font-mono text-xs">{selected.ipv4_address || "Pending"}</dd>
             </dl>
           </div>
-          {selected.status === "FAILED" && (
-            <div className="py-5">
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-red-500">Provisioning failure</p>
-              <p className="text-xs leading-relaxed text-muted-foreground">{selected.error_message || selected.error_code || "Unknown failure"}</p>
-            </div>
-          )}
         </aside>
       )}
     </div>

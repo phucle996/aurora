@@ -5,12 +5,15 @@ message VmCreateV1 {
   uint32 schema_version = 1;
   bytes vm_id = 2;
   string provider_name = 3;
-  string image = 4;
+  bytes image_id = 4;
   uint32 cpu_cores = 5;
   uint64 memory_mb = 6;
   uint64 disk_gb = 7;
   string ssh_public_key = 8;
   bytes config_hash = 9;
+  uint64 image_revision = 10;
+  bytes image_sha256 = 11;
+  uint64 provider_template_vmid = 12;
 }
 
 message VmCreateResultV1 {
@@ -21,4 +24,43 @@ message VmCreateResultV1 {
   uint64 provider_vmid = 5;
   string ipv4_address = 6;
   bytes config_hash = 7;
+}
+
+message ImageImportV1 {
+  uint32 schema_version = 1;
+  bytes image_id = 2;
+  bytes zone_id = 3;
+  uint64 revision = 4;
+  string object_key = 5;
+  string format = 6;
+  string architecture = 7;
+  uint64 size_bytes = 8;
+  bytes sha256 = 9;
+}
+
+message ImageImportResultV1 {
+  uint32 schema_version = 1;
+  bytes image_id = 2;
+  uint64 revision = 3;
+  bytes sha256 = 4;
+  reserved 5, 6;
+  uint64 provider_template_vmid = 7;
+}
+
+message ImageDeleteV1 {
+  uint32 schema_version = 1;
+  bytes image_id = 2;
+  bytes zone_id = 3;
+  uint64 revision = 4;
+  bytes sha256 = 5;
+  string object_key = 6;
+  reserved 7, 8;
+  uint64 provider_template_vmid = 9;
+}
+
+message ImageDeleteResultV1 {
+  uint32 schema_version = 1;
+  bytes image_id = 2;
+  uint64 revision = 3;
+  bytes sha256 = 4;
 }

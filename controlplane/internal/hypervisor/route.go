@@ -12,7 +12,27 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 		return
 	}
 
-	router.GET("/admin/hypervisor/nodes", module.NodeHandler.ListNodes)
+	adminImages := router.Group("/admin/hypervisor/zones/:zone_id/images")
+	adminImages.GET(
+		"",
+		middleware.Authorize("hypervisor:image:read", module.L1Registry, "*"),
+		module.ImageHandler.ListAdmin,
+	)
+	adminImages.POST(
+		"",
+		middleware.Authorize("hypervisor:image:create", module.L1Registry, "*"),
+		module.ImageHandler.RegisterMetadata,
+	)
+	adminImages.POST(
+		"/:image_id/import",
+		middleware.Authorize("hypervisor:image:publish", module.L1Registry, "*"),
+		module.ImageHandler.BeginImport,
+	)
+	adminImages.DELETE(
+		"/:image_id",
+		middleware.Authorize("hypervisor:image:delete", module.L1Registry, "*"),
+		module.ImageHandler.BeginDelete,
+	)
 
 	statusGroup := router.Group("/api/v1/hypervisor")
 	{
@@ -25,6 +45,11 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 	}
 
 	personal := router.Group("/api/v1/personal/hypervisor")
+	personal.GET(
+		"/images/catalog",
+		middleware.Authorize("hypervisor:image:read", module.L1Registry, "*"),
+		module.ImageHandler.ListCatalog,
+	)
 	personal.POST(
 		"/vms",
 		middleware.Authorize("hypervisor:vm:create", module.L1Registry, "*"),

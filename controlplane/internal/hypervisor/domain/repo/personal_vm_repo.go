@@ -9,6 +9,11 @@ import (
 )
 
 type PersonalVMRepository interface {
+	GetAvailableImage(
+		ctx context.Context,
+		imageID uuid.UUID,
+		zoneID uuid.UUID,
+	) (*hypervisorEntity.ImageArtifact, error)
 	CreateOrGet(
 		ctx context.Context,
 		vm *hypervisorEntity.PersonalVM,

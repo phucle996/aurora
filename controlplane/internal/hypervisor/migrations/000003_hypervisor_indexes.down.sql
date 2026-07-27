@@ -1,0 +1,7 @@
+DROP INDEX IF EXISTS idx_hypervisor_outbox_terminal_cleanup;
+DROP INDEX IF EXISTS idx_hypervisor_outbox_resource;
+DROP INDEX IF EXISTS idx_hypervisor_outbox_claim;
+DROP INDEX IF EXISTS idx_hypervisor_personal_vms_image;
+DROP INDEX IF EXISTS idx_hypervisor_personal_vms_scope;
+DROP INDEX IF EXISTS idx_hypervisor_image_state;
+DROP INDEX IF EXISTS idx_hypervisor_image_catalog;

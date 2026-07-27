@@ -1,7 +1,9 @@
 # Proxmox Hypervisor Connection Lifecycle - Workflow God View
 
 > [!NOTE]
-> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng Kết Nối, Giám Sát Trạng Thái (Healthcheck) và Vòng Đời Kết Nối (Connection Lifecycle) của các máy chủ ảo hóa Proxmox Hypervisor Node.
+> Tài liệu này là **Source of Truth (SoT) / God View** cho luồng kết nối và
+> health snapshot của Proxmox trong Zone. Node telemetry là observability data;
+> Admin UI không render node list. Grafana là nơi visualize node/capacity.
 > Mọi thay đổi liên quan đến schema `hypervisor`, controlplane Go module, job-orchestrator, dataplane agent, và Admin UI bắt buộc phải tuân thủ nghiêm ngặt đặc tả này.
 >
 > Luồng provision VM cá nhân được đặc tả riêng tại
@@ -36,14 +38,6 @@ graph TD
     JO["🚀 job-orchestrator (Rust Listener)"]:::backend
     DP["💻 Dataplane Agent (Rust)"]:::dataplane
     PVE["🖥️ Proxmox Cluster"]:::dataplane
-
-    %% Luồng đọc của SRE
-    SRE -- "1. GET /admin/hypervisor/nodes" --> Envoy
-    Envoy -- "2. Check session" --> acr
-    acr -- "3. Session OK" --> Envoy
-    Envoy -- "4. Forward to" --> CP
-    CP -- "5. SELECT from hypervisor.nodes" --> DB
-    CP -- "6. HTTP Response JSON" --> SRE
 
     %% Luồng Auto-discovery & Heartbeat
     DP -- "a. Stable leader polls Nodes & Metrics" --> PVE
@@ -159,53 +153,12 @@ stateDiagram-v2
 
 ## 🏛️ 4. Mô Tả Chi Tiết Luồng Xử Lý (Sequence Diagrams)
 
-### Luồng A: SRE Đọc Trạng Thái Giám Sát Hypervisor (Read Flow)
-*(Xác thực session qua acr gRPC Gatekeeper, bypass Ed25519 & OTP Step-Up vì đây là luồng Read-only. Không truyền User ID hay User Roles, chỉ yêu cầu zone_id cụ thể)*
+### Luồng A: Node health observability
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as 💻 Admin UI (SRE Client)
-    participant Envoy as 🛡️ Envoy Gateway (Edge Proxy)
-    participant acr as 🛡️ acr Service (Rust ExtAuthz)
-    participant Redis as ⚡ Redis L1 (Sessions)
-    participant CP as 🚀 Controlplane (Go Backend)
-    participant DB as 💾 PostgreSQL (hypervisor schema)
-
-    UI->>Envoy: GET /admin/hypervisor/nodes<br/>Cookie: verified admin session
-    
-    Note over Envoy,acr: Envoy chuyển gRPC check sang acr service
-    Envoy->>acr: CheckRequest (Headers & Cookies)
-    
-    rect rgb(20, 30, 40)
-        Note over acr,Redis: Xác thực Session tại Platform Redis L1
-        acr->>Redis: GET Session iam:admin_access_session:<access_key>
-        Redis-->>acr: Trả về Session Data (Chứa device_public_key, ash)
-        Note over acr: Đối chiếu hash(access_secret) với ash
-    end
-
-    alt Session Hợp Lệ
-        acr-->>Envoy: CheckResponse OK (status 0)
-        
-        Envoy->>CP: Forward GET /admin/hypervisor/nodes + verified X-Zone-Context
-        
-        Note over CP: Handler chỉ lấy Zone từ context đã được edge xác minh
-        alt X-Zone-Context thiếu hoặc không phải UUID
-            CP-->>Envoy: HTTP 400 Bad Request
-            Envoy-->>UI: HTTP 400 Bad Request
-        else zone_id hợp lệ (UUID cụ thể)
-            CP->>DB: SELECT id, zone_id, node_code, name, status, cpu_cores_total, cpu_cores_used, ram_mb_total, ram_mb_used, storage_gb_total, storage_gb_used, last_active_at<br/>FROM hypervisor.nodes WHERE zone_id = <uuid> ORDER BY node_code ASC
-            DB-->>CP: Trả về danh sách records của zone tương ứng
-            
-            CP-->>Envoy: HTTP 200 OK (JSON Payload)
-            Envoy-->>UI: HTTP 200 OK (JSON Response)
-            Note over UI: Render danh sách Hypervisor Node vật lý của Zone,<br/>kèm thanh trạng thái tải (Capacity) và connection status.
-        end
-    else Session Không Hợp Lệ / Hết Hạn
-        acr-->>Envoy: CheckResponse Denied (status 16 Unauthenticated)
-        Envoy-->>UI: HTTP 401 Unauthorized (Redirect to Login)
-    end
-```
+Không có public/admin node-management API trong UI flow. Dataplane leader ghi
+snapshot health theo Zone, JO materialize báo cáo durable nếu workflow yêu cầu,
+và Grafana đọc datasource observability để visualize. Node metadata không phải
+input cho image catalog hay VM create request.
 
 ### Luồng B: Auto-Discovery, Healthcheck & Đẩy Tải (Heartbeat Flow)
 

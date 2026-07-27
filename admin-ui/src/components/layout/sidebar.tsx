@@ -41,7 +41,7 @@ const primaryItems: NavItem[] = [
 ]
 
 const infraItems: NavItem[] = [
-  { label: 'Hypervisor', to: '/hypervisor', icon: Server },
+  { label: 'Hypervisor Images', to: '/hypervisor/images', icon: Server },
   { label: 'Resources', to: '/resource-platform', icon: Database },
   { label: 'Storage', icon: HardDrive },
   { label: 'Kubernetes', icon: Boxes },

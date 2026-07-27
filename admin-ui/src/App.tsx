@@ -19,8 +19,7 @@ import './App.css'
 
 const AdminAPIKeyLoginPage = lazy(() => import('@/pages/auth/Login'))
 const DashboardPage = lazy(() => import('@/pages/dashboard/Dashboard'))
-const HypervisorPage = lazy(() => import('@/pages/hypervisor/Hypervisor'))
-const DetailHypervisorPage = lazy(() => import('@/pages/hypervisor/DetailHypervisor'))
+const HypervisorImagesPage = lazy(() => import('@/pages/hypervisor/HypervisorImages'))
 const ZoneManagementPage = lazy(() => import('@/pages/zone/ZoneManagement'))
 const NewZonePage = lazy(() => import('@/pages/zone/NewZone'))
 const ZoneDetailPage = lazy(() => import('@/pages/zone/ZoneDetail'))
@@ -222,17 +221,10 @@ const newZoneRoute = createRoute({
   component: withAdminSession(NewZonePage),
 })
 
-const hypervisorRoute = createRoute({
+const hypervisorImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/hypervisor',
-  component: withAdminSession(HypervisorPage),
-})
-
-
-const detailHypervisorRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/hypervisor/$agentId',
-  component: withAdminSession(DetailHypervisorPage),
+  path: '/hypervisor/images',
+  component: withAdminSession(HypervisorImagesPage),
 })
 
 const resourcePlatformRoute = createRoute({
@@ -254,8 +246,7 @@ const routeTree = rootRoute.addChildren([
   zonesRoute,
   zoneDetailRoute,
   newZoneRoute,
-  hypervisorRoute,
-  detailHypervisorRoute,
+  hypervisorImagesRoute,
   resourcePlatformRoute,
   adminLoginRoute,
 ])

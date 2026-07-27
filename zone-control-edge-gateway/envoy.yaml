@@ -232,7 +232,6 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: minio, port_value: 9000 }
-
 admin:
   access_log_path: /dev/null
   address:

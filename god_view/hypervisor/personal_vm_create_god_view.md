@@ -12,7 +12,7 @@
 | Cloud Console | Form và current view; không tự tạo identity/routing |
 | Envoy + ACR | Xác thực, authorize và rewrite route theo personal context |
 | Controlplane Hypervisor | Desired state, natural identity, VM lifecycle và outbox |
-| Controlplane PostgreSQL | Durable SoT của `personal_vms` và `vm_outbox_records` |
+| Controlplane PostgreSQL | Durable SoT của `personal_vms` và `hypervisor_outbox_records` |
 | Job Orchestrator | CDC bridge, allow-list contract, result settlement và realtime notification |
 | Kafka | Durable at-least-once transport Central-Zone |
 | Dataplane đúng Zone | Validate transport, lease/fence, gọi Proxmox và publish result |
@@ -41,7 +41,8 @@ Create permission là `hypervisor:vm:create`; read permission là
 HTTP request validation kết thúc tại handler:
 
 - `name`: lowercase, 1-63 ký tự, bắt đầu bằng chữ, chỉ chữ/số/dấu gạch đơn;
-- `image`: `ubuntu-24.04` hoặc `debian-12`;
+- `image_id`: UUID của image `AVAILABLE` trong đúng Zone; metadata hiển thị lấy
+  từ catalog, không cho client tự chọn template VMID/object key;
 - `cpu_cores`: 1-64;
 - `memory_mb`: 512-262144 và chia hết cho 256;
 - `disk_gb`: 8-4096;
@@ -64,9 +65,9 @@ constraint. Client không cần gửi idempotency key.
 | Cùng name ở workspace khác | Hai VM độc lập |
 | Bản ghi trước đã `FAILED` | Không tái dùng ngầm; trả `409` để repair/delete rõ ràng |
 
-`spec_hash = SHA-256(image || 0x00 || cpu_be64 || memory_be64 || disk_be64 ||
-ssh_public_key)`. Hash là execution identity bất biến và được Dataplane tính lại
-trước side effect.
+`spec_hash = SHA-256(image_id || image_revision_be64 || image_sha256 || cpu_be64 ||
+memory_be64 || disk_be64 || ssh_public_key)`. Hash là execution identity bất
+biến và được Dataplane tính lại trước side effect.
 
 ```mermaid
 stateDiagram-v2
@@ -100,11 +101,11 @@ sequenceDiagram
     UI->>Edge: POST /api/v1/hypervisor/vms
     Edge->>CP: POST /api/v1/personal/hypervisor/vms + verified context
     CP->>CP: Handler validates and normalizes request
-    CP->>DB: Atomic INSERT personal_vms + vm_outbox_records
+    CP->>DB: Atomic INSERT personal_vms + hypervisor_outbox_records
     DB-->>CP: VM PROVISIONING, operation_id
     CP-->>UI: 202 Accepted
 
-    DB-->>JO: WAL/CDC INSERT hypervisor.vm_outbox_records
+    DB-->>JO: WAL/CDC INSERT hypervisor.hypervisor_outbox_records
     JO->>JO: Validate source domain HYPERVISOR and registered job topic
     JO->>Kafka: Produce "jobs.commands.zone.<zone_id>.v1"
     Note over JO,Kafka: key=resource_id; acks=all before WAL LSN ACK

@@ -13,8 +13,10 @@ use super::proxmox::CloneTemplateRequest;
 
 pub(super) fn canonical_vm_config_hash(command: &VmCreateV1) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(command.image.as_bytes());
+    digest.update(command.image_id.as_slice());
     digest.update([0]);
+    digest.update(command.image_revision.to_be_bytes());
+    digest.update(command.image_sha256.as_slice());
     digest.update(u64::from(command.cpu_cores).to_be_bytes());
     digest.update(command.memory_mb.to_be_bytes());
     digest.update(command.disk_gb.to_be_bytes());
@@ -48,6 +50,10 @@ pub(crate) async fn execute_vm_create(
         || command.disk_gb < 8
         || command.disk_gb > 4_096
         || command.config_hash.len() != 32
+        || command.image_id.len() != 16
+        || command.image_revision == 0
+        || command.image_sha256.len() != 32
+        || command.provider_template_vmid == 0
         || command.ssh_public_key.len() > 16_384
         || (!command.ssh_public_key.starts_with("ssh-ed25519 ")
             && !command.ssh_public_key.starts_with("ssh-rsa ")
@@ -72,21 +78,7 @@ pub(crate) async fn execute_vm_create(
             "Proxmox endpoint or credential is unavailable in this Zone".to_string(),
         ));
     }
-    let template_vmid = match command.image.as_str() {
-        "ubuntu-24.04" => config.proxmox_ubuntu_2404_template_vmid,
-        "debian-12" => config.proxmox_debian_12_template_vmid,
-        _ => {
-            return Err(ExecutorError::ExecutionFailed(
-                "HYPERVISOR_VM_IMAGE_UNSUPPORTED".to_string(),
-            ))
-        }
-    };
-    if template_vmid == 0 {
-        return Err(ExecutorError::Retryable(format!(
-            "Proxmox template is not configured for image {}",
-            command.image
-        )));
-    }
+    let template_vmid = command.provider_template_vmid;
 
     let inventory = runtime
         .proxmox

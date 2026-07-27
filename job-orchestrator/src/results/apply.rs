@@ -40,7 +40,7 @@ pub async fn verify_authority(
              WHERE event_id = $1 AND job_topic = $2"
         }
         "HYPERVISOR" => {
-            "SELECT job_version FROM hypervisor.vm_outbox_records \
+            "SELECT job_version FROM hypervisor.hypervisor_outbox_records \
              WHERE event_id = $1 AND job_topic = $2"
         }
         _ => return Ok(AuthorityCheck::Reject("JOB_RESULT_SOURCE_INVALID")),
@@ -107,18 +107,35 @@ pub async fn apply_result(
             )
             .await
             .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string())),
-            "HYPERVISOR" => hypervisor::apply_vm_result(
-                pg_client,
-                result.job_id,
-                &wire.job_topic,
-                &wire.result_status,
-                error_code,
-                error_message,
-                &wire.result_payload,
-                wire.result_payload_schema_version,
-            )
-            .await
-            .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string())),
+            "HYPERVISOR" => {
+                if wire.job_topic.starts_with("hypervisor.image.") {
+                    hypervisor::apply_image_result(
+                        pg_client,
+                        result.job_id,
+                        &wire.job_topic,
+                        &wire.result_status,
+                        error_code,
+                        error_message,
+                        &wire.result_payload,
+                        wire.result_payload_schema_version,
+                    )
+                    .await
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+                } else {
+                    hypervisor::apply_vm_result(
+                        pg_client,
+                        result.job_id,
+                        &wire.job_topic,
+                        &wire.result_status,
+                        error_code,
+                        error_message,
+                        &wire.result_payload,
+                        wire.result_payload_schema_version,
+                    )
+                    .await
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+                }
+            }
             _ => Err(format!("unsupported source_domain '{}'", wire.source_domain).into()),
         }
     }
@@ -272,7 +289,7 @@ async fn load_existing_hypervisor_result(
     let row = client
         .query_opt(
             "SELECT actor_user_id::text, job_topic, trace_id, resource_id \
-             FROM hypervisor.vm_outbox_records \
+             FROM hypervisor.hypervisor_outbox_records \
              WHERE event_id = $1 AND job_topic = $2 AND status = $3",
             &[&job_id, &job_topic, &status],
         )
