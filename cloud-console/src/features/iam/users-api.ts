@@ -16,6 +16,22 @@ export type PlatformUserItem = {
   updated_at: string;
 };
 
+export type ExternalIdentitySummary = {
+  provider: "google" | "github";
+  state: "not_linked" | "linked" | "revoked";
+  provider_email?: string;
+  email_verified_at?: string | null;
+  last_login_at?: string | null;
+  linked_at?: string | null;
+};
+
+export type UserAuthMethods = {
+  account_identifier_email: string;
+  password_set: boolean;
+  google: ExternalIdentitySummary;
+  github: ExternalIdentitySummary;
+};
+
 // [COMMENT]: listUsers gửi request lấy danh sách người dùng cho Admin portal
 export async function listUsers(limit = 20, offset = 0, signal?: AbortSignal): Promise<PlatformUserItem[]> {
   const res = await fetchJSON<{ data?: { users?: PlatformUserItem[] } }>(`/api/v1/iam/users?limit=${limit}&offset=${offset}`, {
@@ -40,4 +56,15 @@ export async function resetUserPassword(id: string, password: string, signal?: A
     body: { password },
     signal,
   });
+}
+
+export async function getUserAuthMethods(id: string, signal?: AbortSignal): Promise<UserAuthMethods> {
+  const res = await fetchJSON<{ data?: UserAuthMethods }>(`/api/v1/iam/users/${id}/auth-methods`, {
+    method: "GET",
+    signal,
+  });
+  if (!res?.data) {
+    throw new Error("Authentication methods are unavailable");
+  }
+  return res.data;
 }

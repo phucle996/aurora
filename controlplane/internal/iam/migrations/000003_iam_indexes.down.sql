@@ -1,30 +1,4 @@
 -- [COMMENT]: Bỏ drop index admin do bảng đã xóa
-DROP INDEX IF EXISTS oauth_tokens_expires_at_idx;
-DROP INDEX IF EXISTS oauth_tokens_grant_id_idx;
-DROP INDEX IF EXISTS oauth_tokens_user_id_idx;
-DROP INDEX IF EXISTS oauth_tokens_client_id_idx;
-DROP INDEX IF EXISTS oauth_tokens_refresh_hash_uidx;
-DROP INDEX IF EXISTS oauth_tokens_access_hash_uidx;
-
-DROP INDEX IF EXISTS oauth_grants_tenant_workspace_idx;
-DROP INDEX IF EXISTS oauth_grants_user_id_idx;
-DROP INDEX IF EXISTS oauth_grants_client_id_idx;
-
-DROP INDEX IF EXISTS oauth_authorization_codes_expires_at_idx;
-DROP INDEX IF EXISTS oauth_authorization_codes_user_id_idx;
-DROP INDEX IF EXISTS oauth_authorization_codes_client_id_idx;
-DROP INDEX IF EXISTS oauth_authorization_codes_hash_uidx;
-
-DROP INDEX IF EXISTS oauth_client_secrets_client_id_idx;
-DROP INDEX IF EXISTS oauth_client_secrets_hash_uidx;
-DROP INDEX IF EXISTS oauth_client_secrets_prefix_uidx;
-
-DROP INDEX IF EXISTS oauth_clients_status_idx;
-DROP INDEX IF EXISTS oauth_clients_tenant_workspace_idx;
-DROP INDEX IF EXISTS oauth_clients_owner_user_id_idx;
-
-
-
 DROP INDEX IF EXISTS role_permissions_permission_id_idx;
 
 DROP INDEX IF EXISTS roles_scope_idx;

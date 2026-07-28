@@ -44,10 +44,4 @@ BEFORE UPDATE ON roles
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
-DROP TRIGGER IF EXISTS trg_oauth_clients_updated_at ON oauth_clients;
-CREATE TRIGGER trg_oauth_clients_updated_at
-BEFORE UPDATE ON oauth_clients
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
 -- [COMMENT]: Account activation không tạo workspace/zone trong trigger; hierarchy được provision qua workflow explicit sau login.

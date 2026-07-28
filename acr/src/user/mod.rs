@@ -4,6 +4,7 @@
 pub mod claims;
 pub mod device;
 pub mod login;
+pub mod oauth;
 pub mod recovery;
 pub mod revoke;
 pub mod rotate;

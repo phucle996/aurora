@@ -45,7 +45,7 @@ type LoginUser struct {
 	ID           uuid.UUID
 	Username     string
 	Email        string
-	PasswordHash string
+	PasswordHash *string
 	Status       UserStatus
 	// [COMMENT]: TenantID và TenantCode phục vụ flow login username@tenant_domain.
 	// Rỗng/nil nếu login global.
@@ -102,4 +102,88 @@ type VerifyUserCredentialsResult struct {
 	ClientProofPublicKey  string
 	// [COMMENT]: TenantCode được điền khi login qua tenant_domain. Rỗng nếu login global.
 	TenantCode string
+}
+
+type ExternalProvider string
+
+const (
+	ExternalProviderGoogle ExternalProvider = "google"
+	ExternalProviderGitHub ExternalProvider = "github"
+)
+
+type ExternalIdentity struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	Provider        ExternalProvider
+	ProviderSubject string
+	ProviderEmail   string
+	EmailVerifiedAt time.Time
+	DisplayName     string
+	AvatarURL       *string
+	LastLoginAt     *time.Time
+	RevokedAt       *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ExternalIdentityState string
+
+const (
+	ExternalIdentityNotLinked ExternalIdentityState = "not_linked"
+	ExternalIdentityLinked    ExternalIdentityState = "linked"
+	ExternalIdentityRevoked   ExternalIdentityState = "revoked"
+)
+
+type ExternalIdentitySummary struct {
+	Provider        ExternalProvider
+	State           ExternalIdentityState
+	ProviderEmail   string
+	EmailVerifiedAt *time.Time
+	LastLoginAt     *time.Time
+	LinkedAt        *time.Time
+}
+
+type UserAuthMethods struct {
+	AccountEmail string
+	PasswordSet  bool
+	Google       ExternalIdentitySummary
+	GitHub       ExternalIdentitySummary
+}
+
+// VerifiedExternalIdentity is the only identity shape accepted from ACR.
+// Provider JSON, JWT claims and authorization codes must never cross this boundary.
+type VerifiedExternalIdentity struct {
+	Provider        ExternalProvider
+	Subject         string
+	Email           string
+	EmailVerifiedAt time.Time
+	DisplayName     string
+	AvatarURL       *string
+}
+
+type ExternalLoginRequest struct {
+	OperationID     uuid.UUID
+	Identity        VerifiedExternalIdentity
+	DevicePublicKey string
+	TrustDevice     bool
+	DeviceName      string
+	DeviceType      string
+	ClientDeviceID  uuid.UUID
+	ZoneCode        string
+	RemoteIP        string
+	UserAgent       string
+}
+
+type ExternalLoginResult struct {
+	Valid                 bool
+	UserID                string
+	RoleID                string
+	Level                 int32
+	TenantID              string
+	ClientDeviceID        string
+	RefreshToken          string
+	RefreshTokenExpiresAt time.Time
+	Username              string
+	ClientProofPublicKey  string
+	ZoneCode              string
 }

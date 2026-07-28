@@ -33,6 +33,7 @@ pub struct ExtAuthzService {
     rate_limiter: Arc<RateLimiter>,
     shared_redis_client: Arc<redis::Client>,
     shared_redis: Arc<SharedRedisBus>,
+    oauth: Arc<crate::user::oauth::OAuthProviderService>,
 }
 
 impl ExtAuthzService {
@@ -43,6 +44,7 @@ impl ExtAuthzService {
         config: Config,
         shared_redis_client: Arc<redis::Client>,
         shared_redis: Arc<SharedRedisBus>,
+        oauth: Arc<crate::user::oauth::OAuthProviderService>,
     ) -> Self {
         let rate_limiter = Arc::new(RateLimiter::new(session_mgr.clone()));
         Self {
@@ -53,6 +55,7 @@ impl ExtAuthzService {
             rate_limiter,
             shared_redis_client,
             shared_redis,
+            oauth,
         }
     }
 }
@@ -288,6 +291,24 @@ impl Authorization for ExtAuthzService {
         // [COMMENT]: Login challenge là endpoint local của ACR; request vẫn đã qua CORS và pre-auth rate limit.
         if let Some(res) =
             crate::user::login::handle_login_challenge(&self.session_mgr, method, path).await
+        {
+            return res;
+        }
+
+        if let Some(res) = self
+            .oauth
+            .handle(
+                &self.session_mgr,
+                &self.token_mgr,
+                redis_client.as_ref(),
+                &self.shared_redis,
+                &self.config,
+                client_headers,
+                &req,
+                method,
+                path,
+            )
+            .await
         {
             return res;
         }

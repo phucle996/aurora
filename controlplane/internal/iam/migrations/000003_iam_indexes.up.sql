@@ -60,28 +60,3 @@ CREATE INDEX IF NOT EXISTS role_permissions_permission_id_idx ON role_permission
 -- [COMMENT]: Cho phép đăng ký lại thiết bị khi thiết bị cũ bị revoked bằng cách chỉ áp dụng unique cho active devices
 CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS admin_devices_last_seen_at_idx ON admin_devices(last_seen_at);
-
-
-CREATE INDEX IF NOT EXISTS oauth_clients_owner_user_id_idx ON oauth_clients(owner_user_id);
-CREATE INDEX IF NOT EXISTS oauth_clients_tenant_workspace_idx ON oauth_clients(tenant_id, workspace_id);
-CREATE INDEX IF NOT EXISTS oauth_clients_status_idx ON oauth_clients(status);
-
-CREATE UNIQUE INDEX IF NOT EXISTS oauth_client_secrets_prefix_uidx ON oauth_client_secrets(secret_prefix);
-CREATE UNIQUE INDEX IF NOT EXISTS oauth_client_secrets_hash_uidx ON oauth_client_secrets(secret_hash);
-CREATE INDEX IF NOT EXISTS oauth_client_secrets_client_id_idx ON oauth_client_secrets(client_id);
-
-CREATE UNIQUE INDEX IF NOT EXISTS oauth_authorization_codes_hash_uidx ON oauth_authorization_codes(code_hash);
-CREATE INDEX IF NOT EXISTS oauth_authorization_codes_client_id_idx ON oauth_authorization_codes(client_id);
-CREATE INDEX IF NOT EXISTS oauth_authorization_codes_user_id_idx ON oauth_authorization_codes(user_id);
-CREATE INDEX IF NOT EXISTS oauth_authorization_codes_expires_at_idx ON oauth_authorization_codes(expires_at);
-
-CREATE INDEX IF NOT EXISTS oauth_grants_client_id_idx ON oauth_grants(client_id);
-CREATE INDEX IF NOT EXISTS oauth_grants_user_id_idx ON oauth_grants(user_id);
-CREATE INDEX IF NOT EXISTS oauth_grants_tenant_workspace_idx ON oauth_grants(tenant_id, workspace_id);
-
-CREATE UNIQUE INDEX IF NOT EXISTS oauth_tokens_access_hash_uidx ON oauth_tokens(access_token_hash);
-CREATE UNIQUE INDEX IF NOT EXISTS oauth_tokens_refresh_hash_uidx ON oauth_tokens(refresh_token_hash) WHERE refresh_token_hash IS NOT NULL;
-CREATE INDEX IF NOT EXISTS oauth_tokens_client_id_idx ON oauth_tokens(client_id);
-CREATE INDEX IF NOT EXISTS oauth_tokens_user_id_idx ON oauth_tokens(user_id);
-CREATE INDEX IF NOT EXISTS oauth_tokens_grant_id_idx ON oauth_tokens(grant_id);
-CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at_idx ON oauth_tokens(expires_at);

@@ -8,20 +8,21 @@
 | Thuộc tính | Giá trị AS-IS |
 |---|---|
 | Domain | IAM / End-user authentication |
-| Public endpoints | `POST /api/v1/auth/login/challenge`, `POST /api/v1/auth/login` |
+| Public endpoints | `POST /api/v1/auth/login/challenge`, `POST /api/v1/auth/login`, `POST /api/v1/auth/oauth/{google\|github}/start`, `GET /api/v1/auth/oauth/{google\|github}/callback` |
 | UI consumer | Cloud Console sign-in |
 | Edge owner | Envoy + ACR ExtAuthz |
 | Identity owner | Controlplane IAM |
-| Inter-service transport | Shared L2 Redis Pub/Sub request/reply, channel `iam.auth.verify_credentials`; payload = `request_id[16] || protobuf` |
+| Inter-service transport | Shared L2 Redis Pub/Sub request/reply, channels `iam.auth.verify_credentials` và `iam.auth.verify_external_identity`; payload = `request_id[16] || protobuf` |
 | Durable SoT | PostgreSQL: users, roles, memberships, devices, refresh tokens, IAM outbox |
 | Runtime SoT | Auth-State Redis DB0 user session encoded bằng Prost |
-| Crypto | Argon2 password verification; Ed25519 login proof; JWT HS256 qua Vault Transit HMAC-SHA256 |
+| Crypto | Argon2; Ed25519 login proof; OAuth PKCE S256 + one-time state; Google OIDC RS256/JWKS/nonce; JWT HS256 qua Vault Transit HMAC-SHA256 |
 | JWT key custody | HashiCorp Vault Transit; ACR không đọc hoặc giữ raw signing key |
 | Login challenge TTL | 120 giây |
+| OAuth state TTL | Tối đa 300 giây, atomic consume |
 | Pending resend cooldown | Redis `SET NX`, 60 giây |
-| Success response | HTTP `204 No Content` với cookies |
+| Success response | Password: HTTP `204` với cookies; OAuth: HTTP `303` với cùng session cookies |
 | Related workflow | [User Critical Session Proof](user_critical_session_proof_workflow.md) |
-| Verified against | Working tree, 2026-07-19 |
+| Verified against | Working tree, 2026-07-28 |
 
 ### 0.1 Những sự thật không được hiểu sai
 
@@ -35,6 +36,7 @@
 | IAM trả canonical public key cho ACR | Redis session dùng key đã persist, không dùng lại trực tiếp input chưa tin cậy |
 | IAM là issuer và durable owner của refresh token; ACR là HTTP cookie writer | Khi `trust_device=true`, IAM persist hash + trả raw token/expiry đúng một lần; ACR phát HttpOnly cookie theo expiry đó |
 | User access JWT được Vault Transit ký | ACR dựng header/payload nhưng gửi signing input sang Vault; Vault key version nằm trong signature để hỗ trợ rotation |
+| User session luôn thuộc một Zone thật | Mọi user login/recovery thiếu Zone, dùng `global`, Zone UUID nil hoặc Zone không active/draining đều fail-closed; `global` chỉ dành cho SRE |
 
 ### 0.2 Severity gate
 
@@ -54,13 +56,63 @@
 | In scope | Out of scope nhưng liên quan |
 |---|---|
 | Sinh và verify login challenge | Account registration và account verification chi tiết |
-| Canonical login JSON contract | OAuth/SSO |
+| Canonical login JSON contract; Google/GitHub OAuth callback và linked external identity login | OAuth provider linking/unlinking và account recovery detail |
 | Global/tenant credential lookup | Tenant switching sau login |
 | Account-state handling | Admin/SRE login |
 | Device key persistence và refresh-token decision | Device là nguồn tin cậy vật lý; hệ thống không giả định điều đó |
 | Access token, access key, access secret, Redis session | Business authorization sau login |
 | Pending-account resend trigger | Mail delivery/retry chi tiết |
 | Failure, race, HA và security invariants | Critical route proof chi tiết, nằm ở God View riêng |
+
+### 1.1a OAuth user login (zone-bound)
+
+OAuth login is a user flow, not an SRE flow. `POST /api/v1/auth/oauth/{google|github}/start`
+requires a non-empty, non-`global` `zone_code`; ACR resolves and stores the active/draining
+zone in Auth-State Redis. The callback never accepts a replacement zone from the browser.
+
+ACR owns provider parsing, PKCE/state/nonce, Google JWKS/ID-token verification, GitHub
+verified-primary-email lookup, redirect allowlisting and canonicalization. IAM receives only
+`VerifyExternalIdentityRequest` with a verified provider subject/email. The provider subject is
+the only external identity key; provider email is a mutable verified snapshot and is never the
+account identifier or an auto-link key.
+
+Provider client secrets are read from Vault KV at ACR startup. Provider HTTP traffic must use a
+fixed egress proxy/domain allowlist; the existing ACR NetworkPolicy does not permit arbitrary
+internet egress, so enabling a provider requires the corresponding reviewed egress rule.
+Envoy overrides ExtAuthz to 15 seconds only for `/api/v1/auth/oauth/`; ACR cancels callback
+work at 13 seconds and bounds each pod to 64 concurrent callbacks. Google JWKS has a
+single-flight, bounded per-pod cache. The global ExtAuthz budget for all other routes remains
+2 seconds.
+
+The durable identity key is `(provider, provider_subject)`. `users.email` is the canonical
+account identifier entered during normal registration; `external_identities.provider_email`
+remains provider metadata and must not be copied into `users.email` or used for account lookup.
+Every user has a non-null password hash.
+
+OAuth callback is login-only. IAM accepts only an existing, active `external_identities` row
+whose user is active and has a password credential. A missing, unlinked or revoked provider
+subject never creates a user, never creates an identity row and never starts registration.
+Provider linking/unlinking belongs to a separate authenticated re-authentication/MFA workflow;
+that workflow is not implemented by these public login endpoints. Provider-email equality
+never performs linking.
+
+ACR collapses every callback failure visible to the browser — invalid/replayed state, provider
+denial or verification failure, missing/revoked identity, IAM/Redis/Vault failure, invalid
+refresh state and Zone mismatch — into `OAUTH_SIGN_IN_FAILED`, redirects to `/signin`, and
+preserves only an allowlisted `return_to`. Detailed reason classes remain internal logs/metrics
+without provider subject, email or user identifiers.
+
+The callback issues the same Trinity cookies as password login, but redirects with `303` to the
+state-bound safe return path. `zone_code` is written to both the JWT/session and the zone cookie,
+and a mismatch between state and IAM response fails closed.
+
+Platform user operators at hierarchy level 2 can inspect
+`GET /api/v1/personal/iam/users/:id/auth-methods` for subordinate users. The response labels
+`users.email` as the account identifier and each `provider_email` as provider metadata, and
+returns only `not_linked`, `linked` or `revoked` state plus audit timestamps. The same
+server-side hierarchy fence as the user list applies; raw provider subjects and tokens are not
+exposed. Cloud Console fetches this endpoint only when the dedicated `Sign-in` user-detail tab
+is opened; Overview continues to use the paginated directory row.
 
 ### 1.2 Component ownership
 
@@ -72,7 +124,7 @@
 | Shared L2 Redis | Central request/reply, fan-out, locks và streams | Không chứa runtime session hoặc durable identity |
 | Controlplane IAM | User lookup, password/state/role/device/refresh-token business rules | Không phát HTTP cookies |
 | PostgreSQL | Durable identity, device, role, membership, refresh token, resend outbox | Không giữ runtime access session |
-| Auth-State Redis DB0 | One-time challenges, resend cooldown, binary runtime session, indexes và ACR security outbox | Không làm transport Central-Zone hoặc business DB |
+| Auth-State Redis DB0 | One-time challenges, OAuth state/PKCE/nonce, resend cooldown, binary runtime session, indexes và ACR security outbox | Không làm transport Central-Zone hoặc business DB |
 | HashiCorp Vault Transit | Giữ HMAC key, ký và verify JWT bằng SHA2-256 | Không sở hữu user/session business state |
 
 ### 1.3 End-to-end topology
@@ -86,6 +138,7 @@ flowchart LR
     SR -->|PubSub fan-out + SETNX winner| IAM[Controlplane IAM]
     IAM --> DB[(PostgreSQL)]
     IAM -->|request-scoped reply| SR --> A
+    A -->|fixed allowlisted HTTPS| OP[Google / GitHub]
     A -->|Transit HMAC SHA2-256| V[HashiCorp Vault HA]
     A -->|HTTP 204 + Set-Cookie| E --> UI
 ```
@@ -100,8 +153,10 @@ flowchart LR
 |---|---|---|---|
 | `POST /api/v1/auth/login/challenge` | Public, nhưng qua CORS và pre-auth rate limit | ACR local interceptor | `200` JSON challenge |
 | `POST /api/v1/auth/login` | Public login interceptor, bắt buộc proof | ACR → IAM | `204` cookies, `401`, `412`, hoặc `5xx` |
+| `POST /api/v1/auth/oauth/{provider}/start` | Public qua CORS/rate limit; bắt buộc device key và Zone cụ thể | ACR local interceptor | `200` authorization URL hoặc `4xx/5xx` |
+| `GET /api/v1/auth/oauth/{provider}/callback` | One-time state + PKCE; callback không nhận Zone mới từ browser | ACR → provider → IAM | Thành công: `303` cookies + safe return path; thất bại: `303 /signin?oauth_error=OAUTH_SIGN_IN_FAILED` |
 
-Hai endpoint được xử lý ngay trong ACR. Request login thành công không được forward xuống business HTTP API.
+Các endpoint này được xử lý ngay trong ACR. Request login thành công không được forward xuống business HTTP API.
 
 ### 2.2 Challenge response
 
@@ -142,7 +197,7 @@ iam:session_proof:login:{challenge_id} -> nonce, EX 120
 | `username` | Trim, lowercase, required, không chứa `@` | Identity local part duy nhất |
 | `password` | Required, không empty | Chỉ chuyển qua Shared Redis request/reply đến IAM |
 | `tenant_domain` | Trim, lowercase, empty = global login | Chọn lookup global hoặc tenant membership |
-| `zone_code` | Default `global` nếu thiếu | Context zone dùng khi cấp claims/session |
+| `zone_code` | Required, trim/lowercase, cấm `global`, phải resolve thành Zone UUID active/draining | Context Zone bắt buộc của user session |
 | `device_public_key` | ACR verify signature; IAM decode Base64 và yêu cầu đúng 32 bytes | Bind public key vào durable device và runtime session |
 | `session_proof_*` | Challenge tồn tại, timestamp trong 120s, signature hợp lệ | Chống replay và bind identity fields vào request |
 | `trust_device` | Default false | Chỉ là remember-me/refresh-token decision |
@@ -332,7 +387,7 @@ Session manager đồng thời duy trì user/device access indexes và có thể
 | `refresh_token` | Yes | Expiry IAM đã persist | Opaque recovery credential, chỉ có khi `trust_device=true` |
 | `client_device_id` | No | 1 year | Client/device context |
 | `tenant_id` | No | 1 year | Routing context; `platform` cho global |
-| `zone_code` | No | 1 year | Placement context nếu request có field này |
+| `zone_code` | No | 1 year | Placement context bắt buộc, luôn là Zone user đã chọn và ACR đã resolve |
 
 Tất cả cookies đều `Secure`, `SameSite=Lax`, `Path=/` và dùng optional configured parent domain. ACR fail-closed nếu trusted login nhận token rỗng hoặc expiry không còn ở tương lai; `Max-Age` được tính từ expiry IAM trả về thay vì hard-code TTL riêng ở ACR.
 
@@ -347,12 +402,22 @@ erDiagram
     DEVICES ||--o{ REFRESH_TOKENS : binds
     USERS ||--o{ USER_ROLE_ASSIGNMENTS : assigned
     USERS ||--o{ TENANT_MEMBERSHIPS : joins
+    USERS ||--o{ EXTERNAL_IDENTITIES : authenticates
 
     USERS {
       uuid id PK
       varchar username
-      text password_hash
+      text password_hash "non-null Argon2id account credential"
       user_status status
+    }
+    EXTERNAL_IDENTITIES {
+      uuid id PK
+      uuid user_id FK
+      varchar provider
+      varchar provider_subject
+      varchar provider_email
+      timestamptz email_verified_at
+      timestamptz revoked_at
     }
     DEVICES {
       uuid id PK
@@ -402,6 +467,10 @@ erDiagram
 | Outbox insert lỗi sau cooldown winner | Best-effort DEL cooldown 500ms | Cho phép retry sớm; không cấp session |
 | Shared Redis không có subscriber/timeout | ACR trả authentication unavailable | Không cấp session |
 | Nhiều CP replica cùng nhận login | `SET NX` theo request ID, TTL 30s | Chỉ một replica chạy password/device/refresh side effects |
+| OAuth callback cho subject chưa link hoặc đã revoke | Lookup `(provider, provider_subject)` trả cùng invalid-credentials class | Không tạo user/identity/handoff; browser chỉ thấy lỗi chung |
+| OAuth state expired/replayed | Redis Lua `GET` + `DEL` atomic | Redirect lỗi chung về sign-in, không gọi provider/IAM |
+| Provider/IAM callback chậm | Route-only Envoy budget 15s + ACR total budget 13s | Cancel work và redirect lỗi; không tăng timeout ExtAuthz toàn cục |
+| OAuth identity đã revoke | IAM không clear `revoked_at` trong login flow | Fail-closed; chỉ link flow có xác thực mới được re-enable |
 | IAM replica concurrency register device | Durable constraints/repository quyết định | Không được tạo identity session nếu device persistence fail |
 | Vault Transit sign timeout/5xx/sealed | ACR fail trước Redis session write | Không có runtime session và không phát cookies |
 | Vault trả signature empty/malformed | Parser fail-closed | Không tạo JWT |
@@ -439,6 +508,9 @@ erDiagram
 8. ACR không được có local JWT signing secret hoặc fail-open khi Vault unavailable.
 9. Vault AppRole SecretID/static token không được log, đưa vào image hoặc expose cho Cloud Console/downstream API.
 10. ACR luôn thực thi Vault HMAC SHA2-256; cryptographic operation không bao giờ được chọn động từ giá trị `alg` do token cung cấp.
+11. User session issuer chỉ nhận Zone UUID cụ thể; nil/global/không resolve được không bao giờ fallback sang session `global`.
+12. Provider code/token/JWT/JSON dừng tại ACR. IAM transport chỉ nhận canonical external identity đã được verify và validate bounds.
+13. OAuth callback không được tạo user hoặc link identity; mọi callback failure public phải hội tụ vào cùng một error code chung.
 
 ### 6.2 Open risks AS-IS
 
@@ -481,7 +553,7 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 - [ ] Login thiếu/sai/replay proof bị từ chối trước Shared Redis IAM call.
 - [ ] UI tenant input gửi hai field canonical; legacy combined username bị từ chối.
 - [ ] JSON `public_key` legacy không được chấp nhận; chỉ `device_public_key`.
-- [ ] Global login và tenant login đều trả đúng role/scope.
+- [ ] Global identity lookup và tenant identity lookup đều trả đúng role/scope, nhưng runtime user session luôn bind một Zone cụ thể.
 - [ ] Pending login password sai không queue resend; password đúng trả 412 và không có cookies.
 - [ ] Suspended/disabled không lộ trạng thái cụ thể.
 - [ ] Auth Redis/Shared Redis/Vault/PostgreSQL failure đều không tạo client-visible authenticated session.
@@ -493,6 +565,9 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 - [ ] Cookie flags được integration-test qua Envoy với configured public domain.
 - [ ] Critical call sau login verify được session proof theo God View riêng.
 - [ ] `trust_device=true` phát HttpOnly refresh cookie với `Max-Age` khớp expiry IAM; false không phát cookie.
+- [ ] Password/OAuth/recovery đều từ chối thiếu Zone, `global`, Zone nil và Zone inactive.
+- [ ] OAuth state replay/expiry, provider denial, email chưa verify, identity chưa link/revoked và callback Zone mismatch đều fail-closed với cùng public error.
+- [ ] OAuth callback cho identity chưa link không ghi `users`, `external_identities`, role, wallet outbox hoặc Auth-State handoff.
 
 ---
 
@@ -500,11 +575,12 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 
 | Concern | Implementation |
 |---|---|
-| UI sign-in orchestration | [`cloud-console/src/app/signin/signin-form.tsx`](../../cloud-console/src/app/signin/signin-form.tsx) |
-| UI login API | [`cloud-console/src/lib/api/auth.ts`](../../cloud-console/src/lib/api/auth.ts) |
+| UI sign-in orchestration/error return | [`cloud-console/src/app/signin/signin-form.tsx`](../../cloud-console/src/app/signin/signin-form.tsx), [`page.tsx`](../../cloud-console/src/app/signin/page.tsx) |
+| UI login/OAuth API | [`cloud-console/src/features/auth/api.ts`](../../cloud-console/src/features/auth/api.ts) |
 | UI Ed25519 key/signing | [`cloud-console/src/lib/security/deviceKey.ts`](../../cloud-console/src/lib/security/deviceKey.ts) |
-| ACR ExtAuthz ordering/rate limit | [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`ratelimit.rs`](../../acr/src/gateway/ratelimit.rs) |
+| ACR ExtAuthz ordering/rate limit và route-only OAuth timeout | [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`ratelimit.rs`](../../acr/src/gateway/ratelimit.rs), [`controlplane/dev/envoy/routes/cloud_vhost.yaml`](../../controlplane/dev/envoy/routes/cloud_vhost.yaml) |
 | ACR login/challenge/session issue | [`acr/src/user/login.rs`](../../acr/src/user/login.rs) |
+| ACR Google/GitHub provider verification and zone-bound callback | [`acr/src/user/oauth.rs`](../../acr/src/user/oauth.rs), [`acr/src/config.rs`](../../acr/src/config.rs) |
 | ACR proof primitives | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs) |
 | ACR Redis session binary | [`acr/src/user/session.rs`](../../acr/src/user/session.rs) |
 | IAM JWT construction, Vault sign/verify và Moka cache | [`acr/src/user/claims.rs`](../../acr/src/user/claims.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
@@ -514,6 +590,7 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | IAM Shared Redis request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | Durable device eviction relay/consumer | [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/user/device.rs`](../../acr/src/user/device.rs), [`controlplane/internal/iam/transport/pubsub/handler/device.go`](../../controlplane/internal/iam/transport/pubsub/handler/device.go) |
 | IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
+| IAM linked external identity lookup and provider-email/account-email separation | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go), [`controlplane/internal/iam/migrations/000011_external_identities.up.sql`](../../controlplane/internal/iam/migrations/000011_external_identities.up.sql) |
 | Device persistence | [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
 | PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |
 

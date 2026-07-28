@@ -102,6 +102,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session_mgr = Arc::new(SessionManager::new(redis_client.clone(), config.clone()));
     let token_mgr = Arc::new(TokenManager::new(vault_client.clone()));
+    let oauth_service =
+        match crate::user::oauth::OAuthProviderService::new(&config, vault_client.clone()).await {
+            Ok(service) => Arc::new(service),
+            Err(error) => {
+                Logger::sys_error(
+                    "main.oauth",
+                    "Failed to initialize OAuth provider service",
+                    &error,
+                );
+                std::process::exit(1);
+            }
+        };
     let sre_token_mgr = Arc::new(crate::sre::claims::SreTokenManager::new(
         vault_client.clone(),
         config.vault.admin_api_key_path.clone(),
@@ -113,6 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.clone(),
         shared_redis_client.clone(),
         shared_redis_bus.clone(),
+        oauth_service,
     );
 
     let device_service = DeviceRpcHandler::new(session_mgr.clone());

@@ -27,7 +27,9 @@ spec:
         - protocol: TCP
           port: 50051
 
-  # [COMMENT]: Egress Rule: Chỉ cho phép ACR kết nối ra ngoài đến DNS, Redis, Vault và NATS.
+  # [COMMENT]: Egress Rule: Chỉ cho phép ACR kết nối đến DNS, Redis, Vault và NATS.
+  # OAuth provider egress is intentionally absent here. Enabling Google/GitHub requires a
+  # separately reviewed fixed egress-proxy rule; never add a broad internet ipBlock.
   egress:
     # 1. Cho phép DNS Resolution (UDP/TCP 53)
     - ports:

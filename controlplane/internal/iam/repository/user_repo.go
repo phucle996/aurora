@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -162,6 +163,104 @@ func (r *UserRepository) GetUserProfile(ctx context.Context, userID uuid.UUID) (
 	}
 
 	return &p, nil
+}
+
+func (r *UserRepository) GetUserAuthMethods(
+	ctx context.Context,
+	callerLevel uint8,
+	userID uuid.UUID,
+) (*iamEntity.UserAuthMethods, error) {
+	var (
+		accountEmail      string
+		passwordSet       bool
+		googleProvider    *string
+		googleEmail       *string
+		googleVerifiedAt  *time.Time
+		googleLastLoginAt *time.Time
+		googleLinkedAt    *time.Time
+		googleRevokedAt   *time.Time
+		githubProvider    *string
+		githubEmail       *string
+		githubVerifiedAt  *time.Time
+		githubLastLoginAt *time.Time
+		githubLinkedAt    *time.Time
+		githubRevokedAt   *time.Time
+	)
+	query := fmt.Sprintf(`
+		WITH effective_role AS (
+			SELECT user_id, MIN(role_level) AS role_level
+			FROM %s.user_role
+			WHERE workspace_id = '00000000-0000-0000-0000-000000000000'
+			GROUP BY user_id
+		)
+		SELECT
+			u.email,
+			(u.password_hash IS NOT NULL),
+			g.provider, g.provider_email, g.email_verified_at, g.last_login_at, g.created_at, g.revoked_at,
+			h.provider, h.provider_email, h.email_verified_at, h.last_login_at, h.created_at, h.revoked_at
+		FROM %s.users u
+		JOIN effective_role er ON er.user_id = u.id AND er.role_level > $1
+		LEFT JOIN %s.external_identities g
+		       ON g.user_id = u.id AND g.provider = 'google'
+		LEFT JOIN %s.external_identities h
+		       ON h.user_id = u.id AND h.provider = 'github'
+		WHERE u.id = $2
+	`, r.schema, r.schema, r.schema, r.schema)
+	err := r.db.QueryRow(ctx, query, callerLevel, userID).Scan(
+		&accountEmail,
+		&passwordSet,
+		&googleProvider,
+		&googleEmail,
+		&googleVerifiedAt,
+		&googleLastLoginAt,
+		&googleLinkedAt,
+		&googleRevokedAt,
+		&githubProvider,
+		&githubEmail,
+		&githubVerifiedAt,
+		&githubLastLoginAt,
+		&githubLinkedAt,
+		&githubRevokedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("iam repo: get user auth methods: %w", err)
+		}
+		var exists bool
+		if existsErr := r.db.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.users WHERE id = $1)`, r.schema), userID).Scan(&exists); existsErr != nil {
+			return nil, fmt.Errorf("iam repo: check user auth-method target: %w", existsErr)
+		}
+		if !exists {
+			return nil, iamTaxonomy.ErrUserNotFound
+		}
+		return nil, iamTaxonomy.ErrActionNotAllowed
+	}
+
+	summary := func(provider *string, email *string, verifiedAt, lastLoginAt, linkedAt, revokedAt *time.Time, expected iamEntity.ExternalProvider) iamEntity.ExternalIdentitySummary {
+		result := iamEntity.ExternalIdentitySummary{
+			Provider: expected,
+			State:    iamEntity.ExternalIdentityNotLinked,
+		}
+		if provider == nil {
+			return result
+		}
+		result.ProviderEmail = valueOrEmpty(email)
+		result.EmailVerifiedAt = verifiedAt
+		result.LastLoginAt = lastLoginAt
+		result.LinkedAt = linkedAt
+		if revokedAt != nil {
+			result.State = iamEntity.ExternalIdentityRevoked
+		} else {
+			result.State = iamEntity.ExternalIdentityLinked
+		}
+		return result
+	}
+	return &iamEntity.UserAuthMethods{
+		AccountEmail: accountEmail,
+		PasswordSet:  passwordSet,
+		Google:       summary(googleProvider, googleEmail, googleVerifiedAt, googleLastLoginAt, googleLinkedAt, googleRevokedAt, iamEntity.ExternalProviderGoogle),
+		GitHub:       summary(githubProvider, githubEmail, githubVerifiedAt, githubLastLoginAt, githubLinkedAt, githubRevokedAt, iamEntity.ExternalProviderGitHub),
+	}, nil
 }
 
 // [COMMENT]: ResetUserPassword cập nhật mật khẩu mới của user dưới DB và ghi nhận mật khẩu cũ vào password_history qua CTE duy nhất bảo vệ phân cấp quyền lực

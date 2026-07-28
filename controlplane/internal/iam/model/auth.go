@@ -64,37 +64,37 @@ func PasswordHistoryModelToEntity(input PasswordHistory) iamEntity.PasswordHisto
 }
 
 type RefreshToken struct {
-	ID            uuid.UUID  `db:"id"`
-	UserID        uuid.UUID  `db:"user_id"`
-	DeviceID      *uuid.UUID `db:"device_id"`
-	TokenHash     string     `db:"token_hash"`
-	TenantID      *uuid.UUID `db:"tenant_id"`
-	IssuedAt      time.Time  `db:"issued_at"`
-	ExpiresAt     time.Time  `db:"expires_at"`
-	UsedAt        *time.Time `db:"used_at"`
-	RevokedAt     *time.Time `db:"revoked_at"`
+	ID        uuid.UUID  `db:"id"`
+	UserID    uuid.UUID  `db:"user_id"`
+	DeviceID  *uuid.UUID `db:"device_id"`
+	TokenHash string     `db:"token_hash"`
+	TenantID  *uuid.UUID `db:"tenant_id"`
+	IssuedAt  time.Time  `db:"issued_at"`
+	ExpiresAt time.Time  `db:"expires_at"`
+	UsedAt    *time.Time `db:"used_at"`
+	RevokedAt *time.Time `db:"revoked_at"`
 }
 
 func RefreshTokenEntityToModel(input iamEntity.RefreshToken) RefreshToken {
 	return RefreshToken{ID: input.ID,
-		UserID:        input.UserID,
-		DeviceID:      input.DeviceID,
-		TokenHash:     input.TokenHash,
-		TenantID:      input.TenantID,
-		IssuedAt:      input.IssuedAt,
-		ExpiresAt:     input.ExpiresAt,
-		UsedAt:        input.UsedAt,
-		RevokedAt:     input.RevokedAt}
+		UserID:    input.UserID,
+		DeviceID:  input.DeviceID,
+		TokenHash: input.TokenHash,
+		TenantID:  input.TenantID,
+		IssuedAt:  input.IssuedAt,
+		ExpiresAt: input.ExpiresAt,
+		UsedAt:    input.UsedAt,
+		RevokedAt: input.RevokedAt}
 }
 
 func RefreshTokenModelToEntity(input RefreshToken) iamEntity.RefreshToken {
 	return iamEntity.RefreshToken{ID: input.ID,
-		UserID:        input.UserID,
-		DeviceID:      input.DeviceID,
-		TokenHash:     input.TokenHash,
-		TenantID:      input.TenantID,
-		IssuedAt:      input.IssuedAt,
-		ExpiresAt:     input.ExpiresAt,
-		UsedAt:        input.UsedAt,
-		RevokedAt:     input.RevokedAt}
+		UserID:    input.UserID,
+		DeviceID:  input.DeviceID,
+		TokenHash: input.TokenHash,
+		TenantID:  input.TenantID,
+		IssuedAt:  input.IssuedAt,
+		ExpiresAt: input.ExpiresAt,
+		UsedAt:    input.UsedAt,
+		RevokedAt: input.RevokedAt}
 }

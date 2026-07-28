@@ -146,6 +146,19 @@ resources:
             route:
               cluster: zone_control_edge_gateway_cluster
               timeout: 15s
+          # Keep slow provider I/O isolated from the global 2s authorization SLO.
+          - match: { prefix: "/api/v1/auth/oauth/" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 15s
+            typed_per_filter_config:
+              envoy.filters.http.ext_authz:
+                "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                check_settings:
+                  grpc_service:
+                    envoy_grpc:
+                      cluster_name: acr_cluster
+                    timeout: 15s
           # Cloud Console self-scoped Billing reads use one extensible route branch.
           # Keep the neutral Billing branch before generic /api/. ACR rewrites
           # owner scope without requiring a new Envoy route per endpoint.

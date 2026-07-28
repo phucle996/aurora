@@ -15,22 +15,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 
 // [COMMENT]: Import các API và security modules
-import { authAPI, type LoginRequest } from "@/features/auth/api";
+import { authAPI, type LoginRequest, type OAuthProvider } from "@/features/auth/api";
 import { type ZoneCatalogItem } from "@/features/zones/api";
 import { ensureDevicePublicKey, signSessionProof } from "@/lib/security/deviceKey";
 import { useUserSession } from "@/session/use-session";
-
-// [COMMENT]: Icon cho các SSO providers
-function MicrosoftIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <rect x="1" y="1" width="6.5" height="6.5" fill="#F25022" />
-      <rect x="8.5" y="1" width="6.5" height="6.5" fill="#7FBA00" />
-      <rect x="1" y="8.5" width="6.5" height="6.5" fill="#00A4EF" />
-      <rect x="8.5" y="8.5" width="6.5" height="6.5" fill="#FFB900" />
-    </svg>
-  );
-}
 
 function GoogleIcon() {
   return (
@@ -55,6 +43,7 @@ function GitHubIcon() {
 export interface SignInFormProps {
   zones: ZoneCatalogItem[];
   selectedZoneCode: string;
+  returnTo: string;
   onZoneChange: (code: string) => void;
   onSwitchToSignUp: () => void;
 }
@@ -62,6 +51,7 @@ export interface SignInFormProps {
 export default function SignInForm({
   zones,
   selectedZoneCode,
+  returnTo,
   onZoneChange,
   onSwitchToSignUp,
 }: SignInFormProps) {
@@ -90,6 +80,31 @@ export default function SignInForm({
   // [COMMENT]: Dùng refreshSession thay vì setAuthenticatedSession để trigger đầy đủ
   // luồng resolve: session → context → profile ngay sau khi login thành công
   const { refreshSession } = useUserSession();
+
+  const handleOAuthStart = useCallback(async (provider: OAuthProvider) => {
+    if (!selectedZoneCode) {
+      toast.error(t.auth.zoneReq);
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const devicePublicKey = await ensureDevicePublicKey();
+      const response = await authAPI.startOAuth(provider, {
+        device_public_key: devicePublicKey,
+        trust_device: trustDevice,
+        zone_code: selectedZoneCode,
+        device_name: typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 120) : "browser",
+        device_type: "browser",
+        // ACR validates the same narrow allowlist again before persisting state.
+        return_to: returnTo,
+      });
+      window.location.assign(response.authorization_url);
+    } catch (err: unknown) {
+      const apiError = err as { message?: string };
+      toast.error(apiError?.message || "OAuth sign-in is unavailable");
+      setIsLoading(false);
+    }
+  }, [returnTo, selectedZoneCode, t.auth.zoneReq, trustDevice]);
 
   // [COMMENT]: Logic xử lý Đăng nhập — validate → generate device key → call API → redirect
   const handleSignIn = useCallback(async (e: React.FormEvent) => {
@@ -161,7 +176,7 @@ export default function SignInForm({
       // session → context → profile (song song). Không dùng setAuthenticatedSession vì nó
       // chỉ set state local, không fetch context/profile → gây bug phải F5 lại mới load được.
       await refreshSession();
-      router.push("/");
+      router.push(returnTo);
     } catch (err: unknown) {
       const apiError = err as { status?: number; message?: string };
       const msg = apiError?.message || "An unexpected error occurred. Please try again.";
@@ -174,7 +189,7 @@ export default function SignInForm({
     } finally {
       setIsLoading(false);
     }
-	}, [username, password, trustDevice, selectedZoneCode, pendingVerification, t, router, refreshSession, rawUsername, tenantDomain]);
+	}, [username, password, trustDevice, selectedZoneCode, pendingVerification, t, router, refreshSession, rawUsername, tenantDomain, returnTo]);
 
   return (
     <div className="space-y-5">
@@ -273,14 +288,25 @@ export default function SignInForm({
       </div>
 
       {/* [COMMENT]: SSO Provider buttons */}
-      <div className="grid grid-cols-3 gap-2">
-        <Button variant="outline" className="h-9 text-xs font-normal gap-1.5 rounded-[8px]" disabled={isLoading} id="sso-microsoft">
-          <MicrosoftIcon /> Microsoft
-        </Button>
-        <Button variant="outline" className="h-9 text-xs font-normal gap-1.5 rounded-[8px]" disabled={isLoading} id="sso-google">
+      <div className="grid grid-cols-2 gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-9 text-xs font-normal gap-1.5 rounded-[8px]"
+          disabled={isLoading || !selectedZoneCode}
+          id="sso-google"
+          onClick={() => void handleOAuthStart("google")}
+        >
           <GoogleIcon /> Google
         </Button>
-        <Button variant="outline" className="h-9 text-xs font-normal gap-1.5 rounded-[8px]" disabled={isLoading} id="sso-github">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-9 text-xs font-normal gap-1.5 rounded-[8px]"
+          disabled={isLoading || !selectedZoneCode}
+          id="sso-github"
+          onClick={() => void handleOAuthStart("github")}
+        >
           <GitHubIcon /> GitHub
         </Button>
       </div>

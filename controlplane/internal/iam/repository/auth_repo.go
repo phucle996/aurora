@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -23,6 +24,69 @@ import (
 type AuthRepository struct {
 	db     *pgxpool.Pool
 	schema string
+}
+
+func (r *AuthRepository) insertPlatformRoleTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	username string,
+) (uuid.UUID, int32, error) {
+	query := fmt.Sprintf(`
+		SELECT r.id, r.name, r.role_level,
+		       COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
+		FROM %s.roles r
+		LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id
+		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
+		WHERE r.code = 'platform_user'
+	`, r.schema, r.schema, r.schema)
+	rows, err := tx.Query(ctx, query)
+	if err != nil {
+		return uuid.Nil, 0, fmt.Errorf("iam repo: query platform user role: %w", err)
+	}
+	defer rows.Close()
+
+	var roleID uuid.UUID
+	var roleName string
+	var roleLevel int32
+	var perms []string
+	found := false
+	for rows.Next() {
+		found = true
+		var module, object, behavior string
+		if err := rows.Scan(&roleID, &roleName, &roleLevel, &module, &object, &behavior); err != nil {
+			return uuid.Nil, 0, fmt.Errorf("iam repo: scan platform user role: %w", err)
+		}
+		if module != "" && object != "" && behavior != "" {
+			perms = append(perms, fmt.Sprintf(
+				"%s:00000000-0000-0000-0000-000000000000:%s:%s:%s",
+				username, module, object, behavior,
+			))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, 0, fmt.Errorf("iam repo: iterate platform user role: %w", err)
+	}
+	if !found {
+		return uuid.Nil, 0, iamTaxonomy.ErrRoleNotFound
+	}
+
+	rolePayload, err := proto.Marshal(&iamproto.RoleEntry{Permissions: perms})
+	if err != nil {
+		return uuid.Nil, 0, fmt.Errorf("iam repo: marshal platform user role: %w", err)
+	}
+	_, err = tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s.user_role (
+			id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+		ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING
+	`, r.schema),
+		uuid.Must(uuid.NewV7()), userID, username, uuid.Nil, roleID, roleName, roleLevel, rolePayload,
+	)
+	if err != nil {
+		return uuid.Nil, 0, fmt.Errorf("iam repo: insert external user role: %w", err)
+	}
+	return roleID, roleLevel, nil
 }
 
 func NewAuthRepository(
@@ -74,11 +138,12 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 		return nil, fmt.Errorf("iam repo: get login user by username: %w", err)
 	}
 
+	passwordHash := userModel.PasswordHash
 	loginUser := &iamEntity.LoginUser{
 		ID:           userModel.ID,
 		Username:     userModel.Username,
 		Email:        userModel.Email,
-		PasswordHash: userModel.PasswordHash,
+		PasswordHash: &passwordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
 		RoleID:       roleID,
 		Level:        roleLevel,
@@ -137,11 +202,12 @@ func (r *AuthRepository) LoginUserTenant(
 		return nil, fmt.Errorf("iam repo: login user by username and tenant domain: %w", err)
 	}
 
+	passwordHash := userModel.PasswordHash
 	loginUser := &iamEntity.LoginUser{
 		ID:           userModel.ID,
 		Username:     userModel.Username,
 		Email:        userModel.Email,
-		PasswordHash: userModel.PasswordHash,
+		PasswordHash: &passwordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
 		TenantID:     &tenantID,
 		RoleID:       roleID,
@@ -377,4 +443,134 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 	}
 
 	return nil
+}
+
+// VerifyExternalIdentity logs in an already-linked identity. Missing and
+// revoked identities deliberately share the invalid-credentials result: login
+// never creates or links an account and provider email is metadata only.
+func (r *AuthRepository) VerifyExternalIdentity(
+	ctx context.Context,
+	req iamEntity.ExternalLoginRequest,
+) (*iamEntity.ExternalIdentity, *iamEntity.LoginUser, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("iam repo: begin external login tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	now := time.Now().UTC()
+	var identity iamEntity.ExternalIdentity
+	var identityFound bool
+	identityQuery := fmt.Sprintf(`
+		SELECT id, user_id, provider, provider_subject, provider_email,
+		       email_verified_at, display_name, avatar_url, last_login_at,
+		       revoked_at, created_at, updated_at
+		FROM %s.external_identities
+		WHERE provider = $1 AND provider_subject = $2
+		FOR UPDATE
+	`, r.schema)
+	var provider string
+	var avatarURL *string
+	var displayName string
+	if err := tx.QueryRow(ctx, identityQuery, string(req.Identity.Provider), req.Identity.Subject).Scan(
+		&identity.ID,
+		&identity.UserID,
+		&provider,
+		&identity.ProviderSubject,
+		&identity.ProviderEmail,
+		&identity.EmailVerifiedAt,
+		&displayName,
+		&avatarURL,
+		&identity.LastLoginAt,
+		&identity.RevokedAt,
+		&identity.CreatedAt,
+		&identity.UpdatedAt,
+	); err == nil {
+		identityFound = true
+		identity.Provider = iamEntity.ExternalProvider(provider)
+		identity.DisplayName = displayName
+		identity.AvatarURL = avatarURL
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, fmt.Errorf("iam repo: load external identity: %w", err)
+	}
+
+	var userID uuid.UUID
+	var username, email, status string
+	var userPasswordHash *string
+	if identityFound {
+		// Revocation can only be reversed by a future authenticated link flow; a
+		// provider callback must never silently reactivate a detached identity.
+		if identity.RevokedAt != nil {
+			return nil, nil, iamTaxonomy.ErrInvalidCredentials
+		}
+		userID = identity.UserID
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`
+			SELECT id, username, email, password_hash, status
+			FROM %s.users
+			WHERE id = $1
+			FOR UPDATE
+		`, r.schema), userID).Scan(&userID, &username, &email, &userPasswordHash, &status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, iamTaxonomy.ErrUserNotFound
+			}
+			return nil, nil, fmt.Errorf("iam repo: lock external identity user: %w", err)
+		}
+		if status != string(iamEntity.UserStatusActive) {
+			return nil, nil, iamTaxonomy.ErrInvalidCredentials
+		}
+		_, err = tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s.external_identities
+			SET provider_email = $1, email_verified_at = $2, display_name = $3,
+			    avatar_url = NULLIF($4, ''), last_login_at = $5,
+			    updated_at = $5
+			WHERE id = $6
+		`, r.schema),
+			req.Identity.Email, req.Identity.EmailVerifiedAt, req.Identity.DisplayName,
+			valueOrEmpty(req.Identity.AvatarURL), now, identity.ID,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("iam repo: update external identity snapshot: %w", err)
+		}
+	} else {
+		// Never auto-link by provider email: that mutable claim is not proof that
+		// the browser controls an existing Aurora account.
+		return nil, nil, iamTaxonomy.ErrInvalidCredentials
+	}
+
+	var roleID string
+	var roleLevel int32
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`
+		SELECT COALESCE(ur.role_id::text, ''), COALESCE(ur.role_level, 99)
+		FROM %s.user_role ur
+		WHERE ur.user_id = $1
+		  AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+		ORDER BY ur.role_level ASC
+		LIMIT 1
+	`, r.schema), userID).Scan(&roleID, &roleLevel); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, iamTaxonomy.ErrRoleRequired
+		}
+		return nil, nil, fmt.Errorf("iam repo: load external login role: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("iam repo: commit external login tx: %w", err)
+	}
+
+	loginUser := &iamEntity.LoginUser{
+		ID:           userID,
+		Username:     username,
+		Email:        email,
+		PasswordHash: userPasswordHash,
+		Status:       iamEntity.UserStatus(status),
+		RoleID:       roleID,
+		Level:        roleLevel,
+	}
+	return &identity, loginUser, nil
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

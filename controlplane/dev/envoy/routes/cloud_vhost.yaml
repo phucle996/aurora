@@ -23,6 +23,20 @@ routes:
       timeout: 0s
       upgrade_configs:
         - upgrade_type: websocket
+  # OAuth callback performs bounded provider HTTPS and IAM work. Override only
+  # this route; all normal authorization checks keep the global 2s budget.
+  - match: { prefix: "/api/v1/auth/oauth/" }
+    route:
+      cluster: controlplane_cluster
+      timeout: 15s
+    typed_per_filter_config:
+      envoy.filters.http.ext_authz:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+        check_settings:
+          grpc_service:
+            envoy_grpc:
+              cluster_name: acr_cluster
+            timeout: 15s
   # All Cloud Console self-scoped Billing reads share one extensible Cost route branch.
   # Neutral owner Billing API; ACR rewrites to the verified personal/tenant
   # internal path after ext_authz, while the cluster choice stays Cost Manager.

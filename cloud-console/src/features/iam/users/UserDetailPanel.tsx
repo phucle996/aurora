@@ -12,6 +12,7 @@ import { OverviewTab } from "./OverviewTab";
 import { RolesTab } from "./RolesTab";
 import { DevicesTab } from "./DevicesTab";
 import { MfaTab } from "./MfaTab";
+import { AuthMethodsTab } from "./AuthMethodsTab";
 import type { ExtendedUser } from "./UserTable";
 
 // [COMMENT]: Sinh màu sắc avatar ngẫu nhiên đẹp mắt (nhất quán với page.tsx)
@@ -46,7 +47,7 @@ export function UserDetailPanel({
 
   // [COMMENT]: Sinh danh sách tab động dựa theo quyền hạn thực tế của actor
   const tabs = React.useMemo(() => {
-    const list = ["Overview"];
+    const list = ["Overview", "Sign-in"];
     if (checkPermission("iam:role", "read")) {
       list.push("Roles");
     }
@@ -79,6 +80,8 @@ export function UserDetailPanel({
     switch (activeDetailTab) {
       case "Overview":
         return <OverviewTab selectedUser={selectedUser} />;
+      case "Sign-in":
+        return <AuthMethodsTab selectedUser={selectedUser} />;
       case "Roles":
         return <RolesTab selectedUser={selectedUser} getAvatarColors={getAvatarColors} />;
       case "Devices":
@@ -149,13 +152,13 @@ export function UserDetailPanel({
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex border-b border-border text-[11px] font-bold text-muted-foreground select-none">
+      <div className="flex overflow-x-auto border-b border-border text-[11px] font-bold text-muted-foreground select-none">
         {tabs.map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveDetailTab(tab)}
             className={cn(
-              "pb-2 px-2.5 border-b-2 -mb-[2px] transition-all cursor-pointer font-bold",
+              "shrink-0 pb-2 px-2.5 border-b-2 -mb-[2px] transition-all cursor-pointer font-bold",
               activeDetailTab === tab
                 ? "border-blue-600 text-blue-600 dark:text-blue-450"
                 : "border-transparent hover:text-foreground"

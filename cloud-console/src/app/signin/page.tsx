@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
 import { useUserSession } from "@/session/use-session";
 
 // [COMMENT]: Import i18n hooks phục vụ đa ngôn ngữ toàn hệ thống
@@ -43,9 +44,23 @@ function AuthPageContent() {
     requestedReturnTo.startsWith("/billing/authorize?") && !requestedReturnTo.startsWith("//")
       ? requestedReturnTo
       : "/";
+  const oauthError = searchParams.get("oauth_error") || "";
+  const oauthErrorShownRef = useRef<string | null>(null);
 
   // [COMMENT]: Kiểm tra trạng thái phiên đăng nhập hiện tại
   const { authenticated, loading } = useUserSession();
+
+  useEffect(() => {
+    if (!oauthError || oauthErrorShownRef.current === oauthError) return;
+    oauthErrorShownRef.current = oauthError;
+    // OAuth is only an alternate credential for a previously linked Aurora
+    // account. Keep all callback failures indistinguishable to avoid identity
+    // enumeration through provider, account, revocation or infrastructure state.
+    toast.error("OAuth sign-in failed. Please try again.");
+    const cleanSigninPath =
+      returnTo === "/" ? "/signin" : `/signin?return_to=${encodeURIComponent(returnTo)}`;
+    router.replace(cleanSigninPath);
+  }, [oauthError, returnTo, router]);
 
   // [COMMENT]: Chuyển hướng người dùng về trang dashboard nếu đã đăng nhập thành công
   useEffect(() => {
@@ -200,6 +215,7 @@ function AuthPageContent() {
                   <SignInForm
                     zones={zones}
                     selectedZoneCode={effectiveZoneCode}
+                    returnTo={returnTo}
                     onZoneChange={setSelectedZoneCode}
                     onSwitchToSignUp={() => switchMode("signup")}
                   />

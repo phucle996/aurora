@@ -17,6 +17,7 @@ type AuthService interface {
 
 	// Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng qua gRPC
 	VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.VerifyUserCredentialsResult, error)
+	VerifyExternalIdentity(ctx context.Context, req iamEntity.ExternalLoginRequest) (*iamEntity.ExternalLoginResult, error)
 }
 
 // BillingOutboxNotifier chỉ là tín hiệu đánh thức best-effort sau commit;

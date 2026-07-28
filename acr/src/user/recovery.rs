@@ -252,7 +252,7 @@ pub async fn try_handle_recovery_session(
 
     let tenant_id = tenant_id_opt.unwrap_or_else(|| "platform".to_string());
 
-    let (resolved_zone_id, resolved_zone_code, _) = match resolve_zone_context(
+    let (resolved_zone_id, resolved_zone_code, resolved_zone_status) = match resolve_zone_context(
         shared_redis,
         redis_client,
         cookie_header,
@@ -261,12 +261,24 @@ pub async fn try_handle_recovery_session(
     .await
     {
         Ok(res) => res,
-        Err(_) => (
-            "global".to_string(),
-            "global".to_string(),
-            "active".to_string(),
-        ),
+        Err(_) => {
+            release_recovery_lock(session_mgr, &token_hash).await;
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::BadRequest,
+                "A concrete zone_code is required",
+            ))));
+        }
     };
+    if resolved_zone_code == "global"
+        || resolved_zone_id == "00000000-0000-0000-0000-000000000000"
+        || (resolved_zone_status != "active" && resolved_zone_status != "draining")
+    {
+        release_recovery_lock(session_mgr, &token_hash).await;
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Forbidden,
+            "Zone unavailable",
+        ))));
+    }
 
     let cp_req = crate::infra::iam_proto::auth::VerifyOpaqueRefreshTokenRequest {
         refresh_token: refresh_token.clone(),
@@ -347,15 +359,13 @@ pub async fn try_handle_recovery_session(
     let res_val = match release_user_session(
         session_mgr,
         token_mgr,
-        redis_client,
-        shared_redis,
         config,
         &cp_res.user_id,
         &cp_res.username,
         &cp_res.role,
         cp_res.level,
         &tenant_id,
-        &resolved_zone_code,
+        &resolved_zone_id,
         &client_device_id,
         &client_device_id,
         "",

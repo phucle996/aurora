@@ -56,7 +56,7 @@ opentelemetry-otlp = { version = "0.16.0", features = ["grpc-tonic", "metrics"] 
 # Vault Transit: JWT HMAC ký/xác thực qua HashiCorp Vault REST API
 # ═══════════════════════════════════════
 # Reqwest làm HTTP client gọi REST API tới Vault Transit Engine
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 # Base64 encoding/decoding phục vụ giao tiếp với Vault Transit API
 base64 = "0.22"
@@ -66,6 +66,9 @@ ed25519-dalek = { version = "2.1", features = ["alloc"] }
 
 # Moka: Concurrent L1 Cache cho JWT Signature Verification (LRU, TTL, max capacity)
 moka = { version = "0.12", features = ["future"] }
+
+# Google OIDC ID-token signature verification against the provider JWKS.
+jsonwebtoken = "9.3.1"
 
 [build-dependencies]
 tonic-build = "0.9"

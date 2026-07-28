@@ -2,8 +2,10 @@ package pubsubHandler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,8 +25,10 @@ import (
 )
 
 const (
-	verifyCredentialsChannel     = "iam.auth.verify_credentials"
-	verifyCredentialsReplyPrefix = "iam.auth.verify_credentials.reply."
+	verifyCredentialsChannel          = "iam.auth.verify_credentials"
+	verifyCredentialsReplyPrefix      = "iam.auth.verify_credentials.reply."
+	verifyExternalIdentityChannel     = "iam.auth.verify_external_identity"
+	verifyExternalIdentityReplyPrefix = "iam.auth.verify_external_identity.reply."
 
 	verifyOpaqueTokenChannel     = "iam.auth.verify_opaque_token"
 	verifyOpaqueTokenReplyPrefix = "iam.auth.verify_opaque_token.reply."
@@ -77,6 +81,7 @@ func (h *AuthRedisHandler) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	pubsub := h.sharedRedis.Subscribe(ctx,
 		verifyCredentialsChannel,
+		verifyExternalIdentityChannel,
 		verifyOpaqueTokenChannel,
 		revokeOpaqueTokenChannel,
 	)
@@ -125,11 +130,186 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 	switch msg.Channel {
 	case verifyCredentialsChannel:
 		h.handleVerifyCredentials(payload)
+	case verifyExternalIdentityChannel:
+		h.handleVerifyExternalIdentity(payload)
 	case verifyOpaqueTokenChannel:
 		h.handleVerifyOpaqueToken(payload)
 	case revokeOpaqueTokenChannel:
 		h.handleRevokeOpaqueToken(payload)
 	}
+}
+
+func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if len(payload) <= 16 {
+		logger.SysWarn("Redis.VerifyExternalIdentity", "Missing request id envelope")
+		return
+	}
+	requestID, err := uuid.FromBytes(payload[:16])
+	if err != nil || requestID == uuid.Nil {
+		logger.SysWarn("Redis.VerifyExternalIdentity", "Invalid request id envelope")
+		return
+	}
+	replyChannel := verifyExternalIdentityReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:verify_external_identity:" + requestID.String()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil || !acquired {
+		return
+	}
+
+	respond := func(resp *iamproto.VerifyExternalIdentityResponse) {
+		respData, marshalErr := proto.Marshal(resp)
+		if marshalErr != nil {
+			logger.SysError("Redis.VerifyExternalIdentity", "Failed to marshal response payload")
+			return
+		}
+		if publishErr := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); publishErr != nil {
+			logger.SysError("Redis.VerifyExternalIdentity", "Failed to send Redis reply")
+		}
+	}
+	var req iamproto.VerifyExternalIdentityRequest
+	if err := proto.Unmarshal(payload[16:], &req); err != nil {
+		respond(&iamproto.VerifyExternalIdentityResponse{
+			Valid:        false,
+			ErrorMessage: "INVALID_REQUEST_PAYLOAD",
+		})
+		return
+	}
+	if req.SchemaVersion != 1 || req.OperationId == "" ||
+		req.Provider == "" || req.ProviderSubject == "" ||
+		req.ProviderEmail == "" || req.DisplayName == "" ||
+		req.PublicKey == "" || req.ZoneCode == "" || req.ZoneCode == "global" {
+		respond(&iamproto.VerifyExternalIdentityResponse{
+			Valid:        false,
+			ErrorMessage: "INVALID_EXTERNAL_IDENTITY",
+		})
+		return
+	}
+	decodedPublicKey, publicKeyErr := base64.StdEncoding.DecodeString(req.PublicKey)
+	// This is the Redis wire boundary: reject malformed/unbounded input here so
+	// service/repository layers can operate on the canonical identity contract.
+	if req.Provider != strings.ToLower(req.Provider) ||
+		req.ProviderSubject != strings.TrimSpace(req.ProviderSubject) ||
+		req.ProviderEmail != strings.ToLower(strings.TrimSpace(req.ProviderEmail)) ||
+		req.DisplayName != strings.TrimSpace(req.DisplayName) ||
+		req.ZoneCode != strings.ToLower(strings.TrimSpace(req.ZoneCode)) ||
+		req.EmailVerifiedAt <= 0 ||
+		req.EmailVerifiedAt > time.Now().Add(5*time.Minute).Unix() ||
+		publicKeyErr != nil || len(decodedPublicKey) != 32 ||
+		base64.StdEncoding.EncodeToString(decodedPublicKey) != req.PublicKey ||
+		len(req.ProviderSubject) > 255 || len(req.ProviderEmail) > 320 ||
+		len(req.DisplayName) > 120 || len(req.AvatarUrl) > 2048 ||
+		len(req.PublicKey) > 128 || len(req.DeviceName) > 120 ||
+		len(req.DeviceType) > 64 || len(req.ClientIp) > 128 ||
+		len(req.UserAgent) > 1024 ||
+		(req.AvatarUrl != "" && !strings.HasPrefix(req.AvatarUrl, "https://")) {
+		respond(&iamproto.VerifyExternalIdentityResponse{
+			Valid:        false,
+			ErrorMessage: "INVALID_EXTERNAL_IDENTITY",
+		})
+		return
+	}
+	operationID, err := uuid.Parse(req.OperationId)
+	if err != nil {
+		respond(&iamproto.VerifyExternalIdentityResponse{
+			Valid:        false,
+			ErrorMessage: "INVALID_OPERATION_ID",
+		})
+		return
+	}
+	var clientDeviceID uuid.UUID
+	if req.ClientDeviceId != "" {
+		clientDeviceID, err = uuid.Parse(req.ClientDeviceId)
+		if err != nil {
+			respond(&iamproto.VerifyExternalIdentityResponse{
+				Valid:        false,
+				ErrorMessage: "INVALID_DEVICE_ID",
+			})
+			return
+		}
+	}
+	provider := iamEntity.ExternalProvider(req.Provider)
+	if provider != iamEntity.ExternalProviderGoogle && provider != iamEntity.ExternalProviderGitHub {
+		respond(&iamproto.VerifyExternalIdentityResponse{
+			Valid:        false,
+			ErrorMessage: "INVALID_PROVIDER",
+		})
+		return
+	}
+
+	loginReq := iamEntity.ExternalLoginRequest{
+		OperationID: operationID,
+		Identity: iamEntity.VerifiedExternalIdentity{
+			Provider:        provider,
+			Subject:         req.ProviderSubject,
+			Email:           req.ProviderEmail,
+			EmailVerifiedAt: time.Unix(req.EmailVerifiedAt, 0).UTC(),
+			DisplayName:     req.DisplayName,
+			AvatarURL:       optionalString(req.AvatarUrl),
+		},
+		DevicePublicKey: req.PublicKey,
+		TrustDevice:     req.TrustDevice,
+		DeviceName:      req.DeviceName,
+		DeviceType:      req.DeviceType,
+		ClientDeviceID:  clientDeviceID,
+		ZoneCode:        req.ZoneCode,
+		RemoteIP:        req.ClientIp,
+		UserAgent:       req.UserAgent,
+	}
+	res, err := h.authService.VerifyExternalIdentity(ctx, loginReq)
+	if err != nil {
+		switch {
+		case errors.Is(err, iamTaxonomy.ErrVerificationRequired):
+			respond(&iamproto.VerifyExternalIdentityResponse{
+				Valid:        false,
+				ErrorMessage: "PASSWORD_SETUP_REQUIRED",
+			})
+		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
+			respond(&iamproto.VerifyExternalIdentityResponse{
+				Valid:        false,
+				ErrorMessage: "INVALID_CREDENTIALS",
+			})
+		case errors.Is(err, iamTaxonomy.ErrRoleRequired):
+			respond(&iamproto.VerifyExternalIdentityResponse{
+				Valid:        false,
+				ErrorMessage: "ROLE_REQUIRED",
+			})
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
+			respond(&iamproto.VerifyExternalIdentityResponse{
+				Valid:        false,
+				ErrorMessage: "INVALID_EXTERNAL_IDENTITY",
+			})
+		default:
+			logger.SysError("Redis.VerifyExternalIdentity", "External identity verification failed")
+			respond(&iamproto.VerifyExternalIdentityResponse{
+				Valid:        false,
+				ErrorMessage: "AUTHENTICATION_UNAVAILABLE",
+			})
+		}
+		return
+	}
+	respond(&iamproto.VerifyExternalIdentityResponse{
+		Valid:                 res.Valid,
+		UserId:                res.UserID,
+		RoleId:                res.RoleID,
+		Level:                 res.Level,
+		TenantId:              res.TenantID,
+		ClientDeviceId:        res.ClientDeviceID,
+		RefreshToken:          res.RefreshToken,
+		RefreshTokenExpiresAt: res.RefreshTokenExpiresAt.Unix(),
+		Username:              res.Username,
+		ClientProofPublicKey:  res.ClientProofPublicKey,
+		ZoneCode:              res.ZoneCode,
+	})
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // =========================================================================
@@ -183,23 +363,22 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		}
 	}
 
-	respondError := func(errMsg string) {
-		respond(&iamproto.VerifyUserCredentialsResponse{
-			Valid:        false,
-			ErrorMessage: errMsg,
-		})
-	}
-
 	var req iamproto.VerifyUserCredentialsRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
 		logger.SysError("Redis.VerifyUserCredentials", "Failed to unmarshal request data")
-		respondError("invalid request payload")
+		respond(&iamproto.VerifyUserCredentialsResponse{
+			Valid:        false,
+			ErrorMessage: "invalid request payload",
+		})
 		return
 	}
 
 	if req.Username == "" || req.Password == "" {
 		logger.SysWarn("Redis.VerifyUserCredentials", "Username and password are required")
-		respondError("Username and password are required")
+		respond(&iamproto.VerifyUserCredentialsResponse{
+			Valid:        false,
+			ErrorMessage: "Username and password are required",
+		})
 		return
 	}
 
@@ -225,21 +404,33 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 	res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
-			respondError("ACCOUNT_VERIFICATION_REQUIRED")
+			respond(&iamproto.VerifyUserCredentialsResponse{
+				Valid:        false,
+				ErrorMessage: "ACCOUNT_VERIFICATION_REQUIRED",
+			})
 			return
 		}
 		if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
 			logger.SysWarn("Redis.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
-			respondError(iamTaxonomy.ErrInvalidCredentials.Error())
+			respond(&iamproto.VerifyUserCredentialsResponse{
+				Valid:        false,
+				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
+			})
 			return
 		}
 		if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 			logger.SysWarn("Redis.VerifyUserCredentials", "Login attempt failed: invalid credentials")
-			respondError(iamTaxonomy.ErrInvalidCredentials.Error())
+			respond(&iamproto.VerifyUserCredentialsResponse{
+				Valid:        false,
+				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
+			})
 			return
 		}
 		logger.SysError("Redis.VerifyUserCredentials", "Failed to verify credentials due to system error")
-		respondError("authentication service temporarily unavailable")
+		respond(&iamproto.VerifyUserCredentialsResponse{
+			Valid:        false,
+			ErrorMessage: "authentication service temporarily unavailable",
+		})
 		return
 	}
 
@@ -308,23 +499,22 @@ func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
 		}
 	}
 
-	respondError := func(errMsg string) {
-		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
-			Valid:        false,
-			ErrorMessage: errMsg,
-		})
-	}
-
 	var req iamproto.VerifyOpaqueRefreshTokenRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
 		logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
-		respondError("invalid request payload")
+		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:        false,
+			ErrorMessage: "invalid request payload",
+		})
 		return
 	}
 
 	userUUID, err := uuid.Parse(req.UserId)
 	if err != nil {
-		respondError(fmt.Sprintf("invalid user id format: %v", err))
+		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:        false,
+			ErrorMessage: fmt.Sprintf("invalid user id format: %v", err),
+		})
 		return
 	}
 
@@ -333,14 +523,20 @@ func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
 		if parsed, err := uuid.Parse(*req.TenantId); err == nil {
 			tenantUUIDPtr = &parsed
 		} else {
-			respondError(fmt.Sprintf("invalid tenant id format: %v", err))
+			respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
+				Valid:        false,
+				ErrorMessage: fmt.Sprintf("invalid tenant id format: %v", err),
+			})
 			return
 		}
 	}
 
 	res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, tenantUUIDPtr, userUUID)
 	if err != nil {
-		respondError(err.Error())
+		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:        false,
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 

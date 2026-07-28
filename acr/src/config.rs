@@ -51,6 +51,46 @@ pub struct Config {
     pub billing_console_origin: String,
     // [COMMENT]: Danh sách các origin được phép gọi API (đọc từ APP_ALLOWED_ORIGINS)
     pub allowed_origins: Vec<String>,
+    pub oauth: OAuthConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuthProviderConfig {
+    pub enabled: bool,
+    pub client_id: String,
+    pub client_secret_path: String,
+    pub redirect_uri: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuthConfig {
+    pub google: OAuthProviderConfig,
+    pub github: OAuthProviderConfig,
+    pub state_ttl_secs: u64,
+}
+
+impl OAuthProviderConfig {
+    fn from_env(prefix: &str, default_redirect_uri: &str) -> Self {
+        let enabled = env::var(format!("{prefix}_ENABLED"))
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
+            .unwrap_or(false);
+        Self {
+            enabled,
+            client_id: env::var(format!("{prefix}_CLIENT_ID")).unwrap_or_default(),
+            client_secret_path: env::var(format!("{prefix}_CLIENT_SECRET_PATH"))
+                .unwrap_or_default(),
+            redirect_uri: env::var(format!("{prefix}_REDIRECT_URI"))
+                .unwrap_or_else(|_| default_redirect_uri.to_string())
+                .trim_end_matches('/')
+                .to_string(),
+        }
+    }
 }
 
 impl Config {
@@ -196,6 +236,23 @@ impl Config {
             })
             .unwrap_or_default();
 
+        let oauth = OAuthConfig {
+            google: OAuthProviderConfig::from_env(
+                "ACR_OAUTH_GOOGLE",
+                "https://cloud.aurora.local/api/v1/auth/oauth/google/callback",
+            ),
+            github: OAuthProviderConfig::from_env(
+                "ACR_OAUTH_GITHUB",
+                "https://cloud.aurora.local/api/v1/auth/oauth/github/callback",
+            ),
+            state_ttl_secs: env::var("ACR_OAUTH_STATE_TTL_SECS")
+                .unwrap_or_else(|_| "300".to_string())
+                .parse::<u64>()
+                .map_err(|_| {
+                    AcrError::ConfigError("ACR_OAUTH_STATE_TTL_SECS must be a number".to_string())
+                })?,
+        };
+
         Ok(Config {
             grpc_port,
             redis_url,
@@ -208,6 +265,7 @@ impl Config {
             app_public_domain,
             billing_console_origin,
             allowed_origins,
+            oauth,
         })
     }
 }

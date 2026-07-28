@@ -1,5 +1,4 @@
 import React from "react";
-import { Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ExtendedUser } from "./UserTable";
@@ -21,12 +20,11 @@ export function OverviewTab({ selectedUser }: OverviewTabProps) {
           </div>
 
           <div className="flex justify-between items-center border-b border-border/30 py-2 gap-4">
-            <span className="text-[11px] font-semibold text-muted-foreground shrink-0">Email</span>
+            <span className="text-[11px] font-semibold text-muted-foreground shrink-0">Account email</span>
             <div className="flex items-center gap-1.5 min-w-0 justify-end">
               <span className="font-semibold text-foreground truncate select-all">{selectedUser.email}</span>
-              <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/30 font-extrabold uppercase tracking-wider text-[9px] h-4 shrink-0">
-                <Check className="h-2.5 w-2.5 font-bold" />
-                Verified
+              <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 font-extrabold uppercase tracking-wider text-[9px] h-4 shrink-0">
+                Identifier
               </Badge>
             </div>
           </div>
@@ -56,6 +54,7 @@ export function OverviewTab({ selectedUser }: OverviewTabProps) {
           </div>
         </div>
       </div>
+
     </div>
   );
 }

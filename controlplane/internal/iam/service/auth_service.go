@@ -264,7 +264,11 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}
 
 	// [COMMENT]: 2. Xác thực mật khẩu sử dụng thư viện băm bảo mật
-	verified, verifyErr := security.VerifyPassword(user.PasswordHash, req.Password)
+	if user.PasswordHash == nil {
+		loginOutcome = iamMetrics.OutcomeInvalidCredential
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
+	}
+	verified, verifyErr := security.VerifyPassword(*user.PasswordHash, req.Password)
 	if verifyErr != nil {
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, verifyErr, iamMetrics.OutcomeInvalidCredential)
@@ -450,4 +454,93 @@ func cleanString(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+// VerifyExternalIdentity consumes only the canonical identity produced by ACR.
+// Provider parsing and cryptographic assertion verification must stay upstream.
+func (s *AuthService) VerifyExternalIdentity(
+	ctx context.Context,
+	req iamEntity.ExternalLoginRequest,
+) (*iamEntity.ExternalLoginResult, error) {
+	identity, user, err := s.repo.VerifyExternalIdentity(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if identity == nil || user == nil || user.Status != iamEntity.UserStatusActive {
+		return nil, iamTaxonomy.ErrInvalidCredentials
+	}
+	if user.PasswordHash == nil || strings.TrimSpace(*user.PasswordHash) == "" {
+		return nil, iamTaxonomy.ErrVerificationRequired
+	}
+
+	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
+	clientDeviceID := req.ClientDeviceID
+	if matchedClientDeviceID != "" {
+		if parsed, parseErr := uuid.Parse(matchedClientDeviceID); parseErr == nil {
+			clientDeviceID = parsed
+		}
+	}
+	if clientDeviceID == uuid.Nil {
+		clientDeviceID = uuid.New()
+	}
+
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "OAuth browser"
+	}
+	deviceType := strings.TrimSpace(req.DeviceType)
+	if deviceType == "" {
+		deviceType = "browser"
+	}
+	fp := sha256.Sum256([]byte(req.DevicePublicKey))
+	clientDeviceIDValue := clientDeviceID.String()
+	remoteIP := req.RemoteIP
+	userAgent := req.UserAgent
+	loginDevice := iamEntity.Device{
+		UserID:               user.ID,
+		DeviceName:           deviceName,
+		DeviceType:           &deviceType,
+		PublicKey:            req.DevicePublicKey,
+		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
+		ClientDeviceID:       cleanOptionalString(&clientDeviceIDValue),
+		LastSeenIP:           cleanOptionalString(&remoteIP),
+		LastSeenUserAgent:    cleanOptionalString(&userAgent),
+		UpdatedAt:            time.Now().UTC(),
+	}
+	trackedDevice, err := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
+	if err != nil {
+		return nil, fmt.Errorf("%w: register external login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
+	}
+	if trackedDevice == nil || trackedDevice.RevokedAt != nil || strings.TrimSpace(trackedDevice.ID) == "" {
+		return nil, iamTaxonomy.ErrInvalidCredentials
+	}
+	trackedDeviceID, err := uuid.Parse(trackedDevice.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: parse external login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
+	}
+
+	var rawRefresh string
+	var refreshExpiresAt time.Time
+	if req.TrustDevice {
+		rawRefresh, refreshExpiresAt, err = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.billingOutboxNotifier != nil {
+		s.billingOutboxNotifier.Notify()
+	}
+
+	return &iamEntity.ExternalLoginResult{
+		Valid:                 true,
+		UserID:                user.ID.String(),
+		RoleID:                user.RoleID,
+		Level:                 user.Level,
+		ClientDeviceID:        clientDeviceID.String(),
+		RefreshToken:          rawRefresh,
+		RefreshTokenExpiresAt: refreshExpiresAt,
+		Username:              user.Username,
+		ClientProofPublicKey:  trackedDevice.PublicKey,
+		ZoneCode:              req.ZoneCode,
+	}, nil
 }

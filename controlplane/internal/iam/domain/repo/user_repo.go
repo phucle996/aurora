@@ -16,6 +16,7 @@ type UserRepository interface {
 	UpdateUserStatus(ctx context.Context, callerLevel uint8, userID uuid.UUID, status string) error
 	// [COMMENT]: GetUserProfile lấy thông tin profile hiển thị của user từ bảng user_profiles
 	GetUserProfile(ctx context.Context, userID uuid.UUID) (*iamEntity.UserProfile, error)
+	GetUserAuthMethods(ctx context.Context, callerLevel uint8, userID uuid.UUID) (*iamEntity.UserAuthMethods, error)
 	// [COMMENT]: ResetUserPassword cập nhật mật khẩu của user dưới DB và lưu lịch sử mật khẩu cũ
 	ResetUserPassword(ctx context.Context, callerLevel uint8, userID uuid.UUID, passwordHash string) error
 }

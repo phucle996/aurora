@@ -93,6 +93,11 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.RbacPlatformHandler.GetUserRolesPlatform,
 		)
 
+		personalGroup.GET("/iam/users/:id/auth-methods",
+			middleware.Authorize("iam:users:read", module.L1Registry, "2"),
+			module.UserHandler.GetUserAuthMethodsPlatform,
+		)
+
 		// [COMMENT]: Lấy trạng thái xác thực MFA của một user cụ thể phục vụ platform audit (yêu cầu quyền iam:mfa:view và level 2)
 		personalGroup.GET("/iam/users/:id/mfa",
 			middleware.Authorize("iam:mfa:view", module.L1Registry, "2"),

@@ -83,6 +83,23 @@ fn verifying_key(public_key_b64: &str) -> Result<VerifyingKey, String> {
     VerifyingKey::from_bytes(&bytes).map_err(|_| "invalid Ed25519 public key".to_string())
 }
 
+pub fn canonicalize_public_key(public_key_b64: &str) -> Result<String, String> {
+    let bytes = BASE64
+        .decode(public_key_b64.trim())
+        .map_err(|_| "invalid session proof public key encoding".to_string())?;
+    if bytes.len() != 32 {
+        return Err("session proof public key must be 32 bytes".to_string());
+    }
+    VerifyingKey::from_bytes(
+        &bytes
+            .clone()
+            .try_into()
+            .map_err(|_| "session proof public key must be 32 bytes".to_string())?,
+    )
+    .map_err(|_| "invalid Ed25519 public key".to_string())?;
+    Ok(BASE64.encode(bytes))
+}
+
 fn verify(public_key_b64: &str, message: &str, signature_b64: &str) -> Result<(), String> {
     let signature = BASE64
         .decode(signature_b64)

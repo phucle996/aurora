@@ -86,6 +86,14 @@ func (s *UserService) GetUserProfile(ctx context.Context, userID uuid.UUID) (*ia
 	return s.repo.GetUserProfile(ctx, userID)
 }
 
+func (s *UserService) GetUserAuthMethods(
+	ctx context.Context,
+	callerLevel uint8,
+	targetUserID uuid.UUID,
+) (*iamEntity.UserAuthMethods, error) {
+	return s.repo.GetUserAuthMethods(ctx, callerLevel, targetUserID)
+}
+
 // [COMMENT]: ResetUserPassword thực hiện thay đổi mật khẩu của user bởi Admin, hash mật khẩu bằng Argon2id và lưu trữ vào database
 func (s *UserService) ResetUserPassword(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, newPassword string) error {
 	// [COMMENT]: 1. Hash password mới bằng Argon2id sử dụng module security nội bộ

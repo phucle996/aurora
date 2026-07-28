@@ -21,6 +21,35 @@ export type SessionProofChallenge = {
   expires_in: number;
 };
 
+export type OAuthProvider = "google" | "github";
+
+export type OAuthStartRequest = {
+  device_public_key: string;
+  trust_device: boolean;
+  zone_code: string;
+  device_name?: string;
+  device_type?: string;
+  return_to?: string;
+};
+
+export type OAuthStartResponse = {
+  authorization_url: string;
+  expires_in: number;
+};
+
+export async function startOAuth(
+  provider: OAuthProvider,
+  payload: OAuthStartRequest,
+  options: { signal?: AbortSignal } = {},
+): Promise<OAuthStartResponse> {
+  return fetchJSON<OAuthStartResponse>(`/api/v1/auth/oauth/${provider}/start`, {
+    method: "POST",
+    body: payload,
+    credentials: "include",
+    signal: options.signal,
+  });
+}
+
 export async function requestLoginChallenge(
   options: { signal?: AbortSignal } = {},
 ): Promise<SessionProofChallenge> {
@@ -103,6 +132,7 @@ export async function logout(
 export const authAPI = {
   login,
   requestLoginChallenge,
+  startOAuth,
   register,
 	verifyAccount,
   logout,

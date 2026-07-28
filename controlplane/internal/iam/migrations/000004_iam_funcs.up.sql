@@ -20,10 +20,6 @@ BEGIN
     -- Xóa các user refresh tokens đã quá hạn hơn 7 ngày
     DELETE FROM refresh_tokens 
     WHERE expires_at < NOW() - INTERVAL '7 days';
-
-    -- Xóa các oauth tokens đã quá hạn hơn 7 ngày
-    DELETE FROM oauth_tokens 
-    WHERE expires_at < NOW() - INTERVAL '7 days';
 END;
 $$;
 
@@ -36,7 +32,7 @@ BEGIN
     DELETE FROM admin_recovery_codes 
     WHERE used_at IS NOT NULL AND used_at < NOW() - INTERVAL '30 days';
 
-    -- Gọi thủ tục dọn dẹp user/oauth refresh tokens (quá hạn > 7 ngày)
+    -- Gọi thủ tục dọn dẹp user refresh tokens (quá hạn > 7 ngày)
     CALL cleanup_expired_refresh_tokens();
 END;
 $$;

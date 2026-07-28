@@ -509,6 +509,304 @@ func (x *VerifyUserCredentialsResponse) GetRefreshTokenExpiresAt() int64 {
 	return 0
 }
 
+// [COMMENT]: Identity OAuth/OIDC đã được ACR parse, verify chữ ký/claims và canonicalize.
+// Controlplane không nhận raw provider JSON, authorization code hoặc provider token.
+type VerifyExternalIdentityRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	OperationId     string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	SchemaVersion   uint32                 `protobuf:"varint,2,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	Provider        string                 `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`
+	ProviderSubject string                 `protobuf:"bytes,4,opt,name=provider_subject,json=providerSubject,proto3" json:"provider_subject,omitempty"`
+	ProviderEmail   string                 `protobuf:"bytes,5,opt,name=provider_email,json=providerEmail,proto3" json:"provider_email,omitempty"`
+	EmailVerifiedAt int64                  `protobuf:"varint,6,opt,name=email_verified_at,json=emailVerifiedAt,proto3" json:"email_verified_at,omitempty"`
+	DisplayName     string                 `protobuf:"bytes,7,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	AvatarUrl       string                 `protobuf:"bytes,8,opt,name=avatar_url,json=avatarUrl,proto3" json:"avatar_url,omitempty"`
+	ClientDeviceId  string                 `protobuf:"bytes,9,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
+	DeviceName      string                 `protobuf:"bytes,10,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	DeviceType      string                 `protobuf:"bytes,11,opt,name=device_type,json=deviceType,proto3" json:"device_type,omitempty"`
+	PublicKey       string                 `protobuf:"bytes,12,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	TrustDevice     bool                   `protobuf:"varint,13,opt,name=trust_device,json=trustDevice,proto3" json:"trust_device,omitempty"`
+	ZoneCode        string                 `protobuf:"bytes,14,opt,name=zone_code,json=zoneCode,proto3" json:"zone_code,omitempty"`
+	ClientIp        string                 `protobuf:"bytes,15,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	UserAgent       string                 `protobuf:"bytes,16,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *VerifyExternalIdentityRequest) Reset() {
+	*x = VerifyExternalIdentityRequest{}
+	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyExternalIdentityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyExternalIdentityRequest) ProtoMessage() {}
+
+func (x *VerifyExternalIdentityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyExternalIdentityRequest.ProtoReflect.Descriptor instead.
+func (*VerifyExternalIdentityRequest) Descriptor() ([]byte, []int) {
+	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *VerifyExternalIdentityRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *VerifyExternalIdentityRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetProviderSubject() string {
+	if x != nil {
+		return x.ProviderSubject
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetProviderEmail() string {
+	if x != nil {
+		return x.ProviderEmail
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetEmailVerifiedAt() int64 {
+	if x != nil {
+		return x.EmailVerifiedAt
+	}
+	return 0
+}
+
+func (x *VerifyExternalIdentityRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetAvatarUrl() string {
+	if x != nil {
+		return x.AvatarUrl
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetDeviceType() string {
+	if x != nil {
+		return x.DeviceType
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetTrustDevice() bool {
+	if x != nil {
+		return x.TrustDevice
+	}
+	return false
+}
+
+func (x *VerifyExternalIdentityRequest) GetZoneCode() string {
+	if x != nil {
+		return x.ZoneCode
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityRequest) GetUserAgent() string {
+	if x != nil {
+		return x.UserAgent
+	}
+	return ""
+}
+
+type VerifyExternalIdentityResponse struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Valid                 bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	UserId                string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	RoleId                string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	Level                 int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`
+	TenantId              string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ClientDeviceId        string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
+	RefreshToken          string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	ErrorMessage          string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	Username              string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`
+	ClientProofPublicKey  string                 `protobuf:"bytes,10,opt,name=client_proof_public_key,json=clientProofPublicKey,proto3" json:"client_proof_public_key,omitempty"`
+	RefreshTokenExpiresAt int64                  `protobuf:"varint,11,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"`
+	ZoneCode              string                 `protobuf:"bytes,12,opt,name=zone_code,json=zoneCode,proto3" json:"zone_code,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *VerifyExternalIdentityResponse) Reset() {
+	*x = VerifyExternalIdentityResponse{}
+	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyExternalIdentityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyExternalIdentityResponse) ProtoMessage() {}
+
+func (x *VerifyExternalIdentityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyExternalIdentityResponse.ProtoReflect.Descriptor instead.
+func (*VerifyExternalIdentityResponse) Descriptor() ([]byte, []int) {
+	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *VerifyExternalIdentityResponse) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+func (x *VerifyExternalIdentityResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetRoleId() string {
+	if x != nil {
+		return x.RoleId
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetLevel() int32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+func (x *VerifyExternalIdentityResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetClientProofPublicKey() string {
+	if x != nil {
+		return x.ClientProofPublicKey
+	}
+	return ""
+}
+
+func (x *VerifyExternalIdentityResponse) GetRefreshTokenExpiresAt() int64 {
+	if x != nil {
+		return x.RefreshTokenExpiresAt
+	}
+	return 0
+}
+
+func (x *VerifyExternalIdentityResponse) GetZoneCode() string {
+	if x != nil {
+		return x.ZoneCode
+	}
+	return ""
+}
+
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2
 type RoleEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -519,7 +817,7 @@ type RoleEntry struct {
 
 func (x *RoleEntry) Reset() {
 	*x = RoleEntry{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[6]
+	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -531,7 +829,7 @@ func (x *RoleEntry) String() string {
 func (*RoleEntry) ProtoMessage() {}
 
 func (x *RoleEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[6]
+	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -544,7 +842,7 @@ func (x *RoleEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoleEntry.ProtoReflect.Descriptor instead.
 func (*RoleEntry) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{6}
+	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RoleEntry) GetPermissions() []string {
@@ -605,7 +903,44 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\busername\x18\t \x01(\tR\busername\x125\n" +
 	"\x17client_proof_public_key\x18\n" +
 	" \x01(\tR\x14clientProofPublicKey\x127\n" +
-	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\"-\n" +
+	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\"\xcc\x04\n" +
+	"\x1dVerifyExternalIdentityRequest\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
+	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12\x1a\n" +
+	"\bprovider\x18\x03 \x01(\tR\bprovider\x12)\n" +
+	"\x10provider_subject\x18\x04 \x01(\tR\x0fproviderSubject\x12%\n" +
+	"\x0eprovider_email\x18\x05 \x01(\tR\rproviderEmail\x12*\n" +
+	"\x11email_verified_at\x18\x06 \x01(\x03R\x0femailVerifiedAt\x12!\n" +
+	"\fdisplay_name\x18\a \x01(\tR\vdisplayName\x12\x1d\n" +
+	"\n" +
+	"avatar_url\x18\b \x01(\tR\tavatarUrl\x12(\n" +
+	"\x10client_device_id\x18\t \x01(\tR\x0eclientDeviceId\x12\x1f\n" +
+	"\vdevice_name\x18\n" +
+	" \x01(\tR\n" +
+	"deviceName\x12\x1f\n" +
+	"\vdevice_type\x18\v \x01(\tR\n" +
+	"deviceType\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\f \x01(\tR\tpublicKey\x12!\n" +
+	"\ftrust_device\x18\r \x01(\bR\vtrustDevice\x12\x1b\n" +
+	"\tzone_code\x18\x0e \x01(\tR\bzoneCode\x12\x1b\n" +
+	"\tclient_ip\x18\x0f \x01(\tR\bclientIp\x12\x1d\n" +
+	"\n" +
+	"user_agent\x18\x10 \x01(\tR\tuserAgent\"\xed\x03\n" +
+	"\x1eVerifyExternalIdentityResponse\x12\x14\n" +
+	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
+	"\arole_id\x18\x03 \x01(\tR\x06roleId\x12\x14\n" +
+	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
+	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
+	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
+	"\rrefresh_token\x18\a \x01(\tR\frefreshToken\x12#\n" +
+	"\rerror_message\x18\b \x01(\tR\ferrorMessage\x12\x1a\n" +
+	"\busername\x18\t \x01(\tR\busername\x125\n" +
+	"\x17client_proof_public_key\x18\n" +
+	" \x01(\tR\x14clientProofPublicKey\x127\n" +
+	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12\x1b\n" +
+	"\tzone_code\x18\f \x01(\tR\bzoneCodeJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x10onboarding_tokenR\x15onboarding_expires_at\"-\n" +
 	"\tRoleEntry\x12 \n" +
 	"\vpermissions\x18\x01 \x03(\tR\vpermissions2\xd7\x02\n" +
 	"\vAuthService\x12o\n" +
@@ -625,7 +960,7 @@ func file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP() []byte {
 	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescData
 }
 
-var file_internal_iam_transport_rpc_proto_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_internal_iam_transport_rpc_proto_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_internal_iam_transport_rpc_proto_auth_proto_goTypes = []any{
 	(*VerifyOpaqueRefreshTokenRequest)(nil),  // 0: iam.rpc.VerifyOpaqueRefreshTokenRequest
 	(*VerifyOpaqueRefreshTokenResponse)(nil), // 1: iam.rpc.VerifyOpaqueRefreshTokenResponse
@@ -633,7 +968,9 @@ var file_internal_iam_transport_rpc_proto_auth_proto_goTypes = []any{
 	(*RevokeOpaqueRefreshTokenResponse)(nil), // 3: iam.rpc.RevokeOpaqueRefreshTokenResponse
 	(*VerifyUserCredentialsRequest)(nil),     // 4: iam.rpc.VerifyUserCredentialsRequest
 	(*VerifyUserCredentialsResponse)(nil),    // 5: iam.rpc.VerifyUserCredentialsResponse
-	(*RoleEntry)(nil),                        // 6: iam.rpc.RoleEntry
+	(*VerifyExternalIdentityRequest)(nil),    // 6: iam.rpc.VerifyExternalIdentityRequest
+	(*VerifyExternalIdentityResponse)(nil),   // 7: iam.rpc.VerifyExternalIdentityResponse
+	(*RoleEntry)(nil),                        // 8: iam.rpc.RoleEntry
 }
 var file_internal_iam_transport_rpc_proto_auth_proto_depIdxs = []int32{
 	0, // 0: iam.rpc.AuthService.VerifyOpaqueRefreshToken:input_type -> iam.rpc.VerifyOpaqueRefreshTokenRequest
@@ -661,7 +998,7 @@ func file_internal_iam_transport_rpc_proto_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_auth_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

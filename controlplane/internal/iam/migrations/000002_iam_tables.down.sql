@@ -1,8 +1,3 @@
-DROP TABLE IF EXISTS oauth_tokens;
-DROP TABLE IF EXISTS oauth_grants;
-DROP TABLE IF EXISTS oauth_authorization_codes;
-DROP TABLE IF EXISTS oauth_client_secrets;
-DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS admin_recovery_codes;
 DROP TABLE IF EXISTS admin_2fa_settings;
 DROP TABLE IF EXISTS admin_devices;

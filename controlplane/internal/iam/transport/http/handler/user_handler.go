@@ -61,14 +61,63 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 			"devices_count": u.DevicesCount,
 			"bio":           u.Bio,
 			"fullname":      u.Fullname,
-			"last_seen_ip":  u.LastSeenIP,  // [COMMENT]: IP thực tế từ device hoạt động gần nhất
-			"last_seen_at":  u.LastSeenAt,  // [COMMENT]: Thời điểm hoạt động gần nhất từ device
+			"last_seen_ip":  u.LastSeenIP, // [COMMENT]: IP thực tế từ device hoạt động gần nhất
+			"last_seen_at":  u.LastSeenAt, // [COMMENT]: Thời điểm hoạt động gần nhất từ device
 			"created_at":    u.CreatedAt,
 			"updated_at":    u.UpdatedAt,
 		})
 	}
 
 	apires.RespondSuccess(c, gin.H{"users": resp}, "success")
+}
+
+func (h *UserHandler) GetUserAuthMethodsPlatform(c *gin.Context) {
+	const op = "iam.users.auth_methods"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// ContextInjector has already parsed the trusted X-User-Level injected by
+	// ACR/Envoy. Never accept caller level or identity from query/body fields.
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+	targetUserID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
+	if err != nil || targetUserID == uuid.Nil {
+		logger.HandlerWarn(c, op, err, "invalid target user id")
+		apires.RespondBadRequest(c, "invalid user id")
+		return
+	}
+	methods, err := h.userSvc.GetUserAuthMethods(ctx, callerLevel, targetUserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, iamTaxonomy.ErrUserNotFound):
+			apires.RespondNotFound(c, "user not found")
+		case errors.Is(err, iamTaxonomy.ErrActionNotAllowed):
+			apires.RespondForbidden(c, "target user is outside your hierarchy")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "internal error occurred")
+		}
+		return
+	}
+
+	external := func(summary iamEntity.ExternalIdentitySummary) gin.H {
+		return gin.H{
+			"provider":          string(summary.Provider),
+			"state":             string(summary.State),
+			"provider_email":    summary.ProviderEmail,
+			"email_verified_at": summary.EmailVerifiedAt,
+			"last_login_at":     summary.LastLoginAt,
+			"linked_at":         summary.LinkedAt,
+		}
+	}
+	apires.RespondSuccess(c, gin.H{
+		"account_identifier_email": methods.AccountEmail,
+		"password_set":             methods.PasswordSet,
+		"google":                   external(methods.Google),
+		"github":                   external(methods.GitHub),
+	}, "success")
 }
 
 // [COMMENT]: UpdateUserStatusPlatform thực hiện cập nhật trạng thái hoạt động (vô hiệu hóa) của user

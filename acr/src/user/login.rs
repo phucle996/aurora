@@ -128,8 +128,6 @@ fn canonicalize_login_identity(
 pub async fn release_user_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    redis_client: &redis::Client,
-    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     user_id: &str,
     username: &str,
@@ -145,6 +143,13 @@ pub async fn release_user_session(
         "user.login.release",
         &format!("Releasing new user trinity session for user_id={}", user_id),
     );
+
+    // All user entrypoints resolve a concrete Zone before reaching the issuer.
+    // Keep this final invariant so no future user flow can mint a global session.
+    let resolved_zone_id = Uuid::parse_str(zone_id)
+        .ok()
+        .filter(|value| !value.is_nil())
+        .ok_or_else(|| Status::invalid_argument("User session requires a concrete zone"))?;
 
     let access_key = Uuid::now_v7().to_string();
     let access_secret = Uuid::new_v4().to_string();
@@ -163,15 +168,7 @@ pub async fn release_user_session(
         } else {
             Some(tenant_id.to_string())
         },
-        zone_id: if zone_id.is_empty() {
-            None
-        } else if Uuid::parse_str(zone_id).is_ok() {
-            Some(zone_id.to_string())
-        } else {
-            crate::infra::zone::resolve_code_to_id_and_status(shared_redis, redis_client, zone_id)
-                .await
-                .map(|(id, _)| id)
-        },
+        zone_id: Some(resolved_zone_id.to_string()),
         access_key: access_key.clone(),
         jti: Uuid::new_v4().to_string(),
         iss: Some("aurora-acr".to_string()),
@@ -196,7 +193,10 @@ pub async fn release_user_session(
 
     if let Err(e) = session_mgr
         .register_session(
-            claims.zone_id.as_deref().unwrap_or("global"),
+            claims
+                .zone_id
+                .as_deref()
+                .expect("validated user zone must be present"),
             claims.tenant_id.as_deref().unwrap_or("platform"),
             user_id,
             &access_key,
@@ -301,7 +301,43 @@ pub async fn handle_login(
     };
 
     let client_device_id = Uuid::new_v4().to_string();
-    let zone_code = payload.zone_code.as_deref().unwrap_or("global");
+    let zone_code = payload
+        .zone_code
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if zone_code.is_empty() || zone_code == "global" || zone_code.len() > 64 {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::BadRequest,
+            "A concrete zone_code is required",
+        ))));
+    }
+    let (resolved_zone_id, zone_status) = match crate::infra::zone::resolve_code_to_id_and_status(
+        shared_redis,
+        redis_client,
+        &zone_code,
+    )
+    .await
+    {
+        Some(zone) => zone,
+        None => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::Forbidden,
+                "Zone unavailable",
+            ))))
+        }
+    };
+    if !matches!(
+        Uuid::parse_str(&resolved_zone_id),
+        Ok(value) if !value.is_nil()
+    ) || (zone_status != "active" && zone_status != "draining")
+    {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Forbidden,
+            "Zone unavailable",
+        ))));
+    }
     let public_key = payload.device_public_key.as_deref().unwrap_or_default();
     if let Err(error) = crate::user::session_proof::verify_login_proof(
         session_mgr,
@@ -312,7 +348,7 @@ pub async fn handle_login(
         payload.session_proof_timestamp.unwrap_or_default(),
         &username,
         &tenant_domain,
-        zone_code,
+        &zone_code,
         payload.trust_device.unwrap_or(false),
         public_key,
         payload
@@ -455,15 +491,13 @@ pub async fn handle_login(
     let res_val = match release_user_session(
         session_mgr,
         token_mgr,
-        redis_client,
-        shared_redis,
         config,
         &cp_res.user_id,
         &username,
         &cp_res.role_id,
         cp_res.level,
         &cp_res.tenant_id,
-        zone_code,
+        &resolved_zone_id,
         &cp_res.client_device_id,
         &cp_res.client_device_id,
         &cp_res.client_proof_public_key,
@@ -564,13 +598,11 @@ pub async fn handle_login(
     );
     denied_builder.add_header("set-cookie", &tenant_cookie, None, false);
 
-    if let Some(ref zone_code) = payload.zone_code {
-        let zone_cookie = format!(
-            "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-            zone_code, domain_str
-        );
-        denied_builder.add_header("set-cookie", &zone_cookie, None, false);
-    }
+    let zone_cookie = format!(
+        "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        zone_code, domain_str
+    );
+    denied_builder.add_header("set-cookie", &zone_cookie, None, false);
 
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated("Local intercept login success"));
