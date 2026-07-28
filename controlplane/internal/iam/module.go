@@ -220,10 +220,28 @@ func NewModule(
 		return nil, err
 	}
 
+	// [COMMENT]: Khởi tạo MFA repository chịu trách nhiệm thao tác dữ liệu DB và kiểm tra nil
+	mfaRepo := iamRepoImpl.NewMfaRepository(cfg, db)
+	if mfaRepo == nil {
+		return nil, errors.New("iam module: failed to construct mfa repository implementation")
+	}
+
+	// [COMMENT]: Khởi tạo MFA service chịu trách nhiệm xử lý business logic MFA và kiểm tra nil
+	mfaSvc := iamSvcImpl.NewMfaService(cfg, mfaRepo, authRedis)
+	if mfaSvc == nil {
+		return nil, errors.New("iam module: failed to construct mfa service implementation")
+	}
+
+	// [COMMENT]: Khởi tạo HTTP MFA handler chịu trách nhiệm xử lý API request và kiểm tra nil
+	mfaHandler := iamHandler.NewMfaHandler(mfaSvc)
+	if mfaHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP mfa handler")
+	}
+
 	authSvc := iamSvcImpl.NewAuthService(
 		authRepo, refreshSvc, deviceSelfSvc,
 		cacheEngine, oneTimeTokenSvc, verificationPublisher,
-		billingOutboxRelay,
+		billingOutboxRelay, mfaSvc,
 		nil,
 	)
 	if authSvc == nil {
@@ -283,11 +301,6 @@ func NewModule(
 	if rbacTenantHandler == nil {
 		return nil, errors.New("iam module: failed to initialize HTTP RBAC tenant handler")
 	}
-
-	// [COMMENT]: Khởi tạo các thành phần DI phục vụ tra cứu trạng thái MFA
-	mfaRepo := iamRepoImpl.NewMfaRepository(cfg, db)
-	mfaSvc := iamSvcImpl.NewMfaService(mfaRepo)
-	mfaHandler := iamHandler.NewMfaHandler(mfaSvc)
 
 	// ------------------------------------------------------------------------
 	// 🎉 GIAI ĐOẠN 6: RETURN FULLY INITIALIZED MODULE CONTAINER

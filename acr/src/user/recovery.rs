@@ -158,6 +158,10 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
         error_message: message.to_string(),
         error_code: None,
         verification_email_queued: None,
+        mfa_required: None,
+        challenge_id: None,
+        expires_in: None,
+        methods: None,
     };
     let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
 

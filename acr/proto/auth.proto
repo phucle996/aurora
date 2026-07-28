@@ -73,6 +73,8 @@ message VerifyUserCredentialsResponse {
   string username = 9;         // Tên đăng nhập của người dùng
   string client_proof_public_key = 10; // Canonical Ed25519 public key đã được IAM persist/resolve
   int64 refresh_token_expires_at = 11; // Unix seconds của expiry đã persist; ACR dùng làm Max-Age cookie
+  bool mfa_required = 12; // Primary credential đúng nhưng cần hoàn tất MFA trước khi issue session
+  string mfa_setting_id = 13; // Enrollment fence bound into the short-lived MFA challenge
 }
 
 // [COMMENT]: Identity OAuth/OIDC đã được ACR parse, verify chữ ký/claims và canonicalize.
@@ -113,9 +115,54 @@ message VerifyExternalIdentityResponse {
   // reserved so a future schema cannot reinterpret stale wire payloads.
   reserved 13, 14;
   reserved "onboarding_token", "onboarding_expires_at";
+  bool mfa_required = 15;
+  string mfa_setting_id = 16;
+}
+
+message VerifyMfaChallengeRequest {
+  string operation_id = 1;
+  string user_id = 2;
+  string username = 3;
+  string tenant_domain = 4;
+  string method = 5;
+  string code = 6;
+  string client_device_id = 7;
+  string device_name = 8;
+  string device_type = 9;
+  string public_key = 10;
+  bool trust_device = 11;
+  string client_ip = 12;
+  string user_agent = 13;
+  string mfa_setting_id = 14;
+}
+
+message VerifyMfaChallengeResponse {
+  bool valid = 1;
+  string user_id = 2;
+  string role_id = 3;
+  int32 level = 4;
+  string tenant_id = 5;
+  string client_device_id = 6;
+  string refresh_token = 7;
+  string error_message = 8;
+  string username = 9;
+  string client_proof_public_key = 10;
+  int64 refresh_token_expires_at = 11;
+  string tenant_code = 12;
 }
 
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2
 message RoleEntry {
   repeated string permissions = 1;
+}
+
+// Pending self-user MFA enrollment stored in Auth-State Redis.
+// This is an internal short-lived record; it is not a public HTTP payload.
+message MfaSetupPending {
+  string setup_id = 1;
+  string user_id = 2;
+  string setting_id = 3;
+  string secret_ciphertext = 4;
+  string secret_key_id = 5;
+  uint32 schema_version = 6;
 }

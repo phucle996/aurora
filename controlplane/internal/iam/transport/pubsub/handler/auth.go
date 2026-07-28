@@ -29,6 +29,8 @@ const (
 	verifyCredentialsReplyPrefix      = "iam.auth.verify_credentials.reply."
 	verifyExternalIdentityChannel     = "iam.auth.verify_external_identity"
 	verifyExternalIdentityReplyPrefix = "iam.auth.verify_external_identity.reply."
+	verifyMfaChallengeChannel         = "iam.auth.verify_mfa_challenge"
+	verifyMfaChallengeReplyPrefix     = "iam.auth.verify_mfa_challenge.reply."
 
 	verifyOpaqueTokenChannel     = "iam.auth.verify_opaque_token"
 	verifyOpaqueTokenReplyPrefix = "iam.auth.verify_opaque_token.reply."
@@ -82,6 +84,7 @@ func (h *AuthRedisHandler) Start() error {
 	pubsub := h.sharedRedis.Subscribe(ctx,
 		verifyCredentialsChannel,
 		verifyExternalIdentityChannel,
+		verifyMfaChallengeChannel,
 		verifyOpaqueTokenChannel,
 		revokeOpaqueTokenChannel,
 	)
@@ -132,6 +135,8 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 		h.handleVerifyCredentials(payload)
 	case verifyExternalIdentityChannel:
 		h.handleVerifyExternalIdentity(payload)
+	case verifyMfaChallengeChannel:
+		h.handleVerifyMfaChallenge(payload)
 	case verifyOpaqueTokenChannel:
 		h.handleVerifyOpaqueToken(payload)
 	case revokeOpaqueTokenChannel:
@@ -261,11 +266,6 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 	res, err := h.authService.VerifyExternalIdentity(ctx, loginReq)
 	if err != nil {
 		switch {
-		case errors.Is(err, iamTaxonomy.ErrVerificationRequired):
-			respond(&iamproto.VerifyExternalIdentityResponse{
-				Valid:        false,
-				ErrorMessage: "PASSWORD_SETUP_REQUIRED",
-			})
 		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
 			respond(&iamproto.VerifyExternalIdentityResponse{
 				Valid:        false,
@@ -292,6 +292,8 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 	}
 	respond(&iamproto.VerifyExternalIdentityResponse{
 		Valid:                 res.Valid,
+		MfaRequired:           res.MFARequired,
+		MfaSettingId:          res.MFASettingID,
 		UserId:                res.UserID,
 		RoleId:                res.RoleID,
 		Level:                 res.Level,
@@ -436,6 +438,8 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 
 	resp := &iamproto.VerifyUserCredentialsResponse{
 		Valid:                 res.Valid,
+		MfaRequired:           res.MFARequired,
+		MfaSettingId:          res.MFASettingID,
 		UserId:                res.UserID,
 		RoleId:                res.RoleID,
 		Level:                 res.Level,
@@ -447,6 +451,136 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		ClientProofPublicKey:  res.ClientProofPublicKey,
 	}
 	respond(resp)
+}
+
+func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if len(payload) <= 16 {
+		logger.SysWarn("Redis.VerifyMfaChallenge", "Missing request id envelope")
+		return
+	}
+	requestID, err := uuid.FromBytes(payload[:16])
+	if err != nil || requestID == uuid.Nil {
+		logger.SysWarn("Redis.VerifyMfaChallenge", "Invalid request id envelope")
+		return
+	}
+	replyChannel := verifyMfaChallengeReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:verify_mfa_challenge:" + requestID.String()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil || !acquired {
+		return
+	}
+	respond := func(resp *iamproto.VerifyMfaChallengeResponse) {
+		data, marshalErr := proto.Marshal(resp)
+		if marshalErr != nil {
+			logger.SysError("Redis.VerifyMfaChallenge", "Failed to marshal response payload")
+			return
+		}
+		_ = h.sharedRedis.Publish(context.Background(), replyChannel, data).Err()
+	}
+	var req iamproto.VerifyMfaChallengeRequest
+	if err := proto.Unmarshal(payload[16:], &req); err != nil {
+		respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "INVALID_MFA_CHALLENGE"})
+		return
+	}
+	userID, err := uuid.Parse(strings.TrimSpace(req.UserId))
+	mfaSettingID, mfaSettingErr := uuid.Parse(strings.TrimSpace(req.MfaSettingId))
+	operationID, operationIDErr := uuid.Parse(strings.TrimSpace(req.OperationId))
+	decodedPublicKey, publicKeyErr := base64.StdEncoding.DecodeString(req.PublicKey)
+	method := strings.ToLower(strings.TrimSpace(req.Method))
+	if err != nil || userID == uuid.Nil ||
+		mfaSettingErr != nil || mfaSettingID == uuid.Nil ||
+		operationIDErr != nil || operationID == uuid.Nil ||
+		strings.TrimSpace(req.Username) == "" ||
+		len(req.Username) > 255 || len(req.TenantDomain) > 255 ||
+		!validMFALoginCode(method, req.Code) ||
+		publicKeyErr != nil || len(decodedPublicKey) != 32 ||
+		base64.StdEncoding.EncodeToString(decodedPublicKey) != req.PublicKey ||
+		len(req.PublicKey) > 128 || len(req.DeviceName) > 120 ||
+		len(req.DeviceType) > 64 || len(req.ClientIp) > 128 || len(req.UserAgent) > 1024 {
+		respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "INVALID_MFA_CHALLENGE"})
+		return
+	}
+	clientDeviceID := uuid.Nil
+	if strings.TrimSpace(req.ClientDeviceId) != "" {
+		clientDeviceID, err = uuid.Parse(req.ClientDeviceId)
+		if err != nil || clientDeviceID == uuid.Nil {
+			respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "INVALID_MFA_CHALLENGE"})
+			return
+		}
+	}
+	result, err := h.authService.VerifyMfaLogin(ctx, iamEntity.MFALoginRequest{
+		UserID:          userID,
+		MFASettingID:    mfaSettingID,
+		Username:        strings.TrimSpace(req.Username),
+		TenantDomain:    strings.ToLower(strings.TrimSpace(req.TenantDomain)),
+		Method:          method,
+		Code:            strings.TrimSpace(req.Code),
+		DevicePublicKey: strings.TrimSpace(req.PublicKey),
+		TrustDevice:     req.TrustDevice,
+		DeviceName:      strings.TrimSpace(req.DeviceName),
+		DeviceType:      strings.TrimSpace(req.DeviceType),
+		ClientDeviceID:  clientDeviceID,
+		RemoteIP:        strings.TrimSpace(req.ClientIp),
+		UserAgent:       strings.TrimSpace(req.UserAgent),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, iamTaxonomy.ErrMFAInvalidCode),
+			errors.Is(err, iamTaxonomy.ErrRecoveryCodeInvalid),
+			errors.Is(err, iamTaxonomy.ErrMFAChallengeInvalid):
+			respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "MFA_INVALID"})
+		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
+			respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "AUTHENTICATION_UNAVAILABLE"})
+		default:
+			logger.SysError("Redis.VerifyMfaChallenge", "MFA login verification failed")
+			respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "AUTHENTICATION_UNAVAILABLE"})
+		}
+		return
+	}
+	respond(&iamproto.VerifyMfaChallengeResponse{
+		Valid:                 result.Valid,
+		UserId:                result.UserID,
+		RoleId:                result.RoleID,
+		Level:                 result.Level,
+		TenantId:              result.TenantID,
+		ClientDeviceId:        result.ClientDeviceID,
+		RefreshToken:          result.RefreshToken,
+		RefreshTokenExpiresAt: result.RefreshTokenExpiresAt.Unix(),
+		Username:              result.Username,
+		ClientProofPublicKey:  result.ClientProofPublicKey,
+		TenantCode:            result.TenantCode,
+	})
+}
+
+func validMFALoginCode(method, code string) bool {
+	code = strings.TrimSpace(code)
+	switch method {
+	case "totp":
+		if len(code) != 6 {
+			return false
+		}
+		for _, value := range code {
+			if value < '0' || value > '9' {
+				return false
+			}
+		}
+		return true
+	case "recovery_code":
+		if len(code) != 16 {
+			return false
+		}
+		const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+		for _, value := range strings.ToUpper(code) {
+			if !strings.ContainsRune(alphabet, value) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // =========================================================================

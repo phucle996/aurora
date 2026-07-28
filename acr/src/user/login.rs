@@ -22,6 +22,7 @@ use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::{Response, Status};
@@ -86,6 +87,314 @@ pub async fn handle_login_challenge(
     Some(Ok(Response::new(response)))
 }
 
+pub async fn issue_mfa_challenge(
+    session_mgr: &Arc<SessionManager>,
+    context: MfaChallengeContext,
+) -> Result<(String, u64), String> {
+    let challenge_id = Uuid::now_v7().to_string();
+    let key = mfa_challenge_key(&challenge_id);
+    let payload = serde_json::to_string(&context).map_err(|_| "challenge_encode".to_string())?;
+    let mut connection = session_mgr
+        .get_connection()
+        .await
+        .map_err(|_| "challenge_store_unavailable".to_string())?;
+    let stored: Option<String> = redis::cmd("SET")
+        .arg(key)
+        .arg(payload)
+        .arg("EX")
+        .arg(MFA_CHALLENGE_TTL_SECONDS)
+        .arg("NX")
+        .query_async(&mut connection)
+        .await
+        .map_err(|_| "challenge_store_unavailable".to_string())?;
+    if stored.is_none() {
+        return Err("challenge_store_unavailable".to_string());
+    }
+    Ok((challenge_id, MFA_CHALLENGE_TTL_SECONDS))
+}
+
+pub async fn handle_mfa_verify(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<TokenManager>,
+    redis_client: &redis::Client,
+    shared_redis: &Arc<SharedRedisBus>,
+    config: &Config,
+    client_headers: &HashMap<String, String>,
+    req: &envoy_types::pb::envoy::service::auth::v3::CheckRequest,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    if !(method == "POST" && path.split('?').next().unwrap_or(path) == "/api/v1/auth/mfa/verify") {
+        return None;
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct VerifyPayload {
+        challenge_id: String,
+        method: String,
+        code: String,
+    }
+    let body = req
+        .attributes
+        .as_ref()
+        .and_then(|a| a.request.as_ref())
+        .and_then(|r| r.http.as_ref())
+        .map(|h| {
+            if h.body.is_empty() {
+                h.raw_body.clone()
+            } else {
+                h.body.as_bytes().to_vec()
+            }
+        })
+        .unwrap_or_default();
+    let payload: VerifyPayload = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::BadRequest,
+                "Invalid MFA request",
+            ))))
+        }
+    };
+    let challenge_id = payload.challenge_id.trim();
+    let method_name = payload.method.trim().to_ascii_lowercase();
+    let code = payload.code.trim();
+    let valid_code = match method_name.as_str() {
+        "totp" => code.len() == 6 && code.bytes().all(|value| value.is_ascii_digit()),
+        "recovery_code" => {
+            code.len() == 16
+                && code.bytes().all(|value| {
+                    matches!(
+                        value.to_ascii_uppercase(),
+                        b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'2'..=b'9'
+                    )
+                })
+        }
+        _ => false,
+    };
+    if Uuid::parse_str(challenge_id).is_err() || !valid_code {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::BadRequest,
+            "Invalid MFA request",
+        ))));
+    }
+
+    let mut connection = match session_mgr.get_connection().await {
+        Ok(connection) => connection,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service unavailable",
+            ))))
+        }
+    };
+    let key = mfa_challenge_key(challenge_id);
+    let stored: Option<String> = match redis::cmd("GET")
+        .arg(&key)
+        .query_async(&mut connection)
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service unavailable",
+            ))))
+        }
+    };
+    let Some(stored) = stored else {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Unauthorized,
+            "MFA verification failed",
+        ))));
+    };
+    let context: MfaChallengeContext = match serde_json::from_str(&stored) {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::Unauthorized,
+                "MFA verification failed",
+            ))))
+        }
+    };
+    let Some((resolved_zone_id, zone_status)) = crate::infra::zone::resolve_code_to_id_and_status(
+        shared_redis,
+        redis_client,
+        &context.zone_code,
+    )
+    .await
+    else {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Forbidden,
+            "Zone unavailable",
+        ))));
+    };
+    if resolved_zone_id != context.zone_id || (zone_status != "active" && zone_status != "draining")
+    {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Forbidden,
+            "Zone unavailable",
+        ))));
+    }
+
+    let attempts_key = format!("{key}:attempts");
+    let attempts: i64 = match redis::cmd("INCR")
+        .arg(&attempts_key)
+        .query_async(&mut connection)
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service unavailable",
+            ))))
+        }
+    };
+    if attempts == 1 {
+        let _: Result<(), _> = redis::cmd("EXPIRE")
+            .arg(&attempts_key)
+            .arg(MFA_CHALLENGE_TTL_SECONDS)
+            .query_async(&mut connection)
+            .await;
+    }
+    if attempts > 5 {
+        let _: Result<(), _> = redis::cmd("DEL")
+            .arg(&key)
+            .query_async(&mut connection)
+            .await;
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Unauthorized,
+            "MFA verification failed",
+        ))));
+    }
+
+    let client_ip = client_headers
+        .get("x-forwarded-for")
+        .cloned()
+        .unwrap_or_default();
+    let user_agent = client_headers
+        .get("user-agent")
+        .cloned()
+        .unwrap_or_default();
+    let request = crate::infra::iam_proto::auth::VerifyMfaChallengeRequest {
+        operation_id: Uuid::now_v7().to_string(),
+        user_id: context.user_id.clone(),
+        username: context.username.clone(),
+        tenant_domain: context.tenant_domain.clone(),
+        mfa_setting_id: context.mfa_setting_id.clone(),
+        method: method_name,
+        code: code.to_string(),
+        client_device_id: context.client_device_id.clone(),
+        device_name: context.device_name.clone(),
+        device_type: context.device_type.clone(),
+        public_key: context.public_key.clone(),
+        trust_device: context.trust_device,
+        client_ip: client_ip.clone(),
+        user_agent: user_agent.clone(),
+    };
+    let mut request_payload = Vec::new();
+    if request.encode(&mut request_payload).is_err() {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::InternalServerError,
+            "Internal server error",
+        ))));
+    }
+    let response_payload = match shared_redis
+        .request(
+            "iam.auth.verify_mfa_challenge",
+            "iam.auth.verify_mfa_challenge.reply.",
+            request_payload,
+            Duration::from_secs(10),
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service unavailable",
+            ))))
+        }
+    };
+    let response = match crate::infra::iam_proto::auth::VerifyMfaChallengeResponse::decode(
+        response_payload.as_slice(),
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service returned invalid data",
+            ))))
+        }
+    };
+    if !response.valid {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Unauthorized,
+            "MFA verification failed",
+        ))));
+    }
+    if response.user_id != context.user_id {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Unauthorized,
+            "MFA verification failed",
+        ))));
+    }
+    let _: Result<(), _> = redis::cmd("DEL")
+        .arg(&key)
+        .arg(&attempts_key)
+        .query_async(&mut connection)
+        .await;
+    let trust_device = context.trust_device;
+    let refresh_cookie_max_age = if trust_device {
+        let max_age = response.refresh_token_expires_at - chrono::Utc::now().timestamp();
+        if response.refresh_token.is_empty() || max_age <= 0 {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Failed to issue refresh session",
+            ))));
+        }
+        Some(max_age)
+    } else {
+        None
+    };
+    let session = match release_user_session(
+        session_mgr,
+        token_mgr,
+        config,
+        &response.user_id,
+        &response.username,
+        &response.role_id,
+        response.level,
+        &response.tenant_id,
+        &context.zone_id,
+        &response.client_device_id,
+        &response.client_device_id,
+        &response.client_proof_public_key,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Failed to issue session state",
+            ))))
+        }
+    };
+    Some(Ok(Response::new(build_mfa_session_response(
+        config,
+        session,
+        &response.refresh_token,
+        refresh_cookie_max_age,
+        &context.zone_code,
+    ))))
+}
+
+fn mfa_challenge_key(challenge_id: &str) -> String {
+    format!("{MFA_CHALLENGE_PREFIX}{challenge_id}")
+}
+
 /// [COMMENT]: Response JSON lỗi chung
 #[derive(Serialize)]
 pub struct ErrorResponse {
@@ -94,7 +403,39 @@ pub struct ErrorResponse {
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_email_queued: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mfa_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub challenge_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub methods: Option<Vec<String>>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MfaChallengeContext {
+    pub user_id: String,
+    pub username: String,
+    pub tenant_domain: String,
+    pub mfa_setting_id: String,
+    pub role_id: String,
+    pub level: i32,
+    pub tenant_id: String,
+    pub zone_id: String,
+    pub zone_code: String,
+    pub client_device_id: String,
+    pub public_key: String,
+    pub client_proof_public_key: String,
+    pub trust_device: bool,
+    pub device_name: String,
+    pub device_type: String,
+    pub client_ip: String,
+    pub user_agent: String,
+}
+
+const MFA_CHALLENGE_TTL_SECONDS: u64 = 300;
+const MFA_CHALLENGE_PREFIX: &str = "iam:mfa:challenge:";
 
 /// [COMMENT]: Kết quả cấp phát Trinity Session cho User
 pub struct ReleaseUserSessionResult {
@@ -374,19 +715,22 @@ pub async fn handle_login(
         .cloned()
         .or_else(|| _client_headers.get("User-Agent").cloned())
         .unwrap_or_default();
-    let activity_device_type = payload.device_type.clone().unwrap_or_default();
+    let device_name = payload.device_name.clone().unwrap_or_default();
+    let device_type = payload.device_type.clone().unwrap_or_default();
+    let activity_device_type = device_type.clone();
+    let trust_device = payload.trust_device.unwrap_or(false);
     let cp_req = VerifyUserCredentialsRequest {
         username: username.clone(),
         password,
-        device_name: payload.device_name.unwrap_or_default(),
-        device_type: payload.device_type.unwrap_or_default(),
+        device_name: device_name.clone(),
+        device_type: device_type.clone(),
         public_key: public_key.to_string(),
         signature: payload.session_proof_signature.unwrap_or_default(),
         client_device_id: client_device_id.clone(),
-        trust_device: payload.trust_device.unwrap_or(false),
-        client_ip,
-        user_agent,
-        tenant_domain,
+        trust_device,
+        client_ip: client_ip.clone(),
+        user_agent: user_agent.clone(),
+        tenant_domain: tenant_domain.clone(),
     };
 
     Logger::sys_info(
@@ -448,6 +792,47 @@ pub async fn handle_login(
         }
     };
 
+    if cp_res.valid && cp_res.mfa_required {
+        if Uuid::parse_str(&cp_res.mfa_setting_id).is_err() {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service returned invalid data",
+            ))));
+        }
+        let context = MfaChallengeContext {
+            user_id: cp_res.user_id.clone(),
+            username: cp_res.username.clone(),
+            tenant_domain: tenant_domain.clone(),
+            mfa_setting_id: cp_res.mfa_setting_id.clone(),
+            role_id: cp_res.role_id.clone(),
+            level: cp_res.level,
+            tenant_id: cp_res.tenant_id.clone(),
+            zone_id: resolved_zone_id.clone(),
+            zone_code: zone_code.clone(),
+            client_device_id: cp_res.client_device_id.clone(),
+            public_key: public_key.to_string(),
+            client_proof_public_key: cp_res.client_proof_public_key.clone(),
+            trust_device,
+            device_name,
+            device_type,
+            client_ip,
+            user_agent,
+        };
+        let (challenge_id, expires_in) = match issue_mfa_challenge(session_mgr, context).await {
+            Ok(value) => value,
+            Err(_) => {
+                return Some(Ok(Response::new(build_denied_json(
+                    HttpStatusCode::InternalServerError,
+                    "Authentication service unavailable",
+                ))));
+            }
+        };
+        return Some(Ok(Response::new(build_mfa_required_json(
+            &challenge_id,
+            expires_in,
+        ))));
+    }
+
     if !cp_res.valid {
         let err_msg = if cp_res.error_message.is_empty() {
             "Invalid username or password".to_string()
@@ -468,7 +853,6 @@ pub async fn handle_login(
         ))));
     }
 
-    let trust_device = payload.trust_device.unwrap_or(false);
     let refresh_cookie_max_age = if trust_device {
         // [COMMENT]: IAM là issuer/durable owner; ACR chỉ phát cookie theo đúng expiry IAM đã commit.
         let max_age = cp_res.refresh_token_expires_at - chrono::Utc::now().timestamp();
@@ -621,6 +1005,10 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
         error_message: message.to_string(),
         error_code: None,
         verification_email_queued: None,
+        mfa_required: None,
+        challenge_id: None,
+        expires_in: None,
+        methods: None,
     };
     let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
 
@@ -641,6 +1029,10 @@ fn build_verification_required_json() -> CheckResponse {
 		error_message: "Account verification required. A verification email has been queued if cooldown allows.".to_string(),
 		error_code: Some("ACCOUNT_VERIFICATION_REQUIRED".to_string()),
 		verification_email_queued: Some(true),
+		mfa_required: None,
+		challenge_id: None,
+		expires_in: None,
+		methods: None,
 	};
     let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
     let mut denied_builder = DeniedHttpResponseBuilder::new();
@@ -650,6 +1042,112 @@ fn build_verification_required_json() -> CheckResponse {
     let mut response = CheckResponse::new();
     response.set_status(Status::failed_precondition("ACCOUNT_VERIFICATION_REQUIRED"));
     response.set_http_response(denied_builder);
+    response
+}
+
+fn build_mfa_required_json(challenge_id: &str, expires_in: u64) -> CheckResponse {
+    let err_resp = ErrorResponse {
+        error_message: "MFA verification required".to_string(),
+        error_code: Some("MFA_REQUIRED".to_string()),
+        verification_email_queued: None,
+        mfa_required: Some(true),
+        challenge_id: Some(challenge_id.to_string()),
+        expires_in: Some(expires_in),
+        methods: Some(vec!["totp".to_string(), "recovery_code".to_string()]),
+    };
+    let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
+    let mut denied_builder = DeniedHttpResponseBuilder::new();
+    denied_builder.set_http_status(HttpStatusCode::Accepted);
+    denied_builder.add_header("content-type", "application/json", None, false);
+    denied_builder.set_body(json_body);
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated("MFA_REQUIRED"));
+    response.set_http_response(denied_builder);
+    response
+}
+
+fn build_mfa_session_response(
+    config: &Config,
+    session: ReleaseUserSessionResult,
+    refresh_token: &str,
+    refresh_cookie_max_age: Option<i64>,
+    zone_code: &str,
+) -> CheckResponse {
+    let domain_str = if config.app_public_domain.trim().is_empty() {
+        String::new()
+    } else {
+        format!("; Domain={}", config.app_public_domain.trim())
+    };
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(HttpStatusCode::NoContent);
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+            session.access_token, config.session_ttl_secs, domain_str
+        ),
+        None,
+        false,
+    );
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+            session.access_key, config.session_ttl_secs, domain_str
+        ),
+        None,
+        false,
+    );
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+            session.access_secret, config.session_ttl_secs, domain_str
+        ),
+        None,
+        false,
+    );
+    if let Some(max_age) = refresh_cookie_max_age {
+        builder.add_header(
+            "set-cookie",
+            &format!(
+                "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+                COOKIE_REFRESH_TOKEN, refresh_token, max_age, domain_str
+            ),
+            None,
+            false,
+        );
+    }
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "client_device_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+            session.client_device_id, domain_str
+        ),
+        None,
+        false,
+    );
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+            session.tenant_id_val, domain_str
+        ),
+        None,
+        false,
+    );
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+            zone_code, domain_str
+        ),
+        None,
+        false,
+    );
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated("Local MFA login success"));
+    response.set_http_response(builder);
     response
 }
 

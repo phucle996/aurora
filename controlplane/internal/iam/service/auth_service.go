@@ -22,6 +22,7 @@ import (
 	"controlplane/pkg/logger"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,6 +37,7 @@ type AuthService struct {
 	ott                   iamSvcInterface.OneTimeTokenService
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher
 	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier
+	mfaSvc                iamSvcInterface.MfaService
 	acrClient             iamproto.SessionServiceClient
 }
 
@@ -47,6 +49,7 @@ func NewAuthService(
 	ott iamSvcInterface.OneTimeTokenService,
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher,
 	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier,
+	mfaSvc iamSvcInterface.MfaService,
 	acrClient iamproto.SessionServiceClient,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
@@ -57,6 +60,7 @@ func NewAuthService(
 		ott:                   ott,
 		verificationPublisher: verificationPublisher,
 		billingOutboxNotifier: billingOutboxNotifier,
+		mfaSvc:                mfaSvc,
 		acrClient:             acrClient,
 	}
 }
@@ -331,6 +335,31 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}
 	req.DevicePublicKey = canonicalPublicKey
 
+	if s.mfaSvc != nil {
+		mfaSetting, mfaErr := s.mfaSvc.GetLoginSetting(ctx, user.ID)
+		if mfaErr != nil {
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			return nil, fmt.Errorf("%w: check mfa state: %v", iamTaxonomy.ErrAuthenticationUnavailable, mfaErr)
+		}
+		if mfaSetting != nil {
+			// [COMMENT]: Primary credentials are valid, but no device/refresh
+			// side effect is allowed until the ACR MFA challenge is completed.
+			return &iamEntity.VerifyUserCredentialsResult{
+				Valid:                true,
+				MFARequired:          true,
+				UserID:               user.ID.String(),
+				MFASettingID:         mfaSetting.ID.String(),
+				RoleID:               user.RoleID,
+				Level:                user.Level,
+				TenantID:             tenantID,
+				ClientDeviceID:       req.ClientDeviceID.String(),
+				Username:             user.Username,
+				ClientProofPublicKey: canonicalPublicKey,
+				TenantCode:           tenantCode,
+			}, nil
+		}
+	}
+
 	// [COMMENT]: 4. Phân giải/Tìm kiếm thiết bị đang hoạt động tương thích
 	matchedClientDeviceID, err := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
 
@@ -418,6 +447,111 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}, nil
 }
 
+func (s *AuthService) VerifyMfaLogin(
+	ctx context.Context,
+	req iamEntity.MFALoginRequest,
+) (*iamEntity.VerifyUserCredentialsResult, error) {
+	if s.mfaSvc == nil || req.UserID == uuid.Nil {
+		return nil, iamTaxonomy.ErrMFAChallengeInvalid
+	}
+	if req.MFASettingID == uuid.Nil {
+		return nil, iamTaxonomy.ErrMFAChallengeInvalid
+	}
+	var (
+		user     *iamEntity.LoginUser
+		loadErr  error
+		tenantID string
+	)
+	if strings.TrimSpace(req.TenantDomain) != "" {
+		user, loadErr = s.repo.LoginUserTenant(ctx, req.Username, req.TenantDomain)
+		if user != nil && user.TenantID != nil {
+			tenantID = *user.TenantID
+		}
+	} else {
+		user, loadErr = s.repo.LoginUserGlobal(ctx, req.Username)
+	}
+	if loadErr != nil || user == nil || user.ID != req.UserID || user.Status != iamEntity.UserStatusActive {
+		return nil, iamTaxonomy.ErrMFAChallengeInvalid
+	}
+	if err := s.mfaSvc.VerifyLogin(ctx, req.UserID, req.MFASettingID, req.Method, req.Code); err != nil {
+		return nil, err
+	}
+
+	canonicalPublicKey, err := normalizeUserDevicePublicKey(req.DevicePublicKey)
+	if err != nil {
+		return nil, iamTaxonomy.ErrMFAChallengeInvalid
+	}
+	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, canonicalPublicKey)
+	clientDeviceID := req.ClientDeviceID
+	if matchedClientDeviceID != "" {
+		if parsed, parseErr := uuid.Parse(matchedClientDeviceID); parseErr == nil {
+			clientDeviceID = parsed
+		}
+	}
+	if clientDeviceID == uuid.Nil {
+		clientDeviceID = uuid.New()
+	}
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "unknown device"
+	}
+	deviceType := strings.TrimSpace(req.DeviceType)
+	if deviceType == "" {
+		deviceType = "browser"
+	}
+	fp := sha256.Sum256([]byte(canonicalPublicKey))
+	clientDeviceIDValue := clientDeviceID.String()
+	loginDevice := iamEntity.Device{
+		UserID:               user.ID,
+		DeviceName:           deviceName,
+		DeviceType:           &deviceType,
+		PublicKey:            canonicalPublicKey,
+		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
+		ClientDeviceID:       cleanOptionalString(&clientDeviceIDValue),
+		LastSeenIP:           cleanOptionalString(&req.RemoteIP),
+		LastSeenUserAgent:    cleanOptionalString(&req.UserAgent),
+		UpdatedAt:            time.Now().UTC(),
+	}
+	trackedDevice, err := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
+	if err != nil || trackedDevice == nil || trackedDevice.RevokedAt != nil {
+		return nil, fmt.Errorf("%w: register mfa login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
+	}
+	trackedDeviceID, err := uuid.Parse(strings.TrimSpace(trackedDevice.ID))
+	if err != nil {
+		return nil, iamTaxonomy.ErrAuthenticationUnavailable
+	}
+
+	var rawRefresh string
+	var refreshExpiresAt time.Time
+	if req.TrustDevice {
+		var tenantUUIDPtr *uuid.UUID
+		if tenantID != "" {
+			parsed, parseErr := uuid.Parse(tenantID)
+			if parseErr != nil {
+				return nil, iamTaxonomy.ErrMFAChallengeInvalid
+			}
+			tenantUUIDPtr = &parsed
+		}
+		rawRefresh, refreshExpiresAt, err = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, tenantUUIDPtr)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &iamEntity.VerifyUserCredentialsResult{
+		Valid:                 true,
+		UserID:                user.ID.String(),
+		RoleID:                user.RoleID,
+		Level:                 user.Level,
+		TenantID:              tenantID,
+		ClientDeviceID:        clientDeviceID.String(),
+		RefreshToken:          rawRefresh,
+		RefreshTokenExpiresAt: refreshExpiresAt,
+		Username:              user.Username,
+		ClientProofPublicKey:  trackedDevice.PublicKey,
+		TenantCode:            req.TenantDomain,
+	}, nil
+}
+
 // normalizeUserDevicePublicKey decode base64 (std hoặc raw) ed25519 public key
 // (32 bytes) và trả canonical form base64 std để repo lưu + so sánh fingerprint.
 func normalizeUserDevicePublicKey(raw string) (string, error) {
@@ -470,7 +604,27 @@ func (s *AuthService) VerifyExternalIdentity(
 		return nil, iamTaxonomy.ErrInvalidCredentials
 	}
 	if user.PasswordHash == nil || strings.TrimSpace(*user.PasswordHash) == "" {
-		return nil, iamTaxonomy.ErrVerificationRequired
+		// OAuth is only another credential for an existing password-backed
+		// account; the callback must never open an onboarding path.
+		return nil, iamTaxonomy.ErrInvalidCredentials
+	}
+	if s.mfaSvc != nil {
+		mfaSetting, mfaErr := s.mfaSvc.GetLoginSetting(ctx, user.ID)
+		if mfaErr != nil {
+			return nil, fmt.Errorf("%w: check external login mfa state: %v", iamTaxonomy.ErrAuthenticationUnavailable, mfaErr)
+		}
+		if mfaSetting != nil {
+			return &iamEntity.ExternalLoginResult{
+				Valid:        true,
+				MFARequired:  true,
+				UserID:       user.ID.String(),
+				MFASettingID: mfaSetting.ID.String(),
+				RoleID:       user.RoleID,
+				Level:        user.Level,
+				Username:     user.Username,
+				ZoneCode:     req.ZoneCode,
+			}, nil
+		}
 	}
 
 	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)

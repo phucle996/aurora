@@ -45,7 +45,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 			ur.role_name, 
 			EXISTS (
 				SELECT 1 FROM %s.mfa_settings ms 
-				WHERE ms.user_id = u.id AND ms.disabled_at IS NULL
+				WHERE ms.user_id = u.id
 			) AS mfa_enabled,
 			(
 				SELECT COUNT(*) FROM %s.devices d 

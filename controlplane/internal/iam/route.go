@@ -37,6 +37,26 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.UserHandler.GetMyProfile,
 		)
 
+		meGroup.GET("/iam/mfa",
+			module.MfaHandler.GetMyMfa,
+		)
+
+		meGroup.POST("/iam/mfa/setup/start",
+			module.MfaHandler.StartMyMfaSetup,
+		)
+
+		meGroup.POST("/iam/mfa/setup/:setup_id/confirm",
+			module.MfaHandler.ConfirmMyMfaSetup,
+		)
+
+		meGroup.POST("/iam/mfa/recovery/regenerate",
+			module.MfaHandler.RegenerateMyRecoveryCodes,
+		)
+
+		meGroup.DELETE("/iam/mfa",
+			module.MfaHandler.RemoveMyMfa,
+		)
+
 		// [COMMENT]: 1.3) Quản lý thiết bị cá nhân
 		meGroup.GET("/iam/device/read",
 			module.DeviceSelfHandler.ListMyDevices,

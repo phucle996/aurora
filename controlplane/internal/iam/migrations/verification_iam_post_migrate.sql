@@ -12,7 +12,8 @@ SELECT 'refresh_tokens' AS object_name, to_regclass('refresh_tokens') AS regclas
 SELECT 'devices' AS object_name, to_regclass('devices') AS regclass;
 SELECT 'device_challenges' AS object_name, to_regclass('device_challenges') AS regclass;
 SELECT 'mfa_settings' AS object_name, to_regclass('mfa_settings') AS regclass;
-SELECT 'mfa_challenges' AS object_name, to_regclass('mfa_challenges') AS regclass;
+SELECT 'mfa_challenges_absent' AS object_name, to_regclass('mfa_challenges') IS NULL AS verified;
+SELECT 'mfa_recovery_codes' AS object_name, to_regclass('mfa_recovery_codes') AS regclass;
 SELECT 'permissions' AS object_name, to_regclass('permissions') AS regclass;
 SELECT 'roles' AS object_name, to_regclass('roles') AS regclass;
 SELECT 'user_role_assignments' AS object_name, to_regclass('user_role_assignments') AS regclass;
@@ -28,6 +29,7 @@ WHERE schemaname = current_schema()
     'users_email_lower_uidx',
     'refresh_tokens_token_hash_uidx',
     'devices_user_fingerprint_uidx',
+    'mfa_recovery_codes_setting_hash_uidx',
     'device_challenges_nonce_uidx',
     'permissions_code_uidx',
     'permissions_resource_action_uidx',

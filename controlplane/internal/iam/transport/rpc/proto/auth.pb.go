@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: internal/iam/transport/rpc/proto/auth.proto
+// source: auth.proto
 
 package iamproto
 
@@ -33,7 +33,7 @@ type VerifyOpaqueRefreshTokenRequest struct {
 
 func (x *VerifyOpaqueRefreshTokenRequest) Reset() {
 	*x = VerifyOpaqueRefreshTokenRequest{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[0]
+	mi := &file_auth_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -45,7 +45,7 @@ func (x *VerifyOpaqueRefreshTokenRequest) String() string {
 func (*VerifyOpaqueRefreshTokenRequest) ProtoMessage() {}
 
 func (x *VerifyOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[0]
+	mi := &file_auth_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -58,7 +58,7 @@ func (x *VerifyOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyOpaqueRefreshTokenRequest.ProtoReflect.Descriptor instead.
 func (*VerifyOpaqueRefreshTokenRequest) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{0}
+	return file_auth_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *VerifyOpaqueRefreshTokenRequest) GetRefreshToken() string {
@@ -98,7 +98,7 @@ type VerifyOpaqueRefreshTokenResponse struct {
 
 func (x *VerifyOpaqueRefreshTokenResponse) Reset() {
 	*x = VerifyOpaqueRefreshTokenResponse{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[1]
+	mi := &file_auth_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -110,7 +110,7 @@ func (x *VerifyOpaqueRefreshTokenResponse) String() string {
 func (*VerifyOpaqueRefreshTokenResponse) ProtoMessage() {}
 
 func (x *VerifyOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[1]
+	mi := &file_auth_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -123,7 +123,7 @@ func (x *VerifyOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyOpaqueRefreshTokenResponse.ProtoReflect.Descriptor instead.
 func (*VerifyOpaqueRefreshTokenResponse) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{1}
+	return file_auth_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *VerifyOpaqueRefreshTokenResponse) GetValid() bool {
@@ -185,7 +185,7 @@ type RevokeOpaqueRefreshTokenRequest struct {
 
 func (x *RevokeOpaqueRefreshTokenRequest) Reset() {
 	*x = RevokeOpaqueRefreshTokenRequest{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[2]
+	mi := &file_auth_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -197,7 +197,7 @@ func (x *RevokeOpaqueRefreshTokenRequest) String() string {
 func (*RevokeOpaqueRefreshTokenRequest) ProtoMessage() {}
 
 func (x *RevokeOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[2]
+	mi := &file_auth_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -210,7 +210,7 @@ func (x *RevokeOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeOpaqueRefreshTokenRequest.ProtoReflect.Descriptor instead.
 func (*RevokeOpaqueRefreshTokenRequest) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{2}
+	return file_auth_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RevokeOpaqueRefreshTokenRequest) GetRefreshToken() string {
@@ -229,7 +229,7 @@ type RevokeOpaqueRefreshTokenResponse struct {
 
 func (x *RevokeOpaqueRefreshTokenResponse) Reset() {
 	*x = RevokeOpaqueRefreshTokenResponse{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[3]
+	mi := &file_auth_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -241,7 +241,7 @@ func (x *RevokeOpaqueRefreshTokenResponse) String() string {
 func (*RevokeOpaqueRefreshTokenResponse) ProtoMessage() {}
 
 func (x *RevokeOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[3]
+	mi := &file_auth_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -254,7 +254,7 @@ func (x *RevokeOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeOpaqueRefreshTokenResponse.ProtoReflect.Descriptor instead.
 func (*RevokeOpaqueRefreshTokenResponse) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{3}
+	return file_auth_proto_rawDescGZIP(), []int{3}
 }
 
 // [COMMENT]: Request xác thực thông tin đăng nhập thô từ client gửi lên gateway
@@ -279,7 +279,7 @@ type VerifyUserCredentialsRequest struct {
 
 func (x *VerifyUserCredentialsRequest) Reset() {
 	*x = VerifyUserCredentialsRequest{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[4]
+	mi := &file_auth_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -291,7 +291,7 @@ func (x *VerifyUserCredentialsRequest) String() string {
 func (*VerifyUserCredentialsRequest) ProtoMessage() {}
 
 func (x *VerifyUserCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[4]
+	mi := &file_auth_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -304,7 +304,7 @@ func (x *VerifyUserCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyUserCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*VerifyUserCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{4}
+	return file_auth_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *VerifyUserCredentialsRequest) GetUsername() string {
@@ -398,13 +398,15 @@ type VerifyUserCredentialsResponse struct {
 	Username              string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`                                                              // Tên đăng nhập của người dùng
 	ClientProofPublicKey  string                 `protobuf:"bytes,10,opt,name=client_proof_public_key,json=clientProofPublicKey,proto3" json:"client_proof_public_key,omitempty"`     // Canonical Ed25519 public key đã được IAM persist/resolve
 	RefreshTokenExpiresAt int64                  `protobuf:"varint,11,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"` // Unix seconds của expiry đã persist; ACR dùng làm Max-Age cookie
+	MfaRequired           bool                   `protobuf:"varint,12,opt,name=mfa_required,json=mfaRequired,proto3" json:"mfa_required,omitempty"`                                   // Primary credential đúng nhưng cần hoàn tất MFA trước khi issue session
+	MfaSettingId          string                 `protobuf:"bytes,13,opt,name=mfa_setting_id,json=mfaSettingId,proto3" json:"mfa_setting_id,omitempty"`                               // Enrollment fence bound into the short-lived MFA challenge
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
 
 func (x *VerifyUserCredentialsResponse) Reset() {
 	*x = VerifyUserCredentialsResponse{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[5]
+	mi := &file_auth_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -416,7 +418,7 @@ func (x *VerifyUserCredentialsResponse) String() string {
 func (*VerifyUserCredentialsResponse) ProtoMessage() {}
 
 func (x *VerifyUserCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[5]
+	mi := &file_auth_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -429,7 +431,7 @@ func (x *VerifyUserCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyUserCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*VerifyUserCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{5}
+	return file_auth_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *VerifyUserCredentialsResponse) GetValid() bool {
@@ -509,6 +511,20 @@ func (x *VerifyUserCredentialsResponse) GetRefreshTokenExpiresAt() int64 {
 	return 0
 }
 
+func (x *VerifyUserCredentialsResponse) GetMfaRequired() bool {
+	if x != nil {
+		return x.MfaRequired
+	}
+	return false
+}
+
+func (x *VerifyUserCredentialsResponse) GetMfaSettingId() string {
+	if x != nil {
+		return x.MfaSettingId
+	}
+	return ""
+}
+
 // [COMMENT]: Identity OAuth/OIDC đã được ACR parse, verify chữ ký/claims và canonicalize.
 // Controlplane không nhận raw provider JSON, authorization code hoặc provider token.
 type VerifyExternalIdentityRequest struct {
@@ -535,7 +551,7 @@ type VerifyExternalIdentityRequest struct {
 
 func (x *VerifyExternalIdentityRequest) Reset() {
 	*x = VerifyExternalIdentityRequest{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[6]
+	mi := &file_auth_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -547,7 +563,7 @@ func (x *VerifyExternalIdentityRequest) String() string {
 func (*VerifyExternalIdentityRequest) ProtoMessage() {}
 
 func (x *VerifyExternalIdentityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[6]
+	mi := &file_auth_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -560,7 +576,7 @@ func (x *VerifyExternalIdentityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyExternalIdentityRequest.ProtoReflect.Descriptor instead.
 func (*VerifyExternalIdentityRequest) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{6}
+	return file_auth_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *VerifyExternalIdentityRequest) GetOperationId() string {
@@ -689,13 +705,15 @@ type VerifyExternalIdentityResponse struct {
 	ClientProofPublicKey  string                 `protobuf:"bytes,10,opt,name=client_proof_public_key,json=clientProofPublicKey,proto3" json:"client_proof_public_key,omitempty"`
 	RefreshTokenExpiresAt int64                  `protobuf:"varint,11,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"`
 	ZoneCode              string                 `protobuf:"bytes,12,opt,name=zone_code,json=zoneCode,proto3" json:"zone_code,omitempty"`
+	MfaRequired           bool                   `protobuf:"varint,15,opt,name=mfa_required,json=mfaRequired,proto3" json:"mfa_required,omitempty"`
+	MfaSettingId          string                 `protobuf:"bytes,16,opt,name=mfa_setting_id,json=mfaSettingId,proto3" json:"mfa_setting_id,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
 
 func (x *VerifyExternalIdentityResponse) Reset() {
 	*x = VerifyExternalIdentityResponse{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[7]
+	mi := &file_auth_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -707,7 +725,7 @@ func (x *VerifyExternalIdentityResponse) String() string {
 func (*VerifyExternalIdentityResponse) ProtoMessage() {}
 
 func (x *VerifyExternalIdentityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[7]
+	mi := &file_auth_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -720,7 +738,7 @@ func (x *VerifyExternalIdentityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyExternalIdentityResponse.ProtoReflect.Descriptor instead.
 func (*VerifyExternalIdentityResponse) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{7}
+	return file_auth_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *VerifyExternalIdentityResponse) GetValid() bool {
@@ -807,6 +825,300 @@ func (x *VerifyExternalIdentityResponse) GetZoneCode() string {
 	return ""
 }
 
+func (x *VerifyExternalIdentityResponse) GetMfaRequired() bool {
+	if x != nil {
+		return x.MfaRequired
+	}
+	return false
+}
+
+func (x *VerifyExternalIdentityResponse) GetMfaSettingId() string {
+	if x != nil {
+		return x.MfaSettingId
+	}
+	return ""
+}
+
+type VerifyMfaChallengeRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	OperationId    string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	UserId         string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Username       string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
+	TenantDomain   string                 `protobuf:"bytes,4,opt,name=tenant_domain,json=tenantDomain,proto3" json:"tenant_domain,omitempty"`
+	Method         string                 `protobuf:"bytes,5,opt,name=method,proto3" json:"method,omitempty"`
+	Code           string                 `protobuf:"bytes,6,opt,name=code,proto3" json:"code,omitempty"`
+	ClientDeviceId string                 `protobuf:"bytes,7,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
+	DeviceName     string                 `protobuf:"bytes,8,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	DeviceType     string                 `protobuf:"bytes,9,opt,name=device_type,json=deviceType,proto3" json:"device_type,omitempty"`
+	PublicKey      string                 `protobuf:"bytes,10,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	TrustDevice    bool                   `protobuf:"varint,11,opt,name=trust_device,json=trustDevice,proto3" json:"trust_device,omitempty"`
+	ClientIp       string                 `protobuf:"bytes,12,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	UserAgent      string                 `protobuf:"bytes,13,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`
+	MfaSettingId   string                 `protobuf:"bytes,14,opt,name=mfa_setting_id,json=mfaSettingId,proto3" json:"mfa_setting_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *VerifyMfaChallengeRequest) Reset() {
+	*x = VerifyMfaChallengeRequest{}
+	mi := &file_auth_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyMfaChallengeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyMfaChallengeRequest) ProtoMessage() {}
+
+func (x *VerifyMfaChallengeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyMfaChallengeRequest.ProtoReflect.Descriptor instead.
+func (*VerifyMfaChallengeRequest) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *VerifyMfaChallengeRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetTenantDomain() string {
+	if x != nil {
+		return x.TenantDomain
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetDeviceType() string {
+	if x != nil {
+		return x.DeviceType
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetTrustDevice() bool {
+	if x != nil {
+		return x.TrustDevice
+	}
+	return false
+}
+
+func (x *VerifyMfaChallengeRequest) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetUserAgent() string {
+	if x != nil {
+		return x.UserAgent
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeRequest) GetMfaSettingId() string {
+	if x != nil {
+		return x.MfaSettingId
+	}
+	return ""
+}
+
+type VerifyMfaChallengeResponse struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Valid                 bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	UserId                string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	RoleId                string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	Level                 int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`
+	TenantId              string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ClientDeviceId        string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
+	RefreshToken          string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	ErrorMessage          string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	Username              string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`
+	ClientProofPublicKey  string                 `protobuf:"bytes,10,opt,name=client_proof_public_key,json=clientProofPublicKey,proto3" json:"client_proof_public_key,omitempty"`
+	RefreshTokenExpiresAt int64                  `protobuf:"varint,11,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"`
+	TenantCode            string                 `protobuf:"bytes,12,opt,name=tenant_code,json=tenantCode,proto3" json:"tenant_code,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *VerifyMfaChallengeResponse) Reset() {
+	*x = VerifyMfaChallengeResponse{}
+	mi := &file_auth_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyMfaChallengeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyMfaChallengeResponse) ProtoMessage() {}
+
+func (x *VerifyMfaChallengeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyMfaChallengeResponse.ProtoReflect.Descriptor instead.
+func (*VerifyMfaChallengeResponse) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *VerifyMfaChallengeResponse) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+func (x *VerifyMfaChallengeResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetRoleId() string {
+	if x != nil {
+		return x.RoleId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetLevel() int32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+func (x *VerifyMfaChallengeResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetClientProofPublicKey() string {
+	if x != nil {
+		return x.ClientProofPublicKey
+	}
+	return ""
+}
+
+func (x *VerifyMfaChallengeResponse) GetRefreshTokenExpiresAt() int64 {
+	if x != nil {
+		return x.RefreshTokenExpiresAt
+	}
+	return 0
+}
+
+func (x *VerifyMfaChallengeResponse) GetTenantCode() string {
+	if x != nil {
+		return x.TenantCode
+	}
+	return ""
+}
+
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2
 type RoleEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -817,7 +1129,7 @@ type RoleEntry struct {
 
 func (x *RoleEntry) Reset() {
 	*x = RoleEntry{}
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[8]
+	mi := &file_auth_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -829,7 +1141,7 @@ func (x *RoleEntry) String() string {
 func (*RoleEntry) ProtoMessage() {}
 
 func (x *RoleEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[8]
+	mi := &file_auth_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -842,7 +1154,7 @@ func (x *RoleEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoleEntry.ProtoReflect.Descriptor instead.
 func (*RoleEntry) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP(), []int{8}
+	return file_auth_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RoleEntry) GetPermissions() []string {
@@ -852,11 +1164,98 @@ func (x *RoleEntry) GetPermissions() []string {
 	return nil
 }
 
-var File_internal_iam_transport_rpc_proto_auth_proto protoreflect.FileDescriptor
+// Pending self-user MFA enrollment stored in Auth-State Redis.
+// This is an internal short-lived record; it is not a public HTTP payload.
+type MfaSetupPending struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	SetupId          string                 `protobuf:"bytes,1,opt,name=setup_id,json=setupId,proto3" json:"setup_id,omitempty"`
+	UserId           string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	SettingId        string                 `protobuf:"bytes,3,opt,name=setting_id,json=settingId,proto3" json:"setting_id,omitempty"`
+	SecretCiphertext string                 `protobuf:"bytes,4,opt,name=secret_ciphertext,json=secretCiphertext,proto3" json:"secret_ciphertext,omitempty"`
+	SecretKeyId      string                 `protobuf:"bytes,5,opt,name=secret_key_id,json=secretKeyId,proto3" json:"secret_key_id,omitempty"`
+	SchemaVersion    uint32                 `protobuf:"varint,6,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
 
-const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
+func (x *MfaSetupPending) Reset() {
+	*x = MfaSetupPending{}
+	mi := &file_auth_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MfaSetupPending) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MfaSetupPending) ProtoMessage() {}
+
+func (x *MfaSetupPending) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MfaSetupPending.ProtoReflect.Descriptor instead.
+func (*MfaSetupPending) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *MfaSetupPending) GetSetupId() string {
+	if x != nil {
+		return x.SetupId
+	}
+	return ""
+}
+
+func (x *MfaSetupPending) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *MfaSetupPending) GetSettingId() string {
+	if x != nil {
+		return x.SettingId
+	}
+	return ""
+}
+
+func (x *MfaSetupPending) GetSecretCiphertext() string {
+	if x != nil {
+		return x.SecretCiphertext
+	}
+	return ""
+}
+
+func (x *MfaSetupPending) GetSecretKeyId() string {
+	if x != nil {
+		return x.SecretKeyId
+	}
+	return ""
+}
+
+func (x *MfaSetupPending) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+var File_auth_proto protoreflect.FileDescriptor
+
+const file_auth_proto_rawDesc = "" +
 	"\n" +
-	"+internal/iam/transport/rpc/proto/auth.proto\x12\aiam.rpc\"\x8f\x01\n" +
+	"\n" +
+	"auth.proto\x12\aiam.rpc\"\x8f\x01\n" +
 	"\x1fVerifyOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x12 \n" +
 	"\ttenant_id\x18\x02 \x01(\tH\x00R\btenantId\x88\x01\x01\x12\x17\n" +
@@ -890,7 +1289,7 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\n" +
 	"user_agent\x18\n" +
 	" \x01(\tR\tuserAgent\x12#\n" +
-	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\x9a\x03\n" +
+	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xe3\x03\n" +
 	"\x1dVerifyUserCredentialsResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
@@ -903,7 +1302,9 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\busername\x18\t \x01(\tR\busername\x125\n" +
 	"\x17client_proof_public_key\x18\n" +
 	" \x01(\tR\x14clientProofPublicKey\x127\n" +
-	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\"\xcc\x04\n" +
+	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12!\n" +
+	"\fmfa_required\x18\f \x01(\bR\vmfaRequired\x12$\n" +
+	"\x0emfa_setting_id\x18\r \x01(\tR\fmfaSettingId\"\xcc\x04\n" +
 	"\x1dVerifyExternalIdentityRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
 	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12\x1a\n" +
@@ -926,7 +1327,7 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\tzone_code\x18\x0e \x01(\tR\bzoneCode\x12\x1b\n" +
 	"\tclient_ip\x18\x0f \x01(\tR\bclientIp\x12\x1d\n" +
 	"\n" +
-	"user_agent\x18\x10 \x01(\tR\tuserAgent\"\xed\x03\n" +
+	"user_agent\x18\x10 \x01(\tR\tuserAgent\"\xb6\x04\n" +
 	"\x1eVerifyExternalIdentityResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
@@ -940,28 +1341,73 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\x17client_proof_public_key\x18\n" +
 	" \x01(\tR\x14clientProofPublicKey\x127\n" +
 	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12\x1b\n" +
-	"\tzone_code\x18\f \x01(\tR\bzoneCodeJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x10onboarding_tokenR\x15onboarding_expires_at\"-\n" +
+	"\tzone_code\x18\f \x01(\tR\bzoneCode\x12!\n" +
+	"\fmfa_required\x18\x0f \x01(\bR\vmfaRequired\x12$\n" +
+	"\x0emfa_setting_id\x18\x10 \x01(\tR\fmfaSettingIdJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x10onboarding_tokenR\x15onboarding_expires_at\"\xd4\x03\n" +
+	"\x19VerifyMfaChallengeRequest\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1a\n" +
+	"\busername\x18\x03 \x01(\tR\busername\x12#\n" +
+	"\rtenant_domain\x18\x04 \x01(\tR\ftenantDomain\x12\x16\n" +
+	"\x06method\x18\x05 \x01(\tR\x06method\x12\x12\n" +
+	"\x04code\x18\x06 \x01(\tR\x04code\x12(\n" +
+	"\x10client_device_id\x18\a \x01(\tR\x0eclientDeviceId\x12\x1f\n" +
+	"\vdevice_name\x18\b \x01(\tR\n" +
+	"deviceName\x12\x1f\n" +
+	"\vdevice_type\x18\t \x01(\tR\n" +
+	"deviceType\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\n" +
+	" \x01(\tR\tpublicKey\x12!\n" +
+	"\ftrust_device\x18\v \x01(\bR\vtrustDevice\x12\x1b\n" +
+	"\tclient_ip\x18\f \x01(\tR\bclientIp\x12\x1d\n" +
+	"\n" +
+	"user_agent\x18\r \x01(\tR\tuserAgent\x12$\n" +
+	"\x0emfa_setting_id\x18\x0e \x01(\tR\fmfaSettingId\"\xb8\x03\n" +
+	"\x1aVerifyMfaChallengeResponse\x12\x14\n" +
+	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
+	"\arole_id\x18\x03 \x01(\tR\x06roleId\x12\x14\n" +
+	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
+	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
+	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
+	"\rrefresh_token\x18\a \x01(\tR\frefreshToken\x12#\n" +
+	"\rerror_message\x18\b \x01(\tR\ferrorMessage\x12\x1a\n" +
+	"\busername\x18\t \x01(\tR\busername\x125\n" +
+	"\x17client_proof_public_key\x18\n" +
+	" \x01(\tR\x14clientProofPublicKey\x127\n" +
+	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12\x1f\n" +
+	"\vtenant_code\x18\f \x01(\tR\n" +
+	"tenantCode\"-\n" +
 	"\tRoleEntry\x12 \n" +
-	"\vpermissions\x18\x01 \x03(\tR\vpermissions2\xd7\x02\n" +
+	"\vpermissions\x18\x01 \x03(\tR\vpermissions\"\xdc\x01\n" +
+	"\x0fMfaSetupPending\x12\x19\n" +
+	"\bsetup_id\x18\x01 \x01(\tR\asetupId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
+	"\n" +
+	"setting_id\x18\x03 \x01(\tR\tsettingId\x12+\n" +
+	"\x11secret_ciphertext\x18\x04 \x01(\tR\x10secretCiphertext\x12\"\n" +
+	"\rsecret_key_id\x18\x05 \x01(\tR\vsecretKeyId\x12%\n" +
+	"\x0eschema_version\x18\x06 \x01(\rR\rschemaVersion2\xd7\x02\n" +
 	"\vAuthService\x12o\n" +
 	"\x18VerifyOpaqueRefreshToken\x12(.iam.rpc.VerifyOpaqueRefreshTokenRequest\x1a).iam.rpc.VerifyOpaqueRefreshTokenResponse\x12o\n" +
 	"\x18RevokeOpaqueRefreshToken\x12(.iam.rpc.RevokeOpaqueRefreshTokenRequest\x1a).iam.rpc.RevokeOpaqueRefreshTokenResponse\x12f\n" +
 	"\x15VerifyUserCredentials\x12%.iam.rpc.VerifyUserCredentialsRequest\x1a&.iam.rpc.VerifyUserCredentialsResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
-	file_internal_iam_transport_rpc_proto_auth_proto_rawDescOnce sync.Once
-	file_internal_iam_transport_rpc_proto_auth_proto_rawDescData []byte
+	file_auth_proto_rawDescOnce sync.Once
+	file_auth_proto_rawDescData []byte
 )
 
-func file_internal_iam_transport_rpc_proto_auth_proto_rawDescGZIP() []byte {
-	file_internal_iam_transport_rpc_proto_auth_proto_rawDescOnce.Do(func() {
-		file_internal_iam_transport_rpc_proto_auth_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_auth_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_auth_proto_rawDesc)))
+func file_auth_proto_rawDescGZIP() []byte {
+	file_auth_proto_rawDescOnce.Do(func() {
+		file_auth_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)))
 	})
-	return file_internal_iam_transport_rpc_proto_auth_proto_rawDescData
+	return file_auth_proto_rawDescData
 }
 
-var file_internal_iam_transport_rpc_proto_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
-var file_internal_iam_transport_rpc_proto_auth_proto_goTypes = []any{
+var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_auth_proto_goTypes = []any{
 	(*VerifyOpaqueRefreshTokenRequest)(nil),  // 0: iam.rpc.VerifyOpaqueRefreshTokenRequest
 	(*VerifyOpaqueRefreshTokenResponse)(nil), // 1: iam.rpc.VerifyOpaqueRefreshTokenResponse
 	(*RevokeOpaqueRefreshTokenRequest)(nil),  // 2: iam.rpc.RevokeOpaqueRefreshTokenRequest
@@ -970,9 +1416,12 @@ var file_internal_iam_transport_rpc_proto_auth_proto_goTypes = []any{
 	(*VerifyUserCredentialsResponse)(nil),    // 5: iam.rpc.VerifyUserCredentialsResponse
 	(*VerifyExternalIdentityRequest)(nil),    // 6: iam.rpc.VerifyExternalIdentityRequest
 	(*VerifyExternalIdentityResponse)(nil),   // 7: iam.rpc.VerifyExternalIdentityResponse
-	(*RoleEntry)(nil),                        // 8: iam.rpc.RoleEntry
+	(*VerifyMfaChallengeRequest)(nil),        // 8: iam.rpc.VerifyMfaChallengeRequest
+	(*VerifyMfaChallengeResponse)(nil),       // 9: iam.rpc.VerifyMfaChallengeResponse
+	(*RoleEntry)(nil),                        // 10: iam.rpc.RoleEntry
+	(*MfaSetupPending)(nil),                  // 11: iam.rpc.MfaSetupPending
 }
-var file_internal_iam_transport_rpc_proto_auth_proto_depIdxs = []int32{
+var file_auth_proto_depIdxs = []int32{
 	0, // 0: iam.rpc.AuthService.VerifyOpaqueRefreshToken:input_type -> iam.rpc.VerifyOpaqueRefreshTokenRequest
 	2, // 1: iam.rpc.AuthService.RevokeOpaqueRefreshToken:input_type -> iam.rpc.RevokeOpaqueRefreshTokenRequest
 	4, // 2: iam.rpc.AuthService.VerifyUserCredentials:input_type -> iam.rpc.VerifyUserCredentialsRequest
@@ -986,27 +1435,27 @@ var file_internal_iam_transport_rpc_proto_auth_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_internal_iam_transport_rpc_proto_auth_proto_init() }
-func file_internal_iam_transport_rpc_proto_auth_proto_init() {
-	if File_internal_iam_transport_rpc_proto_auth_proto != nil {
+func init() { file_auth_proto_init() }
+func file_auth_proto_init() {
+	if File_auth_proto != nil {
 		return
 	}
-	file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[0].OneofWrappers = []any{}
+	file_auth_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_auth_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_auth_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_internal_iam_transport_rpc_proto_auth_proto_goTypes,
-		DependencyIndexes: file_internal_iam_transport_rpc_proto_auth_proto_depIdxs,
-		MessageInfos:      file_internal_iam_transport_rpc_proto_auth_proto_msgTypes,
+		GoTypes:           file_auth_proto_goTypes,
+		DependencyIndexes: file_auth_proto_depIdxs,
+		MessageInfos:      file_auth_proto_msgTypes,
 	}.Build()
-	File_internal_iam_transport_rpc_proto_auth_proto = out.File
-	file_internal_iam_transport_rpc_proto_auth_proto_goTypes = nil
-	file_internal_iam_transport_rpc_proto_auth_proto_depIdxs = nil
+	File_auth_proto = out.File
+	file_auth_proto_goTypes = nil
+	file_auth_proto_depIdxs = nil
 }

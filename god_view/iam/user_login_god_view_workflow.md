@@ -8,21 +8,21 @@
 | Thuộc tính | Giá trị AS-IS |
 |---|---|
 | Domain | IAM / End-user authentication |
-| Public endpoints | `POST /api/v1/auth/login/challenge`, `POST /api/v1/auth/login`, `POST /api/v1/auth/oauth/{google\|github}/start`, `GET /api/v1/auth/oauth/{google\|github}/callback` |
+| Public endpoints | `POST /api/v1/auth/login/challenge`, `POST /api/v1/auth/login`, `POST /api/v1/auth/mfa/verify`, `POST /api/v1/auth/oauth/{google\|github}/start`, `GET /api/v1/auth/oauth/{google\|github}/callback`; self MFA APIs dưới `/api/v1/me/iam/mfa/*` |
 | UI consumer | Cloud Console sign-in |
 | Edge owner | Envoy + ACR ExtAuthz |
 | Identity owner | Controlplane IAM |
-| Inter-service transport | Shared L2 Redis Pub/Sub request/reply, channels `iam.auth.verify_credentials` và `iam.auth.verify_external_identity`; payload = `request_id[16] || protobuf` |
-| Durable SoT | PostgreSQL: users, roles, memberships, devices, refresh tokens, IAM outbox |
-| Runtime SoT | Auth-State Redis DB0 user session encoded bằng Prost |
-| Crypto | Argon2; Ed25519 login proof; OAuth PKCE S256 + one-time state; Google OIDC RS256/JWKS/nonce; JWT HS256 qua Vault Transit HMAC-SHA256 |
+| Inter-service transport | Shared L2 Redis Pub/Sub request/reply, channels `iam.auth.verify_credentials`, `iam.auth.verify_external_identity`, `iam.auth.verify_mfa_challenge`; payload = `request_id[16] || protobuf` |
+| Durable SoT | PostgreSQL: users, roles, memberships, devices, refresh tokens, active `mfa_settings`, unused `mfa_recovery_codes`, IAM outbox |
+| Runtime SoT | Auth-State Redis DB0 user session encoded bằng Prost, pending setup/login challenge và TOTP replay fence |
+| Crypto | Argon2; Ed25519 login proof; TOTP secret encrypted at rest; one-time recovery hashes; OAuth PKCE S256 + one-time state; Google OIDC RS256/JWKS/nonce; JWT HS256 qua Vault Transit HMAC-SHA256 |
 | JWT key custody | HashiCorp Vault Transit; ACR không đọc hoặc giữ raw signing key |
 | Login challenge TTL | 120 giây |
 | OAuth state TTL | Tối đa 300 giây, atomic consume |
 | Pending resend cooldown | Redis `SET NX`, 60 giây |
 | Success response | Password: HTTP `204` với cookies; OAuth: HTTP `303` với cùng session cookies |
 | Related workflow | [User Critical Session Proof](user_critical_session_proof_workflow.md) |
-| Verified against | Working tree, 2026-07-28 |
+| Verified against | Working tree, 2026-07-29 |
 
 ### 0.1 Những sự thật không được hiểu sai
 
@@ -37,6 +37,10 @@
 | IAM là issuer và durable owner của refresh token; ACR là HTTP cookie writer | Khi `trust_device=true`, IAM persist hash + trả raw token/expiry đúng một lần; ACR phát HttpOnly cookie theo expiry đó |
 | User access JWT được Vault Transit ký | ACR dựng header/payload nhưng gửi signing input sang Vault; Vault key version nằm trong signature để hỗ trợ rotation |
 | User session luôn thuộc một Zone thật | Mọi user login/recovery thiếu Zone, dùng `global`, Zone UUID nil hoặc Zone không active/draining đều fail-closed; `global` chỉ dành cho SRE |
+| MFA gate đứng trước session issuance | Khi MFA enabled, IAM chỉ trả `MFA_REQUIRED`; device/refresh/session/cookie chưa được tạo cho tới khi `POST /api/v1/auth/mfa/verify` thành công |
+| MFA durable state không ở Redis | Auth-State Redis giữ pending setup ciphertext, challenge có TTL và TOTP step fence; active TOTP ciphertext/recovery-code hashes nằm ở PostgreSQL |
+| Pending setup mất thì restart | Redis eviction/failover làm mất pending setup/login continuation; active enrollment PostgreSQL không mất |
+| MFA remove là hard delete | `DELETE mfa_settings` cascade xóa recovery hashes; không có disabled/tombstone state |
 
 ### 0.2 Severity gate
 
@@ -114,6 +118,69 @@ server-side hierarchy fence as the user list applies; raw provider subjects and 
 exposed. Cloud Console fetches this endpoint only when the dedicated `Sign-in` user-detail tab
 is opened; Overview continues to use the paginated directory row.
 
+### 1.1b Self-user MFA enrollment and login gate
+
+MFA is an additional login method for an existing account. It never creates a user or
+starts onboarding. PostgreSQL stores only active, durable enrollment:
+
+- `mfa_settings` has one row per user with encrypted `secret_ciphertext`, `secret_key_id`
+  and timestamps. Row existence means MFA is enabled; removal hard-deletes it.
+- `mfa_recovery_codes` stores only normalized one-way hashes attached to the enrollment.
+  Consuming a code hard-deletes its row; regenerating replaces the complete set atomically.
+- The legacy SQL `mfa_challenges` table is removed; it is not a runtime source.
+
+Auth-State Redis stores bounded, short-lived continuation and concurrency state:
+
+```text
+iam:mfa:challenge:{challenge_id}   -> login context + enrollment + zone, EX 300
+iam:mfa:setup:{user_id}             -> Protobuf `MfaSetupPending` (encrypted secret), EX 600
+iam:mfa:totp:{user_id}:{setting_id} -> monotonic last accepted step, EX 120
+iam:mfa:challenge:{challenge_id}:attempts   -> bounded retry counter
+```
+
+Pending setup contains only a versioned Protobuf `MfaSetupPending` with encrypted TOTP
+ciphertext; no raw recovery code, password, provider token or refresh token is written to
+Redis. A missing/expired key requires a new primary login or setup attempt.
+
+```mermaid
+sequenceDiagram
+    participant UI as Cloud Console
+    participant Edge as Envoy + ACR
+    participant AR as Auth-State Redis
+    participant SR as Shared L2 Redis
+    participant IAM as Controlplane IAM
+    participant DB as PostgreSQL
+
+    UI->>Edge: POST /api/v1/auth/login
+    Edge->>IAM: VerifyUserCredentials
+    IAM->>DB: Verify password + account + active MFA enrollment
+    alt MFA disabled
+        IAM->>DB: Register device + optional refresh
+        IAM-->>Edge: Authenticated result
+        Edge->>AR: Issue runtime session
+        Edge-->>UI: 204 + cookies
+    else MFA enabled
+        IAM-->>Edge: MFA_REQUIRED, no device/refresh/session
+        Edge->>AR: SET iam:mfa:challenge:{id} EX 300
+        Edge-->>UI: 202 + challenge_id
+        UI->>Edge: POST /api/v1/auth/mfa/verify
+        Edge->>AR: Read/attempt-limit challenge
+        Edge->>IAM: VerifyMfaChallenge
+        IAM->>AR: Lua monotonic CAS TOTP step fence
+        IAM->>DB: Verify enrollment fence and consume recovery row if needed
+        IAM->>DB: Register device + optional refresh in durable transaction
+        IAM-->>Edge: Authenticated result
+        Edge->>AR: Issue runtime session, delete challenge
+        Edge-->>UI: 204 + cookies
+    end
+```
+
+Password and Google/GitHub OAuth converge at the same gate. OAuth callback keeps the
+state-bound `zone_id` and `mfa_setting_id`; a successful MFA verify cannot replace either
+with client-supplied data. Concurrent TOTP verification is fenced by Redis `SET NX` with a
+short TTL; concurrent recovery verification is fenced by PostgreSQL atomic `DELETE`
+and its affected-row count.
+
 ### 1.2 Component ownership
 
 | Component | Owns | Không được tự suy diễn |
@@ -122,9 +189,9 @@ is opened; Overview continues to use the paginated directory row.
 | Envoy | TLS, body buffering, gọi ExtAuthz | Không xác thực password |
 | ACR | CORS/rate limit, challenge, proof verification, Shared Redis request, session issuance, cookies | Không query trực tiếp IAM PostgreSQL |
 | Shared L2 Redis | Central request/reply, fan-out, locks và streams | Không chứa runtime session hoặc durable identity |
-| Controlplane IAM | User lookup, password/state/role/device/refresh-token business rules | Không phát HTTP cookies |
-| PostgreSQL | Durable identity, device, role, membership, refresh token, resend outbox | Không giữ runtime access session |
-| Auth-State Redis DB0 | One-time challenges, OAuth state/PKCE/nonce, resend cooldown, binary runtime session, indexes và ACR security outbox | Không làm transport Central-Zone hoặc business DB |
+| Controlplane IAM | User lookup, password/state/role/device/refresh-token business rules; encrypted pending MFA setup và TOTP replay fence với ACL hẹp `iam:mfa:setup:*`/`iam:mfa:totp:*` | Không phát HTTP cookies, không đọc ACR session/proof namespace |
+| PostgreSQL | Durable identity, device, role, membership, refresh token, active MFA ciphertext, recovery hashes, resend outbox | Không giữ runtime access session hoặc pending setup |
+| Auth-State Redis DB0 | One-time login proof/OAuth/MFA setup-login challenges, attempt/rate-limit, TOTP replay fence, resend cooldown, binary runtime session, indexes và ACR security outbox | Không chứa plaintext TOTP/recovery code hoặc business DB |
 | HashiCorp Vault Transit | Giữ HMAC key, ký và verify JWT bằng SHA2-256 | Không sở hữu user/session business state |
 
 ### 1.3 End-to-end topology
@@ -155,6 +222,13 @@ flowchart LR
 | `POST /api/v1/auth/login` | Public login interceptor, bắt buộc proof | ACR → IAM | `204` cookies, `401`, `412`, hoặc `5xx` |
 | `POST /api/v1/auth/oauth/{provider}/start` | Public qua CORS/rate limit; bắt buộc device key và Zone cụ thể | ACR local interceptor | `200` authorization URL hoặc `4xx/5xx` |
 | `GET /api/v1/auth/oauth/{provider}/callback` | One-time state + PKCE; callback không nhận Zone mới từ browser | ACR → provider → IAM | Thành công: `303` cookies + safe return path; thất bại: `303 /signin?oauth_error=OAUTH_SIGN_IN_FAILED` |
+| `POST /api/v1/auth/mfa/verify` | `challenge_id` do ACR phát, code TOTP/recovery | ACR → IAM | Thành công: `204` cookies; thất bại: generic `401` |
+| `GET /api/v1/me/iam/mfa` | Existing user session | Controlplane IAM | Status + recovery count, không trả secret |
+| `POST /api/v1/me/iam/mfa/setup/start` | Existing user session | Controlplane IAM | Redis pending state + one-time provisioning response |
+| `POST /api/v1/me/iam/mfa/setup/:setup_id/confirm` | Existing user session + TOTP | Controlplane IAM | Enable MFA + raw recovery codes một lần |
+| `POST /api/v1/me/iam/mfa/recovery/regenerate` | Existing session + current TOTP | Controlplane IAM | Hard-replace toàn bộ recovery-code set, trả codes mới |
+| `DELETE /api/v1/me/iam/mfa` | Existing session + current TOTP | Controlplane IAM | Hard-delete MFA enrollment và recovery hashes |
+| `GET /api/v1/personal/iam/users/:id/mfa` | Platform permission `iam:mfa:view` + trusted caller level | Controlplane IAM | Chỉ xem target có `role_level > callerLevel`; cùng/higher level trả forbidden |
 
 Các endpoint này được xử lý ngay trong ACR. Request login thành công không được forward xuống business HTTP API.
 
@@ -337,6 +411,11 @@ State decision:
 
 ### 3.4 Phase D — Device and refresh-token persistence
 
+For an MFA-enabled user, this phase is deferred. The initial credential response contains
+`MFA_REQUIRED` and no device/refresh side effect. ACR creates the five-minute challenge and
+only calls `VerifyMfaChallenge` after the client submits TOTP or recovery code. The steps
+below execute only after that verification succeeds.
+
 1. IAM canonicalizes Base64 Ed25519 public key thành standard Base64, đúng 32 bytes.
 2. Device service resolve device theo user + public key; nếu không tìm thấy thì tạo ID mới.
 3. IAM tính fingerprint SHA-256 trên canonical key và register/upsert device cùng IP/UA.
@@ -403,6 +482,8 @@ erDiagram
     USERS ||--o{ USER_ROLE_ASSIGNMENTS : assigned
     USERS ||--o{ TENANT_MEMBERSHIPS : joins
     USERS ||--o{ EXTERNAL_IDENTITIES : authenticates
+    USERS ||--o| MFA_SETTINGS : protects
+    MFA_SETTINGS ||--o{ MFA_RECOVERY_CODES : issues
 
     USERS {
       uuid id PK
@@ -436,6 +517,21 @@ erDiagram
       timestamptz expires_at
       timestamptz revoked_at
     }
+    MFA_SETTINGS {
+      uuid id PK
+      uuid user_id FK
+      text secret_ciphertext
+      text secret_key_id
+      timestamptz created_at
+      timestamptz updated_at
+    }
+    MFA_RECOVERY_CODES {
+      uuid id PK
+      uuid mfa_setting_id FK
+      text code_hash
+      text code_hint
+      timestamptz created_at
+    }
     USER_ACCESS_SESSION {
       string redis_key PK
       string ash
@@ -453,6 +549,11 @@ erDiagram
 | Canonical proof key | Durable device row | Redis session, critical proof verifier |
 | Refresh token + expiry | IAM refresh service và PostgreSQL | ACR phát HttpOnly cookie; recovery flow gửi token về IAM để kiểm tra hash/context |
 | Access token/key/secret | ACR runtime generation | Browser cookies và edge session verification |
+| MFA enrollment/secret | PostgreSQL `mfa_settings` | IAM TOTP verifier; ciphertext only; row existence means enabled |
+| Recovery code state | PostgreSQL `mfa_recovery_codes` | IAM atomic hard-delete consume; raw code chỉ trả một lần |
+| Pending setup | Auth-State Redis encrypted TTL key | IAM confirm; mất key thì restart setup |
+| TOTP replay fence | Auth-State Redis Lua monotonic CAS key | IAM login/setup/remove/regenerate concurrency gate |
+| MFA challenge | Auth-State Redis TTL key | ACR login continuation; mất key thì restart primary login |
 
 ---
 
@@ -465,6 +566,15 @@ erDiagram
 | Redis challenge unavailable | Fail-closed | Không gọi IAM |
 | Hai pending login cùng lúc | `SET NX` cooldown | Tối đa một outbox winner trong window |
 | Outbox insert lỗi sau cooldown winner | Best-effort DEL cooldown 500ms | Cho phép retry sớm; không cấp session |
+| MFA enabled ở initial password/OAuth login | IAM trả `MFA_REQUIRED` trước device/refresh, kèm `mfa_setting_id` | ACR chỉ tạo challenge, chưa cấp session/cookie |
+| Platform MFA audit target ngang/cao hơn caller | Repo CTE lấy effective target `role_level` và yêu cầu `target_level > callerLevel` | Trả forbidden, không tiết lộ trạng thái MFA |
+| Hai TOTP verify/replay trong clock-skew window | Redis Lua monotonic CAS theo user + enrollment, EX 120 | Chỉ step lớn hơn last accepted thành công; request cũ/concurrent generic MFA failure |
+| Hai request dùng cùng recovery code | PostgreSQL atomic `DELETE` + affected-row count | Một request thành công, request còn lại generic MFA failure |
+| Setup mới race với confirm | PostgreSQL unique user + CTE insert | Chỉ một enrollment active; setup cũ không hạ enrollment |
+| MFA remove đồng thời với login | Login challenge bind `mfa_setting_id`; DB row là enrollment fence | Thao tác nào lock/commit trước quyết định linearization; challenge enrollment cũ fail sau hard delete |
+| MFA challenge/setup Redis mất | TTL state không durable | Restart primary login/setup; active enrollment PostgreSQL vẫn còn |
+| Auth Redis failover mất TOTP fence | Fence là ephemeral, HA/AOF/no-eviction giảm xác suất | Có thể cần nhập lại code; replay window chỉ mở trong TTL fence, không bypass password/zone |
+| Recovery delete commit nhưng ACR session issuance lỗi | Không rollback qua Redis/HTTP boundary | Code đã tiêu thụ, không có session; login lại bằng TOTP hoặc recovery code khác |
 | Shared Redis không có subscriber/timeout | ACR trả authentication unavailable | Không cấp session |
 | Nhiều CP replica cùng nhận login | `SET NX` theo request ID, TTL 30s | Chỉ một replica chạy password/device/refresh side effects |
 | OAuth callback cho subject chưa link hoặc đã revoke | Lookup `(provider, provider_subject)` trả cùng invalid-credentials class | Không tạo user/identity/handoff; browser chỉ thấy lỗi chung |
@@ -511,6 +621,11 @@ erDiagram
 11. User session issuer chỉ nhận Zone UUID cụ thể; nil/global/không resolve được không bao giờ fallback sang session `global`.
 12. Provider code/token/JWT/JSON dừng tại ACR. IAM transport chỉ nhận canonical external identity đã được verify và validate bounds.
 13. OAuth callback không được tạo user hoặc link identity; mọi callback failure public phải hội tụ vào cùng một error code chung.
+14. PostgreSQL `mfa_settings` row tồn tại nghĩa là enrollment active; remove hard-delete row và cascade recovery hashes, không có soft-disable tombstone.
+15. Auth-State Redis chỉ chứa pending setup dưới dạng encrypted ciphertext; raw TOTP secret/recovery code/password/provider token/refresh token không được ghi vào Redis.
+16. Recovery verification chỉ thành công khi PostgreSQL atomic `DELETE` affected-row count là một; không giữ `used_at` state.
+17. TOTP replay fence dùng atomic Redis Lua monotonic CAS theo user + enrollment, TTL 120 giây; Redis outage/fence miss không được fail-open thành authenticated session.
+18. `mfa_setting_id` từ IAM response được bind vào ACR challenge và phải khớp enrollment hiện tại ở bước cuối; client không được tự gửi hoặc thay thế nó.
 
 ### 6.2 Open risks AS-IS
 
@@ -523,6 +638,7 @@ erDiagram
 | **P2** | Device-cap selection vẫn đọc/sort session index trước transaction eviction | Concurrent login burst cần stress test để chứng minh cap hội tụ và không orphan index |
 | **P2** | UI/ACR canonical message được implement ở hai ngôn ngữ | Cần contract vector test cross-language trong CI để tránh drift field/order/encoding |
 | **P2** | JWT verification cache Moka chưa đặt TTL riêng theo remaining token lifetime; code kiểm tra `exp` khi cache hit nhưng entry có thể nằm tới eviction | Không bypass expiry, nhưng expired entries có thể chiếm capacity; nên cấu hình expiry-aware eviction |
+| **P1** | TOTP replay fence là Auth Redis state ngắn hạn | Bắt buộc AOF/no-eviction/HA/replica policy; chấp nhận replay window hữu hạn khi Redis failover mất fence hoặc đưa fence về PostgreSQL nếu policy cần tuyệt đối |
 
 ---
 
@@ -565,6 +681,13 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 - [ ] Cookie flags được integration-test qua Envoy với configured public domain.
 - [ ] Critical call sau login verify được session proof theo God View riêng.
 - [ ] `trust_device=true` phát HttpOnly refresh cookie với `Max-Age` khớp expiry IAM; false không phát cookie.
+- [ ] Pending MFA setup chỉ tồn tại trong Auth Redis ciphertext với TTL 10 phút; DB chưa có row trước confirm.
+- [ ] Start MFA chạy một CTE precondition check ở repository; confirm vẫn có CTE unique-enrollment fence cho race cuối.
+- [ ] Confirm MFA dùng TOTP monotonic fence Redis và một SQL CTE insert enrollment + toàn bộ recovery hashes.
+- [ ] Recovery login dùng atomic `DELETE` + affected-row count; cùng code concurrent chỉ một request thành công.
+- [ ] Regenerate dùng CTE delete + insert recovery set, không còn generation/used/revoked state.
+- [ ] `DELETE /api/v1/me/iam/mfa` yêu cầu current TOTP và hard-delete setting/cascade codes.
+- [ ] Password/OAuth MFA response có `mfa_setting_id`; challenge cũ fail sau remove/re-enroll.
 - [ ] Password/OAuth/recovery đều từ chối thiếu Zone, `global`, Zone nil và Zone inactive.
 - [ ] OAuth state replay/expiry, provider denial, email chưa verify, identity chưa link/revoked và callback Zone mismatch đều fail-closed với cùng public error.
 - [ ] OAuth callback cho identity chưa link không ghi `users`, `external_identities`, role, wallet outbox hoặc Auth-State handoff.
@@ -590,9 +713,12 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | IAM Shared Redis request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | Durable device eviction relay/consumer | [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/user/device.rs`](../../acr/src/user/device.rs), [`controlplane/internal/iam/transport/pubsub/handler/device.go`](../../controlplane/internal/iam/transport/pubsub/handler/device.go) |
 | IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
+| IAM MFA HTTP workflows (one handler method per flow) | [`controlplane/internal/iam/transport/http/handler/mfa_handler.go`](../../controlplane/internal/iam/transport/http/handler/mfa_handler.go), [`controlplane/internal/iam/transport/http/dto/mfa.go`](../../controlplane/internal/iam/transport/http/dto/mfa.go) |
+| IAM MFA workflow service (single constructor, no cross-flow helpers) | [`controlplane/internal/iam/service/mfa_service.go`](../../controlplane/internal/iam/service/mfa_service.go), [`controlplane/internal/iam/domain/service/mfa_service.go`](../../controlplane/internal/iam/domain/service/mfa_service.go) |
+| IAM MFA durable repository and entities | [`controlplane/internal/iam/repository/mfa_repo.go`](../../controlplane/internal/iam/repository/mfa_repo.go), [`controlplane/internal/iam/domain/repo/mfa_repo.go`](../../controlplane/internal/iam/domain/repo/mfa_repo.go), [`controlplane/internal/iam/domain/entity/mfa.go`](../../controlplane/internal/iam/domain/entity/mfa.go) |
 | IAM linked external identity lookup and provider-email/account-email separation | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go), [`controlplane/internal/iam/migrations/000011_external_identities.up.sql`](../../controlplane/internal/iam/migrations/000011_external_identities.up.sql) |
 | Device persistence | [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
-| PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |
+| PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql), [`controlplane/internal/iam/migrations/000012_mfa_setup.up.sql`](../../controlplane/internal/iam/migrations/000012_mfa_setup.up.sql) |
 
 ---
 

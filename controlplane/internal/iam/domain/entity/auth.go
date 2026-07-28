@@ -89,8 +89,10 @@ type VerifyOpaqueRefreshTokenResult struct {
 
 // VerifyUserCredentialsResult chứa thông tin phản hồi sau khi xác thực credentials người dùng thành công
 type VerifyUserCredentialsResult struct {
-	Valid  bool
-	UserID string
+	Valid       bool
+	MFARequired bool
+	UserID      string
+	MFASettingID string
 	// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
 	RoleID                string
 	Level                 int32
@@ -176,7 +178,9 @@ type ExternalLoginRequest struct {
 
 type ExternalLoginResult struct {
 	Valid                 bool
+	MFARequired           bool
 	UserID                string
+	MFASettingID          string
 	RoleID                string
 	Level                 int32
 	TenantID              string

@@ -11,7 +11,7 @@ use crate::pkg::cookie::{
     COOKIE_REFRESH_TOKEN, COOKIE_TENANT_ID, COOKIE_ZONE_CODE,
 };
 use crate::token::TokenManager;
-use crate::user::login::release_user_session;
+use crate::user::login::{issue_mfa_challenge, release_user_session, MfaChallengeContext};
 use crate::user::session_proof::canonicalize_public_key;
 use base64::Engine;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
@@ -815,6 +815,52 @@ impl OAuthProviderService {
             );
             return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
         }
+        if response.mfa_required {
+            if Uuid::parse_str(&response.mfa_setting_id).is_err() {
+                Logger::sys_error(
+                    "user.oauth",
+                    "OAuth MFA response violated enrollment binding",
+                    "mfa_setting_id_invalid",
+                );
+                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            }
+            let context = MfaChallengeContext {
+                user_id: response.user_id.clone(),
+                username: response.username.clone(),
+                tenant_domain: String::new(),
+                mfa_setting_id: response.mfa_setting_id.clone(),
+                role_id: response.role_id.clone(),
+                level: response.level,
+                tenant_id: response.tenant_id.clone(),
+                zone_id: state.zone_id.clone(),
+                zone_code: state.zone_code.clone(),
+                client_device_id: state.client_device_id.clone(),
+                public_key: state.device_public_key.clone(),
+                client_proof_public_key: state.device_public_key.clone(),
+                trust_device: state.trust_device,
+                device_name: state.device_name.clone(),
+                device_type: state.device_type.clone(),
+                client_ip: client_headers
+                    .get("x-forwarded-for")
+                    .cloned()
+                    .unwrap_or_default(),
+                user_agent: client_headers
+                    .get("user-agent")
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            let (challenge_id, expires_in) = match issue_mfa_challenge(session_mgr, context).await {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                }
+            };
+            return Ok(Response::new(oauth_mfa_redirect(
+                &state.return_to,
+                &challenge_id,
+                expires_in,
+            )));
+        }
         let refresh_max_age = if state.trust_device {
             let max_age = response.refresh_token_expires_at - chrono::Utc::now().timestamp();
             if response.refresh_token.is_empty() || max_age <= 0 {
@@ -1083,6 +1129,24 @@ fn oauth_failure_redirect(return_to: &str) -> CheckResponse {
     builder.set_body("");
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated("OAuth callback completed"));
+    response.set_http_response(builder);
+    response
+}
+
+fn oauth_mfa_redirect(return_to: &str, challenge_id: &str, expires_in: u64) -> CheckResponse {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("mfa_required", "1");
+    query.append_pair("challenge_id", challenge_id);
+    query.append_pair("expires_in", &expires_in.to_string());
+    if safe_return_to(return_to) && return_to != "/" {
+        query.append_pair("return_to", return_to);
+    }
+    let destination = format!("/signin?{}", query.finish());
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(HttpStatusCode::Found);
+    builder.add_header("location", &destination, None, false);
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated("MFA_REQUIRED"));
     response.set_http_response(builder);
     response
 }

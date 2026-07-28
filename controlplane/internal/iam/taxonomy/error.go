@@ -15,6 +15,11 @@ var (
 	ErrGenRecoveryCodeFailed = errors.New("iam: generate recovery code failed")
 	ErrInvalidCredential     = errors.New("iam: invalid credential")
 	ErrRecoveryCodeInvalid   = errors.New("iam: recovery code invalid or consumed")
+	ErrMFAAlreadyEnabled     = errors.New("iam: mfa already enabled")
+	ErrMFASetupExpired       = errors.New("iam: mfa setup expired")
+	ErrMFAChallengeInvalid   = errors.New("iam: mfa challenge invalid")
+	ErrMFARequired           = errors.New("iam: mfa required")
+	ErrMFAInvalidCode        = errors.New("iam: invalid mfa code")
 	ErrTokenIssueFailed      = errors.New("iam: token issue failed")
 	ErrUuidGenerateFailed    = errors.New("iam: uuid generate failed")
 

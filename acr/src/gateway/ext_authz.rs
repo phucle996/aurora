@@ -295,6 +295,22 @@ impl Authorization for ExtAuthzService {
             return res;
         }
 
+        if let Some(res) = crate::user::login::handle_mfa_verify(
+            &self.session_mgr,
+            &self.token_mgr,
+            redis_client.as_ref(),
+            &self.shared_redis,
+            &self.config,
+            client_headers,
+            &req,
+            method,
+            path,
+        )
+        .await
+        {
+            return res;
+        }
+
         if let Some(res) = self
             .oauth
             .handle(
