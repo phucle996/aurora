@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let cfg = Config::from_env()?;
+    let vault = infra::vault::VaultClient::new(&cfg.vault).await?;
     // Guard owns the bounded log writer and OTel providers. Keeping it in main
     // prevents early worker shutdown and guarantees final flush on SIGTERM.
     let _telemetry_guard = TelemetryRuntime::init(&cfg)?;
@@ -30,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     Logger::sys_info("system.startup", "Starting Notification Service");
 
-    let runtime = app::bootstrap::Runtime::build(&cfg).await?;
+    let runtime = app::bootstrap::Runtime::build(&cfg, &vault).await?;
     let app = app::router::build_router(runtime.state());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.app_port));

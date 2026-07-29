@@ -18,8 +18,8 @@ import (
 	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
+	vaultinfra "controlplane/infra/vault"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -38,7 +38,8 @@ type Modules struct {
 	Storage *storage.StorageModule
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
 	CacheEngine *cacheengine.CacheRegistry
-	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
+	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB và các bridge
+	// nội vùng được module sở hữu; Controlplane không giữ NATS client.
 	probeCancel context.CancelFunc
 }
 
@@ -48,9 +49,9 @@ func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	authRds *goredis.Client,
+	vaultClient *vaultinfra.Client,
 	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
-	natsConn *nats.Conn,
 	otel *observability.OTel,
 ) (*Modules, error) {
 	// ------------------------------------------------------------------------
@@ -99,7 +100,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, authRds, kafkaProducer, cacheEngine, otel)
+	iamModule, err := iam.NewModule(cfg, db, rds, authRds, vaultClient, kafkaProducer, cacheEngine, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -133,7 +134,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// [COMMENT]: Khởi tạo phân hệ Storage (Tier 2). Hỗ trợ chạy ở chế độ suy giảm (Degraded Mode).
-	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine, natsConn)
+	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine)
 	if err != nil {
 		logger.SysError("graceful.degradation.storage", fmt.Sprintf("Failed to initialize storage module: %v. Running in degraded mode.", err))
 		storageModule = storage.NewDegradedModule(err)

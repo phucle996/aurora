@@ -23,19 +23,16 @@ import (
 type PersonalCredentialSvcImpl struct {
 	repo       storageRepoInterface.PersonalCredentialRepo
 	bucketRepo storageRepoInterface.PersonalBucketRepo
-	masterKey  string
 }
 
 // [COMMENT]: NewPersonalCredentialService tạo mới instance thực thi PersonalCredentialService.
 func NewPersonalCredentialService(
 	repo storageRepoInterface.PersonalCredentialRepo,
 	bucketRepo storageRepoInterface.PersonalBucketRepo,
-	masterKey string,
 ) storageSvcInterface.PersonalCredentialService {
 	return &PersonalCredentialSvcImpl{
 		repo:       repo,
 		bucketRepo: bucketRepo,
-		masterKey:  masterKey,
 	}
 }
 

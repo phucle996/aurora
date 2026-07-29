@@ -33,59 +33,14 @@ pub struct ScyllaConfig {
 
 impl ScyllaConfig {
     pub fn from_env(environment: &Environment) -> Result<Self, ConfigError> {
-        let contact_points = environment
-            .required("SCYLLA_CONTACT_POINTS")?
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if contact_points.is_empty() {
-            return Err(ConfigError::InvalidValue("SCYLLA_CONTACT_POINTS"));
-        }
-
-        let local_dc = environment.required("SCYLLA_LOCAL_DC")?;
-        if !valid_identifier(&local_dc) {
-            return Err(ConfigError::InvalidValue("SCYLLA_LOCAL_DC"));
-        }
-        let keyspace = environment.required("SCYLLA_KEYSPACE")?;
-        if !valid_identifier(&keyspace) {
-            return Err(ConfigError::InvalidValue("SCYLLA_KEYSPACE"));
-        }
-
-        let tls_mode = match environment.required("SCYLLA_TLS_MODE")?.as_str() {
-            "disabled" => ScyllaTlsMode::Disabled,
-            "server" => ScyllaTlsMode::Server,
-            "mutual" => ScyllaTlsMode::Mutual,
-            _ => return Err(ConfigError::InvalidValue("SCYLLA_TLS_MODE")),
-        };
-        let tls = match tls_mode {
-            ScyllaTlsMode::Disabled => ScyllaTlsConfig {
-                mode: tls_mode,
-                ca_cert: None,
-                client_cert: None,
-                client_key: None,
-            },
-            ScyllaTlsMode::Server => ScyllaTlsConfig {
-                mode: tls_mode,
-                ca_cert: Some(environment.required("SCYLLA_TLS_CA_CERT")?.into()),
-                client_cert: None,
-                client_key: None,
-            },
-            ScyllaTlsMode::Mutual => ScyllaTlsConfig {
-                mode: tls_mode,
-                ca_cert: Some(environment.required("SCYLLA_TLS_CA_CERT")?.into()),
-                client_cert: Some(environment.required("SCYLLA_TLS_CLIENT_CERT")?.into()),
-                client_key: Some(environment.required("SCYLLA_TLS_CLIENT_KEY")?.into()),
-            },
-        };
-
         Ok(Self {
-            contact_points,
-            local_dc,
-            keyspace,
-            username: environment.required("SCYLLA_USERNAME")?,
-            password: environment.required("SCYLLA_PASSWORD")?,
+            // Scylla endpoint, keyspace, credentials and TLS identity are
+            // resolved from the Central Notification capability in Vault.
+            contact_points: Vec::new(),
+            local_dc: String::new(),
+            keyspace: String::new(),
+            username: String::new(),
+            password: String::new(),
             connect_timeout: Duration::from_millis(environment.bounded_u64(
                 "SCYLLA_CONNECT_TIMEOUT_MS",
                 5_000,
@@ -100,7 +55,12 @@ impl ScyllaConfig {
             )?),
             replication_factor: environment.bounded_usize("SCYLLA_REPLICATION_FACTOR", 3, 1, 9)?,
             auto_schema: environment.required_bool("SCYLLA_AUTO_SCHEMA")?,
-            tls,
+            tls: ScyllaTlsConfig {
+                mode: ScyllaTlsMode::Disabled,
+                ca_cert: None,
+                client_cert: None,
+                client_key: None,
+            },
         })
     }
 }

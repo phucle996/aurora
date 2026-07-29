@@ -19,11 +19,5 @@ func (m *StorageModule) Stop() {
 	if m == nil {
 		return
 	}
-	
-	// [COMMENT]: Hủy đăng ký NATS subscriptions trước khi tắt ứng dụng
-	for _, sub := range m.natsSubs {
-		if sub != nil {
-			_ = sub.Unsubscribe()
-		}
-	}
+
 }

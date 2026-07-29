@@ -13,10 +13,10 @@ impl MinioClient {
     // [COMMENT]: Helper nội bộ: khởi tạo S3 Client từ endpoint_url bất kỳ với credentials từ môi trường.
     // Tất cả config chung (path style, region, credential provider) được tập trung tại đây.
     async fn build_from_endpoint(endpoint_url: String, provider_name: &'static str) -> Self {
-        let access_key =
-            std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let secret_key =
-            std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+        let access_key = std::env::var("MINIO_ACCESS_KEY")
+            .expect("MINIO_ACCESS_KEY must be validated during Dataplane bootstrap");
+        let secret_key = std::env::var("MINIO_SECRET_KEY")
+            .expect("MINIO_SECRET_KEY must be validated during Dataplane bootstrap");
 
         let credentials = Credentials::new(access_key, secret_key, None, None, provider_name);
 
@@ -37,8 +37,10 @@ impl MinioClient {
     /// [COMMENT]: Khởi tạo MinIO Client kết nối qua Private Endpoint (internal network: MINIO_HOST:MINIO_PORT).
     /// Sử dụng cho các tác vụ quản trị nội bộ: tạo/xóa bucket, list objects, monitor.
     pub async fn from_env_private() -> Self {
-        let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
-        let port = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
+        let host = std::env::var("MINIO_HOST")
+            .expect("MINIO_HOST must be validated during Dataplane bootstrap");
+        let port = std::env::var("MINIO_PORT")
+            .expect("MINIO_PORT must be validated during Dataplane bootstrap");
         let endpoint_url = format!("http://{}:{}", host, port);
         Self::build_from_endpoint(endpoint_url, "minio-private").await
     }

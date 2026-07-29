@@ -40,7 +40,7 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // 2. Logger is owned by main so its writer guard outlives bootstrap and every background task.
 
     // 3. Load config from Environment
-    let cfg = Config::load();
+    let cfg = Config::load().map_err(|error| format!("load Dataplane config: {error}"))?;
     Config::set_global(cfg.clone());
     Logger::sys_info(
         "system.bootstrap",

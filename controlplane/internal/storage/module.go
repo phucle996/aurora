@@ -12,7 +12,6 @@ import (
 	storageHandler "controlplane/internal/storage/transport/http/handler"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -24,8 +23,6 @@ type StorageModule struct {
 	db         *pgxpool.Pool
 	rds        *goredis.Client
 	L1Registry *cacheengine.CacheRegistry
-	natsConn   *nats.Conn
-	natsSubs   []*nats.Subscription
 
 	// HTTP Transport Handlers
 	PersonalBucketHandler     *storageHandler.PersonalBucketHandler
@@ -74,7 +71,6 @@ func NewModule(
 	rds *goredis.Client,
 	authRds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
-	natsConn *nats.Conn,
 ) (*StorageModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -95,10 +91,6 @@ func NewModule(
 	if cacheEngine == nil {
 		return nil, errors.New("storage module: cache engine registry is nil")
 	}
-	if natsConn == nil {
-		return nil, errors.New("storage module: nats connection is nil")
-	}
-
 	// ------------------------------------------------------------------------
 	// 🧱 GIAI ĐOẠN ĐẤU NỐI (WIRING GRAPH SETUP WITH FAIL-FAST CHECKS)
 	// ------------------------------------------------------------------------
@@ -130,11 +122,11 @@ func NewModule(
 	if personalBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket service")
 	}
-	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, cfg.Security.RuntimeMasterKey)
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo)
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, cfg.Security.RuntimeMasterKey)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}
@@ -163,7 +155,6 @@ func NewModule(
 		db:                        db,
 		rds:                       rds,
 		L1Registry:                cacheEngine,
-		natsConn:                  natsConn,
 		TenantBucketRepo:          tenantBucketRepo,
 		PersonalBucketRepo:        personalBucketRepo,
 		TenantCredentialRepo:      tenantCredentialRepo,

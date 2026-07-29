@@ -12,15 +12,24 @@ ARG NEXT_PUBLIC_ENVOY_URL
 ARG NEXT_PUBLIC_CENTRIFUGO_WS_URL
 ARG NEXT_PUBLIC_COST_CONSOLE_URL
 
-# [COMMENT]: Xuất các ARG thành ENV để trình biên dịch 'next build' nhúng trực tiếp vào JS bundle client
-ENV NEXT_PUBLIC_ENVOY_URL=$NEXT_PUBLIC_ENVOY_URL
-ENV NEXT_PUBLIC_CENTRIFUGO_WS_URL=$NEXT_PUBLIC_CENTRIFUGO_WS_URL
-ENV NEXT_PUBLIC_COST_CONSOLE_URL=$NEXT_PUBLIC_COST_CONSOLE_URL
-
 COPY package*.json ./
 RUN npm install --legacy-peer-deps
 COPY . .
-RUN npm run build
+# The app-owned .env is the local source of truth. CI may provide explicit
+# build args instead, but every public URL remains required; an empty identity
+# must never silently produce a bundle pointed at an unintended origin.
+RUN set -eu; \
+    if [ -f .env ]; then \
+      set -a; . ./.env; set +a; \
+    else \
+      export NEXT_PUBLIC_ENVOY_URL="$NEXT_PUBLIC_ENVOY_URL"; \
+      export NEXT_PUBLIC_CENTRIFUGO_WS_URL="$NEXT_PUBLIC_CENTRIFUGO_WS_URL"; \
+      export NEXT_PUBLIC_COST_CONSOLE_URL="$NEXT_PUBLIC_COST_CONSOLE_URL"; \
+    fi; \
+    : "${NEXT_PUBLIC_ENVOY_URL:?NEXT_PUBLIC_ENVOY_URL is required}"; \
+    : "${NEXT_PUBLIC_CENTRIFUGO_WS_URL:?NEXT_PUBLIC_CENTRIFUGO_WS_URL is required}"; \
+    : "${NEXT_PUBLIC_COST_CONSOLE_URL:?NEXT_PUBLIC_COST_CONSOLE_URL is required}"; \
+    npm run build
 
 # ============================================================================
 # 🚀 STAGE 2: RUNNER - DISTROLESS NODEJS 20 DEBIAN 12 (NON-ROOT)

@@ -52,10 +52,9 @@ pub struct PostgresConfig {
 
 impl PostgresConfig {
     pub(crate) fn load(environment: &Environment) -> Result<Self, String> {
-        let database_url = environment.required("DATABASE_URL")?;
-        database_url
-            .parse::<tokio_postgres::Config>()
-            .map_err(|error| format!("DATABASE_URL is invalid: {error}"))?;
+        // The URL is resolved by infra::postgres from Vault before any
+        // PostgreSQL or logical-replication connection is opened.
+        let database_url = String::new();
 
         let tls_mode: PostgresTlsMode = environment.required_enum("POSTGRES_TLS_MODE")?;
         let replication_sni = environment.optional("POSTGRES_REPLICATION_SNI");

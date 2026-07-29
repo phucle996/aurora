@@ -6,10 +6,20 @@
 # [COMMENT]: Môi trường Node 20 Alpine biên dịch tĩnh bundle React/Vite SPA cho Billing & Cost Console
 FROM node:20-alpine AS build
 WORKDIR /app
+ARG VITE_CLOUD_CONSOLE_URL
 COPY package*.json ./
 RUN npm install
 COPY . .
-RUN npm run build
+# Prefer the Cost Console-owned .env. A CI build may pass the explicit ARG,
+# but the public redirect origin is always required and never defaulted.
+RUN set -eu; \
+    if [ -f .env ]; then \
+      set -a; . ./.env; set +a; \
+    else \
+      export VITE_CLOUD_CONSOLE_URL="$VITE_CLOUD_CONSOLE_URL"; \
+    fi; \
+    : "${VITE_CLOUD_CONSOLE_URL:?VITE_CLOUD_CONSOLE_URL is required}"; \
+    npm run build
 
 # ============================================================================
 # 🚀 STAGE 2: PRODUCTION NGINX UNPRIVILEGED (NON-ROOT)

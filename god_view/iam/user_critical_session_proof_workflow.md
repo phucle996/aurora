@@ -94,9 +94,13 @@ Client headers là `x-session-proof-challenge-id`, `x-session-proof-timestamp`, 
 
 ## 5. Code map
 
-- UI base: `cloud-console/src/lib/api/criticalFetcher.ts`
+- UI base: `cloud-console/src/shared/api/critical.ts`
 - UI key/signing: `cloud-console/src/lib/security/deviceKey.ts`
 - ACR proof: `acr/src/user/session_proof.rs`
 - ACR enforcement/rewrite: `acr/src/gateway/ext_authz.rs`
 - Redis session binary: `acr/src/user/session.rs`
 - IAM key canonicalization: `controlplane/internal/iam/service/auth_service.go`
+
+Critical consumers hiện tại gồm self social-link start/unlink trong Cloud Console Settings.
+Mỗi mutation tự lấy challenge mới; UI không retry tự động mutation đã ký vì challenge chỉ dùng
+một lần và kết quả mutation có thể đã commit dù response bị mất.

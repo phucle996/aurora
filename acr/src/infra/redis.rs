@@ -10,7 +10,23 @@
 
 use crate::config::Config;
 use crate::error::AcrError;
+use crate::infra::vault::VaultClient;
 use std::sync::Arc;
+
+pub const AUTH_STATE_CONNECTION_PATH: &str =
+    "secret/data/connections/redis/auth-state/role-session-rw";
+pub const SHARED_L2_CONNECTION_PATH: &str =
+    "secret/data/connections/redis/shared-l2/role-auth-request-rw";
+
+pub async fn client_from_vault(
+    vault: &VaultClient,
+    path: &str,
+) -> Result<Arc<redis::Client>, AcrError> {
+    let url = vault.read_redis_url(path).await?;
+    let client = redis::Client::open(url)
+        .map_err(|error| AcrError::RedisError(format!("open Vault Redis client: {error}")))?;
+    Ok(Arc::new(client))
+}
 
 /// [COMMENT]: SessionManager — quản lý kết nối Redis L2 tập trung.
 /// Được chia sẻ qua Arc<SessionManager> giữa tất cả domain (user, sre, billing).

@@ -1,4 +1,4 @@
-use super::environment::{normalized, validate_identifier, Environment};
+use super::environment::{normalized, Environment};
 use super::tls::TlsClientConfig;
 use std::str::FromStr;
 
@@ -76,53 +76,8 @@ pub struct KafkaConfig {
 
 impl KafkaConfig {
     pub(crate) fn load(environment: &Environment) -> Result<Self, String> {
-        let security_protocol: KafkaSecurityProtocol =
-            environment.required_enum("KAFKA_SECURITY_PROTOCOL")?;
-        let username = environment.optional("KAFKA_USERNAME");
-        let password = environment.optional("KAFKA_PASSWORD");
-        if security_protocol.uses_sasl() {
-            if username.is_none() || password.is_none() {
-                return Err(
-                    "Kafka SASL protocol requires KAFKA_USERNAME and KAFKA_PASSWORD".to_owned(),
-                );
-            }
-        } else {
-            environment.reject_present(
-                &["KAFKA_USERNAME", "KAFKA_PASSWORD"],
-                "KAFKA_SECURITY_PROTOCOL does not use SASL",
-            )?;
-        }
-
-        let tls_server_name = environment.optional("KAFKA_TLS_SERVER_NAME");
-        let tls = if security_protocol.uses_tls() {
-            Some(TlsClientConfig::load(
-                environment,
-                "KAFKA_TLS",
-                "KAFKA_TLS_CA_CERT",
-                "KAFKA_TLS_CLIENT_CERT",
-                "KAFKA_TLS_CLIENT_KEY",
-            )?)
-        } else {
-            TlsClientConfig::ensure_absent(
-                environment,
-                "KAFKA_TLS",
-                "KAFKA_TLS_CA_CERT",
-                "KAFKA_TLS_CLIENT_CERT",
-                "KAFKA_TLS_CLIENT_KEY",
-                "KAFKA_SECURITY_PROTOCOL does not use TLS",
-            )?;
-            if tls_server_name.is_some() {
-                return Err("KAFKA_TLS_SERVER_NAME requires ssl or sasl_plain_ssl".to_owned());
-            }
-            None
-        };
-
         let topic_prefix = environment.required("KAFKA_TOPIC_PREFIX")?;
         validate_topic_prefix(&topic_prefix)?;
-        let client_id = environment
-            .optional("KAFKA_CLIENT_ID")
-            .unwrap_or_else(|| "aurora-job-orchestrator".to_owned());
-        validate_identifier("KAFKA_CLIENT_ID", &client_id)?;
 
         let request_timeout_ms =
             environment.bounded("KAFKA_REQUEST_TIMEOUT_MS", 10_000_u64, 1_000, 120_000)?;
@@ -157,14 +112,16 @@ impl KafkaConfig {
         }
 
         Ok(Self {
-            bootstrap_servers: environment.required("KAFKA_BOOTSTRAP_SERVERS")?,
-            security_protocol,
-            username,
-            password,
-            tls,
-            tls_server_name,
+            // Endpoint, auth and TLS identity are resolved from the fixed
+            // Vault capability record before the transport is constructed.
+            bootstrap_servers: String::new(),
+            security_protocol: KafkaSecurityProtocol::Plaintext,
+            username: None,
+            password: None,
+            tls: None,
+            tls_server_name: None,
             topic_prefix,
-            client_id,
+            client_id: String::new(),
             producer_batch_bytes: environment.bounded(
                 "KAFKA_PRODUCER_BATCH_BYTES",
                 65_536_usize,

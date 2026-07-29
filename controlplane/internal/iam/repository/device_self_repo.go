@@ -133,49 +133,54 @@ func (r *DeviceSelfRepository) ResolveDeviceIDByFingerprint(ctx context.Context,
 
 // [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định bằng CTE theo client_device_id, ngăn chặn tự hu hồi thiết bị hiện tại
 func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceID uuid.UUID, userID uuid.UUID, currentDeviceID uuid.UUID) error {
-	// 1. Kiểm tra xem thiết bị cần thu hồi có phải là thiết bị hiện tại không
-	var targetID uuid.UUID
-	var isRevoked bool
-	queryCheck := fmt.Sprintf("SELECT id, revoked_at IS NOT NULL FROM %s.devices WHERE client_device_id = $1 AND user_id = $2", r.schema)
-	err := r.db.QueryRow(ctx, queryCheck, clientDeviceID.String(), userID).Scan(&targetID, &isRevoked)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return iamTaxonomy.ErrZeroRowsAffected
-		}
-		return err
-	}
-
-	if targetID == currentDeviceID {
-		return iamTaxonomy.ErrActionNotAllowed
-	}
-
-	if isRevoked {
-		return nil // Đã bị thu hồi rồi, trả về success (idempotent)
-	}
-
-	// 2. Thực hiện thu hồi qua CTE
 	query := fmt.Sprintf(`
-		WITH revoked_device AS (
-			UPDATE %s.devices
+		WITH target_device AS MATERIALIZED (
+			SELECT id, COALESCE(client_device_id, id::text) AS client_device_id, revoked_at
+			FROM %s.devices
+			WHERE COALESCE(client_device_id, id::text) = $1 AND user_id = $2
+			FOR UPDATE
+		),
+		revoked_device AS (
+			UPDATE %s.devices d
 			SET revoked_at=now(), updated_at=now()
-			WHERE client_device_id = $1 AND user_id = $2
-			RETURNING id
+			FROM target_device target
+			WHERE d.id = target.id
+			  AND target.client_device_id <> $3
+			  AND target.revoked_at IS NULL
+			RETURNING d.id
 		),
 		deleted_tokens AS (
 			DELETE FROM %s.refresh_tokens
 			WHERE user_id = $2 AND device_id = (SELECT id FROM revoked_device)
 			RETURNING 1
 		)
-		SELECT 
-			(SELECT COUNT(*) FROM revoked_device) AS updated_count
-	`, r.schema, r.schema)
-	var updatedCount int64
-	if err := r.db.QueryRow(ctx, query, clientDeviceID.String(), userID).Scan(&updatedCount); err != nil {
-		return err
+		SELECT
+			EXISTS (SELECT 1 FROM target_device),
+			EXISTS (SELECT 1 FROM target_device WHERE client_device_id = $3),
+			EXISTS (SELECT 1 FROM target_device WHERE revoked_at IS NOT NULL),
+			(SELECT COUNT(*) FROM revoked_device)
+	`, r.schema, r.schema, r.schema)
+	var targetExists, currentDevice, alreadyRevoked bool
+	var updatedCount int
+	if err := r.db.QueryRow(
+		ctx,
+		query,
+		clientDeviceID.String(),
+		userID,
+		currentDeviceID.String(),
+	).Scan(&targetExists, &currentDevice, &alreadyRevoked, &updatedCount); err != nil {
+		return fmt.Errorf("iam repo: revoke self device: %w", err)
 	}
-	if updatedCount == 0 {
+	if !targetExists {
 		return iamTaxonomy.ErrZeroRowsAffected
 	}
+	if currentDevice {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+	if updatedCount == 0 && !alreadyRevoked {
+		return iamTaxonomy.ErrZeroRowsAffected
+	}
+	// Desired-state revoke is idempotent after the target has already been revoked.
 	return nil
 }
 
@@ -185,7 +190,8 @@ func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID 
 		WITH target_devices AS MATERIALIZED (
 			SELECT id, COALESCE(client_device_id, id::text) AS client_device_id
 			FROM %s.devices
-			WHERE user_id = $1 AND ($2::uuid IS NULL OR id != $2)
+			WHERE user_id = $1
+			  AND ($2::uuid IS NULL OR COALESCE(client_device_id, id::text) <> $2::uuid::text)
 		),
 		revoked_devices AS (
 			UPDATE %s.devices

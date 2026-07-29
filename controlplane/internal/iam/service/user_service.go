@@ -2,6 +2,7 @@ package iamSvcImpl
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -9,10 +10,10 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/observability"
 	"controlplane/internal/security"
 	"controlplane/internal/useractivity"
-	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -25,6 +26,7 @@ type UserService struct {
 	sharedRedis *goredis.Client
 }
 
+// [COMMENT]: Khởi tạo UserService; dependency availability đã được bảo đảm tại IAM module.
 func NewUserService(
 	repo iamRepoInterface.UserRepository,
 	registry *cacheengine.CacheRegistry,
@@ -39,96 +41,193 @@ func NewUserService(
 	}
 }
 
-// [COMMENT]: ListUsers lấy danh sách users thô từ repository có role_level lớn hơn caller level (quyền lực nhỏ hơn)
-func (s *UserService) ListUsers(ctx context.Context, callerLevel uint8, limit int, offset int) ([]*iamEntity.User, error) {
+// [COMMENT]: ListUsers chỉ nhận entity của riêng workflow user-directory.
+func (s *UserService) ListUsers(
+	ctx context.Context,
+	query iamEntity.ListUsers,
+) ([]iamEntity.ListUsers, error) {
 	start := time.Now()
-	users, err := s.repo.ListUsers(ctx, callerLevel, limit, offset)
+	users, err := s.repo.ListUsers(ctx, query)
 	observability.CurrentMetrics().ObserveDependency("db", "iam.users.list", time.Since(start), err)
 	return users, err
 }
 
-// [COMMENT]: UpdateUserStatus cập nhật user, fence Auth Redis và fan-out L1 invalidation qua Shared Redis.
-func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, status string) error {
-	// [COMMENT]: 1. Gọi Repository để cập nhật status user dưới DB với cơ chế phân cấp
-	if err := s.repo.UpdateUserStatus(ctx, callerLevel, targetUserID, status); err != nil {
+// [COMMENT]: UpdateUserStatus chỉ nhận entity của riêng workflow status mutation.
+func (s *UserService) UpdateUserStatus(ctx context.Context, workflow iamEntity.UpdateUserStatus) error {
+	if err := s.repo.UpdateUserStatus(ctx, workflow); err != nil {
 		return err
 	}
 
-	// [COMMENT]: 2. Thu hồi cache user_role của target user trên L1 cục bộ
-	s.registry.L1.Delete("user_role:" + targetUserID.String())
-
-	// [COMMENT]: 3. User disable/enable cũng fence Billing L2 để trạng thái cũ không được tái cache sau race.
-	var invalidationErr error
-	if s.authRedis != nil {
-		tag := "authz:billing:{" + targetUserID.String() + "}"
-		if err := s.authRedis.Eval(ctx, `
-			redis.call("INCR", KEYS[1])
-			redis.call("EXPIRE", KEYS[1], ARGV[1])
-			redis.call("DEL", KEYS[2], KEYS[3])
-			return 1
-		`, []string{tag + ":generation", tag + ":data", tag + ":data_generation"}, int64(86400)).Err(); err != nil {
-			invalidationErr = fmt.Errorf("invalidate Billing authorization cache after user status update: %w", err)
-		}
+	s.registry.L1.Delete("user_role:" + workflow.TargetUserID.String())
+	tag := "authz:billing:{" + workflow.TargetUserID.String() + "}"
+	if err := s.authRedis.Eval(ctx, `
+		redis.call("INCR", KEYS[1])
+		redis.call("EXPIRE", KEYS[1], ARGV[1])
+		redis.call("DEL", KEYS[2], KEYS[3])
+		return 1
+	`, []string{tag + ":generation", tag + ":data", tag + ":data_generation"}, int64(86400)).Err(); err != nil {
+		return fmt.Errorf("invalidate Billing authorization cache after user status update: %w", err)
 	}
-
-	// [COMMENT]: Shared Redis fans out L1 invalidation after the Auth Redis generation fence succeeds.
-	if invalidationErr == nil && s.sharedRedis != nil {
-		if err := s.sharedRedis.Publish(ctx, "authz.invalidate.billing", targetUserID.String()).Err(); err != nil {
-			invalidationErr = fmt.Errorf("publish Billing authorization invalidation: %w", err)
-		}
+	if err := s.sharedRedis.Publish(ctx, "authz.invalidate.billing", workflow.TargetUserID.String()).Err(); err != nil {
+		return fmt.Errorf("publish Billing authorization invalidation: %w", err)
 	}
-
-	return invalidationErr
+	return nil
 }
 
-// [COMMENT]: GetUserProfile trả về thông tin profile hiển thị của user (fullname, avatar, v.v.)
-func (s *UserService) GetUserProfile(ctx context.Context, userID uuid.UUID) (*iamEntity.UserProfile, error) {
-	return s.repo.GetUserProfile(ctx, userID)
+// [COMMENT]: GetMyProfile để repository populate cùng entity workflow, không
+// chuyển qua UserProfile dùng chung với register/auth.
+func (s *UserService) GetMyProfile(ctx context.Context, workflow *iamEntity.GetMyProfile) error {
+	return s.repo.GetMyProfile(ctx, workflow)
 }
 
+// [COMMENT]: UpdateMyProfile giữ một entity phẳng xuyên suốt ba tầng.
+func (s *UserService) UpdateMyProfile(ctx context.Context, workflow *iamEntity.UpdateMyProfile) error {
+	start := time.Now()
+	err := s.repo.UpdateMyProfile(ctx, workflow)
+	observability.CurrentMetrics().ObserveDependency("db", "iam.profile.update_self", time.Since(start), err)
+	return err
+}
+
+// [COMMENT]: GetMySocialLinks trả về các row cùng một entity workflow,
+// handler chỉ chịu trách nhiệm shape thành JSON response.
+func (s *UserService) GetMySocialLinks(
+	ctx context.Context,
+	workflow *iamEntity.GetMySocialLinks,
+) ([]iamEntity.GetMySocialLinks, error) {
+	start := time.Now()
+	links, err := s.repo.GetMySocialLinks(ctx, workflow)
+	observability.CurrentMetrics().ObserveDependency("db", "iam.social_link.get_self", time.Since(start), err)
+	return links, err
+}
+
+// [COMMENT]: LinkExternalIdentity nhận identity đã được Redis boundary xác thực.
+func (s *UserService) LinkExternalIdentity(
+	ctx context.Context,
+	workflow iamEntity.LinkExternalIdentity,
+) error {
+	start := time.Now()
+	err := s.repo.LinkExternalIdentity(ctx, workflow)
+	observability.CurrentMetrics().ObserveDependency("db", "iam.social_link.link", time.Since(start), err)
+	if err != nil {
+		return err
+	}
+
+	if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
+		EventID:     uuid.New().String(),
+		UserID:      workflow.UserID.String(),
+		Category:    "security",
+		Action:      "user.social_link.linked",
+		ActorType:   "user",
+		Outcome:     "succeeded",
+		Source:      "controlplane",
+		OperationID: workflow.OperationID.String(),
+		Title:       "Social account linked",
+		Summary:     workflow.Provider + " was linked as an additional sign-in method",
+		OccurredAt:  time.Now().UTC(),
+		Metadata:    map[string]any{"provider": workflow.Provider},
+	}); activityErr != nil {
+		return fmt.Errorf("iam.user_activity.social_link: %w", activityErr)
+	}
+	return nil
+}
+
+// [COMMENT]: UnlinkMySocialLink chỉ dùng entity phẳng của chính workflow unlink.
+func (s *UserService) UnlinkMySocialLink(
+	ctx context.Context,
+	workflow iamEntity.UnlinkMySocialLink,
+) error {
+	linkSlot := fmt.Sprintf("%x", sha256.Sum256([]byte(workflow.UserID.String())))
+	pendingKey := "iam:oauth:link:{" + linkSlot + "}:" + workflow.Provider
+	lockKey := pendingKey + ":lock"
+	lockToken := uuid.New().String()
+	acquired, err := s.authRedis.SetNX(ctx, lockKey, lockToken, 15*time.Second).Result()
+	if err != nil || !acquired {
+		return iamTaxonomy.ErrAuthenticationUnavailable
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.authRedis.Eval(releaseCtx, `
+			if redis.call("GET", KEYS[1]) == ARGV[1] then
+				return redis.call("DEL", KEYS[1])
+			end
+			return 0
+		`, []string{lockKey}, lockToken).Err()
+	}()
+
+	if err := s.authRedis.Del(ctx, pendingKey).Err(); err != nil {
+		return fmt.Errorf("%w: invalidate pending social link: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
+	}
+
+	start := time.Now()
+	err = s.repo.UnlinkMySocialLink(ctx, workflow)
+	observability.CurrentMetrics().ObserveDependency("db", "iam.social_link.unlink", time.Since(start), err)
+	if err != nil {
+		return err
+	}
+
+	if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
+		EventID:     uuid.New().String(),
+		UserID:      workflow.UserID.String(),
+		Category:    "security",
+		Action:      "user.social_link.unlinked",
+		ActorType:   "user",
+		Outcome:     "succeeded",
+		Source:      "controlplane",
+		OperationID: workflow.OperationID.String(),
+		Title:       "Social account unlinked",
+		Summary:     workflow.Provider + " was removed as a sign-in method",
+		OccurredAt:  time.Now().UTC(),
+		Metadata:    map[string]any{"provider": workflow.Provider},
+	}); activityErr != nil {
+		return fmt.Errorf("iam.user_activity.social_unlink: %w", activityErr)
+	}
+	return nil
+}
+
+// [COMMENT]: GetUserAuthMethods trả về một row phẳng cho mỗi provider.
 func (s *UserService) GetUserAuthMethods(
 	ctx context.Context,
-	callerLevel uint8,
-	targetUserID uuid.UUID,
-) (*iamEntity.UserAuthMethods, error) {
-	return s.repo.GetUserAuthMethods(ctx, callerLevel, targetUserID)
+	query iamEntity.GetUserAuthMethods,
+) ([]iamEntity.GetUserAuthMethods, error) {
+	return s.repo.GetUserAuthMethods(ctx, query)
 }
 
-// [COMMENT]: ResetUserPassword thực hiện thay đổi mật khẩu của user bởi Admin, hash mật khẩu bằng Argon2id và lưu trữ vào database
-func (s *UserService) ResetUserPassword(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, newPassword string) error {
-	// [COMMENT]: 1. Hash password mới bằng Argon2id sử dụng module security nội bộ
-	passwordHash, err := security.HashPassword(newPassword)
+// [COMMENT]: Hash password trong service, sau đó xóa plaintext trước khi
+// entity được chuyển xuống repository.
+func (s *UserService) ResetUserPassword(
+	ctx context.Context,
+	workflow iamEntity.ResetUserPassword,
+) error {
+	passwordHash, err := security.HashPassword(workflow.Password)
 	if err != nil {
 		return fmt.Errorf("user service: failed to hash new password: %w", err)
 	}
+	workflow.Password = ""
+	workflow.PasswordHash = passwordHash
 
-	// [COMMENT]: 2. Gọi repository để cập nhật mật khẩu dưới DB bằng 1 CTE an toàn
 	start := time.Now()
-	err = s.repo.ResetUserPassword(ctx, callerLevel, targetUserID, passwordHash)
+	err = s.repo.ResetUserPassword(ctx, workflow)
 	observability.CurrentMetrics().ObserveDependency("db", "iam.users.reset_password", time.Since(start), err)
 	if err != nil {
 		return err
 	}
-	if s.sharedRedis != nil {
-		if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
-			EventID:     uuid.New().String(),
-			UserID:      targetUserID.String(),
-			Category:    "security",
-			Action:      "user.password.reset",
-			ActorType:   "admin",
-			Outcome:     "succeeded",
-			Source:      "controlplane",
-			OperationID: uuid.New().String(),
-			Title:       "Password changed",
-			Summary:     "An administrator changed the account password",
-			OccurredAt:  time.Now().UTC(),
-			Metadata:    map[string]any{"caller_level": callerLevel},
-		}); activityErr != nil {
-			// The IAM transaction has already committed; history enqueue is
-			// best-effort and must not make a successful password change retry.
-			logger.SysError("iam.user_activity.password_reset", activityErr.Error())
-		}
-	}
 
+	if activityErr := useractivity.Append(ctx, s.sharedRedis, useractivity.Event{
+		EventID:     uuid.New().String(),
+		UserID:      workflow.TargetUserID.String(),
+		Category:    "security",
+		Action:      "user.password.reset",
+		ActorType:   "admin",
+		Outcome:     "succeeded",
+		Source:      "controlplane",
+		OperationID: workflow.OperationID.String(),
+		Title:       "Password changed",
+		Summary:     "An administrator changed the account password",
+		OccurredAt:  time.Now().UTC(),
+		Metadata:    map[string]any{"caller_level": workflow.CallerLevel},
+	}); activityErr != nil {
+		return fmt.Errorf("iam.user_activity.password_reset: %w", activityErr)
+	}
 	return nil
 }

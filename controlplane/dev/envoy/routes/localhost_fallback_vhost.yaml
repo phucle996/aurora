@@ -1,4 +1,7 @@
-# [COMMENT]: Cấu hình VirtualHost dự phòng cho Localhost (localhost / localhost:443)
+# [DEV-ONLY]: Cloud Console development VirtualHost for localhost. Google
+# localhost callbacks are valid only for local development; production must
+# use a verified HTTPS domain. Keep browser UI, OAuth callback, cookies and
+# realtime on this one origin.
 name: localhost_fallback
 domains:
   - "localhost"
@@ -9,15 +12,47 @@ typed_per_filter_config:
     allow_origin_string_match:
       - safe_regex:
           regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+      - exact: "https://localhost"
       - exact: "http://localhost:5173"
     allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-    allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+    allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Session-Proof-Challenge-ID, X-Session-Proof-Timestamp, X-Session-Proof-Signature, X-Zone-Code, x-zone-code"
     allow_credentials:
       value: true
     max_age: "86400"
 routes:
-  # [COMMENT]: Route mặc định khi truy cập qua localhost
-  - match: { prefix: "/" }
+  # [DEV-ONLY]: Same-origin Cloud Console realtime endpoint.
+  - match: { prefix: "/connection/" }
+    route:
+      cluster: centrifugo_cluster
+      timeout: 0s
+      upgrade_configs:
+        - upgrade_type: websocket
+  - match: { prefix: "/zone-control/v1/" }
+    route:
+      cluster: zone_control_edge_gateway_cluster
+      timeout: 15s
+  # [DEV-ONLY]: OAuth provider callback has a 15s ExtAuthz budget.
+  - match: { prefix: "/api/v1/auth/oauth/" }
+    route:
+      cluster: controlplane_cluster
+      timeout: 15s
+    typed_per_filter_config:
+      envoy.filters.http.ext_authz:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+        check_settings:
+          grpc_service:
+            envoy_grpc:
+              cluster_name: acr_cluster
+            timeout: 15s
+  - match: { prefix: "/api/v1/billing/" }
+    route:
+      cluster: cost_manager_cluster
+      timeout: 5s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 2s
+  - match: { prefix: "/api/" }
     route:
       cluster: controlplane_cluster
       timeout: 10s
@@ -25,3 +60,16 @@ routes:
         retry_on: "connect-failure,refused-stream,reset"
         num_retries: 1
         per_try_timeout: 3s
+  # [DEV-ONLY]: Serve Cloud Console from https://localhost.
+  - match: { prefix: "/" }
+    route:
+      cluster: cloud_ui_cluster
+      timeout: 15s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 5s
+    typed_per_filter_config:
+      envoy.filters.http.ext_authz:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+        disabled: true

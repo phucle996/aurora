@@ -19,7 +19,6 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/logger"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
@@ -123,10 +122,9 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	publishCancel()
 	if publishErr != nil {
 		iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeFailureUnknown, time.Since(publishStart), publishErr)
-		logger.SysError("iam.account_verification.publish", fmt.Sprintf("registration committed but verification message publish failed for user_id=%s: %v", user.ID, publishErr))
-	} else {
-		iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeSuccess, time.Since(publishStart), nil)
+		return fmt.Errorf("registration committed but verification message publish failed for user_id=%s: %w", user.ID, publishErr)
 	}
+	iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeSuccess, time.Since(publishStart), nil)
 
 	return nil
 }

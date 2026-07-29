@@ -26,6 +26,7 @@ package main
 
 import (
 	"controlplane/pkg/logger"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -39,7 +40,11 @@ func main() {
 	// --------------------------------------------------------------------
 	// 🔄 Nạp cấu hình hệ thống từ môi trường (Environment variables / Config file).
 	// --------------------------------------------------------------------
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "controlplane configuration error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// --------------------------------------------------------------------
 	// 🔄 Thiết lập múi giờ (Timezone) hệ thống nhất quán toàn cục.

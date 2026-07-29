@@ -63,7 +63,13 @@ WHERE (module, object, behavior) IN (
         ('billing', 'wallet', 'top_up'),
         ('billing', 'ledger', 'read'),
         ('billing', 'subscription', 'write'),
-        ('billing', 'credit', 'adjust')
+        ('billing', 'credit', 'adjust'),
+        ('hypervisor', 'vm', 'read'),
+        ('hypervisor', 'vm', 'create'),
+        ('hypervisor', 'image', 'read'),
+        ('hypervisor', 'image', 'create'),
+        ('hypervisor', 'image', 'publish'),
+        ('hypervisor', 'image', 'delete')
 );
 
 DELETE FROM user_profiles

@@ -8,7 +8,7 @@
 |---|---|
 | Identity SoT | IAM PostgreSQL `users` |
 | Authorization SoT | IAM PostgreSQL `user_role.list_perm` |
-| Source origin | `https://cloud.aurora.local` |
+| Source origin | Production: `https://cloud.aurora.local`; **dev-only**: `https://localhost` |
 | Target origin | `https://cost-manager.aurora.local` |
 | Source session | IAM Trinity hiện có |
 | Target session | Opaque alias trỏ về source IAM session |
@@ -22,6 +22,10 @@
 | UI Render Context | Reuse `GET /api/v1/me/iam/context/read` của IAM; permission source giữ nguyên 5 bậc |
 | Authorization transport | Cost L1 → Auth Redis projection → Shared Redis request/reply IAM |
 | Critical proof | Cost-origin Ed25519 key + one-time nonce |
+
+> **DEV-ONLY:** Khi chạy OAuth local, Cloud Console phải được mở tại
+> `https://localhost`; Cost Console vẫn giữ host riêng
+> `https://cost-manager.aurora.local` để không chia sẻ host-only cookies.
 
 ## 1. Security boundaries
 

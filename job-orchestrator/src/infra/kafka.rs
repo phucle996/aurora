@@ -1,4 +1,5 @@
-use crate::config::{KafkaConfig, KafkaSecurityProtocol, TlsTrustSource};
+use crate::config::{KafkaConfig, KafkaSecurityProtocol, TlsClientConfig, TlsTrustSource};
+use crate::infra::vault::VaultClient;
 use ahash::AHashMap;
 use krafka::auth::{AuthConfig, TlsConfig};
 use krafka::consumer::{AutoOffsetReset, Consumer, OffsetAndMetadata, TopicPartition};
@@ -7,6 +8,126 @@ use krafka::protocol::Compression;
 use prost::Message;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const CONNECTION_PATH: &str = "secret/data/connections/kafka/central/role-job-orchestrator";
+
+#[derive(serde::Deserialize)]
+struct ConnectionRecord {
+    schema_version: u32,
+    bootstrap_servers: Vec<String>,
+    security_protocol: String,
+    client_id: String,
+    username: Option<String>,
+    password: Option<String>,
+    tls_enabled: bool,
+    tls_trust_source: Option<String>,
+    ca_cert_path: Option<String>,
+    client_cert_path: Option<String>,
+    client_key_path: Option<String>,
+    server_name: Option<String>,
+}
+
+pub async fn resolve_from_vault(
+    vault: &VaultClient,
+    config: &mut KafkaConfig,
+) -> Result<(), String> {
+    let record: ConnectionRecord = vault.read(CONNECTION_PATH).await?;
+    if record.schema_version != 1 {
+        return Err(format!(
+            "unsupported Vault Kafka schema_version {}",
+            record.schema_version
+        ));
+    }
+    let brokers = record
+        .bootstrap_servers
+        .iter()
+        .map(|server| server.trim())
+        .filter(|server| !server.is_empty())
+        .collect::<Vec<_>>();
+    if brokers.is_empty() {
+        return Err("Vault Kafka bootstrap_servers is required".to_owned());
+    }
+    let protocol: KafkaSecurityProtocol = record.security_protocol.parse()?;
+    let username = record.username.filter(|value| !value.trim().is_empty());
+    let password = record.password.filter(|value| !value.trim().is_empty());
+    if protocol.uses_sasl() != (username.is_some() || password.is_some()) {
+        return Err("Vault Kafka SASL credentials do not match security_protocol".to_owned());
+    }
+    if protocol.uses_sasl() && (username.is_none() || password.is_none()) {
+        return Err("Vault Kafka SASL credentials are incomplete".to_owned());
+    }
+
+    let has_tls_material = record.tls_trust_source.is_some()
+        || record.ca_cert_path.is_some()
+        || record.client_cert_path.is_some()
+        || record.client_key_path.is_some();
+    let tls = if protocol.uses_tls() {
+        if !record.tls_enabled {
+            return Err("Vault Kafka TLS protocol requires tls_enabled=true".to_owned());
+        }
+        let trust_source: TlsTrustSource = record
+            .tls_trust_source
+            .as_deref()
+            .ok_or("Vault Kafka tls_trust_source is required")?
+            .parse()?;
+        let ca_cert = match trust_source {
+            TlsTrustSource::System => {
+                if record.ca_cert_path.is_some() {
+                    return Err("Vault Kafka system trust must not include ca_cert_path".to_owned());
+                }
+                None
+            }
+            TlsTrustSource::File => Some(
+                record
+                    .ca_cert_path
+                    .ok_or("Vault Kafka file trust requires ca_cert_path")?
+                    .into(),
+            ),
+        };
+        let (client_cert, client_key) = match (record.client_cert_path, record.client_key_path) {
+            (Some(cert), Some(key)) => (Some(cert.into()), Some(key.into())),
+            (None, None) => (None, None),
+            _ => {
+                return Err(
+                    "Vault Kafka client certificate and key must be configured together".to_owned(),
+                )
+            }
+        };
+        Some(TlsClientConfig {
+            trust_source,
+            ca_cert,
+            client_cert,
+            client_key,
+        })
+    } else {
+        if record.tls_enabled || has_tls_material {
+            return Err(
+                "Vault Kafka TLS material is not allowed for a non-TLS protocol".to_owned(),
+            );
+        }
+        if record
+            .server_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err("Vault Kafka server_name requires a TLS protocol".to_owned());
+        }
+        None
+    };
+    let client_id = record.client_id.trim().to_owned();
+    if client_id.is_empty() {
+        return Err("Vault Kafka client_id is required".to_owned());
+    }
+
+    config.bootstrap_servers = brokers.join(",");
+    config.security_protocol = protocol;
+    config.client_id = client_id;
+    config.username = username;
+    config.password = password;
+    config.tls = tls;
+    config.tls_server_name = record.server_name.filter(|value| !value.trim().is_empty());
+    Ok(())
+}
 
 pub mod transport_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.transport.v1.rs"));

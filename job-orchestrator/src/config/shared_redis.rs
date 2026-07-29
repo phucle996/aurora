@@ -17,14 +17,9 @@ pub struct SharedRedisConfig {
 
 impl SharedRedisConfig {
     pub(crate) fn load(environment: &Environment) -> Result<Self, String> {
-        let url = environment.required("SHARED_REDIS_URL")?;
-        let uses_tls = if url.starts_with("rediss://") {
-            true
-        } else if url.starts_with("redis://") {
-            false
-        } else {
-            return Err("SHARED_REDIS_URL must use redis:// or rediss://".to_owned());
-        };
+        // Endpoint and credential are resolved by infra::redis from Vault.
+        let url = String::new();
+        let uses_tls = environment.optional_bool("SHARED_REDIS_TLS", false)?;
         let tls = if uses_tls {
             Some(TlsClientConfig::load(
                 environment,
@@ -40,7 +35,7 @@ impl SharedRedisConfig {
                 "SHARED_REDIS_TLS_CA_CERT",
                 "SHARED_REDIS_TLS_CLIENT_CERT",
                 "SHARED_REDIS_TLS_CLIENT_KEY",
-                "SHARED_REDIS_URL uses redis://",
+                "Vault Redis URL uses redis://",
             )?;
             None
         };

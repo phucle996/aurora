@@ -37,6 +37,14 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.UserHandler.GetMyProfile,
 		)
 
+		meGroup.PATCH("/iam/profile",
+			module.UserHandler.UpdateMyProfile,
+		)
+
+		meGroup.GET("/iam/social-link",
+			module.UserHandler.GetMySocialLinks,
+		)
+
 		meGroup.GET("/iam/mfa",
 			module.MfaHandler.GetMyMfa,
 		)
@@ -171,6 +179,13 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			middleware.Authorize("iam:device:read", module.L1Registry, "2"),
 			module.DevicePlatformHandler.ListUserDevicesPlatform,
 		)
+
+		// [COMMENT]: Chỉ public /api/v1/critical/* đã ký mới được ACR rewrite
+		// tới route này; middleware lặp lại marker fence tại business boundary.
+		personalGroup.DELETE("/critical/me/iam/social-link/:provider",
+			middleware.RequireSessionProof(),
+			module.UserHandler.UnlinkMySocialLink,
+		)
 	}
 
 	// ------------------------------------------------------------------------
@@ -193,6 +208,13 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		// [COMMENT]: Gán vai trò cho Tenant con thông qua tenant handler
 		tenantGroup.POST("/rbac/tenant-role",
 			module.RbacTenantHandler.AssignTenantRole,
+		)
+
+		// Self identity không đổi theo tenant context, nhưng ACR vẫn rewrite
+		// critical path theo session hiện tại nên hai owner branches dùng cùng handler.
+		tenantGroup.DELETE("/critical/me/iam/social-link/:provider",
+			middleware.RequireSessionProof(),
+			module.UserHandler.UnlinkMySocialLink,
 		)
 	}
 }

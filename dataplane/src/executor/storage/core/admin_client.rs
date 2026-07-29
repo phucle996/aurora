@@ -16,12 +16,14 @@ pub struct MinioAdminClient {
 impl MinioAdminClient {
     /// [COMMENT]: Khởi tạo Admin Client từ biến môi trường.
     pub fn from_env() -> Self {
-        let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
-        let port = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
-        let access_key =
-            std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let secret_key =
-            std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+        let host = std::env::var("MINIO_HOST")
+            .expect("MINIO_HOST must be validated during Dataplane bootstrap");
+        let port = std::env::var("MINIO_PORT")
+            .expect("MINIO_PORT must be validated during Dataplane bootstrap");
+        let access_key = std::env::var("MINIO_ACCESS_KEY")
+            .expect("MINIO_ACCESS_KEY must be validated during Dataplane bootstrap");
+        let secret_key = std::env::var("MINIO_SECRET_KEY")
+            .expect("MINIO_SECRET_KEY must be validated during Dataplane bootstrap");
 
         Self {
             alias: "minio".to_string(),

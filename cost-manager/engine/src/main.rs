@@ -13,10 +13,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Bắt đầu khởi chạy Cost Manager Engine (Rust)...");
 
     // [COMMENT]: 1. Khởi tạo cấu hình ứng dụng
-    let app_config = config::Config::from_env();
+    let mut app_config = config::Config::from_env()?;
+    let vault = infra::vault::VaultClient::new(&app_config.vault).await?;
+    infra::redis::resolve_from_vault(&vault, &mut app_config).await?;
 
     // [COMMENT]: 2. Khởi tạo kết nối PostgreSQL (billing-psql) pool qua infra
-    let pg_pool = infra::psql::init_pg_pool(&app_config).await?;
+    let pg_pool = infra::psql::init_pg_pool(&vault, &app_config).await?;
     println!("Kết nối thành công tới Postgres (billing-psql)!");
 
     // [COMMENT]: Bootstrap pricing fail-closed trước khi bất kỳ billing worker nào được phép chạy.
@@ -32,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Kết nối thành công tới ClickHouse!");
 
     // [COMMENT]: 4. Khởi tạo kết nối Redis multiplexed connection qua infra
-    let redis_conn = infra::redis::init_redis_conn(&app_config).await?;
+    let redis_conn = infra::redis::init_redis_conn(&vault, &app_config).await?;
     println!("Kết nối thành công tới Redis!");
 
     // [COMMENT]: 5. Thiết lập watch channel cho Graceful Shutdown

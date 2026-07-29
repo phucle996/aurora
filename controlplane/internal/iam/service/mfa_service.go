@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"controlplane/internal/config"
+	"controlplane/infra/vault"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -23,17 +23,17 @@ import (
 )
 
 type MfaService struct {
-	cfg       *config.Config
+	vault     *vault.Client
 	repo      iamRepoInterface.MfaRepository
 	authRedis *goredis.Client
 }
 
 func NewMfaService(
-	cfg *config.Config,
+	vaultClient *vault.Client,
 	repo iamRepoInterface.MfaRepository,
 	authRedis *goredis.Client,
 ) iamSvcInterface.MfaService {
-	return &MfaService{cfg: cfg, repo: repo, authRedis: authRedis}
+	return &MfaService{vault: vaultClient, repo: repo, authRedis: authRedis}
 }
 
 func (s *MfaService) GetUserMfaStatus(ctx context.Context, userID uuid.UUID, callerLevel uint8) (bool, string, error) {
@@ -76,7 +76,7 @@ func (s *MfaService) StartSetup(ctx context.Context, userID uuid.UUID) (*iamEnti
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", iamTaxonomy.ErrGenTOTPFailed, err)
 	}
-	secretCiphertext, err := security.EncryptMFASecret(s.cfg.Security.RuntimeMasterKey, totpResult.Secret)
+	secretCiphertext, err := s.vault.TransitEncrypt(ctx, "iam-mfa-secret", totpResult.Secret)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", iamTaxonomy.ErrEncryptSecretFailed, err)
 	}
@@ -89,7 +89,7 @@ func (s *MfaService) StartSetup(ctx context.Context, userID uuid.UUID) (*iamEnti
 		UserId:           userID.String(),
 		SettingId:        settingID.String(),
 		SecretCiphertext: secretCiphertext,
-		SecretKeyId:      "runtime-master-v1",
+		SecretKeyId:      "transit/iam-mfa-secret",
 		SchemaVersion:    1,
 	})
 	if err != nil {
@@ -147,7 +147,7 @@ func (s *MfaService) ConfirmSetup(
 		return nil, iamTaxonomy.ErrMFASetupExpired
 	}
 
-	secret, err := security.DecryptMFASecret(s.cfg.Security.RuntimeMasterKey, pending.GetSecretCiphertext())
+	secret, err := s.vault.TransitDecrypt(ctx, "iam-mfa-secret", pending.GetSecretCiphertext())
 	if err != nil {
 		return nil, fmt.Errorf("%w: decrypt setup state: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
@@ -222,7 +222,7 @@ func (s *MfaService) RegenerateRecoveryCodes(ctx context.Context, userID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	secret, err := security.DecryptMFASecret(s.cfg.Security.RuntimeMasterKey, setting.SecretCiphertext)
+	secret, err := s.vault.TransitDecrypt(ctx, "iam-mfa-secret", setting.SecretCiphertext)
 	if err != nil {
 		return nil, fmt.Errorf("%w: decrypt mfa secret: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
@@ -278,7 +278,7 @@ func (s *MfaService) Remove(ctx context.Context, userID uuid.UUID, code string) 
 	if err != nil {
 		return err
 	}
-	secret, err := security.DecryptMFASecret(s.cfg.Security.RuntimeMasterKey, setting.SecretCiphertext)
+	secret, err := s.vault.TransitDecrypt(ctx, "iam-mfa-secret", setting.SecretCiphertext)
 	if err != nil {
 		return fmt.Errorf("%w: decrypt mfa secret: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
@@ -341,7 +341,7 @@ func (s *MfaService) VerifyLogin(
 		}
 		return nil
 	case "totp":
-		secret, decryptErr := security.DecryptMFASecret(s.cfg.Security.RuntimeMasterKey, setting.SecretCiphertext)
+		secret, decryptErr := s.vault.TransitDecrypt(ctx, "iam-mfa-secret", setting.SecretCiphertext)
 		if decryptErr != nil {
 			return fmt.Errorf("%w: decrypt mfa secret: %v", iamTaxonomy.ErrAuthenticationUnavailable, decryptErr)
 		}

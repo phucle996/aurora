@@ -41,18 +41,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let vault_client = Arc::new(
+        match crate::infra::vault::VaultClient::new(&config.vault).await {
+            Ok(client) => client,
+            Err(e) => {
+                Logger::sys_error(
+                    "main.vault",
+                    "Failed to initialize Vault client",
+                    &e.to_string(),
+                );
+                std::process::exit(1);
+            }
+        },
+    );
+
     Logger::sys_info(
         "main.config",
         &format!(
-            "Loaded config: grpc_port={}, auth_redis={}, shared_redis={}, session_ttl={}s, grace=5s (hardcoded)",
-            config.grpc_port, config.redis_url, config.shared_redis_url, config.session_ttl_secs
+            "Loaded config: grpc_port={}, redis_source=vault, shared_redis_source=vault, session_ttl={}s",
+            config.grpc_port,
+            config.session_ttl_secs
         ),
     );
 
     OtelTracer::init(&config);
 
-    let redis_client = match redis::Client::open(config.redis_url.clone()) {
-        Ok(client) => Arc::new(client),
+    let redis_client = match crate::infra::redis::client_from_vault(
+        &vault_client,
+        crate::infra::redis::AUTH_STATE_CONNECTION_PATH,
+    )
+    .await
+    {
+        Ok(client) => client,
         Err(e) => {
             Logger::sys_error(
                 "main.redis",
@@ -62,8 +82,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-    let shared_redis_client = match redis::Client::open(config.shared_redis_url.clone()) {
-        Ok(client) => Arc::new(client),
+    let shared_redis_client = match crate::infra::redis::client_from_vault(
+        &vault_client,
+        crate::infra::redis::SHARED_L2_CONNECTION_PATH,
+    )
+    .await
+    {
+        Ok(client) => client,
         Err(e) => {
             Logger::sys_error(
                 "main.shared_redis",
@@ -87,18 +112,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         };
-
-    let vault_client = match crate::infra::vault::VaultClient::new(&config.vault).await {
-        Ok(client) => Arc::new(client),
-        Err(e) => {
-            Logger::sys_error(
-                "main.vault",
-                "Failed to initialize Vault client",
-                &e.to_string(),
-            );
-            std::process::exit(1);
-        }
-    };
 
     let session_mgr = Arc::new(SessionManager::new(redis_client.clone(), config.clone()));
     let token_mgr = Arc::new(TokenManager::new(vault_client.clone()));

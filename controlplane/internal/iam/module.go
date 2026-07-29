@@ -2,6 +2,7 @@ package iam
 
 import (
 	kafkainfra "controlplane/infra/kafka"
+	vaultinfra "controlplane/infra/vault"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -65,6 +66,7 @@ func NewModule(
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	authRedis *goredis.Client,
+	vaultClient *vaultinfra.Client,
 	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
 	otel *observability.OTel,
@@ -88,6 +90,9 @@ func NewModule(
 	}
 	if authRedis == nil {
 		return nil, errors.New("iam module: auth redis client is nil")
+	}
+	if vaultClient == nil {
+		return nil, errors.New("iam module: vault client is nil")
 	}
 	if kafkaProducer == nil {
 		return nil, errors.New("iam module: kafka producer is nil")
@@ -227,7 +232,7 @@ func NewModule(
 	}
 
 	// [COMMENT]: Khởi tạo MFA service chịu trách nhiệm xử lý business logic MFA và kiểm tra nil
-	mfaSvc := iamSvcImpl.NewMfaService(cfg, mfaRepo, authRedis)
+	mfaSvc := iamSvcImpl.NewMfaService(vaultClient, mfaRepo, authRedis)
 	if mfaSvc == nil {
 		return nil, errors.New("iam module: failed to construct mfa service implementation")
 	}
@@ -248,10 +253,16 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
 	}
 
+	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, authRedis, rds)
+	if userService == nil {
+		return nil, errors.New("iam module: failed to construct core user service implementation")
+	}
+
 	authRedisHandler, err := iamPubsubHandler.NewAuthRedisHandler(
 		cfg,
 		rds,
 		authSvc,
+		userService,
 		refreshSvc,
 		otel,
 	)
@@ -262,11 +273,6 @@ func NewModule(
 	authHandler := iamHandler.NewAuthHandler(cfg, authSvc)
 	if authHandler == nil {
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
-	}
-
-	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, authRedis, rds)
-	if userService == nil {
-		return nil, errors.New("iam module: failed to construct core user service implementation")
 	}
 
 	userHandler := iamHandler.NewUserHandler(userService)

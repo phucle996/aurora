@@ -5,14 +5,16 @@ mod redis;
 mod runtime;
 mod scylla;
 mod timeline;
+mod vault;
 
 pub use centrifugo::CentrifugoConfig;
 pub use environment::{ConfigError, Environment};
 pub use otel::OtelConfig;
 pub use redis::RedisConfig;
 pub use runtime::RuntimeConfig;
-pub use scylla::{ScyllaConfig, ScyllaTlsMode};
+pub use scylla::{ScyllaConfig, ScyllaTlsConfig, ScyllaTlsMode};
 pub use timeline::TimelineConfig;
+pub use vault::VaultConfig;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -23,6 +25,7 @@ pub struct Config {
     pub runtime: RuntimeConfig,
     pub scylla: ScyllaConfig,
     pub timeline: TimelineConfig,
+    pub vault: VaultConfig,
 }
 
 impl Config {
@@ -53,6 +56,7 @@ impl Config {
             runtime: RuntimeConfig::from_env(&environment)?,
             scylla: ScyllaConfig::from_env(&environment)?,
             timeline: TimelineConfig::from_env(&environment)?,
+            vault: VaultConfig::load(&environment)?,
         })
     }
 }

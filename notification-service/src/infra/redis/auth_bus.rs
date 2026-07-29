@@ -5,6 +5,7 @@ use crate::contract::trinity::rpc::{
     VerifyAdminTrinityTokenRequest, VerifyAdminTrinityTokenResponse, VerifyUserTrinityTokenRequest,
     VerifyUserTrinityTokenResponse,
 };
+use crate::infra::vault::VaultClient;
 use crate::observability::{logger::Logger, metrics::MetricsManager};
 use futures_util::future::BoxFuture;
 use futures_util::StreamExt;
@@ -20,6 +21,13 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 const MAX_REPLY_BYTES: usize = 64 * 1024;
+const CONNECTION_PATH: &str = "secret/data/connections/redis/shared-l2/role-notification-consume";
+
+#[derive(serde::Deserialize)]
+struct ConnectionRecord {
+    schema_version: u32,
+    url: String,
+}
 
 /// Shared Redis request/reply adapter. The reply socket is owned by one
 /// supervised task per pod; request waiters are bounded to prevent a Redis
@@ -36,8 +44,20 @@ pub struct RedisAuthBus {
 }
 
 impl RedisAuthBus {
-    pub async fn connect(config: &RedisConfig) -> Result<Arc<Self>, AppError> {
-        let client = Arc::new(redis::Client::open(config.url.as_str())?);
+    pub async fn connect(config: &RedisConfig, vault: &VaultClient) -> Result<Arc<Self>, AppError> {
+        let record: ConnectionRecord = vault
+            .read(CONNECTION_PATH)
+            .await
+            .map_err(|error| Box::new(std::io::Error::other(error)) as AppError)?;
+        if record.schema_version != 1
+            || (!record.url.starts_with("redis://") && !record.url.starts_with("rediss://"))
+        {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid Vault Shared Redis connection record",
+            )));
+        }
+        let client = Arc::new(redis::Client::open(record.url)?);
         let publisher =
             tokio::time::timeout(config.connect_timeout, client.get_connection_manager()).await??;
 

@@ -18,15 +18,12 @@ import (
 )
 
 func NewMailTestConfig(schema string) *config.Config {
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		panic(fmt.Sprintf("load mail integration config: %v", err))
+	}
 	cfg.SchemaSQL.Mail = schema
 	cfg.App.AppName = "mail-test-node"
-	cfg.Psql.Host = envString("MAIL_TEST_PSQL_HOST", "127.0.0.1")
-	cfg.Psql.Port = envInt("MAIL_TEST_PSQL_PORT", 15434)
-	cfg.Psql.User = envString("MAIL_TEST_PSQL_USER", "postgres")
-	cfg.Psql.Password = envString("MAIL_TEST_PSQL_PASSWORD", "postgres")
-	cfg.Psql.DBName = envString("MAIL_TEST_PSQL_DBNAME", "controlplane")
-	cfg.Psql.SSLMode = envString("MAIL_TEST_PSQL_SSLMODE", "disable")
 	return cfg
 }
 
@@ -52,7 +49,15 @@ func envInt(key string, fallback int) int {
 
 func OpenPostgres(t testing.TB, cfg *config.Config) *pgxpool.Pool {
 	t.Helper()
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", cfg.Psql.Host, cfg.Psql.Port, cfg.Psql.User, cfg.Psql.Password, cfg.Psql.DBName, cfg.Psql.SSLMode)
+	dsn := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		envString("MAIL_TEST_PSQL_HOST", "127.0.0.1"),
+		envInt("MAIL_TEST_PSQL_PORT", 15434),
+		envString("MAIL_TEST_PSQL_USER", "postgres"),
+		envString("MAIL_TEST_PSQL_PASSWORD", "postgres"),
+		envString("MAIL_TEST_PSQL_DBNAME", "controlplane"),
+		envString("MAIL_TEST_PSQL_SSLMODE", "disable"),
+	)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)

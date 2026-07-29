@@ -1,4 +1,4 @@
-use super::environment::{normalized, validate_identifier, Environment};
+use super::environment::{normalized, Environment};
 use super::tls::TlsClientConfig;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -53,67 +53,6 @@ pub struct NatsCoreConfig {
 
 impl NatsCoreConfig {
     pub(crate) fn load(environment: &Environment) -> Result<Self, String> {
-        let urls = environment
-            .required("NATS_URL")?
-            .split(',')
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if urls.is_empty()
-            || urls
-                .iter()
-                .any(|url| !url.starts_with("nats://") && !url.starts_with("tls://"))
-        {
-            return Err(
-                "NATS_URL must contain one or more comma-separated nats:// or tls:// endpoints"
-                    .to_owned(),
-            );
-        }
-        let uses_tls = urls.iter().all(|url| url.starts_with("tls://"));
-        if !uses_tls && urls.iter().any(|url| url.starts_with("tls://")) {
-            return Err(
-                "NATS_URL cannot mix nats:// and tls:// endpoints in one server pool".to_owned(),
-            );
-        }
-
-        let auth_mode: NatsAuthMode = environment.required_enum("NATS_AUTH_MODE")?;
-        let token = environment.optional("NATS_TOKEN");
-        let username = environment.optional("NATS_USERNAME");
-        let password = environment.optional("NATS_PASSWORD");
-        let credentials_file = environment.optional_path("NATS_CREDENTIALS_FILE");
-        validate_auth(auth_mode, &token, &username, &password, &credentials_file)?;
-        if auth_mode != NatsAuthMode::None && !uses_tls {
-            return Err(
-                "NATS authentication requires tls:// endpoints to protect credentials and server identity"
-                    .to_owned(),
-            );
-        }
-
-        let tls = if uses_tls {
-            Some(TlsClientConfig::load(
-                environment,
-                "NATS_TLS",
-                "NATS_TLS_CA_CERT",
-                "NATS_TLS_CLIENT_CERT",
-                "NATS_TLS_CLIENT_KEY",
-            )?)
-        } else {
-            TlsClientConfig::ensure_absent(
-                environment,
-                "NATS_TLS",
-                "NATS_TLS_CA_CERT",
-                "NATS_TLS_CLIENT_CERT",
-                "NATS_TLS_CLIENT_KEY",
-                "NATS_URL uses nats://",
-            )?;
-            None
-        };
-
-        let tls_first = environment.optional_bool("NATS_TLS_FIRST", false)?;
-        if tls_first && !uses_tls {
-            return Err("NATS_TLS_FIRST=true requires tls:// NATS_URL endpoints".to_owned());
-        }
         let reconnect_base_delay_ms =
             environment.bounded("NATS_RECONNECT_BASE_DELAY_MS", 250_u64, 10, 30_000)?;
         let reconnect_max_delay_ms =
@@ -124,21 +63,18 @@ impl NatsCoreConfig {
             );
         }
 
-        let client_name = environment
-            .optional("NATS_CLIENT_NAME")
-            .unwrap_or_else(|| "aurora-job-orchestrator".to_owned());
-        validate_identifier("NATS_CLIENT_NAME", &client_name)?;
-
         Ok(Self {
-            urls,
-            client_name,
-            auth_mode,
-            token,
-            username,
-            password,
-            credentials_file,
-            tls,
-            tls_first,
+            // Endpoint, auth and TLS identity are resolved from Vault before
+            // the Central NATS client is constructed.
+            urls: Vec::new(),
+            client_name: String::new(),
+            auth_mode: NatsAuthMode::None,
+            token: None,
+            username: None,
+            password: None,
+            credentials_file: None,
+            tls: None,
+            tls_first: false,
             connect_timeout_secs: environment.bounded("NATS_CONNECT_TIMEOUT_SECS", 5_u64, 1, 60)?,
             request_timeout_secs: environment.bounded(
                 "NATS_REQUEST_TIMEOUT_SECS",

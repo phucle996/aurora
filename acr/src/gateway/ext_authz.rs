@@ -889,6 +889,29 @@ impl Authorization for ExtAuthzService {
             }
         }
 
+        // Social-link start is an ACR-local critical mutation because only ACR
+        // owns provider redirects and OAuth state. It runs after proof consume,
+        // session, CSRF, Zone and tenant verification.
+        if session_proof_challenge_id.is_some() {
+            if let Some(ref user_claims) = claims {
+                if let Some(response) = self
+                    .oauth
+                    .handle_social_link_start(
+                        &self.session_mgr,
+                        user_claims,
+                        &access_key,
+                        &req,
+                        method,
+                        path,
+                        &cookies_to_set,
+                    )
+                    .await
+                {
+                    return response;
+                }
+            }
+        }
+
         if let Some(ref alias) = billing_alias {
             if path_without_query.starts_with("/api/v1/billing/critical/") {
                 let raw_body = req

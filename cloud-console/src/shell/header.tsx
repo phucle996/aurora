@@ -31,6 +31,7 @@ export function ConsoleHeader({
   const { theme, setTheme } = useTheme();
   const items = consoleNavigation(renderContext?.is_personal ?? true, checkPermission);
   const active = activeNavigation(pathname, items);
+  const breadcrumb = pathname.startsWith("/settings") ? ["Console", "Settings"] : active.breadcrumb;
 
   const handleLogout = useCallback(async () => {
     try {
@@ -64,10 +65,10 @@ export function ConsoleHeader({
         </button>
 
         <div className="hidden min-w-0 items-center gap-1.5 text-xs md:flex" aria-label="Breadcrumb">
-          {active.breadcrumb.map((crumb, index) => (
+          {breadcrumb.map((crumb, index) => (
             <span key={crumb} className="contents">
               {index > 0 && <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
-              <span className={index === active.breadcrumb.length - 1 ? "truncate font-semibold text-foreground" : "text-muted-foreground"}>
+              <span className={index === breadcrumb.length - 1 ? "truncate font-semibold text-foreground" : "text-muted-foreground"}>
                 {crumb}
               </span>
             </span>

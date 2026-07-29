@@ -1,4 +1,5 @@
 use crate::config::{PostgresConfig, PostgresTlsMode, TlsClientConfig, TlsTrustSource};
+use crate::infra::vault::VaultClient;
 use crate::observability::logger::Logger;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ClientConfig, RootCertStore};
@@ -9,6 +10,33 @@ use std::time::Duration;
 use tokio_postgres::config::SslMode;
 use tokio_postgres::Client;
 use tokio_postgres_rustls::MakeRustlsConnect;
+
+const CONNECTION_PATH: &str = "secret/data/connections/postgres/pg-central/role-cdc-read";
+
+#[derive(serde::Deserialize)]
+struct ConnectionRecord {
+    schema_version: u32,
+    database_url: String,
+}
+
+pub async fn resolve_from_vault(
+    vault: &VaultClient,
+    config: &mut PostgresConfig,
+) -> Result<(), String> {
+    let record: ConnectionRecord = vault.read(CONNECTION_PATH).await?;
+    if record.schema_version != 1 {
+        return Err(format!(
+            "unsupported Vault PostgreSQL schema_version {}",
+            record.schema_version
+        ));
+    }
+    record
+        .database_url
+        .parse::<tokio_postgres::Config>()
+        .map_err(|error| format!("Vault database_url is invalid: {error}"))?;
+    config.database_url = record.database_url;
+    Ok(())
+}
 
 /// Opens a SQL connection using the same TLS identity as logical replication.
 /// Connection ownership remains local to the worker; the protocol driver is

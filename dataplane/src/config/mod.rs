@@ -139,6 +139,14 @@ use std::sync::OnceLock;
 
 static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
 
+fn required_env(name: &str) -> Result<String, String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} must be set and non-empty"))
+}
+
 impl Config {
     /// Lấy tham chiếu đến cấu hình toàn cục đã được nạp
     pub fn get_global() -> &'static Config {
@@ -156,77 +164,48 @@ impl Config {
     ///
     /// # Luồng Hoạt động (Execution Flow):
     ///   1. Đọc từng khóa cấu hình bằng `std::env::var`.
-    ///   2. Nếu thiếu khóa thiết yếu, lập tức gọi abort tiến trình.
+    ///   2. Nếu thiếu khóa thiết yếu, trả lỗi để bootstrap dừng trước khi
+    ///      transport hoặc worker được khởi động.
     ///   3. Trả về thực thể `Config` hoàn chỉnh.
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, String> {
+        // Storage executors read these values from the process environment.
+        // Validate them before any worker can accept a storage command.
+        let _ = required_env("MINIO_ACCESS_KEY")?;
+        let _ = required_env("MINIO_SECRET_KEY")?;
+
         let config = Self {
             // ============================================================================
             // 🚀 CẤU HÌNH CHUNG
             // ============================================================================
             // Zone ID cấu hình dùng để chọn đúng Kafka command topic và khóa lease Zone-local.
-            zone_id: env::var("ZONE_ID").unwrap_or_else(|err| {
-                crate::observability::logger::Logger::sys_error(
-                    "system.bootstrap",
-                    "CRITICAL: ZONE_ID environment variable is missing but required for stateless Dataplane!",
-                    &err.to_string(),
-                );
-                std::process::abort();
-            }),
+            zone_id: required_env("ZONE_ID")?,
 
             // ============================================================================
             // 🚀 CẤU HÌNH KAFKA VÀ NATS CORE TRANSPORT
             // ============================================================================
-            kafka_bootstrap_servers: env::var("KAFKA_BOOTSTRAP_SERVERS")
-                .unwrap_or_else(|_| "kafka-1:9092,kafka-2:9092,kafka-3:9092".to_string()),
-            kafka_security_protocol: env::var("KAFKA_SECURITY_PROTOCOL")
-                .unwrap_or_else(|_| "plaintext".to_string())
-                .to_ascii_lowercase(),
+            kafka_bootstrap_servers: required_env("KAFKA_BOOTSTRAP_SERVERS")?,
+            kafka_security_protocol: required_env("KAFKA_SECURITY_PROTOCOL")?.to_ascii_lowercase(),
             kafka_username: env::var("KAFKA_USERNAME").ok(),
             kafka_password: env::var("KAFKA_PASSWORD").ok(),
             kafka_ca_cert: env::var("KAFKA_CA_CERT").ok(),
-            kafka_topic_prefix: env::var("KAFKA_TOPIC_PREFIX")
-                .unwrap_or_else(|_| "aurora".to_string()),
+            kafka_topic_prefix: required_env("KAFKA_TOPIC_PREFIX")?,
             kafka_max_job_attempts: parse_env("KAFKA_MAX_JOB_ATTEMPTS", 5_u32),
-            nats_core_url: env::var("NATS_URL").unwrap_or_else(|err| {
-                crate::observability::logger::Logger::sys_error(
-                    "system.bootstrap",
-                    "CRITICAL: NATS_URL is required for realtime Central↔Zone transport",
-                    &err.to_string(),
-                );
-                std::process::abort();
-            }),
+            nats_core_url: required_env("NATS_URL")?,
             nats_core_ca_cert: env::var("NATS_CA_CERT").ok(),
             nats_core_client_cert: env::var("NATS_CLIENT_CERT").ok(),
             nats_core_client_key: env::var("NATS_CLIENT_KEY").ok(),
 
             nats_zone_url: {
                 // [COMMENT]: Không fallback NATS_URL vì đó là Core bus trung tâm; cross-wire sẽ phá isolation của Zone.
-                let value = env::var("NATS_ZONE_URL").unwrap_or_else(|err| {
-                    crate::observability::logger::Logger::sys_error(
-                        "system.bootstrap",
-                        "CRITICAL: NATS_ZONE_URL is required and must point to the Zone-local JetStream cluster",
-                        &err.to_string(),
-                    );
-                    std::process::abort();
-                });
-                if value.trim().is_empty() {
-                    crate::observability::logger::Logger::sys_error(
-                        "system.bootstrap",
-                        "CRITICAL: NATS_ZONE_URL cannot be empty",
-                        "ZONE_NATS_ENDPOINT_REQUIRED",
-                    );
-                    std::process::abort();
-                }
+                let value = required_env("NATS_ZONE_URL")?;
                 for central_variable in ["NATS_URL", "NATS_ADDR"] {
                     if env::var(central_variable)
                         .is_ok_and(|central_url| central_url.trim() == value.trim())
                     {
-                        crate::observability::logger::Logger::sys_error(
-                            "system.bootstrap",
-                            "CRITICAL: Zone JetStream endpoint must not equal the central NATS Core endpoint",
-                            "ZONE_NATS_CORE_CROSS_WIRE",
+                        return Err(
+                            "NATS_ZONE_URL must not equal the central NATS Core endpoint"
+                                .to_owned(),
                         );
-                        std::process::abort();
                     }
                 }
                 value
@@ -249,64 +228,28 @@ impl Config {
             job_queue_capacity: parse_env("JOB_QUEUE_CAPACITY", 100_usize).clamp(1, 100_000),
 
             // [COMMENT]: JMAP batch transport; secrets có thể được inject từ Kubernetes Secret/Vault Agent.
-            stalwart_jmap_url: env::var("STALWART_JMAP_URL")
-                .unwrap_or_else(|_| "http://stalwart-mail:8080/jmap".to_string()),
+            stalwart_jmap_url: required_env("STALWART_JMAP_URL")?,
             // [COMMENT]: Opaque IDs do Stalwart cấp; bắt buộc cấu hình từ biến môi trường (Fail-fast, không fallback hạ tầng)
-            stalwart_jmap_account_id: env::var("STALWART_JMAP_ACCOUNT_ID").unwrap_or_else(|err| {
-                crate::observability::logger::Logger::sys_error(
-                    "system.bootstrap",
-                    "CRITICAL: STALWART_JMAP_ACCOUNT_ID environment variable is required for JMAP mail runtime!",
-                    &err.to_string(),
-                );
-                std::process::abort();
-            }),
-            stalwart_jmap_identity_id: env::var("STALWART_JMAP_IDENTITY_ID").unwrap_or_else(|err| {
-                crate::observability::logger::Logger::sys_error(
-                    "system.bootstrap",
-                    "CRITICAL: STALWART_JMAP_IDENTITY_ID environment variable is required for JMAP mail runtime!",
-                    &err.to_string(),
-                );
-                std::process::abort();
-            }),
-            stalwart_jmap_mailbox_id: env::var("STALWART_JMAP_MAILBOX_ID").unwrap_or_else(|err| {
-                crate::observability::logger::Logger::sys_error(
-                    "system.bootstrap",
-                    "CRITICAL: STALWART_JMAP_MAILBOX_ID environment variable is required for JMAP mail runtime!",
-                    &err.to_string(),
-                );
-                std::process::abort();
-            }),
-            stalwart_jmap_bearer_token: env::var("STALWART_JMAP_BEARER_TOKEN")
-                .unwrap_or_default(),
-            stalwart_jmap_username: env::var("STALWART_JMAP_USERNAME")
-                .unwrap_or_default(),
-            stalwart_jmap_password: env::var("STALWART_JMAP_PASSWORD")
-                .unwrap_or_default(),
+            stalwart_jmap_account_id: required_env("STALWART_JMAP_ACCOUNT_ID")?,
+            stalwart_jmap_identity_id: required_env("STALWART_JMAP_IDENTITY_ID")?,
+            stalwart_jmap_mailbox_id: required_env("STALWART_JMAP_MAILBOX_ID")?,
+            stalwart_jmap_bearer_token: env::var("STALWART_JMAP_BEARER_TOKEN").unwrap_or_default(),
+            stalwart_jmap_username: env::var("STALWART_JMAP_USERNAME").unwrap_or_default(),
+            stalwart_jmap_password: env::var("STALWART_JMAP_PASSWORD").unwrap_or_default(),
             stalwart_management_jmap_url: env::var("STALWART_MANAGEMENT_JMAP_URL")
                 .unwrap_or_default(),
             stalwart_reporter_bearer_token: env::var("STALWART_REPORTER_BEARER_TOKEN")
                 .unwrap_or_default(),
-            mail_sender_profile_id: env::var("MAIL_SENDER_PROFILE_ID")
-                .unwrap_or_else(|_| "platform-default".to_string()),
+            mail_sender_profile_id: required_env("MAIL_SENDER_PROFILE_ID")?,
             mail_sender_version: parse_env("MAIL_SENDER_VERSION", 1_u32),
-            mail_sender_address: env::var("MAIL_SENDER_ADDRESS")
-                .unwrap_or_else(|_| "noreply@aurora.system".to_string()),
+            mail_sender_address: required_env("MAIL_SENDER_ADDRESS")?,
             mail_batch_max_items: parse_env("MAIL_BATCH_MAX_ITEMS", 50_usize),
             mail_batch_max_wait_ms: parse_env("MAIL_BATCH_MAX_WAIT_MS", 1000_u64),
             mail_batch_max_bytes: parse_env("MAIL_BATCH_MAX_BYTES", 4_194_304_usize),
             mail_batch_queue_capacity: parse_env("MAIL_BATCH_QUEUE_CAPACITY", 5_000_usize),
-            mail_batch_enqueue_timeout_ms: parse_env(
-                "MAIL_BATCH_ENQUEUE_TIMEOUT_MS",
-                1_000_u64,
-            ),
-            mail_jmap_max_inflight_per_pod: parse_env(
-                "MAIL_JMAP_MAX_INFLIGHT_PER_POD",
-                4_usize,
-            ),
-            mail_jmap_request_timeout_ms: parse_env(
-                "MAIL_JMAP_REQUEST_TIMEOUT_MS",
-                10_000_u64,
-            ),
+            mail_batch_enqueue_timeout_ms: parse_env("MAIL_BATCH_ENQUEUE_TIMEOUT_MS", 1_000_u64),
+            mail_jmap_max_inflight_per_pod: parse_env("MAIL_JMAP_MAX_INFLIGHT_PER_POD", 4_usize),
+            mail_jmap_request_timeout_ms: parse_env("MAIL_JMAP_REQUEST_TIMEOUT_MS", 10_000_u64),
             mail_jmap_max_retries: parse_env("MAIL_JMAP_MAX_RETRIES", 2_usize),
             mail_max_message_bytes: parse_env("MAIL_MAX_MESSAGE_BYTES", 1_048_576_usize),
             mail_config_scan_interval_seconds: parse_env(
@@ -321,21 +264,12 @@ impl Config {
                 8_usize,
             )
             .clamp(1, 128),
-            mail_consumer_l1_max_entries: parse_env(
-                "MAIL_CONSUMER_L1_MAX_ENTRIES",
-                50_000_usize,
-            )
-            .clamp(1_000, 1_000_000),
-            mail_template_l1_max_bytes: parse_env(
-                "MAIL_TEMPLATE_L1_MAX_BYTES",
-                67_108_864_u64,
-            )
-            .clamp(1_048_576, 1_073_741_824),
-            mail_template_l1_ttl_seconds: parse_env(
-                "MAIL_TEMPLATE_L1_TTL_SECONDS",
-                3_600_u64,
-            )
-            .clamp(60, 86_400),
+            mail_consumer_l1_max_entries: parse_env("MAIL_CONSUMER_L1_MAX_ENTRIES", 50_000_usize)
+                .clamp(1_000, 1_000_000),
+            mail_template_l1_max_bytes: parse_env("MAIL_TEMPLATE_L1_MAX_BYTES", 67_108_864_u64)
+                .clamp(1_048_576, 1_073_741_824),
+            mail_template_l1_ttl_seconds: parse_env("MAIL_TEMPLATE_L1_TTL_SECONDS", 3_600_u64)
+                .clamp(60, 86_400),
             mail_stream_supervisor_interval_ms: parse_env(
                 "MAIL_STREAM_SUPERVISOR_INTERVAL_MS",
                 1_000_u64,
@@ -351,11 +285,8 @@ impl Config {
                 256_usize,
             )
             .clamp(16, 10_000),
-            mail_stream_max_slots_per_pod: parse_env(
-                "MAIL_STREAM_MAX_SLOTS_PER_POD",
-                256_usize,
-            )
-            .clamp(1, 10_000),
+            mail_stream_max_slots_per_pod: parse_env("MAIL_STREAM_MAX_SLOTS_PER_POD", 256_usize)
+                .clamp(1, 10_000),
             mail_stream_delivery_enabled: env::var("MAIL_STREAM_DELIVERY_ENABLED")
                 .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
             mail_stream_processor_concurrency: parse_env(
@@ -368,10 +299,8 @@ impl Config {
             mail_stream_ca_cert_path: env::var("MAIL_STREAM_CA_CERT_PATH")
                 .ok()
                 .filter(|path| !path.trim().is_empty()),
-            mail_stream_allow_plaintext_kafka: env::var(
-                "MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA",
-            )
-            .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
+            mail_stream_allow_plaintext_kafka: env::var("MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
             mail_consumer_report_interval_ms: parse_env(
                 "MAIL_CONSUMER_REPORT_INTERVAL_MS",
                 5_000_u64,
@@ -383,19 +312,20 @@ impl Config {
             )
             .clamp(5_000, 120_000),
 
-            // [COMMENT]: Nạp cấu hình MinIO (không có fallback mặc định để hỗ trợ báo trạng thái unknown khi thiếu config)
-            minio_host: env::var("MINIO_HOST").ok(),
-            minio_port: env::var("MINIO_PORT").ok().and_then(|p| p.parse().ok()),
+            minio_host: Some(required_env("MINIO_HOST")?),
+            minio_port: Some(
+                required_env("MINIO_PORT")?
+                    .parse::<u16>()
+                    .map_err(|_| "MINIO_PORT must be a valid port".to_owned())?,
+            ),
 
             // ============================================================================
             // 🔒 CẤU HÌNH PROXMOX HYPERVISOR (Least Privilege API Token — env-only)
             // ============================================================================
             // Base URL Proxmox cluster, mặc định rỗng (Dataplane hoạt động degraded nếu không set)
-            proxmox_api_url: env::var("PROXMOX_API_URL")
-                .unwrap_or_else(|_| String::new()),
+            proxmox_api_url: env::var("PROXMOX_API_URL").unwrap_or_else(|_| String::new()),
             // Token theo định dạng: PVEAPIToken=monitor@pve!aurora-token=<uuid-secret>
-            proxmox_api_token: env::var("PROXMOX_API_TOKEN")
-                .unwrap_or_else(|_| String::new()),
+            proxmox_api_token: env::var("PROXMOX_API_TOKEN").unwrap_or_else(|_| String::new()),
             // Chỉ bật trên môi trường dev/staging khi dùng self-signed cert
             proxmox_tls_insecure: env::var("PROXMOX_TLS_INSECURE")
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
@@ -428,14 +358,34 @@ impl Config {
                 .filter(|value| !value.trim().is_empty()),
         };
         if config.min_workers > config.max_workers {
-            crate::observability::logger::Logger::sys_error(
-                "system.bootstrap",
-                "MIN_WORKERS must be less than or equal to MAX_WORKERS",
-                "WORKER_LIMITS_INVALID",
-            );
-            std::process::abort();
+            return Err("MIN_WORKERS must be less than or equal to MAX_WORKERS".to_owned());
         }
-        config
+        let bearer_auth = !config.stalwart_jmap_bearer_token.trim().is_empty();
+        let password_auth = !config.stalwart_jmap_username.trim().is_empty()
+            && !config.stalwart_jmap_password.trim().is_empty();
+        let partial_password_auth = config.stalwart_jmap_username.trim().is_empty()
+            != config.stalwart_jmap_password.trim().is_empty();
+        if partial_password_auth || bearer_auth == password_auth {
+            return Err(
+                "exactly one complete Stalwart bearer or username/password identity is required"
+                    .to_owned(),
+            );
+        }
+        let image_s3_fields = [
+            config.hypervisor_image_s3_endpoint.is_some(),
+            config.hypervisor_image_s3_bucket.is_some(),
+            config.hypervisor_image_s3_access_key.is_some(),
+            config.hypervisor_image_s3_secret_key.is_some(),
+        ];
+        if image_s3_fields.iter().any(|configured| *configured)
+            && image_s3_fields.iter().any(|configured| !*configured)
+        {
+            return Err(
+                "Hypervisor image S3 endpoint, bucket, access key and secret key must be configured together"
+                    .to_owned(),
+            );
+        }
+        Ok(config)
     }
 }
 

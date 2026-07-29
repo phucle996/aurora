@@ -1,5 +1,5 @@
 -- IAM migration layer 000003
--- Secondary indexes and uniqueness constraints.
+-- Secondary indexes and uniqueness constraints for baseline schema.
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_uidx ON users (lower(username));
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_uidx ON users (lower(email));
@@ -31,20 +31,38 @@ CREATE INDEX IF NOT EXISTS devices_user_active_seen_idx
     ON devices (user_id, last_seen_at DESC, created_at DESC)
     WHERE revoked_at IS NULL;
 
--- [COMMENT]: Bỏ index device_challenges do bảng đã được xóa
+-- External Identities Indexes
+CREATE UNIQUE INDEX IF NOT EXISTS external_identities_active_user_provider_uk
+    ON external_identities (user_id, provider)
+    WHERE revoked_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS mfa_settings_user_id_idx ON mfa_settings(user_id);
--- [COMMENT]: Bỏ index mfa_settings_status_idx do cột status đã được xóa
--- CREATE INDEX IF NOT EXISTS mfa_settings_status_idx ON mfa_settings(status);
+CREATE INDEX IF NOT EXISTS external_identities_user_idx
+    ON external_identities (user_id)
+    WHERE revoked_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS mfa_challenges_user_id_idx ON mfa_challenges(user_id);
-CREATE INDEX IF NOT EXISTS mfa_challenges_status_idx ON mfa_challenges(status);
-CREATE INDEX IF NOT EXISTS mfa_challenges_expires_at_idx ON mfa_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS external_identities_email_idx
+    ON external_identities (provider_email);
 
-CREATE UNIQUE INDEX IF NOT EXISTS mfa_recovery_codes_user_hash_uidx ON mfa_recovery_codes(user_id, code_hash);
-CREATE INDEX IF NOT EXISTS mfa_recovery_codes_user_id_idx ON mfa_recovery_codes(user_id);
-CREATE INDEX IF NOT EXISTS mfa_recovery_codes_used_at_idx ON mfa_recovery_codes(used_at);
+-- MFA Recovery Codes Indexes
+CREATE INDEX IF NOT EXISTS mfa_recovery_codes_setting_idx
+    ON mfa_recovery_codes(mfa_setting_id, created_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS mfa_recovery_codes_setting_hash_uidx
+    ON mfa_recovery_codes(mfa_setting_id, code_hash);
+
+-- Billing Outbox Indexes
+CREATE INDEX IF NOT EXISTS idx_billing_outbox_claim
+    ON billing_outbox_records (available_at, id)
+    WHERE status IN ('PENDING', 'PUBLISHING');
+
+CREATE INDEX IF NOT EXISTS idx_billing_outbox_owner_audit
+    ON billing_outbox_records (owner_type, owner_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_billing_outbox_published_cleanup
+    ON billing_outbox_records (published_at, id)
+    WHERE status = 'PUBLISHED' AND published_at IS NOT NULL;
+
+-- Permissions & Roles Indexes
 CREATE INDEX IF NOT EXISTS permissions_module_idx ON permissions(module);
 CREATE INDEX IF NOT EXISTS permissions_object_idx ON permissions(object);
 CREATE INDEX IF NOT EXISTS permissions_behavior_idx ON permissions(behavior);
@@ -55,8 +73,6 @@ CREATE INDEX IF NOT EXISTS roles_scope_idx ON roles(scope);
 
 CREATE INDEX IF NOT EXISTS role_permissions_permission_id_idx ON role_permissions(permission_id);
 
-
-
--- [COMMENT]: Cho phép đăng ký lại thiết bị khi thiết bị cũ bị revoked bằng cách chỉ áp dụng unique cho active devices
+-- Admin Devices Indexes
 CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS admin_devices_last_seen_at_idx ON admin_devices(last_seen_at);

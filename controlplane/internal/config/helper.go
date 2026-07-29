@@ -1,12 +1,41 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+func requireEnv(key string) (string, error) {
+	value := getEnv(key, "")
+	if value == "" {
+		return "", fmt.Errorf("%s must be set and non-empty", key)
+	}
+	return value, nil
+}
+
+func requireEnvAsCSV(key string) ([]string, error) {
+	values := getEnvAsCSV(key, nil)
+	if len(values) == 0 {
+		return nil, fmt.Errorf("%s must contain at least one value", key)
+	}
+	return values, nil
+}
+
+func requireEnvAsBool(key string) (bool, error) {
+	value, err := requireEnv(key)
+	if err != nil {
+		return false, err
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return parsed, nil
+}
 
 func getEnv(key, defaultVal string) string {
 	val := os.Getenv(key)

@@ -1,11 +1,33 @@
 use crate::config::Config;
+use crate::infra::vault::VaultClient;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 use std::path::Path;
 use std::str::FromStr;
 
+const CONNECTION_PATH: &str = "secret/data/connections/postgres/pg-billing/role-engine-read";
+
+#[derive(serde::Deserialize)]
+struct ConnectionRecord {
+    schema_version: u32,
+    database_url: String,
+}
+
 // [COMMENT]: Khởi tạo Postgres Connection Pool với đầy đủ cấu hình bảo mật TLS/mTLS
-pub async fn init_pg_pool(config: &Config) -> Result<PgPool, sqlx::Error> {
-    let mut pg_conn_options = PgConnectOptions::from_str(&config.database_url)?;
+pub async fn init_pg_pool(vault: &VaultClient, config: &Config) -> Result<PgPool, sqlx::Error> {
+    let record: ConnectionRecord = vault
+        .read(CONNECTION_PATH)
+        .await
+        .map_err(|error| sqlx::Error::Configuration(std::io::Error::other(error).into()))?;
+    if record.schema_version != 1 {
+        return Err(sqlx::Error::Configuration(
+            std::io::Error::other(format!(
+                "unsupported Vault PostgreSQL schema_version {}",
+                record.schema_version
+            ))
+            .into(),
+        ));
+    }
+    let mut pg_conn_options = PgConnectOptions::from_str(&record.database_url)?;
 
     // [COMMENT]: Cấu hình SSL Mode tương ứng với môi trường chạy (disable, verify-ca, verify-full,...)
     let pg_ssl_mode = match config.pg_ssl_mode.as_str() {
@@ -15,7 +37,15 @@ pub async fn init_pg_pool(config: &Config) -> Result<PgPool, sqlx::Error> {
         "require" => PgSslMode::Require,
         "verify-ca" => PgSslMode::VerifyCa,
         "verify-full" => PgSslMode::VerifyFull,
-        _ => PgSslMode::Prefer,
+        _ => {
+            // `Config::from_env` rejects this before startup. Keep the
+            // connector fail-closed as well so a manually-built Config
+            // cannot silently downgrade database TLS.
+            return Err(sqlx::Error::Configuration(
+                std::io::Error::other(format!("unsupported PG_SSL_MODE {:?}", config.pg_ssl_mode))
+                    .into(),
+            ));
+        }
     };
     pg_conn_options = pg_conn_options.ssl_mode(pg_ssl_mode);
 

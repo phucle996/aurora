@@ -18,20 +18,6 @@ services:
       # Mount TLS certs vào đúng path mà binary prod đọc (xem GRPC_TLS_* trong .env).
       - ./dev/tls:/etc/controlplane/tls:ro
       # Binary prod chạy với WORKDIR /var/lib/controlplane và đọc policy tại
-    environment:
-      # Override TLS paths để khớp với mount point mới của prod container.
-      GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
-      GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
-      GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
-      GRPC_PORT: "9090"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
-      # [COMMENT]: Dev Shared Redis chỉ có một node; production không được hạ ngưỡng replica này.
-      REDIS_DURABLE_REPLICA_ACKS: "0"
-      # [COMMENT]: Auth-State dùng DB 0 + ACL/prefix; không dùng logical DB để còn tương thích Redis Cluster.
-      AUTH_REDIS_ADDR: "acr-redis:6379"
-      AUTH_REDIS_USERNAME: "controlplane"
-      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -40,8 +26,6 @@ services:
       cp-redis:
         condition: service_healthy
       acr-redis:
-        condition: service_healthy
-      nats:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
@@ -52,6 +36,8 @@ services:
       victoriatraces:
         condition: service_started
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -71,18 +57,6 @@ services:
       - .env
     volumes:
       - ./dev/tls:/etc/controlplane/tls:ro
-    environment:
-      GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
-      GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
-      GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
-      GRPC_PORT: "9090"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
-      REDIS_DURABLE_REPLICA_ACKS: "0"
-      # [COMMENT]: Mỗi replica dùng cùng ACL nhưng cô lập dữ liệu bằng namespace AuthZ được cấp quyền.
-      AUTH_REDIS_ADDR: "acr-redis:6379"
-      AUTH_REDIS_USERNAME: "controlplane"
-      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -91,8 +65,6 @@ services:
       cp-redis:
         condition: service_healthy
       acr-redis:
-        condition: service_healthy
-      nats:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
@@ -103,6 +75,8 @@ services:
       victoriatraces:
         condition: service_started
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -122,18 +96,6 @@ services:
       - .env
     volumes:
       - ./dev/tls:/etc/controlplane/tls:ro
-    environment:
-      GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
-      GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
-      GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
-      GRPC_PORT: "9090"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
-      REDIS_DURABLE_REPLICA_ACKS: "0"
-      # [COMMENT]: Mỗi replica dùng cùng ACL nhưng cô lập dữ liệu bằng namespace AuthZ được cấp quyền.
-      AUTH_REDIS_ADDR: "acr-redis:6379"
-      AUTH_REDIS_USERNAME: "controlplane"
-      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -142,8 +104,6 @@ services:
       cp-redis:
         condition: service_healthy
       acr-redis:
-        condition: service_healthy
-      nats:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
@@ -154,6 +114,8 @@ services:
       victoriatraces:
         condition: service_started
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -287,26 +249,10 @@ services:
     ports:
       - "8084:8084" # REST API port
       - "9094:9094" # gRPC port
-    environment:
-      - DATABASE_URL=postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable
-      - CLICKHOUSE_URL=http://clickhouse-server:8123
-      # [COMMENT]: Shared Redis chứa cache/pubsub/lock và bounded AOF-backed Central Streams.
-      - CACHE_REDIS_URL=redis://controlplane-cp-redis:6379
-      # [COMMENT]: Embedded Cost Engine dùng cùng Shared Redis cho lock và pricing PubSub.
-      - REDIS_URL=redis://controlplane-cp-redis:6379/0
-      # [COMMENT]: Cost chỉ thấy authz/proof namespace qua ACL, không thể đọc Trinity session của ACR.
-      - AUTH_REDIS_URL=redis://cost:aurora-dev-cost-secret@controlplane-acr-redis:6379/0
-      # Development contract for the external checkout gateway. Production injects
-      # both signing keys from Secret and points at the real payment provider.
-      - PAYMENT_PROVIDER=aurora-payment-gateway
-      - PAYMENT_CHECKOUT_BASE_URL=https://payments.aurora.local/checkout
-      - PAYMENT_RETURN_BASE_URL=https://cost-manager.aurora.local/
-      - PAYMENT_CHECKOUT_SIGNING_SECRET=dev-checkout-signing-key-change-before-production-2026
-      - PAYMENT_WEBHOOK_SIGNING_SECRET=dev-webhook-signing-key-change-before-production-2026
-      - PAYMENT_MINIMUM_TOP_UP_MICRO_UNITS=1000000
-      - PAYMENT_INTENT_TTL=30m
-      - PAYMENT_REFERRAL_RESERVATION_TTL=24h
-      - PAYMENT_WEBHOOK_TOLERANCE=5m
+    # API and embedded Engine identities live in this app-owned file. The API
+    # remaps VAULT_ENGINE_TOKEN only for the Engine child process.
+    env_file:
+      - ../cost-manager/api/.env
     volumes:
       - ../cost-manager/api:/app/api
     depends_on:
@@ -317,6 +263,8 @@ services:
       acr-redis:
         condition: service_healthy
       clickhouse:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
 
@@ -551,42 +499,10 @@ services:
         LOCAL_GID: 1000
     container_name: dataplane-vn-n1
     init: true
-    environment:
-      ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      # [COMMENT]: Core NATS chỉ chở watch/runtime soft state; không trỏ vào Zone JetStream KV.
-      NATS_URL: "nats://nats:4222"
-      NATS_ZONE_URL: "nats://nats-zone-z1:4222"
-      NATS_ZONE_KV_REPLICAS: "1"
-      # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
-      APP_LOG_LEVEL: "info"
-      TZ: "Asia/Ho_Chi_Minh"
-      # Cổng export Prometheus metrics endpoint /metrics
-      METRICS_PORT: "2112"
-      # Endpoint gRPC của OTel Collector để gửi traces (Tempo)
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
-      OTEL_TRACE_SAMPLE_RATIO: "0.25"
-      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
-      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
-      OTEL_BSP_SCHEDULE_DELAY: "1000"
-      OTEL_BSP_EXPORT_TIMEOUT: "5000"
-      MINIO_HOST: "minio"
-      MINIO_PORT: "9000"
-      MINIO_ACCESS_KEY: "minioadmin"
-      MINIO_SECRET_KEY: "minioadmin"
-      HYPERVISOR_IMAGE_S3_ENDPOINT: "http://minio:9000"
-      HYPERVISOR_IMAGE_S3_BUCKET: "aurora-hypervisor-images"
-      HYPERVISOR_IMAGE_S3_ACCESS_KEY: "minioadmin"
-      HYPERVISOR_IMAGE_S3_SECRET_KEY: "minioadmin"
-      PROXMOX_IMAGE_SOURCE_STORAGE: "local"
-      STALWART_JMAP_URL: "http://stalwart:8080/jmap"
-      STALWART_JMAP_ACCOUNT_ID: "b"
-      STALWART_JMAP_IDENTITY_ID: "b"
-      STALWART_JMAP_MAILBOX_ID: "e"
-      STALWART_JMAP_USERNAME: "admin@example.org"
-      STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
-      MAIL_SENDER_ADDRESS: "admin@example.org"
-      MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA: "true"
+    # Every replica in this Zone receives the same Zone-scoped transport and
+    # infrastructure identity contract.
+    env_file:
+      - ../dataplane/.env
     depends_on:
       controlplane1:
         condition: service_started
@@ -618,38 +534,8 @@ services:
         LOCAL_GID: 1000
     container_name: dataplane-vn-n2
     init: true
-    environment:
-      ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      NATS_URL: "nats://nats:4222"
-      NATS_ZONE_URL: "nats://nats-zone-z1:4222"
-      NATS_ZONE_KV_REPLICAS: "1"
-      APP_LOG_LEVEL: "info"
-      TZ: "Asia/Ho_Chi_Minh"
-      METRICS_PORT: "2112"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
-      OTEL_TRACE_SAMPLE_RATIO: "0.25"
-      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
-      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
-      OTEL_BSP_SCHEDULE_DELAY: "1000"
-      OTEL_BSP_EXPORT_TIMEOUT: "5000"
-      MINIO_HOST: "minio"
-      MINIO_PORT: "9000"
-      MINIO_ACCESS_KEY: "minioadmin"
-      MINIO_SECRET_KEY: "minioadmin"
-      HYPERVISOR_IMAGE_S3_ENDPOINT: "http://minio:9000"
-      HYPERVISOR_IMAGE_S3_BUCKET: "aurora-hypervisor-images"
-      HYPERVISOR_IMAGE_S3_ACCESS_KEY: "minioadmin"
-      HYPERVISOR_IMAGE_S3_SECRET_KEY: "minioadmin"
-      PROXMOX_IMAGE_SOURCE_STORAGE: "local"
-      STALWART_JMAP_URL: "http://stalwart:8080/jmap"
-      STALWART_JMAP_ACCOUNT_ID: "b"
-      STALWART_JMAP_IDENTITY_ID: "b"
-      STALWART_JMAP_MAILBOX_ID: "e"
-      STALWART_JMAP_USERNAME: "admin@example.org"
-      STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
-      MAIL_SENDER_ADDRESS: "admin@example.org"
-      MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA: "true"
+    env_file:
+      - ../dataplane/.env
     depends_on:
       controlplane2:
         condition: service_started
@@ -673,38 +559,8 @@ services:
         LOCAL_GID: 1000
     container_name: dataplane-vn-n3
     init: true
-    environment:
-      ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
-      NATS_URL: "nats://nats:4222"
-      NATS_ZONE_URL: "nats://nats-zone-z1:4222"
-      NATS_ZONE_KV_REPLICAS: "1"
-      APP_LOG_LEVEL: "info"
-      TZ: "Asia/Ho_Chi_Minh"
-      METRICS_PORT: "2112"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
-      OTEL_TRACE_SAMPLE_RATIO: "0.25"
-      OTEL_BSP_MAX_QUEUE_SIZE: "8192"
-      OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "512"
-      OTEL_BSP_SCHEDULE_DELAY: "1000"
-      OTEL_BSP_EXPORT_TIMEOUT: "5000"
-      MINIO_HOST: "minio"
-      MINIO_PORT: "9000"
-      MINIO_ACCESS_KEY: "minioadmin"
-      MINIO_SECRET_KEY: "minioadmin"
-      HYPERVISOR_IMAGE_S3_ENDPOINT: "http://minio:9000"
-      HYPERVISOR_IMAGE_S3_BUCKET: "aurora-hypervisor-images"
-      HYPERVISOR_IMAGE_S3_ACCESS_KEY: "minioadmin"
-      HYPERVISOR_IMAGE_S3_SECRET_KEY: "minioadmin"
-      PROXMOX_IMAGE_SOURCE_STORAGE: "local"
-      STALWART_JMAP_URL: "http://stalwart:8080/jmap"
-      STALWART_JMAP_ACCOUNT_ID: "b"
-      STALWART_JMAP_IDENTITY_ID: "b"
-      STALWART_JMAP_MAILBOX_ID: "e"
-      STALWART_JMAP_USERNAME: "admin@example.org"
-      STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
-      MAIL_SENDER_ADDRESS: "admin@example.org"
-      MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA: "true"
+    env_file:
+      - ../dataplane/.env
     depends_on:
       controlplane3:
         condition: service_started
@@ -805,24 +661,20 @@ services:
         condition: service_started
       victoriatraces:
         condition: service_started
+      vault:
+        condition: service_started
     restart: unless-stopped
 
   cloud-console:
     build:
       context: ../cloud-console
       dockerfile: Dockerfile.prod
-      args:
-        - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
-        # [COMMENT]: WebSocket đi qua Envoy (wss://) để TLS terminate và proxy sang centrifugo:8000 nội bộ
-        - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
-        - NEXT_PUBLIC_COST_CONSOLE_URL=https://cost-manager.aurora.local
     container_name: cloud-console-dev
-    environment:
-      - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
-      # [COMMENT]: Giá trị này được baked vào bundle lúc build, runtime env không có tác dụng với NEXT_PUBLIC_ nhưng để tham chiếu
-      - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
-      - NEXT_PUBLIC_COST_CONSOLE_URL=https://cost-manager.aurora.local
-      - NODE_TLS_REJECT_UNAUTHORIZED=0
+    # Runtime browser configuration is owned by Cloud Console. The public
+    # values are loaded from its own .env and are also consumed by its Docker
+    # build stage because Next.js bakes them into the static client bundle.
+    env_file:
+      - ../cloud-console/.env
     restart: unless-stopped
 
   admin-ui-nginx:
@@ -872,6 +724,8 @@ services:
         condition: service_healthy
       otel-collector:
         condition: service_started
+      vault:
+        condition: service_started
     restart: unless-stopped
 
   centrifugo:
@@ -904,30 +758,8 @@ services:
     # [COMMENT]: Mount chứng chỉ TLS để thiết lập kết nối mTLS bảo mật đến các node Controlplane
     volumes:
       - ./dev/tls:/etc/acr/tls:ro
-    environment:
-      TZ: "Asia/Ho_Chi_Minh"
-      ACR_GRPC_PORT: "50051"
-      # [COMMENT]: Hai Redis tách vai trò; Security-State dùng AOF/noeviction,
-      # Shared Redis dùng cho Central request/reply, bounded stream và cache.
-      AUTH_REDIS_URL: "redis://acr:aurora-dev-acr-secret@controlplane-acr-redis:6379/0"
-      SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
-      VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.bmEYXu28616H11YtER7uuejz"
-      VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
-      # Enable only after the matching public key has been provisioned into
-      # every Zone Control Authorizer deployment.
-      VAULT_ZONE_CONTROL_ASSERTION_KEY_PATH: "transit/keys/zone-control-assertion"
-      VAULT_ZONE_CONTROL_ASSERTION_KEY_ID: "zone-control-assertion:v1"
-      VAULT_TOTP_KEY_PATH: "totp/keys/admin"
-      VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
-      VAULT_TIMEOUT_SECS: "5"
-      VAULT_MAX_RETRIES: "3"
-      SESSION_TTL_SECS: "1800"
-      REFRESH_THRESHOLD_SECS: "900"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
-      # [COMMENT]: ACR cookies luôn host-only; domain handoff chỉ redirect tới origin cố định này.
-      BILLING_CONSOLE_ORIGIN: "https://cost-manager.aurora.local"
-      APP_ALLOWED_ORIGINS: "https://adminui.aurora.local,https://adminui-dev.aurora.local,https://cloud.aurora.local,https://cost-manager.aurora.local"
+    env_file:
+      - ../acr/.env
     depends_on:
       acr-redis:
         condition: service_healthy
@@ -946,27 +778,8 @@ services:
     container_name: aurora-notification-service
     ports:
       - "8083:8083"
-    environment:
-      - TZ=Asia/Ho_Chi_Minh
-      - APP_PORT=8083
-      - CENTRIFUGO_API_URL=http://centrifugo:8000/api
-      - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
-      - SHARED_REDIS_URL=redis://controlplane-cp-redis:6379/0
-      # Scylla owns only the user timeline/history bounded context.
-      - SCYLLA_CONTACT_POINTS=scylla:9042
-      - SCYLLA_LOCAL_DC=datacenter1
-      - SCYLLA_KEYSPACE=aurora_timeline
-      - SCYLLA_USERNAME=timeline_service
-      - SCYLLA_PASSWORD=timeline-dev-password
-      - SCYLLA_TLS_MODE=disabled
-      - SCYLLA_REPLICATION_FACTOR=1
-      - SCYLLA_AUTO_SCHEMA=true
-      - TIMELINE_ACTIVITY_RETENTION_DAYS=365
-      - TIMELINE_INBOX_RETENTION_DAYS=180
-      - TIMELINE_MAX_PAGE_SIZE=50
-      - TIMELINE_MAX_MONTH_SCAN=24
-      # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
+    env_file:
+      - ../notification-service/.env
     depends_on:
       centrifugo:
         condition: service_started
@@ -975,6 +788,8 @@ services:
       scylla:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
 

@@ -1,5 +1,26 @@
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
+
+fn required_env(name: &str) -> Result<String, String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} must be set and non-empty"))
+}
+
+#[derive(Debug, Clone)]
+pub struct VaultConfig {
+    pub addr: String,
+    pub token: Option<String>,
+    pub role_id: Option<String>,
+    pub secret_id: Option<String>,
+    pub kubernetes_role: Option<String>,
+    pub kubernetes_jwt_path: PathBuf,
+    pub timeout: Duration,
+    pub max_retries: usize,
+}
 
 /// Cấu hình hệ thống Cost Manager Engine đọc từ các biến môi trường
 #[derive(Debug, Clone)]
@@ -46,22 +67,56 @@ pub struct Config {
     pub redis_ssl_client_cert: Option<String>,
     /// Đường dẫn tới file Client Private Key dùng cho mTLS Redis
     pub redis_ssl_client_key: Option<String>,
+    pub vault: VaultConfig,
+}
+
+impl VaultConfig {
+    fn from_env() -> Result<Self, String> {
+        Ok(Self {
+            addr: required_env("VAULT_ADDR")?,
+            token: env::var("VAULT_TOKEN")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            role_id: env::var("VAULT_ROLE_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            secret_id: env::var("VAULT_SECRET_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            kubernetes_role: env::var("VAULT_KUBERNETES_ROLE")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            kubernetes_jwt_path: PathBuf::from(
+                env::var("VAULT_KUBERNETES_JWT_PATH").unwrap_or_else(|_| {
+                    "/var/run/secrets/kubernetes.io/serviceaccount/token".to_owned()
+                }),
+            ),
+            timeout: Duration::from_secs(
+                env::var("VAULT_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(5),
+            ),
+            max_retries: env::var("VAULT_MAX_RETRIES")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(5)
+                .clamp(1, 20),
+        })
+    }
 }
 
 impl Config {
-    /// Đọc các cấu hình từ biến môi trường và gán giá trị mặc định nếu thiếu
-    pub fn from_env() -> Self {
-        // Đọc Database URL cho Postgres, mặc định kết nối cục bộ trong mạng docker/k8s
-        let database_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable".to_string());
+    /// Identity-bearing endpoints and security modes are required. Only
+    /// bounded performance/retention controls keep local defaults.
+    pub fn from_env() -> Result<Self, String> {
+        // Connection URLs are resolved by infra connectors from Vault.
+        let database_url = String::new();
 
-        // Đọc ClickHouse URL, mặc định http://clickhouse:8123
-        let clickhouse_url =
-            env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://clickhouse:8123".to_string());
+        let clickhouse_url = required_env("CLICKHOUSE_URL")?;
 
         // Đọc Redis URL cho control plane
-        let redis_url = env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://controlplane-acr-redis:6379".to_string());
+        let redis_url = String::new();
 
         // Cấu hình số kết nối tối đa tới Postgres, mặc định là 10
         let pg_max_connections = env::var("PG_MAX_CONNECTIONS")
@@ -103,7 +158,13 @@ impl Config {
 
         // --- Đọc cấu hình TLS/mTLS từ biến môi trường ---
 
-        let pg_ssl_mode = env::var("PG_SSL_MODE").unwrap_or_else(|_| "prefer".to_string());
+        let pg_ssl_mode = required_env("PG_SSL_MODE")?.to_ascii_lowercase();
+        if !matches!(
+            pg_ssl_mode.as_str(),
+            "disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full"
+        ) {
+            return Err("PG_SSL_MODE is invalid".to_owned());
+        }
         let pg_ssl_root_cert = env::var("PG_SSL_ROOT_CERT").ok();
         let pg_ssl_client_cert = env::var("PG_SSL_CLIENT_CERT").ok();
         let pg_ssl_client_key = env::var("PG_SSL_CLIENT_KEY").ok();
@@ -116,7 +177,7 @@ impl Config {
         let redis_ssl_client_cert = env::var("REDIS_SSL_CLIENT_CERT").ok();
         let redis_ssl_client_key = env::var("REDIS_SSL_CLIENT_KEY").ok();
 
-        Self {
+        Ok(Self {
             database_url,
             clickhouse_url,
             redis_url,
@@ -136,6 +197,7 @@ impl Config {
             redis_ssl_root_cert,
             redis_ssl_client_cert,
             redis_ssl_client_key,
-        }
+            vault: VaultConfig::from_env()?,
+        })
     }
 }

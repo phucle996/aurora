@@ -13,7 +13,7 @@
 //     lỗi để đảm bảo không rò rỉ tài nguyên (Resource Leak).
 //
 // 🔑 2. FAIL STRATEGY MATRIX
-//   [FAIL-CLOSE] Security - RuntimeMasterKey:     Bắt buộc, không có thì hệ thống không start.
+//   [FAIL-CLOSE] Security - Vault Transit:        MFA secret encryption/decryption fails closed.
 //   [FAIL-CLOSE] Infrastructure - PostgreSQL:     Bắt buộc, mất DB thì toàn bộ nghiệp vụ tê liệt.
 //   [FAIL-CLOSE] Infrastructure - Redis:          Bắt buộc, mất Redis thì session/cache mất hoàn toàn.
 //   [FAIL-CLOSE] Infrastructure - Kafka config:   Client/config bắt buộc; broker outage fail theo publish,
@@ -45,9 +45,9 @@ package app
 import (
 	"context"
 	kafkainfra "controlplane/infra/kafka"
-	natsinfra "controlplane/infra/nats"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
+	"controlplane/infra/vault"
 	"controlplane/internal/app/bootstrap"
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
@@ -59,7 +59,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -78,8 +77,8 @@ type App struct {
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
 	authRds    *goredis.Client
+	vault      *vault.Client
 	kafka      *kafkainfra.Producer
-	natsConn   *nats.Conn
 	ready      bool
 }
 
@@ -92,11 +91,21 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{ctx: ctx, cancel: cancel, cfg: cfg}
 
+	// [FAIL-CLOSE] Authenticate once with the app's Vault identity before
+	// infrastructure creation. Connectors read only their own fixed capability
+	// record; credentials never pass through application config.
+	vaultClient, err := vault.NewClient(ctx, cfg.Vault)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: Vault client init failed: %w", err)
+	}
+	app.vault = vaultClient
+
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Infrastructure bootstrap: PostgreSQL.
 	// Mất kết nối DB -> toàn bộ nghiệp vụ đọc/ghi dữ liệu tê liệt -> abort.
 	// --------------------------------------------------------------------
-	db, err := psql.NewPostgres(ctx, &cfg.Psql)
+	db, err := psql.NewPostgres(ctx, vaultClient, &cfg.Psql)
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: psql init failed: %w", err)
@@ -107,7 +116,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// [FAIL-CLOSE] Infrastructure bootstrap: Redis (Session / Cache).
 	// Mất Redis chính -> session/token cache mất hoàn toàn -> abort.
 	// --------------------------------------------------------------------
-	rds, err := redisinfra.NewRedis(ctx, &cfg.Redis)
+	rds, err := redisinfra.NewRedis(ctx, vaultClient, &cfg.Redis, redisinfra.SharedConnectionPath)
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: redis init failed: %w", err)
@@ -118,7 +127,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: redis client is required")
 	}
 	// [COMMENT]: Security-State/AuthZ Redis là deployment và credential riêng; không dùng logical DB.
-	authRds, err := redisinfra.NewRedis(ctx, &cfg.AuthRedis)
+	authRds, err := redisinfra.NewRedis(ctx, vaultClient, &cfg.AuthRedis, redisinfra.AuthStateConnectionPath)
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: auth redis init failed: %w", err)
@@ -141,14 +150,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: kafka producer is required")
 	}
-
-	// [COMMENT]: Khởi tạo NATS Core Client từ infra connector hỗ trợ TLS/mTLS và retry
-	nc, err := natsinfra.NewNATS(ctx, &cfg.NATS, cfg.App.AppName)
-	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: nats init failed: %w", err)
-	}
-	app.natsConn = nc
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Schema bootstrap: Database migrations bắt buộc chạy trước khi modules dùng DB.
@@ -238,7 +239,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, authRds, kafkaProducer, cacheEngine, app.natsConn, app.otel)
+	modules, err := NewGlobalModules(cfg, db, rds, authRds, app.vault, kafkaProducer, cacheEngine, app.otel)
 	if err != nil {
 		app.Stop()
 		return nil, err
@@ -371,8 +372,5 @@ func (a *App) Stop() {
 	}
 	if a.kafka != nil {
 		a.kafka.Close()
-	}
-	if a.natsConn != nil {
-		a.natsConn.Close()
 	}
 }
