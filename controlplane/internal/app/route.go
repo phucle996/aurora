@@ -19,6 +19,7 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/managedservice"
 	"controlplane/internal/storage"
 	"controlplane/pkg/apires"
 
@@ -89,4 +90,8 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 			apires.RespondServiceUnavailable(c, "STORAGE_MODULE_DEGRADED: Phân hệ Object Storage hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
 	}
+
+	// Managed Service Platform hiện chỉ có route boundary; business routes sẽ
+	// được đăng ký cùng từng vertical slice hoàn chỉnh.
+	managedservice.RegisterRoutes(router, m.ManagedService)
 }

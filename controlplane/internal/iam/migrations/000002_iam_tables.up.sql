@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS address varchar(500) NULL;
+
 COMMENT ON COLUMN user_profiles.address IS 'Optional user-managed postal or locality address. It is profile metadata and is never an authentication or recovery identifier.';
 
 -- [COMMENT]: Bảng lưu vết refresh token cho xác thực JWT
@@ -95,6 +97,7 @@ CREATE TABLE IF NOT EXISTS external_identities (
 );
 
 COMMENT ON TABLE external_identities IS 'Verified external login identities.';
+ALTER TABLE external_identities ADD COLUMN IF NOT EXISTS linked_at timestamptz NOT NULL DEFAULT now();
 COMMENT ON COLUMN external_identities.linked_at IS 'Most recent successful explicit link time. Re-linking a previously revoked provider advances this timestamp.';
 
 -- [COMMENT]: Bảng cài đặt MFA bảo mật của người dùng (Mỗi người dùng có tối đa 1 bản ghi cấu hình)

@@ -14,6 +14,7 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/managedservice"
 	"controlplane/internal/observability"
 	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
@@ -36,6 +37,8 @@ type Modules struct {
 	Mail *mail.Module
 	// Storage là module vệ tinh Tier-2 (lưu trữ object). Cho phép chạy ở trạng thái suy giảm (Degraded).
 	Storage *storage.StorageModule
+	// ManagedService là shell của catalog dịch vụ SRE; chưa sở hữu workflow runtime.
+	ManagedService *managedservice.Module
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
 	CacheEngine *cacheengine.CacheRegistry
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB và các bridge
@@ -111,6 +114,13 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, fmt.Errorf("app: wire tenant billing outbox notifier: %w", err)
 	}
 
+	// Managed Service Platform hiện chỉ dựng boundary và dependency graph.
+	// Chưa có route/business workflow nên module không mở thêm side effect runtime.
+	managedServiceModule, err := managedservice.NewModule(cfg, db, cacheEngine)
+	if err != nil {
+		return nil, fmt.Errorf("app: init managed service module: %w", err)
+	}
+
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 3: KHỞI TẠO CÁC PHÂN HỆ TIER-1 (NON-CRITICAL) - SAI LÀ DEGRADE GRACEFUL
 	// ------------------------------------------------------------------------
@@ -145,14 +155,15 @@ func NewGlobalModules(cfg *config.Config,
 	keepProbeRunning = true
 
 	modules := &Modules{
-		Health:      health,
-		Core:        coreModule,
-		IAM:         iamModule,
-		Hypervisor:  hypervisorModule,
-		Mail:        mailModule,
-		Storage:     storageModule,
-		CacheEngine: cacheEngine,
-		probeCancel: probeCancel,
+		Health:         health,
+		Core:           coreModule,
+		IAM:            iamModule,
+		Hypervisor:     hypervisorModule,
+		Mail:           mailModule,
+		Storage:        storageModule,
+		ManagedService: managedServiceModule,
+		CacheEngine:    cacheEngine,
+		probeCancel:    probeCancel,
 	}
 
 	return modules, nil
@@ -187,6 +198,9 @@ func (m *Modules) Stop() {
 	}
 	if m.Storage != nil {
 		m.Storage.Stop()
+	}
+	if m.ManagedService != nil {
+		m.ManagedService.Stop()
 	}
 	if m.Core != nil {
 		m.Core.Stop()

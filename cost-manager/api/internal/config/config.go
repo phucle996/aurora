@@ -100,16 +100,6 @@ func LoadConfig() *Config {
 			AllowedOrigins: getEnvAsCSV("APP_ALLOWED_ORIGINS", nil),
 		},
 		Vault: VaultCfg{
-			Addr:              getEnv("VAULT_ADDR", ""),
-			Token:             getEnv("VAULT_TOKEN", ""),
-			RoleID:            getEnv("VAULT_ROLE_ID", ""),
-			SecretID:          getEnv("VAULT_SECRET_ID", ""),
-			KubernetesRole:    getEnv("VAULT_KUBERNETES_ROLE", ""),
-			KubernetesJWTPath: getEnv("VAULT_KUBERNETES_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-			Timeout:           getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
-			MaxRetries:        getEnvAsInt("VAULT_MAX_RETRIES", 5),
-		},
-		Vault: VaultCfg{
 			Addr:              getEnv("VAULT_ADDR", "http://127.0.0.1:8200"),
 			Token:             getEnv("VAULT_TOKEN", ""),
 			RoleID:            getEnv("VAULT_ROLE_ID", ""),

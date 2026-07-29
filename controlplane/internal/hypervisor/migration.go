@@ -26,17 +26,8 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.Hypervisor)
 
-	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
-		return fmt.Errorf("hypervisor migration: begin tx: %w", err)
-	}
-	defer func() {
-		_, _ = conn.Exec(ctx, "ROLLBACK")
-	}()
-
-	// The transaction-scoped lock serializes embedded migrations across HA replicas.
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_xact_lock(1104)"); err != nil {
-		return fmt.Errorf("hypervisor migration: acquire advisory lock: %w", err)
-	}
+	// The app bootstrap owns the transaction and advisory lock. This module
+	// only applies its embedded files inside that caller-owned transaction.
 
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
@@ -48,9 +39,6 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 		return err
 	}
 
-	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("hypervisor migration: commit tx: %w", err)
-	}
 	return nil
 }
 
@@ -73,7 +61,7 @@ func setMigrationSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath 
 	if searchPath == "" {
 		return fmt.Errorf("hypervisor migration: search_path is required")
 	}
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s", searchPath)); err != nil {
+	if _, err := conn.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %s", searchPath)); err != nil {
 		return fmt.Errorf("hypervisor migration: set search_path to %s: %w", searchPath, err)
 	}
 	return nil

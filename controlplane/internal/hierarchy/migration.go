@@ -44,19 +44,9 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
 
-	// B2: Khởi tạo database transaction và đăng ký trì hoãn rollback khi có lỗi phát sinh.
-	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
-		return fmt.Errorf("core migration: begin tx: %w", err)
-	}
-	defer func() {
-		_, _ = conn.Exec(ctx, "ROLLBACK")
-	}()
-
-	// Acquire a transaction-level advisory lock to serialize concurrent migrations across HA nodes
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_xact_lock(1102)"); err != nil {
-		return fmt.Errorf("core migration: acquire advisory lock: %w", err)
-	}
-
+	// B2: App bootstrap owns the transaction and advisory lock. Keeping this
+	// function transaction-free avoids nested BEGIN/COMMIT and lets a failure
+	// roll back every module migration atomically.
 	// B3: Đảm bảo database schema đích được khởi tạo và tồn tại.
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
@@ -72,10 +62,6 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 		return err
 	}
 
-	// B6: Commit transaction để lưu trữ các thay đổi cấu trúc database atomically.
-	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("core migration: commit tx: %w", err)
-	}
 	return nil
 }
 
@@ -101,7 +87,7 @@ func setMigrationSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath 
 	if searchPath == "" {
 		return fmt.Errorf("core migration: search_path is required")
 	}
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s", searchPath)); err != nil {
+	if _, err := conn.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %s", searchPath)); err != nil {
 		return fmt.Errorf("core migration: set search_path to %s: %w", searchPath, err)
 	}
 	return nil

@@ -33,7 +33,8 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 	}
 	defer conn.Release()
 
-	// bắt đầu một transaction để đảm bảo toàn bộ migration được thực hiện một lần
+	// App bootstrap owns the only migration transaction. Every module below
+	// must execute inside this transaction and must not BEGIN/COMMIT itself.
 	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
 		return fmt.Errorf("migration: begin transaction: %w", err)
 	}
@@ -48,7 +49,8 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 		}
 	}()
 
-	// acquire advisory lock để tránh xung đột migration giữa các instance
+	// One transaction-level advisory lock serializes the complete migration
+	// graph across all HA replicas.
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationLockKey1, migrationLockKey2); err != nil {
 		return fmt.Errorf("migration: acquire lock: %w", err)
 	}
@@ -68,7 +70,7 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 		return err
 	}
 
-	// [NEW COMMENT]: hypervisor migrations thực thi độc lập bằng transactional lock
+	// Hypervisor migration chạy trong cùng transaction và advisory lock của app.
 	if err := hypervisor.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}

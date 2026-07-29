@@ -42,6 +42,12 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 		}
 	}
 
+	if modules.ManagedService != nil {
+		if err := modules.ManagedService.Bootstrap(ctx); err != nil {
+			return fmt.Errorf("app bootstrap: managed service module: %w", err)
+		}
+	}
+
 	// ------------------------------------------------------------------------
 	// 🟢 HẠNG MỤC 2: KHỞI CHẠY TIER-1 (NON-CRITICAL MODULES)
 	// ------------------------------------------------------------------------

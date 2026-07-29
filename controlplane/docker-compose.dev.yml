@@ -716,7 +716,7 @@ services:
     env_file:
       - ../job-orchestrator/.env
     environment:
-      VAULT_TOKEN: "${VAULT_JOB_ORCHESTRATOR_TOKEN:?set VAULT_JOB_ORCHESTRATOR_TOKEN for dev}"
+      VAULT_TOKEN: "${VAULT_JOB_ORCHESTRATOR_TOKEN:-aurora-dev-job-orchestrator-token}"
     depends_on:
       psql:
         condition: service_healthy

@@ -18,7 +18,8 @@ import (
 var storageSchemaIdentPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // [COMMENT]: ApplyMigrations thực thi khởi tạo schema cho phân hệ Storage.
-// Sử dụng advisory lock (id: 1102) để đảm bảo đồng bộ hóa chạy migrations HA.
+// App bootstrap sở hữu transaction và advisory lock dùng chung cho toàn bộ
+// migration graph của Controlplane.
 func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config) error {
 	if conn == nil {
 		return fmt.Errorf("storage migration: connection is nil")
@@ -28,17 +29,8 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.Storage)
 
-	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
-		return fmt.Errorf("storage migration: begin tx: %w", err)
-	}
-	defer func() {
-		_, _ = conn.Exec(ctx, "ROLLBACK")
-	}()
-
-	// [COMMENT]: Advisory lock tránh race condition khi nhiều replica pod chạy migration cùng lúc
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_xact_lock(1102)"); err != nil {
-		return fmt.Errorf("storage migration: acquire advisory lock: %w", err)
-	}
+	// The app bootstrap owns the transaction and advisory lock. This module
+	// only applies its embedded files inside that caller-owned transaction.
 
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
@@ -52,9 +44,6 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 		return err
 	}
 
-	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("storage migration: commit tx: %w", err)
-	}
 	return nil
 }
 
@@ -77,7 +66,7 @@ func setMigrationSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath 
 	if searchPath == "" {
 		return fmt.Errorf("storage migration: search_path is required")
 	}
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s", searchPath)); err != nil {
+	if _, err := conn.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %s", searchPath)); err != nil {
 		return fmt.Errorf("storage migration: set search_path to %s: %w", searchPath, err)
 	}
 	return nil
