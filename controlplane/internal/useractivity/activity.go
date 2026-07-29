@@ -34,9 +34,6 @@ type Event struct {
 }
 
 func Append(ctx context.Context, client *goredis.Client, event Event) error {
-	if client == nil {
-		return fmt.Errorf("shared redis client is nil")
-	}
 	if event.EventID == "" || event.UserID == "" || event.Action == "" ||
 		event.Source == "" || event.Category == "" || event.Outcome == "" {
 		return fmt.Errorf("user activity identity fields are required")

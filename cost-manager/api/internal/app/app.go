@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,9 +47,16 @@ func (a *App) Init() error {
 
 	// 1. Load config
 	a.Cfg = config.LoadConfig()
+	vaultClient, err := infra.NewVaultClient(context.Background(), a.Cfg.Vault)
+	if err != nil {
+		return fmt.Errorf("initialize Vault client: %w", err)
+	}
+	if err := infra.ReadPaymentSecrets(context.Background(), vaultClient, &a.Cfg.Payment); err != nil {
+		return fmt.Errorf("initialize payment signing secrets: %w", err)
+	}
 
 	// 2. Connect to Billing Database Infrastructure
-	dbPool, err := infra.ConnectPostgres(&a.Cfg.Psql)
+	dbPool, err := infra.ConnectPostgres(context.Background(), vaultClient, &a.Cfg.Psql)
 
 	if err != nil {
 		return err
@@ -61,14 +69,14 @@ func (a *App) Init() error {
 	}
 
 	// 4. Connect to Redis Cache Infrastructure
-	redisClient, err := infra.ConnectRedis(a.Cfg.Redis.Addr)
+	redisClient, err := infra.ConnectRedis(context.Background(), vaultClient, infra.SharedL2ConnectionPath)
 	if err != nil {
 		return err
 	}
 	a.redisClient = redisClient
 
 	// [COMMENT]: Auth Redis dùng ACL riêng; Cost không có quyền truy cập session namespace.
-	authRedisClient, err := infra.ConnectRedis(a.Cfg.AuthRedis.Addr)
+	authRedisClient, err := infra.ConnectRedis(context.Background(), vaultClient, infra.AuthStateConnectionPath)
 	if err != nil {
 		return err
 	}
@@ -180,6 +188,21 @@ func (a *App) Start() error {
 	a.rustCmd.Stdout = os.Stdout
 	a.rustCmd.Stderr = os.Stderr
 	a.rustCmd.Env = os.Environ()
+	// The embedded engine is a separate Vault consumer and must not inherit the
+	// API token. Its policy is supplied through a dedicated dev deployment
+	// variable; production should use a separate workload identity.
+	filteredEnv := a.rustCmd.Env[:0]
+	engineToken := strings.TrimSpace(os.Getenv("VAULT_ENGINE_TOKEN"))
+	for _, item := range a.rustCmd.Env {
+		if strings.HasPrefix(item, "VAULT_ENGINE_TOKEN=") ||
+			(engineToken != "" && strings.HasPrefix(item, "VAULT_TOKEN=")) {
+			continue
+		}
+		filteredEnv = append(filteredEnv, item)
+	}
+	if engineToken != "" {
+		a.rustCmd.Env = append(filteredEnv, "VAULT_TOKEN="+engineToken)
+	}
 
 	if err := a.rustCmd.Start(); err != nil {
 		logger.SysWarn(op, "Could not start Rust Engine child process: "+err.Error())

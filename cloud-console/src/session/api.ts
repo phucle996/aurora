@@ -17,7 +17,11 @@ export type RenderContext = {
 
 export type UserProfile = {
   user_id: string;
+  username: string;
+  account_email: string;
+  phone?: string;
   fullname: string;
+  address?: string;
   avatar_url?: string;
   bio?: string;
   locale: string;
@@ -62,6 +66,8 @@ function decodeProfile(value: unknown): UserProfile {
   if (
     !isRecord(value) ||
     typeof value.user_id !== "string" ||
+    typeof value.username !== "string" ||
+    typeof value.account_email !== "string" ||
     typeof value.fullname !== "string" ||
     typeof value.locale !== "string" ||
     typeof value.timezone !== "string"
@@ -71,7 +77,11 @@ function decodeProfile(value: unknown): UserProfile {
 
   return {
     user_id: value.user_id,
+    username: value.username,
+    account_email: value.account_email,
+    phone: typeof value.phone === "string" ? value.phone : undefined,
     fullname: value.fullname,
+    address: typeof value.address === "string" ? value.address : undefined,
     avatar_url: typeof value.avatar_url === "string" ? value.avatar_url : undefined,
     bio: typeof value.bio === "string" ? value.bio : undefined,
     locale: value.locale,

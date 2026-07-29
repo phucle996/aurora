@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"controlplane/infra/vault"
 	"controlplane/internal/config"
 	"controlplane/internal/observability"
 	"crypto/tls"
@@ -15,12 +16,36 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-func NewRedis(ctx context.Context, cfg *config.RedisCfg) (*goredis.Client, error) {
+const (
+	SharedConnectionPath    = "secret/data/connections/redis/shared-l2/role-request-reply-rw"
+	AuthStateConnectionPath = "secret/data/connections/redis/auth-state/role-authz-projection-rw"
+)
+
+type connectionRecord struct {
+	SchemaVersion int    `json:"schema_version"`
+	Addr          string `json:"addr"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	DB            int    `json:"db"`
+	TLSEnabled    bool   `json:"tls_enabled"`
+	CACertPath    string `json:"ca_cert_path"`
+	CertPath      string `json:"cert_path"`
+	KeyPath       string `json:"key_path"`
+}
+
+func NewRedis(ctx context.Context, vaultClient *vault.Client, cfg *config.RedisCfg, connectionPath string) (*goredis.Client, error) {
+	var connection connectionRecord
+	if err := vaultClient.ReadJSON(ctx, connectionPath, &connection); err != nil {
+		return nil, fmt.Errorf("redis: read Vault connection record: %w", err)
+	}
+	if err := validateConnection(connection, connectionPath); err != nil {
+		return nil, err
+	}
 	opts := &goredis.Options{
-		Addr:         cfg.Addr,
-		Username:     cfg.Username,
-		Password:     cfg.Password,
-		DB:           cfg.DB,
+		Addr:         connection.Addr,
+		Username:     connection.Username,
+		Password:     connection.Password,
+		DB:           connection.DB,
 		DialTimeout:  cfg.DialTimeout,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
@@ -31,8 +56,8 @@ func NewRedis(ctx context.Context, cfg *config.RedisCfg) (*goredis.Client, error
 		ContextTimeoutEnabled: true,
 	}
 
-	if cfg.TLSEnabled {
-		tlsCfg, err := buildTLSConfig(cfg)
+	if connection.TLSEnabled {
+		tlsCfg, err := buildTLSConfig(connection)
 		if err != nil {
 			return nil, fmt.Errorf("redis: failed to build TLS config: %w", err)
 		}
@@ -64,7 +89,7 @@ func NewRedis(ctx context.Context, cfg *config.RedisCfg) (*goredis.Client, error
 	return nil, fmt.Errorf("redis: failed to connect after %d attempts: %w", cfg.MaxRetries, lastErr)
 }
 
-func buildTLSConfig(cfg *config.RedisCfg) (*tls.Config, error) {
+func buildTLSConfig(cfg connectionRecord) (*tls.Config, error) {
 	tlsCfg := &tls.Config{}
 
 	host := cfg.Addr
@@ -92,4 +117,20 @@ func buildTLSConfig(cfg *config.RedisCfg) (*tls.Config, error) {
 	}
 
 	return tlsCfg, nil
+}
+
+func validateConnection(value connectionRecord, path string) error {
+	if value.SchemaVersion != 1 {
+		return fmt.Errorf("redis: unsupported Vault schema_version %d", value.SchemaVersion)
+	}
+	if strings.TrimSpace(value.Addr) == "" {
+		return fmt.Errorf("redis: Vault connection address is required")
+	}
+	if value.DB < 0 {
+		return fmt.Errorf("redis: Vault database index is invalid")
+	}
+	if strings.Contains(path, "auth-state") && value.DB != 0 {
+		return fmt.Errorf("redis: Auth-State Redis must use database index 0")
+	}
+	return nil
 }

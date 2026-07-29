@@ -116,6 +116,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // [COMMENT]: Verifier chỉ sống trong Cost origin; Cloud và ACR chỉ nhìn thấy SHA-256 challenge.
         sessionStorage.setItem('billing.pkce.verifier', verifier);
         sessionStorage.setItem('billing.pkce.state', state);
+        // [DEV-ONLY]: compose injects https://localhost so a Cost Console
+        // login cannot start OAuth on cloud.aurora.local and lose host-only
+        // cookies when Google returns to localhost. Production must inject
+        // the verified Cloud Console origin.
         const cloudOrigin = import.meta.env.VITE_CLOUD_CONSOLE_URL || 'https://cloud.aurora.local';
         window.location.replace(
           `${cloudOrigin}/billing/authorize?state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(challenge)}`,

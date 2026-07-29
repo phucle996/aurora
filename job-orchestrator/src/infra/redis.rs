@@ -1,9 +1,36 @@
 use crate::config::{SharedRedisConfig, TlsTrustSource};
+use crate::infra::vault::VaultClient;
 use redis::aio::{ConnectionManager, MultiplexedConnection};
 use redis::{Client, ClientTlsConfig, TlsCertificates};
 use std::fs;
 use std::io;
 use std::time::Duration;
+
+const CONNECTION_PATH: &str = "secret/data/connections/redis/shared-l2/role-runtime-bridge-rw";
+
+#[derive(serde::Deserialize)]
+struct ConnectionRecord {
+    schema_version: u32,
+    url: String,
+}
+
+pub async fn resolve_from_vault(
+    vault: &VaultClient,
+    config: &mut SharedRedisConfig,
+) -> Result<(), String> {
+    let record: ConnectionRecord = vault.read(CONNECTION_PATH).await?;
+    if record.schema_version != 1 {
+        return Err(format!(
+            "unsupported Vault Shared Redis schema_version {}",
+            record.schema_version
+        ));
+    }
+    if !record.url.starts_with("redis://") && !record.url.starts_with("rediss://") {
+        return Err("Vault Shared Redis URL must use redis:// or rediss://".to_owned());
+    }
+    config.url = record.url;
+    Ok(())
+}
 
 pub fn client(config: &SharedRedisConfig) -> io::Result<Client> {
     let Some(tls) = &config.tls else {

@@ -839,6 +839,168 @@ func (x *VerifyExternalIdentityResponse) GetMfaSettingId() string {
 	return ""
 }
 
+// Canonical provider identity accepted only after ACR completed a critical
+// session-proof start and verified the provider callback.
+type LinkExternalIdentityRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	OperationId     string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	SchemaVersion   uint32                 `protobuf:"varint,2,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	UserId          string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Provider        string                 `protobuf:"bytes,4,opt,name=provider,proto3" json:"provider,omitempty"`
+	ProviderSubject string                 `protobuf:"bytes,5,opt,name=provider_subject,json=providerSubject,proto3" json:"provider_subject,omitempty"`
+	ProviderEmail   string                 `protobuf:"bytes,6,opt,name=provider_email,json=providerEmail,proto3" json:"provider_email,omitempty"`
+	EmailVerifiedAt int64                  `protobuf:"varint,7,opt,name=email_verified_at,json=emailVerifiedAt,proto3" json:"email_verified_at,omitempty"`
+	DisplayName     string                 `protobuf:"bytes,8,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	AvatarUrl       string                 `protobuf:"bytes,9,opt,name=avatar_url,json=avatarUrl,proto3" json:"avatar_url,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *LinkExternalIdentityRequest) Reset() {
+	*x = LinkExternalIdentityRequest{}
+	mi := &file_auth_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkExternalIdentityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkExternalIdentityRequest) ProtoMessage() {}
+
+func (x *LinkExternalIdentityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkExternalIdentityRequest.ProtoReflect.Descriptor instead.
+func (*LinkExternalIdentityRequest) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *LinkExternalIdentityRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *LinkExternalIdentityRequest) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *LinkExternalIdentityRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *LinkExternalIdentityRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *LinkExternalIdentityRequest) GetProviderSubject() string {
+	if x != nil {
+		return x.ProviderSubject
+	}
+	return ""
+}
+
+func (x *LinkExternalIdentityRequest) GetProviderEmail() string {
+	if x != nil {
+		return x.ProviderEmail
+	}
+	return ""
+}
+
+func (x *LinkExternalIdentityRequest) GetEmailVerifiedAt() int64 {
+	if x != nil {
+		return x.EmailVerifiedAt
+	}
+	return 0
+}
+
+func (x *LinkExternalIdentityRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *LinkExternalIdentityRequest) GetAvatarUrl() string {
+	if x != nil {
+		return x.AvatarUrl
+	}
+	return ""
+}
+
+type LinkExternalIdentityResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Linked        bool                   `protobuf:"varint,1,opt,name=linked,proto3" json:"linked,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkExternalIdentityResponse) Reset() {
+	*x = LinkExternalIdentityResponse{}
+	mi := &file_auth_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkExternalIdentityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkExternalIdentityResponse) ProtoMessage() {}
+
+func (x *LinkExternalIdentityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkExternalIdentityResponse.ProtoReflect.Descriptor instead.
+func (*LinkExternalIdentityResponse) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *LinkExternalIdentityResponse) GetLinked() bool {
+	if x != nil {
+		return x.Linked
+	}
+	return false
+}
+
+func (x *LinkExternalIdentityResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
 type VerifyMfaChallengeRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	OperationId    string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
@@ -861,7 +1023,7 @@ type VerifyMfaChallengeRequest struct {
 
 func (x *VerifyMfaChallengeRequest) Reset() {
 	*x = VerifyMfaChallengeRequest{}
-	mi := &file_auth_proto_msgTypes[8]
+	mi := &file_auth_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -873,7 +1035,7 @@ func (x *VerifyMfaChallengeRequest) String() string {
 func (*VerifyMfaChallengeRequest) ProtoMessage() {}
 
 func (x *VerifyMfaChallengeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[8]
+	mi := &file_auth_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -886,7 +1048,7 @@ func (x *VerifyMfaChallengeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyMfaChallengeRequest.ProtoReflect.Descriptor instead.
 func (*VerifyMfaChallengeRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{8}
+	return file_auth_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *VerifyMfaChallengeRequest) GetOperationId() string {
@@ -1007,7 +1169,7 @@ type VerifyMfaChallengeResponse struct {
 
 func (x *VerifyMfaChallengeResponse) Reset() {
 	*x = VerifyMfaChallengeResponse{}
-	mi := &file_auth_proto_msgTypes[9]
+	mi := &file_auth_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1019,7 +1181,7 @@ func (x *VerifyMfaChallengeResponse) String() string {
 func (*VerifyMfaChallengeResponse) ProtoMessage() {}
 
 func (x *VerifyMfaChallengeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[9]
+	mi := &file_auth_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1032,7 +1194,7 @@ func (x *VerifyMfaChallengeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyMfaChallengeResponse.ProtoReflect.Descriptor instead.
 func (*VerifyMfaChallengeResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{9}
+	return file_auth_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *VerifyMfaChallengeResponse) GetValid() bool {
@@ -1129,7 +1291,7 @@ type RoleEntry struct {
 
 func (x *RoleEntry) Reset() {
 	*x = RoleEntry{}
-	mi := &file_auth_proto_msgTypes[10]
+	mi := &file_auth_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1141,7 +1303,7 @@ func (x *RoleEntry) String() string {
 func (*RoleEntry) ProtoMessage() {}
 
 func (x *RoleEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[10]
+	mi := &file_auth_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1154,7 +1316,7 @@ func (x *RoleEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoleEntry.ProtoReflect.Descriptor instead.
 func (*RoleEntry) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{10}
+	return file_auth_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RoleEntry) GetPermissions() []string {
@@ -1180,7 +1342,7 @@ type MfaSetupPending struct {
 
 func (x *MfaSetupPending) Reset() {
 	*x = MfaSetupPending{}
-	mi := &file_auth_proto_msgTypes[11]
+	mi := &file_auth_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1192,7 +1354,7 @@ func (x *MfaSetupPending) String() string {
 func (*MfaSetupPending) ProtoMessage() {}
 
 func (x *MfaSetupPending) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[11]
+	mi := &file_auth_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1205,7 +1367,7 @@ func (x *MfaSetupPending) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MfaSetupPending.ProtoReflect.Descriptor instead.
 func (*MfaSetupPending) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{11}
+	return file_auth_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MfaSetupPending) GetSetupId() string {
@@ -1343,7 +1505,21 @@ const file_auth_proto_rawDesc = "" +
 	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12\x1b\n" +
 	"\tzone_code\x18\f \x01(\tR\bzoneCode\x12!\n" +
 	"\fmfa_required\x18\x0f \x01(\bR\vmfaRequired\x12$\n" +
-	"\x0emfa_setting_id\x18\x10 \x01(\tR\fmfaSettingIdJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x10onboarding_tokenR\x15onboarding_expires_at\"\xd4\x03\n" +
+	"\x0emfa_setting_id\x18\x10 \x01(\tR\fmfaSettingIdJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x10onboarding_tokenR\x15onboarding_expires_at\"\xdc\x02\n" +
+	"\x1bLinkExternalIdentityRequest\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
+	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x1a\n" +
+	"\bprovider\x18\x04 \x01(\tR\bprovider\x12)\n" +
+	"\x10provider_subject\x18\x05 \x01(\tR\x0fproviderSubject\x12%\n" +
+	"\x0eprovider_email\x18\x06 \x01(\tR\rproviderEmail\x12*\n" +
+	"\x11email_verified_at\x18\a \x01(\x03R\x0femailVerifiedAt\x12!\n" +
+	"\fdisplay_name\x18\b \x01(\tR\vdisplayName\x12\x1d\n" +
+	"\n" +
+	"avatar_url\x18\t \x01(\tR\tavatarUrl\"[\n" +
+	"\x1cLinkExternalIdentityResponse\x12\x16\n" +
+	"\x06linked\x18\x01 \x01(\bR\x06linked\x12#\n" +
+	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\"\xd4\x03\n" +
 	"\x19VerifyMfaChallengeRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1a\n" +
@@ -1406,7 +1582,7 @@ func file_auth_proto_rawDescGZIP() []byte {
 	return file_auth_proto_rawDescData
 }
 
-var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_auth_proto_goTypes = []any{
 	(*VerifyOpaqueRefreshTokenRequest)(nil),  // 0: iam.rpc.VerifyOpaqueRefreshTokenRequest
 	(*VerifyOpaqueRefreshTokenResponse)(nil), // 1: iam.rpc.VerifyOpaqueRefreshTokenResponse
@@ -1416,10 +1592,12 @@ var file_auth_proto_goTypes = []any{
 	(*VerifyUserCredentialsResponse)(nil),    // 5: iam.rpc.VerifyUserCredentialsResponse
 	(*VerifyExternalIdentityRequest)(nil),    // 6: iam.rpc.VerifyExternalIdentityRequest
 	(*VerifyExternalIdentityResponse)(nil),   // 7: iam.rpc.VerifyExternalIdentityResponse
-	(*VerifyMfaChallengeRequest)(nil),        // 8: iam.rpc.VerifyMfaChallengeRequest
-	(*VerifyMfaChallengeResponse)(nil),       // 9: iam.rpc.VerifyMfaChallengeResponse
-	(*RoleEntry)(nil),                        // 10: iam.rpc.RoleEntry
-	(*MfaSetupPending)(nil),                  // 11: iam.rpc.MfaSetupPending
+	(*LinkExternalIdentityRequest)(nil),      // 8: iam.rpc.LinkExternalIdentityRequest
+	(*LinkExternalIdentityResponse)(nil),     // 9: iam.rpc.LinkExternalIdentityResponse
+	(*VerifyMfaChallengeRequest)(nil),        // 10: iam.rpc.VerifyMfaChallengeRequest
+	(*VerifyMfaChallengeResponse)(nil),       // 11: iam.rpc.VerifyMfaChallengeResponse
+	(*RoleEntry)(nil),                        // 12: iam.rpc.RoleEntry
+	(*MfaSetupPending)(nil),                  // 13: iam.rpc.MfaSetupPending
 }
 var file_auth_proto_depIdxs = []int32{
 	0, // 0: iam.rpc.AuthService.VerifyOpaqueRefreshToken:input_type -> iam.rpc.VerifyOpaqueRefreshTokenRequest
@@ -1447,7 +1625,7 @@ func file_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

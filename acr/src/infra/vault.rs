@@ -19,6 +19,7 @@ use std::time::Duration;
 ///   - Đồng bộ 100% logic với controlplane/internal/security/jwt.go.
 ///
 
+#[derive(Clone)]
 pub struct VaultClient {
     // HTTP client tái sử dụng connection pool
     http_client: reqwest::Client,
@@ -34,6 +35,8 @@ pub struct VaultClient {
     totp_mount_path: String,
     // Tên khóa TOTP dùng cho OTP (mặc định: admin)
     totp_key_name: String,
+    // Bounded retry budget shared by startup-only KV reads.
+    max_retries: usize,
 }
 
 impl VaultClient {
@@ -69,8 +72,37 @@ impl VaultClient {
                         continue;
                     }
                 }
+            } else if !cfg.kubernetes_role.is_empty() {
+                match Self::kubernetes_login(
+                    &http_client,
+                    &cfg.addr,
+                    &cfg.kubernetes_role,
+                    &cfg.kubernetes_jwt_path,
+                )
+                .await
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        last_err = format!("Kubernetes auth attempt {} failed", attempt);
+                        Logger::sys_warn(
+                            "vault.init",
+                            &format!("Kubernetes auth attempt {} failed", attempt),
+                            &e.to_string(),
+                        );
+                        if attempt < cfg.max_retries {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        continue;
+                    }
+                }
             } else {
                 // Static token fallback (dev/testing)
+                if cfg.token.trim().is_empty() {
+                    last_err =
+                        "no Vault token, AppRole credentials, or Kubernetes auth role configured"
+                            .to_string();
+                    continue;
+                }
                 cfg.token.clone()
             };
 
@@ -114,6 +146,7 @@ impl VaultClient {
                         transit_key_name: transit_key,
                         totp_mount_path: totp_mount,
                         totp_key_name: totp_key,
+                        max_retries: cfg.max_retries.max(1),
                     });
                 }
                 Err(e) => {
@@ -175,6 +208,48 @@ impl VaultClient {
             .map(|t| t.to_string())
             .ok_or_else(|| {
                 AcrError::Internal("AppRole login returned empty client_token".to_string())
+            })
+    }
+
+    async fn kubernetes_login(
+        http: &reqwest::Client,
+        addr: &str,
+        role: &str,
+        jwt_path: &str,
+    ) -> Result<String, AcrError> {
+        let jwt = tokio::fs::read_to_string(jwt_path)
+            .await
+            .map_err(|e| AcrError::Internal(format!("Kubernetes Vault JWT read failed: {e}")))?;
+        let body = serde_json::json!({
+            "role": role,
+            "jwt": jwt.trim(),
+        });
+        let resp = http
+            .post(format!(
+                "{}/v1/auth/kubernetes/login",
+                addr.trim_end_matches('/')
+            ))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AcrError::Internal(format!("Kubernetes Vault login failed: {e}")))?;
+        let status = resp.status();
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AcrError::Internal(format!("Kubernetes Vault login parse failed: {e}")))?;
+        if !status.is_success() {
+            return Err(AcrError::Internal(format!(
+                "Kubernetes Vault login HTTP {}",
+                status
+            )));
+        }
+        json["auth"]["client_token"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                AcrError::Internal("Kubernetes Vault login returned empty client token".to_string())
             })
     }
 
@@ -433,31 +508,72 @@ impl VaultClient {
     /// Hỗ trợ đọc API Key và 2FA Secret thô phục vụ xác thực tại biên (ACL).
     pub async fn read_secret(&self, path: &str) -> Result<serde_json::Value, AcrError> {
         let url = format!("{}/v1/{}", self.addr, path);
-
-        let resp = self
-            .http_client
-            .get(&url)
-            .header("X-Vault-Token", &self.token)
-            .send()
-            .await
-            .map_err(|e| AcrError::Internal(format!("Vault read request failed: {}", e)))?;
-
-        let status = resp.status();
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AcrError::Internal(format!("Vault read response parse failed: {}", e)))?;
-
-        if !status.is_success() {
-            Logger::sys_error(
-                "vault.read_secret",
-                &format!("Vault read HTTP {}", status),
-                &format!("{:?}", json),
-            );
-            return Err(AcrError::Internal(format!("Vault read HTTP {}", status)));
+        let mut last_error = "no Vault read attempt".to_string();
+        for attempt in 1..=self.max_retries {
+            match self
+                .http_client
+                .get(&url)
+                .header("X-Vault-Token", &self.token)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    return response.json().await.map_err(|error| {
+                        AcrError::Internal(format!("Vault read response parse failed: {}", error))
+                    });
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    // Never read or log the response body: an engine error may
+                    // itself contain secret-bearing fields.
+                    if status != reqwest::StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
+                    {
+                        return Err(AcrError::Internal(format!("Vault read HTTP {}", status)));
+                    }
+                    last_error = format!("Vault read HTTP {}", status);
+                }
+                Err(error) => last_error = format!("Vault read request failed: {}", error),
+            }
+            if attempt < self.max_retries {
+                tokio::time::sleep(Duration::from_millis(attempt as u64 * 250)).await;
+            }
         }
+        Logger::sys_error("vault.read_secret", &last_error, "redacted");
+        Err(AcrError::Internal(format!(
+            "Vault read failed after {} attempts",
+            self.max_retries
+        )))
+    }
 
-        Ok(json)
+    pub async fn read_redis_url(&self, path: &str) -> Result<String, AcrError> {
+        let secret = self.read_secret(path).await?;
+        let data = secret
+            .get("data")
+            .and_then(|value| value.get("data"))
+            .ok_or_else(|| {
+                AcrError::Internal("Vault connection record is missing KV data".to_string())
+            })?;
+        if data
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        {
+            return Err(AcrError::Internal(
+                "Unsupported Vault connection schema_version".to_string(),
+            ));
+        }
+        let redis_url = data
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AcrError::Internal("Vault Redis URL is missing".to_string()))?;
+        if !redis_url.starts_with("redis://") && !redis_url.starts_with("rediss://") {
+            return Err(AcrError::Internal(
+                "Vault Redis URL must use redis:// or rediss://".to_string(),
+            ));
+        }
+        Ok(redis_url.to_string())
     }
 
     /// [COMMENT]: Thực hiện gửi mã OTP đến Vault TOTP Secrets Engine để kiểm tra trực tiếp

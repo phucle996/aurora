@@ -89,9 +89,9 @@ type VerifyOpaqueRefreshTokenResult struct {
 
 // VerifyUserCredentialsResult chứa thông tin phản hồi sau khi xác thực credentials người dùng thành công
 type VerifyUserCredentialsResult struct {
-	Valid       bool
-	MFARequired bool
-	UserID      string
+	Valid        bool
+	MFARequired  bool
+	UserID       string
 	MFASettingID string
 	// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
 	RoleID                string
@@ -126,30 +126,6 @@ type ExternalIdentity struct {
 	RevokedAt       *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
-}
-
-type ExternalIdentityState string
-
-const (
-	ExternalIdentityNotLinked ExternalIdentityState = "not_linked"
-	ExternalIdentityLinked    ExternalIdentityState = "linked"
-	ExternalIdentityRevoked   ExternalIdentityState = "revoked"
-)
-
-type ExternalIdentitySummary struct {
-	Provider        ExternalProvider
-	State           ExternalIdentityState
-	ProviderEmail   string
-	EmailVerifiedAt *time.Time
-	LastLoginAt     *time.Time
-	LinkedAt        *time.Time
-}
-
-type UserAuthMethods struct {
-	AccountEmail string
-	PasswordSet  bool
-	Google       ExternalIdentitySummary
-	GitHub       ExternalIdentitySummary
 }
 
 // VerifiedExternalIdentity is the only identity shape accepted from ACR.

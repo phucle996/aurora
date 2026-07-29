@@ -119,6 +119,25 @@ message VerifyExternalIdentityResponse {
   string mfa_setting_id = 16;
 }
 
+// Canonical provider identity accepted only after ACR completed a critical
+// session-proof start and verified the provider callback.
+message LinkExternalIdentityRequest {
+  string operation_id = 1;
+  uint32 schema_version = 2;
+  string user_id = 3;
+  string provider = 4;
+  string provider_subject = 5;
+  string provider_email = 6;
+  int64 email_verified_at = 7;
+  string display_name = 8;
+  string avatar_url = 9;
+}
+
+message LinkExternalIdentityResponse {
+  bool linked = 1;
+  string error_message = 2;
+}
+
 message VerifyMfaChallengeRequest {
   string operation_id = 1;
   string user_id = 2;

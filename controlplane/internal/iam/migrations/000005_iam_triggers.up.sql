@@ -1,7 +1,6 @@
 -- IAM migration layer 000005
--- SQL Triggers
+-- SQL Triggers for auto-updating updated_at timestamp.
 
--- 1) Auto-update updated_at triggers on mutable tables.
 DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
 CREATE TRIGGER trg_users_updated_at
 BEFORE UPDATE ON users
@@ -26,9 +25,21 @@ BEFORE UPDATE ON admin_devices
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_external_identities_updated_at ON external_identities;
+CREATE TRIGGER trg_external_identities_updated_at
+BEFORE UPDATE ON external_identities
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 DROP TRIGGER IF EXISTS trg_mfa_settings_updated_at ON mfa_settings;
 CREATE TRIGGER trg_mfa_settings_updated_at
 BEFORE UPDATE ON mfa_settings
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_billing_outbox_records_updated_at ON billing_outbox_records;
+CREATE TRIGGER trg_billing_outbox_records_updated_at
+BEFORE UPDATE ON billing_outbox_records
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

@@ -33,6 +33,7 @@ krafka = { version = "0.11.0", default-features = false, features = ["zstd", "na
 bytes = "1.7"
 ahash = "0.8"
 sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 
 [build-dependencies]

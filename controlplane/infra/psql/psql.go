@@ -2,6 +2,7 @@ package psql
 
 import (
 	"context"
+	"controlplane/infra/vault"
 	"controlplane/internal/config"
 	"controlplane/internal/observability"
 	"fmt"
@@ -11,8 +12,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func NewPostgres(ctx context.Context, cfg *config.PsqlCfg) (*pgxpool.Pool, error) {
-	dsn := buildDSN(cfg)
+const connectionPath = "secret/data/connections/postgres/pg-central/role-business-rw"
+
+type connectionRecord struct {
+	SchemaVersion int    `json:"schema_version"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	Database      string `json:"database"`
+	SSLMode       string `json:"ssl_mode"`
+	TLSEnabled    bool   `json:"tls_enabled"`
+	CACertPath    string `json:"ca_cert_path"`
+	CertPath      string `json:"cert_path"`
+	KeyPath       string `json:"key_path"`
+}
+
+func NewPostgres(ctx context.Context, vaultClient *vault.Client, cfg *config.PsqlCfg) (*pgxpool.Pool, error) {
+	var connection connectionRecord
+	if err := vaultClient.ReadJSON(ctx, connectionPath, &connection); err != nil {
+		return nil, fmt.Errorf("psql: read Vault connection record: %w", err)
+	}
+	if err := validateConnection(connection); err != nil {
+		return nil, err
+	}
+	dsn := buildDSN(connection)
 
 	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -71,10 +95,10 @@ func sanitizeError(err error) error {
 	return err
 }
 
-func buildDSN(cfg *config.PsqlCfg) string {
+func buildDSN(cfg connectionRecord) string {
 	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
+		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database, cfg.SSLMode,
 	)
 
 	if cfg.TLSEnabled {
@@ -85,7 +109,7 @@ func buildDSN(cfg *config.PsqlCfg) string {
 
 		dsn = fmt.Sprintf(
 			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, sslMode,
+			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database, sslMode,
 		)
 
 		if cfg.CACertPath != "" {
@@ -100,6 +124,30 @@ func buildDSN(cfg *config.PsqlCfg) string {
 	}
 
 	return dsn
+}
+
+func validateConnection(value connectionRecord) error {
+	if value.SchemaVersion != 1 {
+		return fmt.Errorf("psql: unsupported Vault schema_version %d", value.SchemaVersion)
+	}
+	if strings.TrimSpace(value.Host) == "" ||
+		strings.TrimSpace(value.Username) == "" ||
+		strings.TrimSpace(value.Password) == "" ||
+		strings.TrimSpace(value.Database) == "" {
+		return fmt.Errorf("psql: Vault connection record is incomplete")
+	}
+	if value.Port < 1 || value.Port > 65535 {
+		return fmt.Errorf("psql: Vault PostgreSQL port is out of range")
+	}
+	switch strings.ToLower(strings.TrimSpace(value.SSLMode)) {
+	case "disable", "require", "verify-ca", "verify-full":
+	default:
+		return fmt.Errorf("psql: Vault PostgreSQL ssl_mode %q is unsupported", value.SSLMode)
+	}
+	if value.TLSEnabled && strings.EqualFold(value.SSLMode, "disable") {
+		return fmt.Errorf("psql: Vault TLS connection cannot use ssl_mode=disable")
+	}
+	return nil
 }
 
 func buildSearchPath(value string) string {

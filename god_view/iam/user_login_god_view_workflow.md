@@ -80,9 +80,37 @@ verified-primary-email lookup, redirect allowlisting and canonicalization. IAM r
 the only external identity key; provider email is a mutable verified snapshot and is never the
 account identifier or an auto-link key.
 
-Provider client secrets are read from Vault KV at ACR startup. Provider HTTP traffic must use a
-fixed egress proxy/domain allowlist; the existing ACR NetworkPolicy does not permit arbitrary
-internet egress, so enabling a provider requires the corresponding reviewed egress rule.
+Only `OAUTH_GOOGLE_ENABLED` and `OAUTH_GITHUB_ENABLED` are provider-specific ACR
+environment flags. If a flag is false, ACR does not read that provider's secret. If true,
+ACR reads exactly one fixed KV-v2 record at `secret/data/acr/oauth/{provider}` during startup.
+The record contains `callback_url`, `client_id`, `client_secret` and `scope`; ACR validates
+their bounds and callback allowlist at the trust boundary, then retains a bounded per-pod
+runtime copy in memory. Provider HTTP endpoint URLs remain compiled fixed allowlists, rather
+than Vault-controlled egress targets. Provider HTTP traffic must use a fixed egress
+proxy/domain allowlist; the existing ACR NetworkPolicy does not permit arbitrary internet
+egress, so enabling a provider requires the corresponding reviewed egress rule.
+
+The KV-v2 data contract is:
+
+```json
+{
+  "data": {
+    "callback_url": "https://localhost/api/v1/auth/oauth/google/callback",
+    "client_id": "<provider-client-id>",
+    "client_secret": "<provider-client-secret>",
+    "scope": "openid email profile"
+  }
+}
+```
+
+The `localhost` callback above is **development-only**: Google permits it as a
+loopback redirect, and the dev Cloud Console must also be opened at
+`https://localhost` so host-only cookies remain on the same browser origin.
+Production/staging must replace it with a verified HTTPS domain and update the
+Envoy vhost, `APP_ALLOWED_ORIGINS` and Vault record together.
+
+The equivalent GitHub record uses the GitHub callback path and `read:user user:email`
+scope. `client_secret` is never logged, persisted outside Vault, or sent to IAM.
 Envoy overrides ExtAuthz to 15 seconds only for `/api/v1/auth/oauth/`; ACR cancels callback
 work at 13 seconds and bounds each pod to 64 concurrent callbacks. Google JWKS has a
 single-flight, bounded per-pod cache. The global ExtAuthz budget for all other routes remains
@@ -96,9 +124,10 @@ Every user has a non-null password hash.
 OAuth callback is login-only. IAM accepts only an existing, active `external_identities` row
 whose user is active and has a password credential. A missing, unlinked or revoked provider
 subject never creates a user, never creates an identity row and never starts registration.
-Provider linking/unlinking belongs to a separate authenticated re-authentication/MFA workflow;
-that workflow is not implemented by these public login endpoints. Provider-email equality
-never performs linking.
+Provider linking/unlinking belongs to the authenticated Settings workflow documented in
+[User Settings](user_settings_god_view_workflow.md). It requires a one-time critical session
+proof bound to the current browser session, but does not require password re-entry or MFA.
+Provider-email equality never performs linking.
 
 ACR collapses every callback failure visible to the browser — invalid/replayed state, provider
 denial or verification failure, missing/revoked identity, IAM/Redis/Vault failure, invalid

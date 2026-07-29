@@ -21,19 +21,16 @@ import (
 type TenantCredentialSvcImpl struct {
 	repo       storageRepoInterface.TenantCredentialRepo
 	bucketRepo storageRepoInterface.TenantBucketRepo
-	masterKey  string
 }
 
 // [COMMENT]: NewTenantCredentialService tạo mới instance thực thi TenantCredentialService.
 func NewTenantCredentialService(
 	repo storageRepoInterface.TenantCredentialRepo,
 	bucketRepo storageRepoInterface.TenantBucketRepo,
-	masterKey string,
 ) storageSvcInterface.TenantCredentialService {
 	return &TenantCredentialSvcImpl{
 		repo:       repo,
 		bucketRepo: bucketRepo,
-		masterKey:  masterKey,
 	}
 }
 

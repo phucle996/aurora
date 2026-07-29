@@ -37,6 +37,10 @@ func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 	if !ok {
 		return
 	}
+	currentDeviceID, ok := pkgcontext.GetClientDeviceID(c, op)
+	if !ok {
+		return
+	}
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -74,6 +78,7 @@ func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 				"status":      status,
 			},
 			"is_online":            item.IsOnline,
+			"is_current":           item.ID == currentDeviceID.String(),
 			"last_seen_at":         item.LastSeenAt,
 			"last_seen_ip":         item.LastIP,
 			"last_seen_user_agent": item.LastUA,
@@ -163,5 +168,3 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 	}
 	apires.RespondSuccess(c, gin.H{"revoked_sessions": affected}, "ok")
 }
-
-

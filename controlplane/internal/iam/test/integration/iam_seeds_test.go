@@ -1,6 +1,7 @@
-package migrations
+package integration
 
 import (
+	"controlplane/internal/iam/migrations"
 	"encoding/hex"
 	"reflect"
 	"regexp"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
-	sql, err := Files.ReadFile("000006_iam_seeds.up.sql")
+	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
 	if err != nil {
 		t.Fatalf("read IAM bootstrap seed: %v", err)
 	}
@@ -126,11 +127,11 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 }
 
 func TestIAMSeedRollbackCoversPermissionCatalog(t *testing.T) {
-	upSQL, err := Files.ReadFile("000006_iam_seeds.up.sql")
+	upSQL, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
 	if err != nil {
 		t.Fatalf("read IAM bootstrap up migration: %v", err)
 	}
-	downSQL, err := Files.ReadFile("000006_iam_seeds.down.sql")
+	downSQL, err := migrations.Files.ReadFile("000006_iam_seeds.down.sql")
 	if err != nil {
 		t.Fatalf("read IAM bootstrap down migration: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestIAMSeedRollbackCoversPermissionCatalog(t *testing.T) {
 }
 
 func TestTenantWalletTopUpIsNotAPlatformPermission(t *testing.T) {
-	sql, err := Files.ReadFile("000006_iam_seeds.up.sql")
+	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
 	if err != nil {
 		t.Fatalf("read IAM bootstrap seed: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestTenantWalletTopUpIsNotAPlatformPermission(t *testing.T) {
 }
 
 func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
-	sql, err := Files.ReadFile("000002_iam_tables.up.sql")
+	sql, err := migrations.Files.ReadFile("000002_iam_tables.up.sql")
 	if err != nil {
 		t.Fatalf("read IAM tables migration: %v", err)
 	}

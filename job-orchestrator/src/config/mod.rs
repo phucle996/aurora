@@ -5,6 +5,7 @@ mod otel;
 mod postgres;
 mod shared_redis;
 mod tls;
+mod vault;
 mod workflows;
 
 pub use kafka::{KafkaConfig, KafkaSecurityProtocol};
@@ -13,6 +14,7 @@ pub use otel::OtelConfig;
 pub use postgres::{PostgresConfig, PostgresTlsMode};
 pub use shared_redis::SharedRedisConfig;
 pub use tls::{TlsClientConfig, TlsTrustSource};
+pub use vault::VaultConfig;
 pub use workflows::{OwnershipWorkflowConfig, WorkflowConfig};
 
 use environment::Environment;
@@ -27,22 +29,28 @@ pub struct Config {
     pub nats_core: NatsCoreConfig,
     pub otel: OtelConfig,
     pub workflows: WorkflowConfig,
+    pub vault: VaultConfig,
 }
 
 impl Config {
-    pub fn load() -> Result<Self, String> {
+    pub async fn load() -> Result<Self, String> {
         let environment = Environment::capture();
         Self::from_environment(&environment)
     }
 
     fn from_environment(environment: &Environment) -> Result<Self, String> {
+        let vault = VaultConfig::load(environment)?;
         Ok(Self {
+            // Enabled Vault mode allows the connection URL to be absent from
+            // the environment; the placeholder is replaced before startup
+            // returns to main.
             postgres: PostgresConfig::load(environment)?,
             shared_redis: SharedRedisConfig::load(environment)?,
             kafka: KafkaConfig::load(environment)?,
             nats_core: NatsCoreConfig::load(environment)?,
             otel: OtelConfig::load(environment)?,
             workflows: WorkflowConfig::load(environment)?,
+            vault,
         })
     }
 }
@@ -60,12 +68,7 @@ mod tests {
     use super::{Config, Environment};
 
     const REQUIRED_DEVELOPMENT_ENV: &[(&str, &str)] = &[
-        (
-            "DATABASE_URL",
-            "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable",
-        ),
         ("POSTGRES_TLS_MODE", "disable"),
-        ("SHARED_REDIS_URL", "redis://redis:6379/0"),
         ("SHARED_REDIS_AOF_REPLICA_ACKS", "0"),
         ("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"),
         ("KAFKA_SECURITY_PROTOCOL", "plaintext"),

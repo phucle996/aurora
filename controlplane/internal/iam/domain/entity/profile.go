@@ -7,12 +7,16 @@ import (
 )
 
 type UserProfile struct {
-	UserID    uuid.UUID
-	Fullname  string
-	AvatarURL *string
-	Bio       *string
-	Locale    string
-	Timezone  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	UserID       uuid.UUID
+	Username     string
+	AccountEmail string
+	Phone        *string
+	Fullname     string
+	Address      *string
+	AvatarURL    *string
+	Bio          *string
+	Locale       string
+	Timezone     string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

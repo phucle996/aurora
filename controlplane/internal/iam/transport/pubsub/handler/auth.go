@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -29,6 +31,8 @@ const (
 	verifyCredentialsReplyPrefix      = "iam.auth.verify_credentials.reply."
 	verifyExternalIdentityChannel     = "iam.auth.verify_external_identity"
 	verifyExternalIdentityReplyPrefix = "iam.auth.verify_external_identity.reply."
+	linkExternalIdentityChannel       = "iam.auth.link_external_identity"
+	linkExternalIdentityReplyPrefix   = "iam.auth.link_external_identity.reply."
 	verifyMfaChallengeChannel         = "iam.auth.verify_mfa_challenge"
 	verifyMfaChallengeReplyPrefix     = "iam.auth.verify_mfa_challenge.reply."
 
@@ -44,6 +48,7 @@ type AuthRedisHandler struct {
 	cfg                   *config.Config
 	sharedRedis           *goredis.Client
 	authService           iamSvcInterface.AuthService
+	userService           iamSvcInterface.UserService
 	sessionRefreshService iamSvcInterface.SessionRefreshService
 	otel                  *observability.OTel
 
@@ -59,16 +64,18 @@ func NewAuthRedisHandler(
 	cfg *config.Config,
 	sharedRedis *goredis.Client,
 	authService iamSvcInterface.AuthService,
+	userService iamSvcInterface.UserService,
 	sessionRefreshService iamSvcInterface.SessionRefreshService,
 	otel *observability.OTel,
 ) (*AuthRedisHandler, error) {
-	if sharedRedis == nil || authService == nil || sessionRefreshService == nil {
-		return nil, errors.New("auth Redis handler requires Shared Redis, AuthService and SessionRefreshService")
+	if sharedRedis == nil || authService == nil || userService == nil || sessionRefreshService == nil {
+		return nil, errors.New("auth Redis handler requires Shared Redis, AuthService, UserService and SessionRefreshService")
 	}
 	return &AuthRedisHandler{
 		cfg:                   cfg,
 		sharedRedis:           sharedRedis,
 		authService:           authService,
+		userService:           userService,
 		sessionRefreshService: sessionRefreshService,
 		otel:                  otel,
 		slots:                 make(chan struct{}, 64),
@@ -84,6 +91,7 @@ func (h *AuthRedisHandler) Start() error {
 	pubsub := h.sharedRedis.Subscribe(ctx,
 		verifyCredentialsChannel,
 		verifyExternalIdentityChannel,
+		linkExternalIdentityChannel,
 		verifyMfaChallengeChannel,
 		verifyOpaqueTokenChannel,
 		revokeOpaqueTokenChannel,
@@ -135,6 +143,8 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 		h.handleVerifyCredentials(payload)
 	case verifyExternalIdentityChannel:
 		h.handleVerifyExternalIdentity(payload)
+	case linkExternalIdentityChannel:
+		h.handleLinkExternalIdentity(payload)
 	case verifyMfaChallengeChannel:
 		h.handleVerifyMfaChallenge(payload)
 	case verifyOpaqueTokenChannel:
@@ -142,6 +152,116 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 	case revokeOpaqueTokenChannel:
 		h.handleRevokeOpaqueToken(payload)
 	}
+}
+
+func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if len(payload) <= 16 {
+		logger.SysWarn("Redis.LinkExternalIdentity", "Missing request id envelope")
+		return
+	}
+	requestID, err := uuid.FromBytes(payload[:16])
+	if err != nil || requestID == uuid.Nil {
+		logger.SysWarn("Redis.LinkExternalIdentity", "Invalid request id envelope")
+		return
+	}
+	replyChannel := linkExternalIdentityReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:link_external_identity:" + requestID.String()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	if err != nil || !acquired {
+		return
+	}
+
+	respond := func(response *iamproto.LinkExternalIdentityResponse) {
+		data, marshalErr := proto.Marshal(response)
+		if marshalErr != nil {
+			logger.SysError("Redis.LinkExternalIdentity", "Failed to marshal response")
+			return
+		}
+		if publishErr := h.sharedRedis.Publish(ctx, replyChannel, data).Err(); publishErr != nil {
+			logger.SysError("Redis.LinkExternalIdentity", "Failed to publish response")
+		}
+	}
+
+	var request iamproto.LinkExternalIdentityRequest
+	if len(payload) > 16+(8<<10) {
+		respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "INVALID_REQUEST_PAYLOAD"})
+		return
+	}
+	if err := proto.Unmarshal(payload[16:], &request); err != nil {
+		respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "INVALID_REQUEST_PAYLOAD"})
+		return
+	}
+	operationID, operationErr := uuid.Parse(strings.TrimSpace(request.OperationId))
+	userID, userErr := uuid.Parse(strings.TrimSpace(request.UserId))
+	provider := iamEntity.ExternalProvider(request.Provider)
+	verifiedAt := time.Unix(request.EmailVerifiedAt, 0).UTC()
+	avatarURL := strings.TrimSpace(request.AvatarUrl)
+	avatarValid := true
+	if avatarURL != "" {
+		parsed, parseErr := url.Parse(avatarURL)
+		avatarValid = parseErr == nil && parsed.Scheme == "https" && parsed.Host != "" &&
+			parsed.User == nil && parsed.Fragment == ""
+	}
+	if request.SchemaVersion != 1 ||
+		operationErr != nil || operationID == uuid.Nil ||
+		userErr != nil || userID == uuid.Nil ||
+		(provider != iamEntity.ExternalProviderGoogle && provider != iamEntity.ExternalProviderGitHub) ||
+		request.Provider != strings.ToLower(strings.TrimSpace(request.Provider)) ||
+		request.ProviderSubject == "" ||
+		request.ProviderSubject != strings.TrimSpace(request.ProviderSubject) ||
+		len(request.ProviderSubject) > 255 ||
+		request.ProviderEmail == "" ||
+		request.ProviderEmail != strings.ToLower(strings.TrimSpace(request.ProviderEmail)) ||
+		len(request.ProviderEmail) > 320 ||
+		strings.Count(request.ProviderEmail, "@") != 1 ||
+		strings.HasPrefix(request.ProviderEmail, "@") ||
+		strings.HasSuffix(request.ProviderEmail, "@") ||
+		request.DisplayName == "" ||
+		request.DisplayName != strings.TrimSpace(request.DisplayName) ||
+		len(request.DisplayName) > 120 ||
+		len(avatarURL) > 2048 || !avatarValid ||
+		request.EmailVerifiedAt <= 0 ||
+		verifiedAt.Before(time.Now().Add(-10*time.Minute)) ||
+		verifiedAt.After(time.Now().Add(5*time.Minute)) ||
+		strings.IndexFunc(request.ProviderSubject, unicode.IsControl) >= 0 ||
+		strings.IndexFunc(request.ProviderEmail, unicode.IsControl) >= 0 ||
+		strings.IndexFunc(request.DisplayName, unicode.IsControl) >= 0 {
+		respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "INVALID_EXTERNAL_IDENTITY"})
+		return
+	}
+
+	var avatar *string
+	if avatarURL != "" {
+		avatar = &avatarURL
+	}
+	err = h.userService.LinkExternalIdentity(ctx, iamEntity.LinkExternalIdentity{
+		OperationID:     operationID,
+		UserID:          userID,
+		Provider:        string(provider),
+		ProviderSubject: request.ProviderSubject,
+		ProviderEmail:   request.ProviderEmail,
+		EmailVerifiedAt: verifiedAt,
+		DisplayName:     request.DisplayName,
+		AvatarURL:       avatar,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, iamTaxonomy.ErrExternalIdentityConflict):
+			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "IDENTITY_ALREADY_LINKED"})
+		case errors.Is(err, iamTaxonomy.ErrSocialProviderAlreadyLinked):
+			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "PROVIDER_ALREADY_LINKED"})
+		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
+			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "ACCOUNT_UNAVAILABLE"})
+		default:
+			logger.SysError("Redis.LinkExternalIdentity", "Social identity link failed")
+			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "AUTHENTICATION_UNAVAILABLE"})
+		}
+		return
+	}
+	respond(&iamproto.LinkExternalIdentityResponse{Linked: true})
 }
 
 func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {

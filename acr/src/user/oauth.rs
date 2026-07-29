@@ -1,6 +1,7 @@
 use crate::config::{Config, OAuthProviderConfig};
 use crate::infra::iam_proto::auth::{
-    VerifyExternalIdentityRequest, VerifyExternalIdentityResponse,
+    LinkExternalIdentityRequest, LinkExternalIdentityResponse, VerifyExternalIdentityRequest,
+    VerifyExternalIdentityResponse,
 };
 use crate::infra::redis::SessionManager;
 use crate::infra::shared_redis::SharedRedisBus;
@@ -27,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 use tonic::{Response, Status};
-use url::form_urlencoded;
+use url::{form_urlencoded, Url};
 use uuid::Uuid;
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -40,6 +41,7 @@ const STATE_KEY_PREFIX: &str = "iam:oauth:state:";
 const STATE_TTL_SECONDS: u64 = 300;
 const GOOGLE_JWKS_CACHE_TTL: Duration = Duration::from_secs(600);
 const OAUTH_CALLBACK_CONCURRENCY: usize = 64;
+const SOCIAL_LINK_LOCK_MILLIS: usize = 15_000;
 
 #[derive(Clone)]
 pub struct OAuthProviderService {
@@ -64,6 +66,7 @@ struct CachedGoogleJwks {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OAuthState {
+    flow: String,
     provider: String,
     operation_id: String,
     code_verifier: String,
@@ -75,6 +78,8 @@ struct OAuthState {
     trust_device: bool,
     zone_id: String,
     zone_code: String,
+    tenant_id: String,
+    user_id: String,
     return_to: String,
 }
 
@@ -147,13 +152,28 @@ impl OAuthProviderService {
             .build()
             .map_err(|error| format!("build OAuth HTTP client: {error}"))?;
 
-        let google = load_runtime(&config.oauth.google, &vault, "google").await?;
-        let github = load_runtime(&config.oauth.github, &vault, "github").await?;
+        let google = load_runtime(
+            &config.oauth.google,
+            &vault,
+            "google",
+            &config.allowed_origins,
+        )
+        .await?;
+        let github = load_runtime(
+            &config.oauth.github,
+            &vault,
+            "github",
+            &config.allowed_origins,
+        )
+        .await?;
         Ok(Self {
             google,
             github,
             http,
-            state_ttl_secs: config.oauth.state_ttl_secs.clamp(60, STATE_TTL_SECONDS),
+            // OAuth state is a security TTL, not provider configuration. Keep
+            // one bounded value in code so Vault remains the sole provider
+            // configuration source and env only controls enablement.
+            state_ttl_secs: STATE_TTL_SECONDS,
             google_jwks: Arc::new(Mutex::new(None)),
             callback_slots: Arc::new(Semaphore::new(OAUTH_CALLBACK_CONCURRENCY)),
         })
@@ -177,18 +197,17 @@ impl OAuthProviderService {
         let challenge = pkce_challenge(&state.code_verifier);
         let mut query = form_urlencoded::Serializer::new(String::new());
         query.append_pair("client_id", &runtime.config.client_id);
-        query.append_pair("redirect_uri", &runtime.config.redirect_uri);
+        query.append_pair("redirect_uri", &runtime.config.callback_url);
         query.append_pair("response_type", "code");
         query.append_pair("state", state_token);
         query.append_pair("code_challenge", &challenge);
         query.append_pair("code_challenge_method", "S256");
+        query.append_pair("scope", &runtime.config.scope);
         if provider == "google" {
-            query.append_pair("scope", "openid email profile");
             query.append_pair("nonce", &state.nonce);
             query.append_pair("access_type", "online");
             format!("{GOOGLE_AUTH_URL}?{}", query.finish())
         } else {
-            query.append_pair("scope", "read:user user:email");
             format!("{GITHUB_AUTH_URL}?{}", query.finish())
         }
     }
@@ -208,7 +227,7 @@ impl OAuthProviderService {
                     ("code", code),
                     ("client_id", runtime.config.client_id.as_str()),
                     ("client_secret", runtime.client_secret.as_str()),
-                    ("redirect_uri", runtime.config.redirect_uri.as_str()),
+                    ("redirect_uri", runtime.config.callback_url.as_str()),
                     ("grant_type", "authorization_code"),
                     ("code_verifier", state.code_verifier.as_str()),
                 ])
@@ -231,7 +250,7 @@ impl OAuthProviderService {
                     ("client_id", runtime.config.client_id.as_str()),
                     ("client_secret", runtime.client_secret.as_str()),
                     ("code", code),
-                    ("redirect_uri", runtime.config.redirect_uri.as_str()),
+                    ("redirect_uri", runtime.config.callback_url.as_str()),
                     ("code_verifier", state.code_verifier.as_str()),
                 ])
                 .send()
@@ -458,6 +477,7 @@ impl OAuthProviderService {
         let callback = self.handle_callback(
             session_mgr,
             token_mgr,
+            redis_client,
             shared_redis,
             config,
             client_headers,
@@ -478,6 +498,361 @@ impl OAuthProviderService {
                 }
             },
         )
+    }
+
+    pub async fn handle_social_link_start(
+        &self,
+        session_mgr: &Arc<SessionManager>,
+        claims: &crate::user::claims::Claims,
+        access_key: &str,
+        req: &CheckRequest,
+        method: &str,
+        path: &str,
+        cookies_to_set: &[String],
+    ) -> Option<Result<Response<CheckResponse>, Status>> {
+        let path_without_query = path.split('?').next().unwrap_or(path);
+        let rest = path_without_query.strip_prefix("/api/v1/critical/me/iam/social-link/")?;
+        let provider = rest.strip_suffix("/start")?;
+        if provider.contains('/') || !matches!(provider, "google" | "github") {
+            return Some(Ok(Response::new(error_json(
+                HttpStatusCode::NotFound,
+                "OAUTH_PROVIDER_DISABLED",
+            ))));
+        }
+        if method != "POST" || path != path_without_query {
+            return Some(Ok(Response::new(error_json(
+                HttpStatusCode::MethodNotAllowed,
+                "Method not allowed",
+            ))));
+        }
+        let runtime = match self.runtime(provider) {
+            Some(runtime) => runtime,
+            None => {
+                return Some(Ok(Response::new(error_json(
+                    HttpStatusCode::NotFound,
+                    "OAUTH_PROVIDER_DISABLED",
+                ))))
+            }
+        };
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LinkStartPayload {
+            return_to: Option<String>,
+        }
+        let body = request_body(req);
+        if body.len() > 4 * 1024 {
+            return Some(Ok(Response::new(error_json(
+                HttpStatusCode::BadRequest,
+                "Invalid social link payload",
+            ))));
+        }
+        let payload: LinkStartPayload = match serde_json::from_slice(&body) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return Some(Ok(Response::new(error_json(
+                    HttpStatusCode::BadRequest,
+                    "Invalid social link payload",
+                ))))
+            }
+        };
+        let return_to = payload
+            .return_to
+            .unwrap_or_else(|| "/settings/social-links".to_string());
+        if return_to != "/settings/social-links" {
+            return Some(Ok(Response::new(error_json(
+                HttpStatusCode::BadRequest,
+                "Invalid return path",
+            ))));
+        }
+
+        let zone_id = claims.zone_id.as_deref().unwrap_or("global");
+        let tenant_id = claims.tenant_id.as_deref().unwrap_or("platform");
+        let session = match session_mgr
+            .get_session(zone_id, tenant_id, &claims.uid, access_key)
+            .await
+        {
+            Ok(Some(session)) if !session.client_proof_public_key.is_empty() => session,
+            _ => {
+                return Some(Ok(Response::new(error_json(
+                    HttpStatusCode::Forbidden,
+                    "Session proof key unavailable",
+                ))))
+            }
+        };
+        if Uuid::parse_str(&claims.uid).is_err() {
+            return Some(Ok(Response::new(error_json(
+                HttpStatusCode::Forbidden,
+                "Invalid session identity",
+            ))));
+        }
+
+        let state = OAuthState {
+            flow: "link".to_string(),
+            provider: provider.to_string(),
+            operation_id: Uuid::now_v7().to_string(),
+            code_verifier: random_token(),
+            nonce: random_token(),
+            device_public_key: session.client_proof_public_key,
+            client_device_id: session.tdid,
+            device_name: String::new(),
+            device_type: String::new(),
+            trust_device: false,
+            zone_id: zone_id.to_string(),
+            zone_code: String::new(),
+            tenant_id: tenant_id.to_string(),
+            user_id: claims.uid.clone(),
+            return_to,
+        };
+        // Link state, intent index and operation lock must share one Redis
+        // Cluster hash slot even though the callback initially knows only state.
+        let state_token = format!("{}.{}", social_link_slot(&state.user_id), random_token());
+        let state_redis_key = state_key(provider, &state_token);
+        let state_json = match serde_json::to_string(&state) {
+            Ok(value) => value,
+            Err(_) => {
+                return Some(Err(Status::internal(
+                    "Social link state serialization failed",
+                )))
+            }
+        };
+        let mut connection = match session_mgr.get_connection().await {
+            Ok(connection) => connection,
+            Err(_) => {
+                return Some(Err(Status::unavailable(
+                    "Social link state service unavailable",
+                )))
+            }
+        };
+        let script = r#"
+            if redis.call('EXISTS', KEYS[4]) == 1 then return 0 end
+            local previous = redis.call('GET', KEYS[2])
+            if previous then redis.call('DEL', previous) end
+            redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+            redis.call('SET', KEYS[2], KEYS[1], 'EX', ARGV[2])
+            redis.call('SET', KEYS[3], KEYS[2], 'EX', ARGV[2])
+            return 1
+        "#;
+        let stored = redis::Script::new(script)
+            .key(&state_redis_key)
+            .key(link_index_key(&state.user_id, provider))
+            .key(format!("{state_redis_key}:index"))
+            .key(format!("{}:lock", link_index_key(&state.user_id, provider)))
+            .arg(state_json)
+            .arg(self.state_ttl_secs)
+            .invoke_async::<_, i32>(&mut connection)
+            .await;
+        if !matches!(stored, Ok(1)) {
+            return Some(Err(Status::unavailable(
+                "Social link state service unavailable",
+            )));
+        }
+
+        let authorization_url = self.authorization_url(provider, runtime, &state, &state_token);
+        Some(Ok(Response::new(local_json_with_cookies(
+            HttpStatusCode::Ok,
+            serde_json::json!({
+                "authorization_url": authorization_url,
+                "expires_in": self.state_ttl_secs,
+            }),
+            cookies_to_set,
+        ))))
+    }
+
+    async fn validate_social_link_callback_session(
+        &self,
+        session_mgr: &Arc<SessionManager>,
+        token_mgr: &Arc<TokenManager>,
+        shared_redis_client: &redis::Client,
+        shared_redis: &Arc<SharedRedisBus>,
+        config: &Config,
+        client_headers: &HashMap<String, String>,
+        path: &str,
+        state: &OAuthState,
+    ) -> Result<Vec<String>, String> {
+        let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+        let verification = crate::user::verify::verify_edge_session(
+            session_mgr,
+            token_mgr,
+            shared_redis_client,
+            shared_redis,
+            config,
+            &cookie_header,
+            client_headers,
+            "GET",
+            path,
+        )
+        .await;
+        if verification.denial_response.is_some() {
+            return Err("link callback session rejected".to_string());
+        }
+        let claims = verification
+            .claims
+            .ok_or_else(|| "link callback session missing".to_string())?;
+        let zone_id = claims.zone_id.as_deref().unwrap_or("global");
+        let tenant_id = claims.tenant_id.as_deref().unwrap_or("platform");
+        if claims.uid != state.user_id || zone_id != state.zone_id || tenant_id != state.tenant_id {
+            return Err("link callback session binding mismatch".to_string());
+        }
+        let session = session_mgr
+            .get_session(zone_id, tenant_id, &claims.uid, &verification.access_key)
+            .await
+            .map_err(|_| "link callback session unavailable".to_string())?
+            .ok_or_else(|| "link callback session missing".to_string())?;
+        if session.client_proof_public_key != state.device_public_key
+            || session.tdid != state.client_device_id
+        {
+            return Err("link callback device binding mismatch".to_string());
+        }
+        Ok(verification.cookies_to_set)
+    }
+
+    async fn complete_social_link(
+        &self,
+        session_mgr: &Arc<SessionManager>,
+        shared_redis: &Arc<SharedRedisBus>,
+        provider: &str,
+        state_token: &str,
+        state: &OAuthState,
+        identity: CanonicalIdentity,
+        cookies_to_set: &[String],
+    ) -> Result<Response<CheckResponse>, Status> {
+        let state_redis_key = state_key(provider, state_token);
+        let index_key = link_index_key(&state.user_id, provider);
+        let lock_key = format!("{index_key}:lock");
+        let lock_token = random_token();
+        let mut auth_connection = match session_mgr.get_connection().await {
+            Ok(connection) => connection,
+            Err(_) => {
+                return Ok(Response::new(oauth_social_link_redirect(
+                    &state.return_to,
+                    "failed",
+                    cookies_to_set,
+                )))
+            }
+        };
+        let acquired = redis::Script::new(
+            r#"
+                if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+                if not redis.call('SET', KEYS[2], ARGV[2], 'NX', 'PX', ARGV[3]) then
+                    return -1
+                end
+                redis.call('DEL', KEYS[1])
+                return 1
+            "#,
+        )
+        .key(&index_key)
+        .key(&lock_key)
+        .arg(&state_redis_key)
+        .arg(&lock_token)
+        .arg(SOCIAL_LINK_LOCK_MILLIS)
+        .invoke_async::<_, i32>(&mut auth_connection)
+        .await;
+        if !matches!(acquired, Ok(1)) {
+            Logger::sys_warn(
+                "user.oauth",
+                "Social link callback was fenced before persistence",
+                "link_operation_fenced",
+            );
+            return Ok(Response::new(oauth_social_link_redirect(
+                &state.return_to,
+                "failed",
+                cookies_to_set,
+            )));
+        }
+
+        let request = LinkExternalIdentityRequest {
+            operation_id: state.operation_id.clone(),
+            schema_version: 1,
+            user_id: state.user_id.clone(),
+            provider: identity.provider.to_string(),
+            provider_subject: identity.subject,
+            provider_email: identity.email,
+            email_verified_at: identity.email_verified_at,
+            display_name: identity.display_name,
+            avatar_url: identity.avatar_url.unwrap_or_default(),
+        };
+        let mut payload = Vec::new();
+        let linked = if request.encode(&mut payload).is_err() {
+            Logger::sys_error(
+                "user.oauth",
+                "Social link IAM request serialization failed",
+                "request_encode",
+            );
+            false
+        } else {
+            match shared_redis
+                .request(
+                    "iam.auth.link_external_identity",
+                    "iam.auth.link_external_identity.reply.",
+                    payload,
+                    Duration::from_secs(10),
+                )
+                .await
+            {
+                Err(_) => {
+                    Logger::sys_error(
+                        "user.oauth",
+                        "Social link IAM request failed",
+                        "authentication_service_unavailable",
+                    );
+                    false
+                }
+                Ok(response_payload) => {
+                    match LinkExternalIdentityResponse::decode(response_payload.as_slice()) {
+                        Err(_) => {
+                            Logger::sys_error(
+                                "user.oauth",
+                                "Social link IAM response decode failed",
+                                "response_decode",
+                            );
+                            false
+                        }
+                        Ok(response) if response.linked => true,
+                        Ok(response) => {
+                            Logger::sys_warn(
+                                "user.oauth",
+                                "Social identity link rejected by IAM",
+                                if response.error_message.is_empty() {
+                                    "AUTHENTICATION_UNAVAILABLE"
+                                } else {
+                                    response.error_message.as_str()
+                                },
+                            );
+                            false
+                        }
+                    }
+                }
+            }
+        };
+
+        let release_result = redis::Script::new(
+            r#"
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                end
+                return 0
+            "#,
+        )
+        .key(&lock_key)
+        .arg(&lock_token)
+        .invoke_async::<_, i32>(&mut auth_connection)
+        .await;
+        if release_result.is_err() {
+            // The TTL is the crash fence; a failed best-effort release cannot
+            // allow another workflow to overtake an uncertain DB result.
+            Logger::sys_warn(
+                "user.oauth",
+                "Social link operation lock release deferred to TTL",
+                "link_lock_release_failed",
+            );
+        }
+
+        Ok(Response::new(oauth_social_link_redirect(
+            &state.return_to,
+            if linked { "linked" } else { "failed" },
+            cookies_to_set,
+        )))
     }
 
     async fn handle_start(
@@ -581,6 +956,7 @@ impl OAuthProviderService {
         .map(|value| value.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
         let state = OAuthState {
+            flow: "login".to_string(),
             provider: provider.to_string(),
             operation_id: Uuid::now_v7().to_string(),
             code_verifier: random_token(),
@@ -592,6 +968,8 @@ impl OAuthProviderService {
             trust_device: payload.trust_device.unwrap_or(false),
             zone_id,
             zone_code,
+            tenant_id: String::new(),
+            user_id: String::new(),
             return_to,
         };
         let state_token = random_token();
@@ -628,6 +1006,7 @@ impl OAuthProviderService {
         &self,
         session_mgr: &Arc<SessionManager>,
         token_mgr: &Arc<TokenManager>,
+        shared_redis_client: &redis::Client,
         shared_redis: &Arc<SharedRedisBus>,
         config: &Config,
         client_headers: &HashMap<String, String>,
@@ -706,20 +1085,61 @@ impl OAuthProviderService {
                 "OAuth callback state rejected",
                 "provider_mismatch",
             );
-            return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            return Ok(Response::new(oauth_state_failure_redirect(&state, &[])));
         }
+        if !matches!(state.flow.as_str(), "login" | "link") {
+            Logger::sys_warn(
+                "user.oauth",
+                "OAuth callback state rejected",
+                "flow_mismatch",
+            );
+            return Ok(Response::new(oauth_failure_redirect("/")));
+        }
+        let link_session_cookies = if state.flow == "link" {
+            match self
+                .validate_social_link_callback_session(
+                    session_mgr,
+                    token_mgr,
+                    shared_redis_client,
+                    shared_redis,
+                    config,
+                    client_headers,
+                    path,
+                    &state,
+                )
+                .await
+            {
+                Ok(cookies) => cookies,
+                Err(error) => {
+                    Logger::sys_warn(
+                        "user.oauth",
+                        "Social link callback session rejected",
+                        &error,
+                    );
+                    return Ok(Response::new(oauth_state_failure_redirect(&state, &[])));
+                }
+            }
+        } else {
+            Vec::new()
+        };
         if params.get("error").is_some() {
             Logger::sys_warn(
                 "user.oauth",
                 "OAuth provider denied callback",
                 "provider_denied",
             );
-            return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            return Ok(Response::new(oauth_state_failure_redirect(
+                &state,
+                &link_session_cookies,
+            )));
         }
         let code = params.get("code").cloned().unwrap_or_default();
         if code.is_empty() || code.len() > 4096 {
             Logger::sys_warn("user.oauth", "OAuth callback code rejected", "invalid_code");
-            return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            return Ok(Response::new(oauth_state_failure_redirect(
+                &state,
+                &link_session_cookies,
+            )));
         }
         let identity = match self
             .exchange_and_verify(provider, runtime, &code, &state)
@@ -728,9 +1148,25 @@ impl OAuthProviderService {
             Ok(identity) => identity,
             Err(error) => {
                 Logger::sys_warn("user.oauth", "Provider identity rejected", &error);
-                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                return Ok(Response::new(oauth_state_failure_redirect(
+                    &state,
+                    &link_session_cookies,
+                )));
             }
         };
+        if state.flow == "link" {
+            return self
+                .complete_social_link(
+                    session_mgr,
+                    shared_redis,
+                    provider,
+                    &state_token,
+                    &state,
+                    identity,
+                    &link_session_cookies,
+                )
+                .await;
+        }
         let req = VerifyExternalIdentityRequest {
             operation_id: state.operation_id.clone(),
             schema_version: 1,
@@ -916,29 +1352,56 @@ async fn load_runtime(
     config: &OAuthProviderConfig,
     vault: &Arc<VaultClient>,
     provider: &str,
+    allowed_origins: &[String],
 ) -> Result<Option<ProviderRuntime>, String> {
     if !config.enabled {
         return Ok(None);
     }
-    if config.client_id.trim().is_empty()
-        || config.client_id.len() > 512
-        || config.client_secret_path.trim().is_empty()
-        || config.redirect_uri.trim().is_empty()
-    {
-        return Err(format!(
-            "OAuth {provider} is enabled but client configuration is incomplete"
-        ));
-    }
-    if !config
-        .client_secret_path
-        .starts_with("secret/data/acr/oauth/")
-    {
-        return Err(format!(
-            "OAuth {provider} client secret path is outside the ACR OAuth Vault namespace"
-        ));
-    }
-    let redirect = url::Url::parse(&config.redirect_uri)
-        .map_err(|_| format!("OAuth {provider} redirect URI is invalid"))?;
+    // The path is deliberately derived from the provider name. ACR must not
+    // accept a Vault path from env because that would let deployment config
+    // redirect secret reads outside the reviewed OAuth namespace.
+    let vault_path = match provider {
+        "google" | "github" => format!("secret/data/acr/oauth/{provider}"),
+        _ => return Err("unsupported OAuth provider".to_string()),
+    };
+    let secret = vault
+        .read_secret(&vault_path)
+        .await
+        .map_err(|_| format!("OAuth {provider} configuration unavailable from Vault"))?;
+    let vault_data = secret
+        .get("data")
+        .and_then(|value| {
+            value
+                .get("data")
+                .and_then(|nested| nested.as_object())
+                .or_else(|| value.as_object())
+        })
+        .ok_or_else(|| format!("OAuth {provider} Vault secret has no data object"))?;
+    let client_id = vault_data
+        .get("client_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+        })
+        .map(str::to_string)
+        .ok_or_else(|| format!("OAuth {provider} Vault secret has no valid client_id"))?;
+    let client_secret = vault_data
+        .get("client_secret")
+        .and_then(|value| value.as_str())
+        .filter(|value| {
+            !value.trim().is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control)
+        })
+        .ok_or_else(|| format!("OAuth {provider} Vault secret has no valid client_secret"))?
+        .to_string();
+    let callback_url = vault_data
+        .get("callback_url")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 2048)
+        .ok_or_else(|| format!("OAuth {provider} Vault secret has no valid callback_url"))?;
+    let redirect = url::Url::parse(callback_url)
+        .map_err(|_| format!("OAuth {provider} callback URL is invalid"))?;
     let is_local_http = redirect.scheme() == "http"
         && matches!(redirect.host_str(), Some("localhost") | Some("127.0.0.1"));
     if (redirect.scheme() != "https" && !is_local_http)
@@ -949,28 +1412,65 @@ async fn load_runtime(
         || redirect.path() != format!("/api/v1/auth/oauth/{provider}/callback")
     {
         return Err(format!(
-            "OAuth {provider} redirect URI must be the provider callback over HTTPS"
+            "OAuth {provider} callback URL must be the provider callback over HTTPS"
         ));
     }
-    let secret = vault
-        .read_secret(&config.client_secret_path)
-        .await
-        .map_err(|_| format!("OAuth {provider} client secret unavailable from Vault"))?;
-    let client_secret = secret
-        .get("data")
-        .and_then(|value| value.get("data"))
-        .and_then(|value| value.get("client_secret"))
-        .or_else(|| {
-            secret
-                .get("data")
-                .and_then(|value| value.get("client_secret"))
-        })
+    let callback_matches_allowed_origin = allowed_origins.iter().any(|origin| {
+        let Ok(allowed) = Url::parse(origin.trim_end_matches('/')) else {
+            return false;
+        };
+        (allowed.path().is_empty() || allowed.path() == "/")
+            && allowed.username().is_empty()
+            && allowed.password().is_none()
+            && allowed.query().is_none()
+            && allowed.fragment().is_none()
+            && allowed.scheme() == redirect.scheme()
+            && allowed.host_str() == redirect.host_str()
+            && allowed.port_or_known_default() == redirect.port_or_known_default()
+    });
+    if !callback_matches_allowed_origin {
+        return Err(format!(
+            "OAuth {provider} callback URL is outside APP_ALLOWED_ORIGINS"
+        ));
+    }
+    let scope_value = vault_data
+        .get("scope")
         .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty() && value.len() <= 4096)
-        .ok_or_else(|| format!("OAuth {provider} Vault secret has no client_secret"))?
-        .to_string();
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 512)
+        .ok_or_else(|| format!("OAuth {provider} Vault secret has no valid scope"))?;
+    let scope_parts = scope_value.split_whitespace().collect::<Vec<_>>();
+    if scope_parts.is_empty()
+        || scope_parts.len() > 16
+        || scope_parts
+            .iter()
+            .any(|item| item.len() > 64 || item.chars().any(char::is_control))
+    {
+        return Err(format!("OAuth {provider} Vault scope has invalid syntax"));
+    }
+    let scope = scope_parts.join(" ");
+    let (allowed_scopes, required_scopes): (&[&str], &[&str]) = match provider {
+        "google" => (&["openid", "email", "profile"], &["openid", "email"]),
+        "github" => (&["read:user", "user:email"], &["read:user", "user:email"]),
+        _ => return Err("unsupported OAuth provider".to_string()),
+    };
+    if scope_parts
+        .iter()
+        .any(|item| !allowed_scopes.contains(item))
+        || required_scopes
+            .iter()
+            .any(|required| !scope_parts.contains(required))
+    {
+        return Err(format!(
+            "OAuth {provider} Vault scope is outside the provider allowlist"
+        ));
+    }
+    let mut runtime_config = config.clone();
+    runtime_config.client_id = client_id;
+    runtime_config.callback_url = callback_url.to_string();
+    runtime_config.scope = scope;
     Ok(Some(ProviderRuntime {
-        config: config.clone(),
+        config: runtime_config,
         client_secret,
     }))
 }
@@ -1026,8 +1526,21 @@ fn canonical_identity(
     {
         return Err("PROVIDER_IDENTITY_INVALID".to_string());
     }
-    let avatar_url =
-        avatar_url.filter(|value| value.starts_with("https://") && value.len() <= 2048);
+    let avatar_url = avatar_url.and_then(|value| {
+        let value = value.trim().to_string();
+        let parsed = Url::parse(&value).ok()?;
+        if value.len() <= 2048
+            && parsed.scheme() == "https"
+            && parsed.host_str().is_some()
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.fragment().is_none()
+        {
+            Some(value)
+        } else {
+            None
+        }
+    });
     Ok(CanonicalIdentity {
         provider,
         subject,
@@ -1065,7 +1578,15 @@ async fn consume_state(
     let script = r#"
         local value = redis.call('GET', KEYS[1])
         if not value then return nil end
-        redis.call('DEL', KEYS[1])
+        local companion = KEYS[1] .. ':index'
+        local index_key = redis.call('GET', companion)
+        if index_key and redis.call('GET', index_key) ~= KEYS[1] then
+            redis.call('DEL', KEYS[1], companion)
+            return nil
+        end
+        -- Link callbacks retain the per-user/provider index until the DB
+        -- mutation acquires its cross-service lock. Unlink can delete it first.
+        redis.call('DEL', KEYS[1], companion)
         return value
     "#;
     redis::Script::new(script)
@@ -1077,7 +1598,25 @@ async fn consume_state(
 
 fn state_key(provider: &str, state: &str) -> String {
     let digest = Sha256::digest(format!("{provider}:{state}").as_bytes());
-    format!("{STATE_KEY_PREFIX}{provider}:{:x}", digest)
+    let cluster_slot = state
+        .split_once('.')
+        .map(|(slot, _)| slot)
+        .filter(|slot| slot.len() == 64 && slot.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    match cluster_slot {
+        Some(slot) => format!("{STATE_KEY_PREFIX}{{{slot}}}:{provider}:{:x}", digest),
+        None => format!("{STATE_KEY_PREFIX}{provider}:{:x}", digest),
+    }
+}
+
+fn social_link_slot(user_id: &str) -> String {
+    format!("{:x}", Sha256::digest(user_id.as_bytes()))
+}
+
+fn link_index_key(user_id: &str, provider: &str) -> String {
+    format!(
+        "iam:oauth:link:{{{}}}:{provider}",
+        social_link_slot(user_id)
+    )
 }
 
 fn random_token() -> String {
@@ -1092,16 +1631,60 @@ fn pkce_challenge(verifier: &str) -> String {
 }
 
 fn safe_return_to(value: &str) -> bool {
-    value == "/" || (value.starts_with("/billing/authorize?") && !value.starts_with("//"))
+    value == "/"
+        || value == "/settings/social-links"
+        || (value.starts_with("/billing/authorize?") && !value.starts_with("//"))
 }
 
 fn local_json(status: HttpStatusCode, body: serde_json::Value) -> CheckResponse {
+    local_json_with_cookies(status, body, &[])
+}
+
+fn local_json_with_cookies(
+    status: HttpStatusCode,
+    body: serde_json::Value,
+    cookies_to_set: &[String],
+) -> CheckResponse {
     let mut builder = DeniedHttpResponseBuilder::new();
     builder.set_http_status(status);
     builder.add_header("content-type", "application/json", None, false);
+    for cookie in cookies_to_set {
+        builder.add_header("set-cookie", cookie, None, false);
+    }
     builder.set_body(body.to_string());
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated("Local OAuth response"));
+    response.set_http_response(builder);
+    response
+}
+
+fn oauth_state_failure_redirect(state: &OAuthState, cookies_to_set: &[String]) -> CheckResponse {
+    if state.flow == "link" {
+        oauth_social_link_redirect(&state.return_to, "failed", cookies_to_set)
+    } else {
+        oauth_failure_redirect(&state.return_to)
+    }
+}
+
+fn oauth_social_link_redirect(
+    return_to: &str,
+    outcome: &str,
+    cookies_to_set: &[String],
+) -> CheckResponse {
+    let destination = if return_to == "/settings/social-links" {
+        format!("{return_to}?social_link={outcome}")
+    } else {
+        "/settings/social-links?social_link=failed".to_string()
+    };
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(HttpStatusCode::SeeOther);
+    builder.add_header("location", &destination, None, false);
+    for cookie in cookies_to_set {
+        builder.add_header("set-cookie", cookie, None, false);
+    }
+    builder.set_body("");
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated("Social link callback completed"));
     response.set_http_response(builder);
     response
 }
@@ -1245,6 +1828,7 @@ mod tests {
     #[test]
     fn return_path_allowlist_rejects_external_and_ambiguous_paths() {
         assert!(safe_return_to("/"));
+        assert!(safe_return_to("/settings/social-links"));
         assert!(safe_return_to("/billing/authorize?request_id=abc"));
         assert!(!safe_return_to("//attacker.example"));
         assert!(!safe_return_to("https://attacker.example"));
@@ -1266,6 +1850,41 @@ mod tests {
         assert_eq!(identity.email, "user@example.com");
         assert_eq!(identity.display_name, "Aurora User");
         assert!(identity.avatar_url.is_none());
+    }
+
+    #[test]
+    fn provider_avatar_accepts_https_query_but_rejects_embedded_credentials() {
+        let github = canonical_identity(
+            "github",
+            "42".to_string(),
+            "user@example.com".to_string(),
+            "Aurora User".to_string(),
+            Some("https://avatars.githubusercontent.com/u/42?v=4".to_string()),
+        )
+        .expect("GitHub identity must be canonical");
+        assert_eq!(
+            github.avatar_url.as_deref(),
+            Some("https://avatars.githubusercontent.com/u/42?v=4")
+        );
+
+        let credentialed = canonical_identity(
+            "github",
+            "42".to_string(),
+            "user@example.com".to_string(),
+            "Aurora User".to_string(),
+            Some("https://user:secret@example.com/avatar".to_string()),
+        )
+        .expect("invalid optional avatar must not reject the identity");
+        assert!(credentialed.avatar_url.is_none());
+    }
+
+    #[test]
+    fn social_link_state_and_index_share_the_cluster_hash_slot() {
+        let user_id = "019f9f2d-25a7-7bb3-8bf1-78c6e65bcf94";
+        let slot = social_link_slot(user_id);
+        let state_token = format!("{slot}.opaque-state");
+        assert!(state_key("github", &state_token).contains(&format!("{{{slot}}}")));
+        assert!(link_index_key(user_id, "github").contains(&format!("{{{slot}}}")));
     }
 
     #[test]

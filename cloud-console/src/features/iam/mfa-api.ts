@@ -13,3 +13,72 @@ export async function getUserMfaPlatform(id: string, signal?: AbortSignal): Prom
   });
   return res?.data || null;
 }
+
+export type SelfMfaStatus = {
+  status: "enabled" | "disabled";
+  enabled_at?: string;
+  recovery_codes_remaining: number;
+};
+
+export type MfaSetup = {
+  setup_id: string;
+  provisioning_uri: string;
+  manual_secret: string;
+  expires_at: string;
+};
+
+export type MfaConfirmation = {
+  status: "enabled";
+  enabled_at: string;
+  recovery_codes: string[];
+};
+
+export async function getMyMfa(signal?: AbortSignal): Promise<SelfMfaStatus> {
+  const response = await fetchJSON<{ data?: SelfMfaStatus }>("/api/v1/me/iam/mfa", {
+    method: "GET",
+    signal,
+  });
+  if (!response.data || (response.data.status !== "enabled" && response.data.status !== "disabled")) {
+    throw new Error("The MFA status response is invalid.");
+  }
+  return response.data;
+}
+
+export async function startMyMfaSetup(): Promise<MfaSetup> {
+  const response = await fetchJSON<{ data?: MfaSetup }>("/api/v1/me/iam/mfa/setup/start", {
+    method: "POST",
+  });
+  if (!response.data?.setup_id || !response.data.manual_secret || !response.data.provisioning_uri) {
+    throw new Error("The MFA setup response is invalid.");
+  }
+  return response.data;
+}
+
+export async function confirmMyMfaSetup(setupID: string, code: string): Promise<MfaConfirmation> {
+  const response = await fetchJSON<{ data?: MfaConfirmation }>(
+    `/api/v1/me/iam/mfa/setup/${encodeURIComponent(setupID)}/confirm`,
+    { method: "POST", body: { code } },
+  );
+  if (!response.data || !Array.isArray(response.data.recovery_codes)) {
+    throw new Error("The MFA confirmation response is invalid.");
+  }
+  return response.data;
+}
+
+export async function regenerateMyRecoveryCodes(code: string): Promise<string[]> {
+  const response = await fetchJSON<{ data?: { recovery_codes?: unknown } }>(
+    "/api/v1/me/iam/mfa/recovery/regenerate",
+    { method: "POST", body: { code } },
+  );
+  if (!Array.isArray(response.data?.recovery_codes) || !response.data.recovery_codes.every((item) => typeof item === "string")) {
+    throw new Error("The recovery-code response is invalid.");
+  }
+  return response.data.recovery_codes as string[];
+}
+
+export async function removeMyMfa(code: string): Promise<void> {
+  await fetchJSON("/api/v1/me/iam/mfa", {
+    method: "DELETE",
+    body: { code },
+  });
+}

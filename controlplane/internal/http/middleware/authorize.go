@@ -18,6 +18,20 @@ import (
 
 var ErrRoleNotFound = errors.New("role not found")
 
+// RequireSessionProof fails closed unless ACR verified and consumed a
+// session-bound Ed25519 challenge for this exact critical mutation.
+func RequireSessionProof() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		challengeID, err := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
+		if c.GetHeader("x-session-proof-verified") != "true" || err != nil || challengeID == uuid.Nil {
+			apires.RespondForbidden(c, "verified session proof is required")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // Authorize kiểm tra Actor hiện tại có đủ quyền thực hiện hành động theo scope yêu cầu hay không.
 //
 // requiredPermission phải theo format 3 phần ngăn cách bởi ":" — chỉ phần hành động:

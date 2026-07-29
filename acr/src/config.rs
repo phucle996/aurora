@@ -15,6 +15,8 @@ pub struct VaultConfig {
     pub token: String,
     pub role_id: String,
     pub secret_id: String,
+    pub kubernetes_role: String,
+    pub kubernetes_jwt_path: String,
     pub transit_key_path: String,
     pub totp_key_path: String,
     pub admin_api_key_path: String,
@@ -31,11 +33,7 @@ pub struct VaultConfig {
 pub struct Config {
     // Port lắng nghe gRPC server (mặc định: 50051)
     pub grpc_port: u16,
-    // [COMMENT]: Security-State Redis chứa session, alias, nonce, rate-limit và one-time handoff.
-    pub redis_url: String,
-    // [COMMENT]: Shared L2 Redis chứa cache/pubsub/stream/lock nội vùng Central.
-    pub shared_redis_url: String,
-    // Cấu hình kết nối Vault phục vụ việc xác thực JWT
+    // Cấu hình kết nối Vault phục vụ signing, TOTP, OAuth và Redis bootstrap.
     pub vault: VaultConfig,
     // Thời gian sống tối đa của Access Session (mặc định: 1800 giây - 30 phút)
     pub session_ttl_secs: u64,
@@ -58,20 +56,20 @@ pub struct Config {
 pub struct OAuthProviderConfig {
     pub enabled: bool,
     pub client_id: String,
-    pub client_secret_path: String,
-    pub redirect_uri: String,
+    pub callback_url: String,
+    pub scope: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     pub google: OAuthProviderConfig,
     pub github: OAuthProviderConfig,
-    pub state_ttl_secs: u64,
 }
 
 impl OAuthProviderConfig {
-    fn from_env(prefix: &str, default_redirect_uri: &str) -> Self {
-        let enabled = env::var(format!("{prefix}_ENABLED"))
+    fn from_env(provider: &str) -> Self {
+        let provider_name = provider.to_ascii_uppercase();
+        let enabled = env::var(format!("OAUTH_{provider_name}_ENABLED"))
             .ok()
             .map(|value| {
                 matches!(
@@ -82,13 +80,12 @@ impl OAuthProviderConfig {
             .unwrap_or(false);
         Self {
             enabled,
-            client_id: env::var(format!("{prefix}_CLIENT_ID")).unwrap_or_default(),
-            client_secret_path: env::var(format!("{prefix}_CLIENT_SECRET_PATH"))
-                .unwrap_or_default(),
-            redirect_uri: env::var(format!("{prefix}_REDIRECT_URI"))
-                .unwrap_or_else(|_| default_redirect_uri.to_string())
-                .trim_end_matches('/')
-                .to_string(),
+            // All provider configuration below is a runtime slot. When enabled,
+            // OAuthProviderService fills it from the fixed Vault record for this
+            // provider; no credential, callback URL, or scope comes from env.
+            client_id: String::new(),
+            callback_url: String::new(),
+            scope: String::new(),
         }
     }
 }
@@ -107,12 +104,6 @@ impl Config {
                 AcrError::ConfigError("ACR_GRPC_PORT must be a valid port number".to_string())
             })?;
 
-        let redis_url = env::var("AUTH_REDIS_URL")
-            .or_else(|_| env::var("REDIS_URL"))
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let shared_redis_url = env::var("SHARED_REDIS_URL")
-            .unwrap_or_else(|_| "redis://controlplane-cp-redis:6379".to_string());
-
         // Vault configurations
         let vault_addr =
             env::var("VAULT_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
@@ -122,6 +113,10 @@ impl Config {
         let vault_role_id = env::var("VAULT_ROLE_ID").unwrap_or_else(|_| "".to_string());
 
         let vault_secret_id = env::var("VAULT_SECRET_ID").unwrap_or_else(|_| "".to_string());
+        let vault_kubernetes_role =
+            env::var("VAULT_KUBERNETES_ROLE").unwrap_or_else(|_| "".to_string());
+        let vault_kubernetes_jwt_path = env::var("VAULT_KUBERNETES_JWT_PATH")
+            .unwrap_or_else(|_| "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string());
 
         let vault_transit_key_path = env::var("VAULT_TRANSIT_KEY_PATH")
             .unwrap_or_else(|_| "transit/keys/jwt-signer".to_string());
@@ -157,12 +152,13 @@ impl Config {
             .unwrap_or_else(|_| "3".to_string())
             .parse::<usize>()
             .unwrap_or(3);
-
         let vault = VaultConfig {
             addr: vault_addr,
             token: vault_token,
             role_id: vault_role_id,
             secret_id: vault_secret_id,
+            kubernetes_role: vault_kubernetes_role,
+            kubernetes_jwt_path: vault_kubernetes_jwt_path,
             transit_key_path: vault_transit_key_path,
             totp_key_path: vault_totp_key_path,
             admin_api_key_path: vault_admin_api_key_path,
@@ -237,26 +233,12 @@ impl Config {
             .unwrap_or_default();
 
         let oauth = OAuthConfig {
-            google: OAuthProviderConfig::from_env(
-                "ACR_OAUTH_GOOGLE",
-                "https://cloud.aurora.local/api/v1/auth/oauth/google/callback",
-            ),
-            github: OAuthProviderConfig::from_env(
-                "ACR_OAUTH_GITHUB",
-                "https://cloud.aurora.local/api/v1/auth/oauth/github/callback",
-            ),
-            state_ttl_secs: env::var("ACR_OAUTH_STATE_TTL_SECS")
-                .unwrap_or_else(|_| "300".to_string())
-                .parse::<u64>()
-                .map_err(|_| {
-                    AcrError::ConfigError("ACR_OAUTH_STATE_TTL_SECS must be a number".to_string())
-                })?,
+            google: OAuthProviderConfig::from_env("google"),
+            github: OAuthProviderConfig::from_env("github"),
         };
 
         Ok(Config {
             grpc_port,
-            redis_url,
-            shared_redis_url,
             vault,
             session_ttl_secs,
             refresh_threshold_secs,

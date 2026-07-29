@@ -10,6 +10,7 @@ use crate::inbound::realtime_pubsub::RealtimePubSubConsumer;
 use crate::infra::centrifugo::CentrifugoPublisher;
 use crate::infra::redis::RedisAuthBus;
 use crate::infra::scylla::{connect as connect_scylla, ScyllaTimelineStore};
+use crate::infra::vault::VaultClient;
 use crate::observability::logger::Logger;
 use crate::timeline::activity::ActivityService;
 use crate::timeline::inbox::InboxService;
@@ -27,11 +28,11 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub async fn build(config: &Config) -> Result<Self, AppError> {
+    pub async fn build(config: &Config, vault: &VaultClient) -> Result<Self, AppError> {
         Logger::sys_info("app.bootstrap", "Initializing Notification Service runtime");
         let (shutdown, shutdown_rx) = watch::channel(false);
 
-        let auth_bus = RedisAuthBus::connect(&config.redis).await?;
+        let auth_bus = RedisAuthBus::connect(&config.redis, vault).await?;
         let publisher: Arc<dyn RealtimePublisher> =
             Arc::new(CentrifugoPublisher::new(&config.centrifugo)?);
         let scylla = connect_scylla(&config.scylla).await?;

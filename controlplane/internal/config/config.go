@@ -3,15 +3,17 @@
 🗺️ ARCHITECTURAL COMPONENT: CENTRAL APPLICATION CONFIGURATION
 ============================================================================
 CONTRACT:
-1.Định nghĩa cấu trúc dữ liệu và khởi tạo centralized config cho application từ file .env và OS env.
-2.Đảm bảo tính Immutable trong suốt process lifecycle.
+1. Định nghĩa bootstrap config từ file .env và OS env.
+2. Chỉ giữ Vault authentication bootstrap và non-secret infrastructure policy;
+   connector đọc connection record trực tiếp từ Vault.
+3. Đảm bảo tính Immutable trong suốt process lifecycle.
 
 SOT: file này là source of truth cho toàn bộ cấu hình tĩnh của application.
 
 BOUNDARY:
-1. file này chỉ load immutable config từ .env và OS env, không validate dữ liệu.
-2. khi sử dụng env, phải sử dụng các function helper của file này để avoid
-4. chỉ parse theo kiểu dữ liệu , không xác định tính đúng sai logic.
+1. Bootstrap chỉ chứa thông tin deployment và Vault authentication.
+2. Khi sử dụng env, phải sử dụng các function helper của file này để tránh
+   đọc trực tiếp từ process environment.
 ============================================================================
 */
 
@@ -27,6 +29,7 @@ import (
 type Config struct {
 	App      AppCfg
 	Security SecurityCfg
+	Vault    VaultCfg
 	Psql     PsqlCfg
 	Redis    RedisCfg
 	// [COMMENT]: AuthRedis là security-state/authz projection; không dùng làm cache business chung.
@@ -36,6 +39,21 @@ type Config struct {
 	GRPC      GRPCCfg
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
+}
+
+// VaultCfg contains only the bootstrap material required to let the
+// application read its connection snapshot. PostgreSQL/Redis credentials are
+// intentionally absent from this environment-level contract when Vault mode
+// is enabled.
+type VaultCfg struct {
+	Addr              string
+	Token             string
+	RoleID            string
+	SecretID          string
+	KubernetesRole    string
+	KubernetesJWTPath string
+	Timeout           time.Duration
+	MaxRetries        int
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -71,7 +89,6 @@ type AppCfg struct {
 
 // SecurityCfg lưu trữ các tham số bảo mật, thời hạn TTL của các loại Token và Session.
 type SecurityCfg struct {
-	RuntimeMasterKey        string
 	OneTimeTokenTTL         time.Duration
 	OneTimeTokenReplicaAcks int
 	OneTimeTokenReplicaWait time.Duration
@@ -80,16 +97,6 @@ type SecurityCfg struct {
 
 // PsqlCfg chứa các thông số kết nối cơ sở dữ liệu PostgreSQL và connection pool.
 type PsqlCfg struct {
-	Host          string
-	Port          int
-	User          string
-	Password      string
-	DBName        string
-	SSLMode       string
-	TLSEnabled    bool
-	CACertPath    string
-	CertPath      string
-	KeyPath       string
 	MaxConns      int
 	MinConns      int
 	MaxConnLife   time.Duration
@@ -101,14 +108,6 @@ type PsqlCfg struct {
 
 // RedisCfg chứa các thông số kết nối Redis cho cache và job queuing.
 type RedisCfg struct {
-	Addr          string
-	Username      string
-	Password      string
-	DB            int
-	TLSEnabled    bool
-	CACertPath    string
-	CertPath      string
-	KeyPath       string
 	DialTimeout   time.Duration
 	ReadTimeout   time.Duration
 	WriteTimeout  time.Duration
@@ -189,24 +188,23 @@ func LoadConfig() *Config {
 		},
 
 		Security: SecurityCfg{
-			RuntimeMasterKey: getEnv("SECURITY_MASTER_KEY", "aurora-storage-master-secret-key-32bytes"),
-			OneTimeTokenTTL:  getEnvAsDuration("IAM_OTT_TTL", 15*time.Minute),
+			OneTimeTokenTTL: getEnvAsDuration("IAM_OTT_TTL", 15*time.Minute),
 			// [COMMENT]: Production mặc định đòi ít nhất một replica ACK; dev đơn node phải override về 0 rõ ràng.
 			OneTimeTokenReplicaAcks: getEnvAsInt("IAM_OTT_REPLICA_ACKS", 1),
 			OneTimeTokenReplicaWait: getEnvAsDuration("IAM_OTT_REPLICA_WAIT", time.Second),
 			RefreshTokenTTL:         30 * 24 * time.Hour,
 		},
+		Vault: VaultCfg{
+			Addr:              getEnv("VAULT_ADDR", "http://127.0.0.1:8200"),
+			Token:             getEnv("VAULT_TOKEN", ""),
+			RoleID:            getEnv("VAULT_ROLE_ID", ""),
+			SecretID:          getEnv("VAULT_SECRET_ID", ""),
+			KubernetesRole:    getEnv("VAULT_KUBERNETES_ROLE", ""),
+			KubernetesJWTPath: getEnv("VAULT_KUBERNETES_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+			Timeout:           getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
+			MaxRetries:        getEnvAsInt("VAULT_MAX_RETRIES", 5),
+		},
 		Psql: PsqlCfg{
-			Host:          getEnv("PSQL_HOST", "localhost"),
-			Port:          getEnvAsInt("PSQL_PORT", 5432),
-			User:          getEnv("PSQL_USER", "postgres"),
-			Password:      getEnv("PSQL_PASSWORD", ""),
-			DBName:        getEnv("PSQL_DBNAME", "controlplane"),
-			SSLMode:       getEnv("PSQL_SSLMODE", "disable"),
-			TLSEnabled:    getEnvAsBool("PSQL_TLS_ENABLED", false),
-			CACertPath:    getEnv("PSQL_TLS_CA", ""),
-			CertPath:      getEnv("PSQL_TLS_CERT", ""),
-			KeyPath:       getEnv("PSQL_TLS_KEY", ""),
 			MaxConns:      100,
 			MinConns:      5,
 			MaxConnLife:   30 * time.Minute,
@@ -218,14 +216,6 @@ func LoadConfig() *Config {
 		Redis: RedisCfg{
 			// [COMMENT]: Shared Redis chứa cache/pubsub/lock và bounded internal Streams;
 			// deployment phải persistence và không được dùng allkeys eviction.
-			Addr:          getEnv("REDIS_ADDR", "localhost:6379"),
-			Username:      getEnv("REDIS_USERNAME", ""),
-			Password:      getEnv("REDIS_PASSWORD", ""),
-			DB:            getEnvAsInt("REDIS_DB", 0),
-			TLSEnabled:    getEnvAsBool("REDIS_TLS_ENABLED", false),
-			CACertPath:    getEnv("REDIS_TLS_CA", ""),
-			CertPath:      getEnv("REDIS_TLS_CERT", ""),
-			KeyPath:       getEnv("REDIS_TLS_KEY", ""),
 			DialTimeout:   2 * time.Second,
 			ReadTimeout:   500 * time.Millisecond,
 			WriteTimeout:  500 * time.Millisecond,
@@ -241,14 +231,6 @@ func LoadConfig() *Config {
 		},
 		AuthRedis: RedisCfg{
 			// [COMMENT]: Redis Cluster chỉ dùng DB 0; session/authz cô lập bằng prefix + ACL, không dùng SELECT DB 1.
-			Addr:          getEnv("AUTH_REDIS_ADDR", "localhost:16380"),
-			Username:      getEnv("AUTH_REDIS_USERNAME", "controlplane"),
-			Password:      getEnv("AUTH_REDIS_PASSWORD", ""),
-			DB:            0,
-			TLSEnabled:    getEnvAsBool("AUTH_REDIS_TLS_ENABLED", false),
-			CACertPath:    getEnv("AUTH_REDIS_TLS_CA", ""),
-			CertPath:      getEnv("AUTH_REDIS_TLS_CERT", ""),
-			KeyPath:       getEnv("AUTH_REDIS_TLS_KEY", ""),
 			DialTimeout:   2 * time.Second,
 			ReadTimeout:   500 * time.Millisecond,
 			WriteTimeout:  500 * time.Millisecond,

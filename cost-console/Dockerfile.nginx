@@ -6,6 +6,8 @@
 # [COMMENT]: Môi trường Node 20 Alpine biên dịch tĩnh bundle React/Vite SPA cho Billing & Cost Console
 FROM node:20-alpine AS build
 WORKDIR /app
+ARG VITE_CLOUD_CONSOLE_URL
+ENV VITE_CLOUD_CONSOLE_URL=$VITE_CLOUD_CONSOLE_URL
 COPY package*.json ./
 RUN npm install
 COPY . .

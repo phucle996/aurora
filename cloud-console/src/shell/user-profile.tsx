@@ -3,7 +3,8 @@
 /* eslint-disable @next/next/no-img-element */
 
 import React, { useState, useRef, useEffect } from "react";
-import { ChevronDown, User, Key, Sliders, LogOut } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, LogOut, Settings } from "lucide-react";
 import type { UserProfile as SessionUserProfile } from "@/session/api";
 
 interface UserProfileProps {
@@ -64,27 +65,14 @@ export function UserProfile({ profile, handleLogout }: UserProfileProps) {
             </p>
           </div>
 
-          <button
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-left"
+          <Link
+            href="/settings/personalization"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800/50"
             onClick={() => setUserOpen(false)}
           >
-            <User className="h-4.5 w-4.5 text-slate-400" />
-            <span>My Profile</span>
-          </button>
-          <button
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-left"
-            onClick={() => setUserOpen(false)}
-          >
-            <Key className="h-4.5 w-4.5 text-slate-400" />
-            <span>API Keys</span>
-          </button>
-          <button
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-left"
-            onClick={() => setUserOpen(false)}
-          >
-            <Sliders className="h-4.5 w-4.5 text-slate-400" />
-            <span>Preferences</span>
-          </button>
+            <Settings className="h-4.5 w-4.5 text-slate-400" />
+            <span>Settings</span>
+          </Link>
 
           <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 

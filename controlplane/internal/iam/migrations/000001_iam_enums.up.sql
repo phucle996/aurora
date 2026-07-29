@@ -3,6 +3,7 @@
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- [COMMENT]: Trạng thái user account
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -13,6 +14,15 @@ BEGIN
     ) THEN
         CREATE TYPE user_status AS ENUM ('pending-active', 'active', 'suspended', 'disabled');
     END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending-active');
+    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
+    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'suspended');
+    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'disabled');
 END
 $$;
 
@@ -29,77 +39,8 @@ BEGIN
     END IF;
 END
 $$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending-active');
-    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
-    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'suspended');
-    EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'disabled');
-END
-$$;
 
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'challenge_status' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE challenge_status AS ENUM ('pending', 'verified', 'expired', 'failed', 'consumed');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.challenge_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending');
-    EXECUTE format('ALTER TYPE %I.challenge_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'verified');
-    EXECUTE format('ALTER TYPE %I.challenge_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'expired');
-    EXECUTE format('ALTER TYPE %I.challenge_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'failed');
-    EXECUTE format('ALTER TYPE %I.challenge_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'consumed');
-END
-$$;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'mfa_type' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE mfa_type AS ENUM ('totp', 'recovery_code');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.mfa_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'totp');
-    EXECUTE format('ALTER TYPE %I.mfa_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'recovery_code');
-END
-$$;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'mfa_status' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE mfa_status AS ENUM ('pending', 'enabled', 'disabled');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.mfa_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending');
-    EXECUTE format('ALTER TYPE %I.mfa_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'enabled');
-    EXECUTE format('ALTER TYPE %I.mfa_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'disabled');
-END
-$$;
-
+-- [COMMENT]: Role scope type cho RBAC
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -112,6 +53,7 @@ BEGIN
     END IF;
 END
 $$;
+
 DO $$
 BEGIN
     EXECUTE format('ALTER TYPE %I.role_scope_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'platform');
@@ -119,3 +61,4 @@ BEGIN
     EXECUTE format('ALTER TYPE %I.role_scope_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'workspace');
 END
 $$;
+

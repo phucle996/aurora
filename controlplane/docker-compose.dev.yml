@@ -28,10 +28,9 @@ services:
       KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
       # [COMMENT]: Dev Shared Redis chỉ có một node; production không được hạ ngưỡng replica này.
       REDIS_DURABLE_REPLICA_ACKS: "0"
-      # [COMMENT]: Auth-State dùng DB 0 + ACL/prefix; không dùng logical DB để còn tương thích Redis Cluster.
-      AUTH_REDIS_ADDR: "acr-redis:6379"
-      AUTH_REDIS_USERNAME: "controlplane"
-      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
+      # [DEV-ONLY]: Connection credentials are read directly from Vault.
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "${VAULT_CONTROLPLANE_TOKEN:?set VAULT_CONTROLPLANE_TOKEN for dev}"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -52,6 +51,8 @@ services:
       victoriatraces:
         condition: service_started
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -79,10 +80,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
       KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
       REDIS_DURABLE_REPLICA_ACKS: "0"
-      # [COMMENT]: Mỗi replica dùng cùng ACL nhưng cô lập dữ liệu bằng namespace AuthZ được cấp quyền.
-      AUTH_REDIS_ADDR: "acr-redis:6379"
-      AUTH_REDIS_USERNAME: "controlplane"
-      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "${VAULT_CONTROLPLANE_TOKEN:?set VAULT_CONTROLPLANE_TOKEN for dev}"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -103,6 +102,8 @@ services:
       victoriatraces:
         condition: service_started
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -130,10 +131,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092"
       KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
       REDIS_DURABLE_REPLICA_ACKS: "0"
-      # [COMMENT]: Mỗi replica dùng cùng ACL nhưng cô lập dữ liệu bằng namespace AuthZ được cấp quyền.
-      AUTH_REDIS_ADDR: "acr-redis:6379"
-      AUTH_REDIS_USERNAME: "controlplane"
-      AUTH_REDIS_PASSWORD: "aurora-dev-controlplane-secret"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "${VAULT_CONTROLPLANE_TOKEN:?set VAULT_CONTROLPLANE_TOKEN for dev}"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -154,6 +153,8 @@ services:
       victoriatraces:
         condition: service_started
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -288,21 +289,16 @@ services:
       - "8084:8084" # REST API port
       - "9094:9094" # gRPC port
     environment:
-      - DATABASE_URL=postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable
       - CLICKHOUSE_URL=http://clickhouse-server:8123
-      # [COMMENT]: Shared Redis chứa cache/pubsub/lock và bounded AOF-backed Central Streams.
-      - CACHE_REDIS_URL=redis://controlplane-cp-redis:6379
-      # [COMMENT]: Embedded Cost Engine dùng cùng Shared Redis cho lock và pricing PubSub.
-      - REDIS_URL=redis://controlplane-cp-redis:6379/0
-      # [COMMENT]: Cost chỉ thấy authz/proof namespace qua ACL, không thể đọc Trinity session của ACR.
-      - AUTH_REDIS_URL=redis://cost:aurora-dev-cost-secret@controlplane-acr-redis:6379/0
-      # Development contract for the external checkout gateway. Production injects
-      # both signing keys from Secret and points at the real payment provider.
+      # [DEV-ONLY]: API and its embedded Engine use separate Vault policies.
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_COST_MANAGER_API_TOKEN:?set VAULT_COST_MANAGER_API_TOKEN for dev}
+      - VAULT_ENGINE_TOKEN=${VAULT_COST_MANAGER_ENGINE_TOKEN:?set VAULT_COST_MANAGER_ENGINE_TOKEN for dev}
+      # Development contract for the external checkout gateway. Signing keys
+      # are seeded in Vault and read through the Cost Manager policy.
       - PAYMENT_PROVIDER=aurora-payment-gateway
       - PAYMENT_CHECKOUT_BASE_URL=https://payments.aurora.local/checkout
       - PAYMENT_RETURN_BASE_URL=https://cost-manager.aurora.local/
-      - PAYMENT_CHECKOUT_SIGNING_SECRET=dev-checkout-signing-key-change-before-production-2026
-      - PAYMENT_WEBHOOK_SIGNING_SECRET=dev-webhook-signing-key-change-before-production-2026
       - PAYMENT_MINIMUM_TOP_UP_MICRO_UNITS=1000000
       - PAYMENT_INTENT_TTL=30m
       - PAYMENT_REFERRAL_RESERVATION_TTL=24h
@@ -317,6 +313,8 @@ services:
       acr-redis:
         condition: service_healthy
       clickhouse:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
 
@@ -805,6 +803,8 @@ services:
         condition: service_started
       victoriatraces:
         condition: service_started
+      vault:
+        condition: service_started
     restart: unless-stopped
 
   cloud-console:
@@ -812,15 +812,20 @@ services:
       context: ../cloud-console
       dockerfile: Dockerfile.prod
       args:
+        # [DEV-ONLY]: Browser API calls are same-origin; SSR keeps using the
+        # internal controlplane hostname because "localhost" inside this
+        # container is not the Envoy edge.
         - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
-        # [COMMENT]: WebSocket đi qua Envoy (wss://) để TLS terminate và proxy sang centrifugo:8000 nội bộ
-        - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
+        # [DEV-ONLY]: Cloud Console is opened at https://localhost so the
+        # websocket and host-only OAuth session remain on the same browser host.
+        - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://localhost/connection/websocket
         - NEXT_PUBLIC_COST_CONSOLE_URL=https://cost-manager.aurora.local
     container_name: cloud-console-dev
     environment:
       - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
-      # [COMMENT]: Giá trị này được baked vào bundle lúc build, runtime env không có tác dụng với NEXT_PUBLIC_ nhưng để tham chiếu
-      - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
+      # [DEV-ONLY]: This value is baked into the browser bundle at build time;
+      # keep it aligned with the localhost Cloud Console origin.
+      - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://localhost/connection/websocket
       - NEXT_PUBLIC_COST_CONSOLE_URL=https://cost-manager.aurora.local
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     restart: unless-stopped
@@ -838,6 +843,10 @@ services:
     build:
       context: ../cost-console
       dockerfile: Dockerfile.nginx
+      args:
+        # [DEV-ONLY]: Starting Billing from Cost Console must return to the
+        # same localhost Cloud Console origin used by OAuth.
+        VITE_CLOUD_CONSOLE_URL: https://localhost
     container_name: cost-console-nginx
     ports:
       - "5176:5173"
@@ -859,6 +868,8 @@ services:
     # injects the same contract from ConfigMap/Secret plus mounted TLS identity.
     env_file:
       - ../job-orchestrator/.env
+    environment:
+      VAULT_TOKEN: "${VAULT_JOB_ORCHESTRATOR_TOKEN:?set VAULT_JOB_ORCHESTRATOR_TOKEN for dev}"
     depends_on:
       psql:
         condition: service_healthy
@@ -871,6 +882,8 @@ services:
       nats:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
 
@@ -907,12 +920,8 @@ services:
     environment:
       TZ: "Asia/Ho_Chi_Minh"
       ACR_GRPC_PORT: "50051"
-      # [COMMENT]: Hai Redis tách vai trò; Security-State dùng AOF/noeviction,
-      # Shared Redis dùng cho Central request/reply, bounded stream và cache.
-      AUTH_REDIS_URL: "redis://acr:aurora-dev-acr-secret@controlplane-acr-redis:6379/0"
-      SHARED_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.bmEYXu28616H11YtER7uuejz"
+      VAULT_TOKEN: "${VAULT_ACR_TOKEN:?set VAULT_ACR_TOKEN for dev}"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       # Enable only after the matching public key has been provisioned into
       # every Zone Control Authorizer deployment.
@@ -922,12 +931,20 @@ services:
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
       VAULT_TIMEOUT_SECS: "5"
       VAULT_MAX_RETRIES: "3"
+      # OAuth is opt-in for dev. These flags are the only provider-specific
+      # app configuration; ACR loads callback_url, client_id, client_secret
+      # and scope from the fixed Vault KV record at startup.
+      OAUTH_GOOGLE_ENABLED: "${OAUTH_GOOGLE_ENABLED:-false}"
+      OAUTH_GITHUB_ENABLED: "${OAUTH_GITHUB_ENABLED:-false}"
       SESSION_TTL_SECS: "1800"
       REFRESH_THRESHOLD_SECS: "900"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       # [COMMENT]: ACR cookies luôn host-only; domain handoff chỉ redirect tới origin cố định này.
       BILLING_CONSOLE_ORIGIN: "https://cost-manager.aurora.local"
-      APP_ALLOWED_ORIGINS: "https://adminui.aurora.local,https://adminui-dev.aurora.local,https://cloud.aurora.local,https://cost-manager.aurora.local"
+      # [DEV-ONLY]: localhost is the Google OAuth/Cloud Console origin. Keep
+      # other virtual hosts isolated; production must replace this with the
+      # verified real Cloud Console domain.
+      APP_ALLOWED_ORIGINS: "https://adminui.aurora.local,https://adminui-dev.aurora.local,https://cloud.aurora.local,https://localhost,https://cost-manager.aurora.local"
     depends_on:
       acr-redis:
         condition: service_healthy
@@ -951,7 +968,10 @@ services:
       - APP_PORT=8083
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
-      - SHARED_REDIS_URL=redis://controlplane-cp-redis:6379/0
+      # [DEV-ONLY]: Shared Redis connection is read directly from Vault using
+      # the notification-only policy.
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_NOTIFICATION_TOKEN:?set VAULT_NOTIFICATION_TOKEN for dev}
       # Scylla owns only the user timeline/history bounded context.
       - SCYLLA_CONTACT_POINTS=scylla:9042
       - SCYLLA_LOCAL_DC=datacenter1
@@ -975,6 +995,8 @@ services:
       scylla:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      vault:
         condition: service_started
     restart: unless-stopped
 

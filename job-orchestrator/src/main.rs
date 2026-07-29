@@ -40,13 +40,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _logger_guard = Logger::init();
 
     // 1. Nạp cấu hình từ biến môi trường đầu tiên để phục vụ khởi tạo Observability
-    let config = match Config::load() {
+    let mut config = match Config::load().await {
         Ok(cfg) => cfg,
         Err(err) => {
             Logger::sys_error("main.init", "Lỗi cấu hình biến môi trường", &err);
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, err).into());
         }
     };
+
+    let vault = infra::vault::VaultClient::new(&config.vault).await?;
+    infra::postgres::resolve_from_vault(&vault, &mut config.postgres).await?;
+    infra::redis::resolve_from_vault(&vault, &mut config.shared_redis).await?;
 
     // Khởi tạo logger có cấu trúc, OpenTelemetry Tracer & Metrics (Push model)
     OtelTracer::init(&config.otel);

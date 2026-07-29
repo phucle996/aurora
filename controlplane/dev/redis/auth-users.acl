@@ -2,6 +2,6 @@
 user default off
 user health on >aurora-dev-health-secret -@all +ping resetkeys resetchannels
 user acr on >aurora-dev-acr-secret +@all -@dangerous +eval +evalsha ~iam:* ~billing:* ~ratelimit:* ~authz:* ~storage_access:* resetchannels
-# IAM MFA setup and replay fences are short-lived Auth-State Redis namespaces.
-user controlplane on >aurora-dev-controlplane-secret +@all -@dangerous +eval +evalsha ~authz:* ~auth:revocation:* ~storage_access:* ~iam:mfa:setup:* ~iam:mfa:totp:* resetchannels &authz.invalidate.*
+# IAM MFA state and social-link callback fences are short-lived Auth-State Redis namespaces.
+user controlplane on >aurora-dev-controlplane-secret +@all -@dangerous +eval +evalsha ~authz:* ~auth:revocation:* ~storage_access:* ~iam:mfa:setup:* ~iam:mfa:totp:* ~iam:oauth:link:* resetchannels &authz.invalidate.*
 user cost on >aurora-dev-cost-secret +@all -@dangerous +eval +evalsha ~authz:* ~auth:proof:cost:* resetchannels &authz.invalidate.*

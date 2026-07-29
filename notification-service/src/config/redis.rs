@@ -3,7 +3,6 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct RedisConfig {
-    pub url: String,
     pub connect_timeout: Duration,
     pub auth_timeout: Duration,
     pub auth_max_pending: usize,
@@ -13,13 +12,9 @@ pub struct RedisConfig {
 
 impl RedisConfig {
     pub fn from_env(environment: &Environment) -> Result<Self, ConfigError> {
-        let url = environment.required("SHARED_REDIS_URL")?;
-        if !url.starts_with("redis://") && !url.starts_with("rediss://") {
-            return Err(ConfigError::Missing("SHARED_REDIS_URL"));
-        }
-
+        // The connection endpoint and credentials are loaded by the infra
+        // connector from the app's Vault policy.
         Ok(Self {
-            url,
             connect_timeout: Duration::from_millis(environment.bounded_u64(
                 "NOTIFICATION_REDIS_CONNECT_TIMEOUT_MS",
                 5_000,

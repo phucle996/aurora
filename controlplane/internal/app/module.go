@@ -18,6 +18,7 @@ import (
 	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
+	vaultinfra "controlplane/infra/vault"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
@@ -48,6 +49,7 @@ func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	authRds *goredis.Client,
+	vaultClient *vaultinfra.Client,
 	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
@@ -99,7 +101,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, authRds, kafkaProducer, cacheEngine, otel)
+	iamModule, err := iam.NewModule(cfg, db, rds, authRds, vaultClient, kafkaProducer, cacheEngine, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
