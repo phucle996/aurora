@@ -690,6 +690,10 @@ services:
     build:
       context: ../cost-console
       dockerfile: Dockerfile.nginx
+      args:
+        # [DEV-ONLY]: Starting Billing from Cost Console must return to the
+        # same localhost Cloud Console origin used by OAuth.
+        VITE_CLOUD_CONSOLE_URL: https://localhost
     container_name: cost-console-nginx
     ports:
       - "5176:5173"
@@ -711,6 +715,8 @@ services:
     # injects the same contract from ConfigMap/Secret plus mounted TLS identity.
     env_file:
       - ../job-orchestrator/.env
+    environment:
+      VAULT_TOKEN: "${VAULT_JOB_ORCHESTRATOR_TOKEN:?set VAULT_JOB_ORCHESTRATOR_TOKEN for dev}"
     depends_on:
       psql:
         condition: service_healthy
