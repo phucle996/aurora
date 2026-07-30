@@ -99,6 +99,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: Vault client init failed: %w", err)
 	}
+	if vaultClient == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: Vault client is required")
+	}
 	app.vault = vaultClient
 
 	// --------------------------------------------------------------------
@@ -109,6 +113,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: psql init failed: %w", err)
+	}
+	if db == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: psql pool is required")
 	}
 	app.psql = db
 
@@ -232,6 +240,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: cache engine init failed [FAIL-CLOSE]: %w", err)
+	}
+	if cacheEngine == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: cache engine is required")
 	}
 
 	// --------------------------------------------------------------------

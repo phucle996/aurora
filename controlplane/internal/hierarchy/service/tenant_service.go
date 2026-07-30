@@ -70,9 +70,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, tenant entity.Tenant, 
 	// [COMMENT]: Ghi nhận thành công
 	metrics.Downstream(ctx, metrics.KindRepo, "CreateTenant", metrics.OutcomeSuccess, duration, nil)
 	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	if s.notifyBillingOutbox != nil {
-		s.notifyBillingOutbox()
-	}
+	s.notifyBillingOutbox()
 	return result, nil
 }
 

@@ -197,6 +197,9 @@ func NewModule(
 }
 
 func (m *Module) SetTenantBillingOutboxNotifier(notify func()) error {
+	if notify == nil {
+		return fmt.Errorf("hierarchy module: tenant billing outbox notifier is nil")
+	}
 	tenantService, ok := m.TenantService.(*service.TenantService)
 	if !ok || tenantService == nil {
 		return fmt.Errorf("hierarchy module: concrete tenant service is unavailable")

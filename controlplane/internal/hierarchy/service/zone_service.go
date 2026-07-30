@@ -115,12 +115,11 @@ func (s *ZoneService) CreateZone(ctx context.Context, input entity.CreateZoneInp
 		return err
 	}
 
-	// [COMMENT]: Ghi dữ liệu zone mới vào Shared Redis L2 và phát invalidation nội vùng Central.
-	if s.rds != nil {
-		redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zone.Code)))
-		val := fmt.Sprintf("%s:%s", zone.ID, zone.Status)
-		_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
-	}
+	// [COMMENT]: Shared Redis is a required app-level dependency. A runtime
+	// write failure remains best-effort because PostgreSQL is the Zone SoT.
+	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zone.Code)))
+	val := fmt.Sprintf("%s:%s", zone.ID, zone.Status)
+	_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
 	s.publishInvalidation(ctx, zoneID, false)
 
 	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
@@ -166,12 +165,11 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		return err
 	}
 
-	// [COMMENT]: Cập nhật trạng thái mới vào Shared Redis L2 và phát invalidation nội vùng Central.
-	if s.rds != nil {
-		redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zoneCode)))
-		val := fmt.Sprintf("%s:%s", zoneID, toStatus)
-		_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
-	}
+	// [COMMENT]: Redis propagation is rebuildable soft state and therefore does
+	// not change the committed PostgreSQL outcome when Redis is temporarily down.
+	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zoneCode)))
+	val := fmt.Sprintf("%s:%s", zoneID, toStatus)
+	_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
 	s.publishInvalidation(ctx, zoneID, false)
 
 	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
@@ -187,10 +185,8 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	}
 
 	// [COMMENT]: Xóa Shared Redis L2 và phát invalidation nội vùng Central.
-	if s.rds != nil {
-		redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(deletedCode)))
-		_ = s.rds.Del(ctx, redisKey).Err()
-	}
+	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(deletedCode)))
+	_ = s.rds.Del(ctx, redisKey).Err()
 	s.publishInvalidation(ctx, zoneID, true, deletedCode)
 
 	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
@@ -229,10 +225,6 @@ func (s *ZoneService) AcrResolveZone(ctx context.Context, code string) (*entity.
 // publishInvalidation lấy trạng thái mới nhất của Zone từ database (SoT) và phát
 // Shared Redis PubSub để ACR L1 không giữ topology cũ.
 func (s *ZoneService) publishInvalidation(ctx context.Context, zoneID uuid.UUID, deleted bool, deletedCode ...string) {
-	if s.rds == nil {
-		return
-	}
-
 	var code, status, name string
 	if deleted && len(deletedCode) > 0 {
 		code = deletedCode[0]
