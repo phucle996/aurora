@@ -41,9 +41,6 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.DELETE("/admin/critical/hierarchy/zones/:zone_id",
 		module.ZoneHandler.DeleteZone,
 	)
-	// router.GET("/admin/hierarchy/zones/:zone_id/services",
-	// 	module.ZoneHandler.ListZoneServices,
-	// )
 	router.PUT("/admin/critical/hierarchy/zones/services",
 		module.ZoneHandler.UpdateZoneService,
 	)

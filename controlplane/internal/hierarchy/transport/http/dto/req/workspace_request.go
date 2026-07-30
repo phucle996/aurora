@@ -1,4 +1,4 @@
-package dto
+package hierarchyReq
 
 // [COMMENT]: CreatePersonalWorkspaceRequest định nghĩa dữ liệu đầu vào từ HTTP body để tạo workspace cá nhân.
 // Scope personal không có tenant_id — ZoneID được lấy từ header do ACR inject.

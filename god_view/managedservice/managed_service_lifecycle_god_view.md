@@ -220,6 +220,12 @@ handlers do not write `c.JSON` directly.
 eligibility reads `zone_services.desired_state=true`; operational `actual_state`,
 health and capacity do not become catalog SoT. Selector/capability internals, YAML,
 component contract and audit provenance never leave the customer API.
+The `managed_service` capability is the mandatory Zone admission gate for this
+module. Every personal/tenant catalog and version-detail query first requires its
+Zone row to have `managed_service` enabled; revision-specific `all_of` requirements
+are evaluated afterwards. A Zone without it is ineligible even when Kubernetes
+itself is available. In V1 this capability is static desired state, not a health
+signal and not an input to Zone draining.
 
 Version detail returns the exact revision ID/hash plus `input_schema` and `ui_schema`.
 The optional `expected_revision_id` is a read fence: a switched default returns

@@ -1,4 +1,4 @@
-package repository
+package hierarchyRepoImpl
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -23,7 +23,7 @@ type zoneEncryptionKeyRepository struct {
 	retireQuery   string
 }
 
-func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyrepo.ZoneEncryptionKeyRepository {
+func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRepoInterface.ZoneEncryptionKeyRepository {
 	return &zoneEncryptionKeyRepository{
 		db: db,
 		registerQuery: fmt.Sprintf(`
@@ -175,8 +175,8 @@ func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyre
 	}
 }
 
-func (r *zoneEncryptionKeyRepository) RegisterZoneEncryptionKey(ctx context.Context, in *entity.RegisterZoneEncryptionKey) (*entity.RegisterZoneEncryptionKey, error) {
-	out := &entity.RegisterZoneEncryptionKey{}
+func (r *zoneEncryptionKeyRepository) RegisterZoneEncryptionKey(ctx context.Context, in *hierarchyEntity.RegisterZoneEncryptionKey) (*hierarchyEntity.RegisterZoneEncryptionKey, error) {
+	out := &hierarchyEntity.RegisterZoneEncryptionKey{}
 	var zoneExists bool
 	err := r.db.QueryRow(ctx, r.registerQuery,
 		in.ID, in.ZoneID, in.PublicKey, in.Fingerprint, in.Algorithm, in.Actor, in.ProofID,
@@ -187,22 +187,22 @@ func (r *zoneEncryptionKeyRepository) RegisterZoneEncryptionKey(ctx context.Cont
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, taxonomy.ErrZoneEncryptionKeyMaterialConflict
+			return nil, hierarchyTaxonomy.ErrConflict
 		}
 		return nil, err
 	}
 	if !zoneExists {
-		return nil, taxonomy.ErrZoneEncryptionKeyZoneNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
 	// [COMMENT]: Fingerprint uniqueness is global. Returning a row owned by a
 	// different Zone means the same private counterpart was accidentally reused.
 	if out.ZoneID != in.ZoneID {
-		return nil, taxonomy.ErrZoneEncryptionKeyMaterialConflict
+		return nil, hierarchyTaxonomy.ErrConflict
 	}
 	return out, nil
 }
 
-func (r *zoneEncryptionKeyRepository) ListZoneEncryptionKeys(ctx context.Context, in *entity.ListZoneEncryptionKeys) ([]entity.ListZoneEncryptionKeys, error) {
+func (r *zoneEncryptionKeyRepository) ListZoneEncryptionKeys(ctx context.Context, in *hierarchyEntity.ListZoneEncryptionKeys) ([]hierarchyEntity.ListZoneEncryptionKeys, error) {
 	rows, err := r.db.Query(ctx, r.listQuery, in.ZoneID, in.HasCursor, in.CursorCreatedAt, in.CursorID, in.Limit+1)
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ func (r *zoneEncryptionKeyRepository) ListZoneEncryptionKeys(ctx context.Context
 	defer rows.Close()
 
 	zoneExists := false
-	out := make([]entity.ListZoneEncryptionKeys, 0)
+	out := make([]hierarchyEntity.ListZoneEncryptionKeys, 0)
 	for rows.Next() {
 		zoneExists = true
 		var zoneID uuid.UUID
@@ -229,7 +229,7 @@ func (r *zoneEncryptionKeyRepository) ListZoneEncryptionKeys(ctx context.Context
 		if keyID == nil {
 			continue
 		}
-		item := entity.ListZoneEncryptionKeys{
+		item := hierarchyEntity.ListZoneEncryptionKeys{
 			ZoneID: zoneID, ID: *keyID, PublicKey: publicKey, Fingerprint: fingerprint,
 			ActivatedAt: activatedAt, DecryptOnlyAt: decryptOnlyAt, RetiredAt: retiredAt,
 		}
@@ -237,7 +237,7 @@ func (r *zoneEncryptionKeyRepository) ListZoneEncryptionKeys(ctx context.Context
 			item.Algorithm = *algorithm
 		}
 		if status != nil {
-			item.Status = entity.ZoneEncryptionKeyStatus(*status)
+			item.Status = hierarchyEntity.ZoneEncryptionKeyStatus(*status)
 		}
 		if registeredBy != nil {
 			item.RegisteredBy = *registeredBy
@@ -263,13 +263,13 @@ func (r *zoneEncryptionKeyRepository) ListZoneEncryptionKeys(ctx context.Context
 		return nil, err
 	}
 	if !zoneExists {
-		return nil, taxonomy.ErrZoneEncryptionKeyZoneNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
 	return out, nil
 }
 
-func (r *zoneEncryptionKeyRepository) ActivateZoneEncryptionKey(ctx context.Context, in *entity.ActivateZoneEncryptionKey) (*entity.ActivateZoneEncryptionKey, error) {
-	out := &entity.ActivateZoneEncryptionKey{}
+func (r *zoneEncryptionKeyRepository) ActivateZoneEncryptionKey(ctx context.Context, in *hierarchyEntity.ActivateZoneEncryptionKey) (*hierarchyEntity.ActivateZoneEncryptionKey, error) {
+	out := &hierarchyEntity.ActivateZoneEncryptionKey{}
 	var zoneExists, keyExists, selected bool
 	var currentStatus string
 	err := r.db.QueryRow(ctx, r.activateQuery, in.ZoneID, in.KeyID, in.Actor, in.ProofID).Scan(
@@ -282,19 +282,19 @@ func (r *zoneEncryptionKeyRepository) ActivateZoneEncryptionKey(ctx context.Cont
 		return nil, err
 	}
 	if !zoneExists {
-		return nil, taxonomy.ErrZoneEncryptionKeyZoneNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
 	if !keyExists {
-		return nil, taxonomy.ErrZoneEncryptionKeyNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
-	if !selected || (currentStatus != string(entity.ZoneEncryptionKeyStatusStaged) && currentStatus != string(entity.ZoneEncryptionKeyStatusActive)) {
-		return nil, taxonomy.ErrZoneEncryptionKeyInvalidTransition
+	if !selected || (currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusStaged) && currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusActive)) {
+		return nil, hierarchyTaxonomy.ErrInvalidTransition
 	}
 	return out, nil
 }
 
-func (r *zoneEncryptionKeyRepository) RetireZoneEncryptionKey(ctx context.Context, in *entity.RetireZoneEncryptionKey) (*entity.RetireZoneEncryptionKey, error) {
-	out := &entity.RetireZoneEncryptionKey{}
+func (r *zoneEncryptionKeyRepository) RetireZoneEncryptionKey(ctx context.Context, in *hierarchyEntity.RetireZoneEncryptionKey) (*hierarchyEntity.RetireZoneEncryptionKey, error) {
+	out := &hierarchyEntity.RetireZoneEncryptionKey{}
 	var zoneExists, keyExists, selected bool
 	var currentStatus string
 	err := r.db.QueryRow(ctx, r.retireQuery, in.ZoneID, in.KeyID, in.Actor, in.ProofID).Scan(
@@ -307,15 +307,15 @@ func (r *zoneEncryptionKeyRepository) RetireZoneEncryptionKey(ctx context.Contex
 		return nil, err
 	}
 	if !zoneExists {
-		return nil, taxonomy.ErrZoneEncryptionKeyZoneNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
 	if !keyExists {
-		return nil, taxonomy.ErrZoneEncryptionKeyNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
-	if !selected || (currentStatus != string(entity.ZoneEncryptionKeyStatusStaged) &&
-		currentStatus != string(entity.ZoneEncryptionKeyStatusDecryptOnly) &&
-		currentStatus != string(entity.ZoneEncryptionKeyStatusRetired)) {
-		return nil, taxonomy.ErrZoneEncryptionKeyInvalidTransition
+	if !selected || (currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusStaged) &&
+		currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusDecryptOnly) &&
+		currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusRetired)) {
+		return nil, hierarchyTaxonomy.ErrInvalidTransition
 	}
 	return out, nil
 }

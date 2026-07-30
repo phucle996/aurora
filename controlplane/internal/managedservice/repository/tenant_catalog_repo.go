@@ -29,6 +29,11 @@ func (r *tenantCatalogRepository) ListTenantCatalog(ctx context.Context, in *ent
 		SELECT workspace.id
 		FROM %s.tenant_workspaces workspace
 		WHERE workspace.id=$1 AND workspace.tenant_id=$2 AND workspace.zone_id=$3
+		  AND EXISTS (
+			SELECT 1 FROM %s.zone_services capability
+			WHERE capability.zone_id=$3 AND capability.desired_state=true
+			  AND capability.service_type::text='managed_service'
+		  )
 	), eligible AS (
 		SELECT category.id,category.code,category.name_i18n,category.description_i18n,category.icon_key,
 			definition.id,definition.code,definition.name_i18n,definition.description_i18n,definition.icon_key,
@@ -67,7 +72,7 @@ func (r *tenantCatalogRepository) ListTenantCatalog(ctx context.Context, in *ent
 		ORDER BY version.id
 		LIMIT $5
 	)
-	SELECT * FROM eligible`, r.hierarchySchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.hierarchySchema)
+		SELECT * FROM eligible`, r.hierarchySchema, r.hierarchySchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.hierarchySchema)
 
 	rows, err := r.db.Query(ctx, query, in.WorkspaceID, in.TenantID, in.ZoneID, in.AfterVersionID, in.Limit+1)
 	if err != nil {

@@ -61,6 +61,7 @@ export default function NewZonePage() {
     mail: false,
     k8s: true,
     ai: false,
+    managed_service: false,
   })
 
   // ---------------------------------------------------------------------------
@@ -139,8 +140,9 @@ export default function NewZonePage() {
         enable_hypervisor: services.hypervisor,
         enable_storage: services.storage,
         enable_mail: services.mail,
-        enable_k8s: services.k8s,
+        enable_kubernetes: services.k8s,
         enable_ai: services.ai,
+        enable_managed_service: services.managed_service,
       })
 
       // SHA-256 hex của body — đưa vào payload để backend verify body không bị tamper.

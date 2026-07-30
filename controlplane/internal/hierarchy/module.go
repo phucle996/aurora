@@ -26,7 +26,6 @@
 package hierarchy
 
 import (
-	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -34,12 +33,10 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 
-	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	repository "controlplane/internal/hierarchy/repository"
-	service "controlplane/internal/hierarchy/service"
-	httphandler "controlplane/internal/hierarchy/transport/http/handler"
-	pubsubhandler "controlplane/internal/hierarchy/transport/pubsub/handler"
+	hierarchyRepoImpl "controlplane/internal/hierarchy/repository"
+	hierarchySvcImpl "controlplane/internal/hierarchy/service"
+	hierarchyHandler "controlplane/internal/hierarchy/transport/http/handler"
+	hierarchyPubsubHandler "controlplane/internal/hierarchy/transport/pubsub/handler"
 
 	"controlplane/internal/observability"
 
@@ -48,28 +45,13 @@ import (
 )
 
 type Module struct {
-	cfg                         *config.Config
-	rds                         *goredis.Client
-	otel                        *observability.OTel
-	zoneRedis                   *pubsubhandler.ZoneRedisHandler
-	ZoneRepository              hierarchyrepo.ZoneRepository
-	ZoneService                 hierarchyservice.ZoneService
-	ZoneHandler                 *httphandler.ZoneHandler
-	ZoneEncryptionKeyRepository hierarchyrepo.ZoneEncryptionKeyRepository
-	ZoneEncryptionKeyService    hierarchyservice.ZoneEncryptionKeyService
-	ZoneEncryptionKeyHandler    *httphandler.ZoneEncryptionKeyHandler
-	// [COMMENT]: Chia ranh giới DB access thành 2 repositories Tenant và Personal
-	TenantWorkspaceRepository   hierarchyrepo.TenantWorkspaceRepository
-	PersonalWorkspaceRepository hierarchyrepo.PersonalWorkspaceRepository
-	// [COMMENT]: Chia ranh giới Service Layer thành 2 services Tenant và Personal
-	TenantWorkspaceService   hierarchyservice.TenantWorkspaceService
-	PersonalWorkspaceService hierarchyservice.PersonalWorkspaceService
-	WorkspacePersonalHandler *httphandler.WorkspacePersonalHandler
-	WorkspaceTenantHandler   *httphandler.WorkspaceTenantHandler
-	TenantRepository         hierarchyrepo.TenantRepository
-	TenantService            hierarchyservice.TenantService
-	TenantHandler            *httphandler.TenantHandler
-	listenCancel             context.CancelFunc
+	zoneRedis                *hierarchyPubsubHandler.ZoneRedisHandler
+	tenantService            *hierarchySvcImpl.TenantService
+	ZoneHandler              *hierarchyHandler.ZoneHandler
+	ZoneEncryptionKeyHandler *hierarchyHandler.ZoneEncryptionKeyHandler
+	WorkspacePersonalHandler *hierarchyHandler.WorkspacePersonalHandler
+	WorkspaceTenantHandler   *hierarchyHandler.WorkspaceTenantHandler
+	TenantHandler            *hierarchyHandler.TenantHandler
 	L1Registry               *cacheengine.CacheRegistry
 }
 
@@ -88,6 +70,12 @@ func NewModule(
 	if db == nil {
 		return nil, fmt.Errorf("hierarchy module: database pool is required")
 	}
+	if rds == nil {
+		return nil, fmt.Errorf("hierarchy module: Shared Redis is required")
+	}
+	if cacheEngine == nil {
+		return nil, fmt.Errorf("hierarchy module: cache registry is required")
+	}
 	hierarchySchema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
 	if !regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`).MatchString(hierarchySchema) {
 		return nil, fmt.Errorf("hierarchy module: database schema is invalid")
@@ -95,77 +83,81 @@ func NewModule(
 
 	// 1) SoT data access for secret lifecycle.
 	// 3) Rotation orchestration - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneRepo := repository.NewZoneRepoImpl(cfg, db)
+	zoneRepo := hierarchyRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: zone repository is nil")
 	}
 
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := service.NewZoneService(zoneRepo, rds)
+	zoneService := hierarchySvcImpl.NewZoneService(zoneRepo, rds)
 	if zoneService == nil {
 		return nil, fmt.Errorf("hierarchy module: zone service is nil")
 	}
-	zHandler := httphandler.NewZoneHandler(zoneService)
+	zHandler := hierarchyHandler.NewZoneHandler(zoneService)
 	if zHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: zone handler is nil")
 	}
-	zoneRedis, err := pubsubhandler.NewZoneRedisHandler(rds, zoneService, otel)
+	zoneRedis, err := hierarchyPubsubHandler.NewZoneRedisHandler(rds, zoneService, otel)
 	if err != nil {
 		return nil, fmt.Errorf("hierarchy module: initialize Shared Redis handler: %w", err)
 	}
 
 	// [COMMENT]: Hierarchy owns only the public half of each Zone key pair.
 	// Dataplane private-key loading remains a separate filesystem boundary.
-	zoneEncryptionKeyRepo := repository.NewZoneEncryptionKeyRepository(db, hierarchySchema)
+	zoneEncryptionKeyRepo := hierarchyRepoImpl.NewZoneEncryptionKeyRepository(db, hierarchySchema)
 	if zoneEncryptionKeyRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key repository is nil")
 	}
-	zoneEncryptionKeyService := service.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo)
+	zoneEncryptionKeyService := hierarchySvcImpl.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo)
 	if zoneEncryptionKeyService == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key service is nil")
 	}
-	zoneEncryptionKeyHTTPHandler := httphandler.NewZoneEncryptionKeyHandler(zoneEncryptionKeyService)
+	zoneEncryptionKeyHTTPHandler := hierarchyHandler.NewZoneEncryptionKeyHandler(zoneEncryptionKeyService)
 	if zoneEncryptionKeyHTTPHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key handler is nil")
 	}
 
 	// 6) Workspace management — repo, service, handler (Chia 2 dòng chảy Tenant và Personal)
-	tenantWorkspaceRepo := repository.NewTenantWorkspaceRepoImpl(cfg, db)
+	tenantWorkspaceRepo := hierarchyRepoImpl.NewTenantWorkspaceRepoImpl(cfg, db)
 	if tenantWorkspaceRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant workspace repository is nil")
 	}
-	personalWorkspaceRepo := repository.NewPersonalWorkspaceRepoImpl(cfg, db)
+	personalWorkspaceRepo := hierarchyRepoImpl.NewPersonalWorkspaceRepoImpl(cfg, db)
 	if personalWorkspaceRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace repository is nil")
 	}
 
-	tenantWorkspaceService := service.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine)
+	tenantWorkspaceService := hierarchySvcImpl.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine)
 	if tenantWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant workspace service is nil")
 	}
-	personalWorkspaceService := service.NewPersonalWorkspaceService(personalWorkspaceRepo)
+	personalWorkspaceService := hierarchySvcImpl.NewPersonalWorkspaceService(personalWorkspaceRepo)
 	if personalWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace service is nil")
 	}
-	wPersonalHandler := httphandler.NewWorkspacePersonalHandler(personalWorkspaceService)
+	wPersonalHandler := hierarchyHandler.NewWorkspacePersonalHandler(personalWorkspaceService)
 	if wPersonalHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: workspace personal handler is nil")
 	}
-	wTenantHandler := httphandler.NewWorkspaceTenantHandler(tenantWorkspaceService)
+	wTenantHandler := hierarchyHandler.NewWorkspaceTenantHandler(tenantWorkspaceService)
 	if wTenantHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: workspace tenant handler is nil")
 	}
 
 	// 7) Tenant management — repo, service, handler
-	tenantRepo := repository.NewTenantRepoImpl(cfg, db)
+	tenantRepo := hierarchyRepoImpl.NewTenantRepoImpl(cfg, db)
 	if tenantRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant repository is nil")
 	}
-	tenantService := service.NewTenantService(tenantRepo)
+	tenantService := hierarchySvcImpl.NewTenantService(tenantRepo)
 	if tenantService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant service is nil")
 	}
-	tHandler := httphandler.NewTenantHandler(tenantService)
+	concreteTenantService, ok := tenantService.(*hierarchySvcImpl.TenantService)
+	if !ok {
+		return nil, fmt.Errorf("hierarchy module: concrete tenant service is unavailable")
+	}
+	tHandler := hierarchyHandler.NewTenantHandler(tenantService)
 	if tHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant handler is nil")
 	}
@@ -173,26 +165,14 @@ func NewModule(
 	// [COMMENT]: Lược bỏ việc khởi tạo BackpressureService do đã chuyển đổi hoàn toàn sang mô hình event-driven ở job-orchestrator.
 
 	return &Module{
-		cfg:                         cfg,
-		rds:                         rds,
-		otel:                        otel,
-		zoneRedis:                   zoneRedis,
-		ZoneRepository:              zoneRepo,
-		ZoneService:                 zoneService,
-		ZoneHandler:                 zHandler,
-		ZoneEncryptionKeyRepository: zoneEncryptionKeyRepo,
-		ZoneEncryptionKeyService:    zoneEncryptionKeyService,
-		ZoneEncryptionKeyHandler:    zoneEncryptionKeyHTTPHandler,
-		TenantWorkspaceRepository:   tenantWorkspaceRepo,
-		PersonalWorkspaceRepository: personalWorkspaceRepo,
-		TenantWorkspaceService:      tenantWorkspaceService,
-		PersonalWorkspaceService:    personalWorkspaceService,
-		WorkspacePersonalHandler:    wPersonalHandler,
-		WorkspaceTenantHandler:      wTenantHandler,
-		TenantRepository:            tenantRepo,
-		TenantService:               tenantService,
-		TenantHandler:               tHandler,
-		L1Registry:                  cacheEngine,
+		zoneRedis:                zoneRedis,
+		tenantService:            concreteTenantService,
+		ZoneHandler:              zHandler,
+		ZoneEncryptionKeyHandler: zoneEncryptionKeyHTTPHandler,
+		WorkspacePersonalHandler: wPersonalHandler,
+		WorkspaceTenantHandler:   wTenantHandler,
+		TenantHandler:            tHandler,
+		L1Registry:               cacheEngine,
 	}, nil
 }
 
@@ -200,11 +180,10 @@ func (m *Module) SetTenantBillingOutboxNotifier(notify func()) error {
 	if notify == nil {
 		return fmt.Errorf("hierarchy module: tenant billing outbox notifier is nil")
 	}
-	tenantService, ok := m.TenantService.(*service.TenantService)
-	if !ok || tenantService == nil {
+	if m.tenantService == nil {
 		return fmt.Errorf("hierarchy module: concrete tenant service is unavailable")
 	}
-	tenantService.SetBillingOutboxNotifier(notify)
+	m.tenantService.SetBillingOutboxNotifier(notify)
 	return nil
 }
 
@@ -213,11 +192,6 @@ func (m *Module) Stop() {
 	if m == nil {
 		return
 	}
-	if m.listenCancel != nil {
-		m.listenCancel()
-		m.listenCancel = nil
-	}
-
 	if m.zoneRedis != nil {
 		m.zoneRedis.Stop()
 	}

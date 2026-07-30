@@ -125,7 +125,7 @@ func TestValidateDraftSealsCurrentHashes(t *testing.T) {
 		"input_schema":                map[string]any{"fields": []any{map[string]any{"key": "replicas", "value_type": "INT64", "cardinality": "ONE", "required": true, "mutable": true, "min": 1, "max": 100}}},
 		"ui_schema":                   map[string]any{"groups": []any{map[string]any{"key": "capacity", "order": 10, "label_i18n": map[string]any{"en": "Capacity"}}}, "fields": []any{map[string]any{"key": "replicas", "group": "capacity", "order": 10, "widget": "NUMBER", "label_i18n": map[string]any{"en": "Replicas"}}}},
 		"safe_observed_output_schema": map[string]any{}, "zone_selector": map[string]any{"mode": "all"},
-		"capability_requirement": map[string]any{"all_of": []any{"kubernetes"}},
+		"capability_requirement": map[string]any{"all_of": []any{"managed_service"}},
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

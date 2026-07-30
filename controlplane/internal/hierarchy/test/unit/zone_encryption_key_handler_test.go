@@ -14,7 +14,7 @@ import (
 	entity "controlplane/internal/hierarchy/domain/entity"
 	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	"controlplane/internal/hierarchy/test/mocks"
-	"controlplane/internal/hierarchy/transport/http/handler"
+	hierarchyHandler "controlplane/internal/hierarchy/transport/http/handler"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,7 +29,7 @@ const (
 func TestRegisterZoneEncryptionKeyFailsClosedWithoutCriticalProof(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &mocks.ZoneEncryptionKeyService{}
-	h := handler.NewZoneEncryptionKeyHandler(service)
+	h := hierarchyHandler.NewZoneEncryptionKeyHandler(service)
 	router := gin.New()
 	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys", h.RegisterZoneEncryptionKey)
 
@@ -48,7 +48,7 @@ func TestRegisterZoneEncryptionKeyFailsClosedWithoutCriticalProof(t *testing.T) 
 func TestRegisterZoneEncryptionKeyRejectsLowOrderPointAtHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &mocks.ZoneEncryptionKeyService{}
-	h := handler.NewZoneEncryptionKeyHandler(service)
+	h := hierarchyHandler.NewZoneEncryptionKeyHandler(service)
 	router := gin.New()
 	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys", h.RegisterZoneEncryptionKey)
 	body, _ := json.Marshal(map[string]string{"public_key": base64.StdEncoding.EncodeToString(make([]byte, 32))})
@@ -78,7 +78,7 @@ func TestRegisterZoneEncryptionKeyMapsValidatedEntityAndGinHResponse(t *testing.
 		Fingerprint: bytes.Repeat([]byte{0x31}, 32), Algorithm: entity.ZoneEncryptionKeyAlgorithm,
 		Status: entity.ZoneEncryptionKeyStatusStaged, RegisteredBy: "sre", CreatedAt: now, UpdatedAt: now,
 	}}
-	h := handler.NewZoneEncryptionKeyHandler(service)
+	h := hierarchyHandler.NewZoneEncryptionKeyHandler(service)
 	router := gin.New()
 	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys", h.RegisterZoneEncryptionKey)
 	body, _ := json.Marshal(map[string]string{"public_key": base64.StdEncoding.EncodeToString(publicKey)})
@@ -119,7 +119,7 @@ func TestListZoneEncryptionKeysReturnsPublicInventory(t *testing.T) {
 		Fingerprint: bytes.Repeat([]byte{0x33}, 32), Algorithm: entity.ZoneEncryptionKeyAlgorithm,
 		Status: entity.ZoneEncryptionKeyStatusActive,
 	}}}
-	h := handler.NewZoneEncryptionKeyHandler(service)
+	h := hierarchyHandler.NewZoneEncryptionKeyHandler(service)
 	router := gin.New()
 	router.GET("/admin/hierarchy/zones/:zone_id/encryption-keys", h.ListZoneEncryptionKeys)
 	request := httptest.NewRequest(http.MethodGet, "/admin/hierarchy/zones/"+testZoneID+"/encryption-keys", nil)
@@ -137,8 +137,8 @@ func TestListZoneEncryptionKeysReturnsPublicInventory(t *testing.T) {
 
 func TestActivateZoneEncryptionKeyMapsStateConflict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	service := &mocks.ZoneEncryptionKeyService{ActivateErr: taxonomy.ErrZoneEncryptionKeyInvalidTransition}
-	h := handler.NewZoneEncryptionKeyHandler(service)
+	service := &mocks.ZoneEncryptionKeyService{ActivateErr: taxonomy.ErrInvalidTransition}
+	h := hierarchyHandler.NewZoneEncryptionKeyHandler(service)
 	router := gin.New()
 	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys/:key_id/activate", h.ActivateZoneEncryptionKey)
 	request := httptest.NewRequest(http.MethodPost, "/admin/critical/hierarchy/zones/"+testZoneID+"/encryption-keys/"+testKeyID+"/activate", nil)
@@ -160,8 +160,8 @@ func TestActivateZoneEncryptionKeyMapsStateConflict(t *testing.T) {
 
 func TestRetireZoneEncryptionKeyMapsNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	service := &mocks.ZoneEncryptionKeyService{RetireErr: taxonomy.ErrZoneEncryptionKeyNotFound}
-	h := handler.NewZoneEncryptionKeyHandler(service)
+	service := &mocks.ZoneEncryptionKeyService{RetireErr: taxonomy.ErrNotFound}
+	h := hierarchyHandler.NewZoneEncryptionKeyHandler(service)
 	router := gin.New()
 	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys/:key_id/retire", h.RetireZoneEncryptionKey)
 	request := httptest.NewRequest(http.MethodPost, "/admin/critical/hierarchy/zones/"+testZoneID+"/encryption-keys/"+testKeyID+"/retire", nil)

@@ -3,7 +3,7 @@
 //            HTTP Handler cho luồng quản lý Tenant
 // ======================================================================================================
 
-package handler
+package hierarchyHandler
 
 import (
 	"context"
@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
-	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyReq "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
@@ -25,11 +25,11 @@ import (
 
 // [COMMENT]: TenantHandler xử lý HTTP requests liên quan đến Tenant
 type TenantHandler struct {
-	tenantSvc hierarchyservice.TenantService
+	tenantSvc hierarchySvcInterface.TenantService
 }
 
 // [COMMENT]: NewTenantHandler tạo instance handler mới với tenant service dependency
-func NewTenantHandler(tenantSvc hierarchyservice.TenantService) *TenantHandler {
+func NewTenantHandler(tenantSvc hierarchySvcInterface.TenantService) *TenantHandler {
 	return &TenantHandler{
 		tenantSvc: tenantSvc,
 	}
@@ -43,7 +43,7 @@ func NewTenantHandler(tenantSvc hierarchyservice.TenantService) *TenantHandler {
 // @Produce      json
 // @Param        X-User-ID   header string true  "User ID (UUID) bắt buộc"
 // @Param        X-Tenant-ID header string false "Tenant ID (phải trống)"
-// @Param        request     body   requestdto.CreateTenantRequest true "Tenant creation body"
+// @Param        request     body   hierarchyReq.CreateTenantRequest true "Tenant creation body"
 // @Success      201 {object} map[string]interface{} "Tenant created"
 // @Failure      400 {object} map[string]interface{} "Invalid request / Tenant context already exists"
 // @Failure      409 {object} map[string]interface{} "Tenant code already exists"
@@ -77,29 +77,31 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 	}
 
 	// [COMMENT]: Bind JSON body
-	var request requestdto.CreateTenantRequest
+	var request hierarchyReq.CreateTenantRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind create tenant request failed")
 		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
+	tenantName := strings.TrimSpace(request.Name)
+	tenantCode := strings.ToLower(strings.TrimSpace(request.Code))
+	if tenantName == "" || tenantCode == "" || len(tenantName) > 255 || len(tenantCode) > 100 {
+		logger.HandlerWarn(c, op, nil, "create tenant normalized input is invalid")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 
 	// [COMMENT]: Gọi service layer tạo tenant
-	tenant, err := h.tenantSvc.CreateTenant(ctx, entity.Tenant{
-		Name: strings.TrimSpace(request.Name),
-		Code: strings.ToLower(strings.TrimSpace(request.Code)),
-	}, ownerID)
+	tenant, err := h.tenantSvc.CreateTenant(ctx, &hierarchyEntity.CreateTenant{
+		OwnerID: ownerID,
+		Name:    tenantName,
+		Code:    tenantCode,
+	})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrTenantInvalidInput):
-			logger.HandlerWarn(c, op, err, "create tenant invalid input")
-			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, taxonomy.ErrCodeAlreadyExists):
+		case errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create tenant code conflict")
 			apires.RespondConflict(c, "tenant code already exists")
-		case errors.Is(err, taxonomy.ErrTenantInsertFailed):
-			logger.HandlerWarn(c, op, err, "create tenant insertion failed")
-			apires.RespondBadRequest(c, "tenant creation failed")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")

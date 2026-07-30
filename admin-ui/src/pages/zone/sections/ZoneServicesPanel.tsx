@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { PackageCheck, Server, Database, Layers3, Clock3 } from 'lucide-react'
+import { PackageCheck, Server, Database, Layers3, CloudCog, Clock3 } from 'lucide-react'
 
 import { Panel } from './ZoneOverviewPanel'
 import { cn } from '@/lib/utils'
@@ -43,7 +43,9 @@ function ServiceIcon({ serviceKey }: { serviceKey: string }) {
         ? Layers3
         : serviceKey === 'mail'
           ? PackageCheck
-          : Clock3
+          : serviceKey === 'managed_service'
+            ? CloudCog
+            : Clock3
   return <Icon className="size-4" />
 }
 

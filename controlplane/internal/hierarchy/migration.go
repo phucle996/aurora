@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"controlplane/internal/config"
-	zonemigrations "controlplane/internal/hierarchy/migrations"
+	hierarchyMigrations "controlplane/internal/hierarchy/migrations"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,7 +58,7 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 	}
 
 	// B5: Đọc và thực thi tuần tự các file migration được nhúng trong thư mục.
-	if err := applyEmbeddedMigrations(ctx, conn, "hierarchy", zonemigrations.Files); err != nil {
+	if err := applyEmbeddedMigrations(ctx, conn, "hierarchy", hierarchyMigrations.Files); err != nil {
 		return err
 	}
 

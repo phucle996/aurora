@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Link } from '@tanstack/react-router'
 import { slugify } from '@/lib/slugify'
 
-export type ServiceKey = 'hypervisor' | 'storage' | 'mail' | 'k8s' | 'ai'
+export type ServiceKey = 'hypervisor' | 'storage' | 'mail' | 'k8s' | 'ai' | 'managed_service'
 
 const serviceItems: Array<{ key: ServiceKey; label: string; description: string }> = [
   { key: 'hypervisor', label: 'Hypervisor', description: 'Compute virtualization and VM management.' },
@@ -15,6 +15,7 @@ const serviceItems: Array<{ key: ServiceKey; label: string; description: string 
   { key: 'k8s', label: 'Kubernetes', description: 'Managed Kubernetes clusters.' },
   { key: 'ai', label: 'AI Services', description: 'AI/ML workloads and GPU acceleration.' },
   { key: 'mail', label: 'Mail Services', description: 'Email and messaging services.' },
+  { key: 'managed_service', label: 'Managed Services', description: 'Customer managed-service workloads provisioned on Kubernetes.' },
 ]
 
 function Required() {

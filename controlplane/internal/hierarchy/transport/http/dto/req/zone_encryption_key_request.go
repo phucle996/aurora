@@ -1,4 +1,4 @@
-package dto
+package hierarchyReq
 
 // RegisterZoneEncryptionKeyRequest contains only transport JSON. The decoded
 // X25519 bytes are mapped to a workflow entity by the handler.

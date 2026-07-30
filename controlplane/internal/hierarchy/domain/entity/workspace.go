@@ -1,4 +1,4 @@
-package entity
+package hierarchyEntity
 
 import (
 	"time"
@@ -6,43 +6,77 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: PersonalWorkspace đại diện cho không gian làm việc cá nhân (Personal/Me)
-type PersonalWorkspace struct {
+type CreatePersonalWorkspace struct {
 	ID          uuid.UUID
 	Name        string
 	Code        string
 	Description string
 	ZoneID      uuid.UUID
-	OwnerID     uuid.UUID // ID của người sở hữu / quản trị Workspace
+	OwnerID     uuid.UUID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
-// [COMMENT]: TenantWorkspace đại diện cho không gian làm việc thuộc Doanh nghiệp (Tenant)
-type TenantWorkspace struct {
+type ListPersonalWorkspaces struct {
+	OwnerID     uuid.UUID
+	ID          uuid.UUID
+	Name        string
+	Code        string
+	Description string
+	CreatedAt   time.Time
+}
+
+type ListPersonalWorkspaceCatalog struct {
+	OwnerID uuid.UUID
+	ZoneID  uuid.UUID
+	ID      uuid.UUID
+	Code    string
+	Name    string
+}
+
+type DeletePersonalWorkspace struct {
+	ID      uuid.UUID
+	OwnerID uuid.UUID
+}
+
+type CreateTenantWorkspace struct {
 	ID          uuid.UUID
 	Name        string
 	Code        string
 	Description string
 	ZoneID      uuid.UUID
-	TenantID    uuid.UUID // ID của Tenant sở hữu Workspace (bắt buộc)
-	OwnerID     uuid.UUID // ID của người tạo ra Workspace
+	TenantID    uuid.UUID
+	OwnerID     uuid.UUID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
-// [COMMENT]: WorkspaceCatalog đại diện cho thông tin workspace tối giản trong hot path catalog
-type WorkspaceCatalog struct {
-	ID   uuid.UUID
-	Code string
-	Name string
+type ListTenantWorkspaces struct {
+	TenantID            uuid.UUID
+	RoleID              uuid.UUID
+	AllWorkspaces       bool
+	AllowedWorkspaceIDs []uuid.UUID
+	ID                  uuid.UUID
+	Name                string
+	Code                string
+	Description         string
+	ZoneID              uuid.UUID
+	OwnerID             uuid.UUID
+	CreatedAt           time.Time
 }
 
-// [COMMENT]: WorkspacePersonalListItem đại diện cho thông tin workspace cá nhân trả về cho client
-type WorkspacePersonalListItem struct {
-	ID          uuid.UUID
-	Name        string
-	Code        string
-	Description string
-	CreatedAt   time.Time
+type ListTenantWorkspaceCatalog struct {
+	TenantID            uuid.UUID
+	ZoneID              uuid.UUID
+	RoleID              uuid.UUID
+	AllWorkspaces       bool
+	AllowedWorkspaceIDs []uuid.UUID
+	ID                  uuid.UUID
+	Code                string
+	Name                string
+}
+
+type DeleteTenantWorkspace struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
 }

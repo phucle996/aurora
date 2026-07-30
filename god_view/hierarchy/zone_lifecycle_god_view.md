@@ -35,20 +35,23 @@
 Tên canonical của domain này là **Hierarchy** trên toàn bộ source, runtime và
 public admin API:
 
-- Go module/package root: `hierarchy`; các package con dùng tên theo vai trò
-  như `entity`, `repository`, `service`, `handler`, `dto`, `metrics`.
+- Go module/package root: `hierarchy`; package con mang prefix module như
+  `hierarchyEntity`, `hierarchyRepoInterface`, `hierarchySvcInterface`,
+  `hierarchyRepoImpl`, `hierarchySvcImpl`, `hierarchyHandler`, `hierarchyReq`,
+  `hierarchyTaxonomy` và `hierarchyMetrics`.
 - Admin route: `/admin/hierarchy/...`; mutation ảnh hưởng vận hành dùng
   `/admin/critical/hierarchy/...` để ACR bắt critical proof.
 - Observability: meter `aurora-controlplane.hierarchy` và metric prefix
   `aurora_controlplane_hierarchy_`.
-- Protobuf descriptor package: `hierarchy.rpc`.
+- Protobuf schema package: `hierarchy.rpc`; message hiện được dùng trên Shared
+  Redis request/reply, không biểu thị một runtime gRPC hop.
 
 Đây là clean cutover khi hệ thống chưa production: không duy trì alias
 `/admin/core/...`, package `core` hay descriptor `core.rpc`. Controlplane, ACR,
 Cost API và Admin UI phải đổi cùng change-set. Việc đổi descriptor không đổi
 field number hoặc wire type của `ZoneEntry`, vì vậy payload Protobuf đã lưu hoặc
-đang đi qua Shared Redis vẫn byte-compatible; tên gRPC method đầy đủ đổi sang
-`/hierarchy.rpc.ZoneService/...` và mọi producer/consumer phải dùng contract mới.
+đang đi qua Shared Redis vẫn byte-compatible; producer/consumer phải dùng cùng
+message contract và field number.
 
 Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zone:
 
@@ -129,6 +132,12 @@ Danh sách dịch vụ kích hoạt hoặc vô hiệu hóa theo cấu hình mong
 | **AI Workload** | `ai` | Xử lý workloads AI/GPU | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
 | **Storage** | `storage` | Lưu trữ Object/Block Storage | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
 | **Database** | `database` | Managed Database services | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
+| **Managed Services** | `managed_service` | Cho phép catalog và lifecycle Managed Service triển khai customer workload vào Kubernetes của Zone | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
+
+`managed_service` là static Zone capability trong V1. Customer catalog chỉ đọc
+`desired_state=true`; `actual_state` giữ `unknown` cho tới khi có runtime observer
+riêng. Capability này không tham gia Zone drain/recovery policy và không được suy
+diễn health từ việc customer workload có hoặc không tồn tại.
 
 ---
 
@@ -686,7 +695,7 @@ sequenceDiagram
    - `middleware.AdminXSSI()`: XSSI guard.
    - Không áp dụng Go-level authorization middleware vì SRE có toàn quyền.
 3. **HTTP Handler**: [`zone_handler.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/transport/http/handler/zone_handler.go#L355) giải mã payload mong muốn.
-4. **Hierarchy Service**: [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) xử lý workflow và repository CTE trả `ErrZoneServiceStateConflict` nếu Zone không ở `maintenance`.
+4. **Hierarchy Service**: [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go) xử lý workflow và repository CTE trả `ErrPreconditionFailed` nếu Zone không ở `maintenance`.
 5. **Database (Repo)**: [`zone_repo.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L401) chạy truy vấn CTE. Giao dịch chỉ cập nhật/chèn desired_state mới nếu trạng thái Zone khớp `maintenance`.
 
 ---
@@ -1045,15 +1054,20 @@ sequenceDiagram
 Hệ thống đưa ra quyết định chuyển đổi trạng thái vận hành của Zone dựa trên các chỉ số hiệu năng và sức khỏe đã validate. Triển khai tại [`policy.rs`](../../job-orchestrator/src/zone_state/policy.rs).
 
 > [!IMPORTANT]
-> **Nguyên tắc Enabled-Only Evaluation**: `DecisionEngine::evaluate()` chỉ nhận đầu vào từ các service đang **enabled** trên zone đó. Service bị tắt (`desired_state = false`) được coi là **không liên quan** — không được đưa vào điều kiện draining trigger cũng như recovery condition. Điều này ngăn zone bị kéo về `draining` chỉ vì một service không được cài đặt.
+> **Nguyên tắc Observed-and-Enabled Evaluation**: V1 chỉ đưa `mail` và `storage`
+> vào `DecisionEngine::evaluate()` vì đây là hai service có runtime observation
+> contract. Trong hai loại này, service bị tắt (`desired_state=false`) không được
+> tham gia draining/recovery. Các static capability khác, bao gồm
+> `managed_service`, không được kéo Zone về `draining` khi chưa có observer và
+> policy contract riêng.
 
 ---
 
 ### 12.0 EnabledServicesMap — In-Memory SOT của JO
 
 Job Orchestrator duy trì một `EnabledServicesMap` trong RAM để điều phối:
-- **Luồng nào được health check** (dataplane monitor)
-- **Input nào được đưa vào DecisionEngine**
+- metadata projection của toàn bộ static Zone capability;
+- enabled fence cho observer/policy của những service đã có runtime contract.
 
 ```
 EnabledServicesMap[zone_id] = {
@@ -1063,6 +1077,7 @@ EnabledServicesMap[zone_id] = {
     "kubernetes": true | false,
     "ai":         true | false,
     "database":   true | false,
+    "managed_service": true | false,
 }
 ```
 
@@ -1268,7 +1283,7 @@ sequenceDiagram
 | 12 | **Zombie generic Zone report** | Singleton watchdog hạ actual health bằng durable timestamp; không sửa desired state | `zone_state/watchdog.rs` |
 | 13 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
 | 14 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
-| 15 | **Duplicate zone code** | `UNIQUE (code)` → `ErrCodeAlreadyExists` | `zone_repo.go#L239-L244` |
+| 15 | **Duplicate zone code** | `UNIQUE (code)` → `ErrAlreadyExists` | `zone_repo.go` |
 | 16 | **UpdateService khi zone không maintenance** | SQL `WHERE status = 'maintenance'` trong upsert CTE | `zone_repo.go#L142` |
 | 17 | **EnabledServicesMap bootstrap gap** | Changefeed bootstrap toàn bộ desired state bằng long-lived metadata connection | `changefeed/worker.rs` |
 | 18 | **Decision với enabled info stale** | Mỗi report đọc một typed policy snapshot từ PostgreSQL; không cache SRE state qua rebalance | `zone_state/{processor,store}.rs` |

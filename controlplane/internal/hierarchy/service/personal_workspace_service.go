@@ -1,136 +1,84 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/hierarchy/service/personal_workspace_service.go
-//            Đặc Tả Nghiệp Vụ Quản Lý Vòng Đời Workspace Cá Nhân (Personal Scope)
-// ======================================================================================================
-
-package service
+package hierarchySvcImpl
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	metrics "controlplane/internal/hierarchy/metrics"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
-	"controlplane/pkg/apperr"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyMetrics "controlplane/internal/hierarchy/metrics"
 
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: PersonalWorkspaceServiceImpl triển khai PersonalWorkspaceService interface
 type PersonalWorkspaceServiceImpl struct {
-	repo hierarchyrepo.PersonalWorkspaceRepository
+	repo hierarchyRepoInterface.PersonalWorkspaceRepository
 }
 
-// [COMMENT]: NewPersonalWorkspaceService tạo instance mới của PersonalWorkspaceService
-func NewPersonalWorkspaceService(
-	repo hierarchyrepo.PersonalWorkspaceRepository,
-) hierarchyservice.PersonalWorkspaceService {
-	return &PersonalWorkspaceServiceImpl{
-		repo: repo,
-	}
+func NewPersonalWorkspaceService(repo hierarchyRepoInterface.PersonalWorkspaceRepository) hierarchySvcInterface.PersonalWorkspaceService {
+	return &PersonalWorkspaceServiceImpl{repo: repo}
 }
 
-func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error) {
+func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Context, in *hierarchyEntity.CreatePersonalWorkspace) (*hierarchyEntity.CreatePersonalWorkspace, error) {
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
-		return nil, apperr.Wrap(taxonomy.ErrGenUUID, err, metrics.OutcomeFailure)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate personal workspace id: %w", err)
 	}
-
 	now := time.Now().UTC()
-	workspace.ID = workspaceID
-	workspace.CreatedAt = now
-	workspace.UpdatedAt = now
+	in.ID = workspaceID
+	in.CreatedAt = now
+	in.UpdatedAt = now
 
-	start := time.Now()
-	result, err := s.repo.Create(ctx, workspace)
-	duration := time.Since(start)
+	startedAt := time.Now()
+	out, err := s.repo.CreateWorkspaceForPersonal(ctx, in)
 	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "CreateWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateWorkspaceForPersonal", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-
-	metrics.Downstream(ctx, metrics.KindRepo, "CreateWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return result, nil
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateWorkspaceForPersonal", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return out, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*entity.PersonalWorkspace, error) {
-	start := time.Now()
-	result, err := s.repo.GetByID(ctx, workspaceID)
-	duration := time.Since(start)
+func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Context, in *hierarchyEntity.ListPersonalWorkspaces) ([]hierarchyEntity.ListPersonalWorkspaces, error) {
+	startedAt := time.Now()
+	items, err := s.repo.ListWorkspacesForPersonal(ctx, in)
 	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "GetWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspacesForPersonal", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-
-	metrics.Downstream(ctx, metrics.KindRepo, "GetWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return result, nil
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspacesForPersonal", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return items, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*entity.WorkspacePersonalListItem, error) {
-	start := time.Now()
-	result, err := s.repo.ListByOwner(ctx, userID)
-	duration := time.Since(start)
+func (s *PersonalWorkspaceServiceImpl) ListWorkspaceCatalogForPersonal(ctx context.Context, in *hierarchyEntity.ListPersonalWorkspaceCatalog) ([]hierarchyEntity.ListPersonalWorkspaceCatalog, error) {
+	startedAt := time.Now()
+	items, err := s.repo.ListWorkspaceCatalogForPersonal(ctx, in)
 	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspacesForPersonal", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspaceCatalogForPersonal", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-
-	metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspacesForPersonal", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return result, nil
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspaceCatalogForPersonal", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return items, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) UpdateWorkspaceForPersonal(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error) {
-	start := time.Now()
-	result, err := s.repo.Update(ctx, workspace)
-	duration := time.Since(start)
+func (s *PersonalWorkspaceServiceImpl) DeleteWorkspaceForPersonal(ctx context.Context, in *hierarchyEntity.DeletePersonalWorkspace) error {
+	startedAt := time.Now()
+	err := s.repo.DeleteWorkspaceForPersonal(ctx, in)
 	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "UpdateWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
-		return nil, err
-	}
-
-	metrics.Downstream(ctx, metrics.KindRepo, "UpdateWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return result, nil
-}
-
-func (s *PersonalWorkspaceServiceImpl) DeleteWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID, ownerID uuid.UUID) error {
-	start := time.Now()
-	err := s.repo.Delete(ctx, workspaceID, ownerID)
-	duration := time.Since(start)
-	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "DeleteWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteWorkspaceForPersonal", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return err
 	}
-
-	metrics.Downstream(ctx, metrics.KindRepo, "DeleteWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteWorkspaceForPersonal", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
 	return nil
-}
-
-// [COMMENT]: ListWorkspaceCatalogForPersonal hot path catalog — query trực tiếp theo owner_id + zone_id, không cần cache
-func (s *PersonalWorkspaceServiceImpl) ListWorkspaceCatalogForPersonal(ctx context.Context, userID uuid.UUID, zoneID uuid.UUID) ([]entity.WorkspaceCatalog, error) {
-	start := time.Now()
-	result, err := s.repo.ListCatalogByOwner(ctx, userID, zoneID)
-	duration := time.Since(start)
-	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspaceCatalogForPersonal", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
-		return nil, err
-	}
-
-	metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspaceCatalogForPersonal", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return result, nil
 }

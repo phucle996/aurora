@@ -40,6 +40,11 @@ cho bounded request/reply, cache/invalidation và dữ liệu có thể tái t�
 Tên canonical duy nhất của module là `hierarchy`:
 
 - Go root package: `package hierarchy`.
+- Mọi package con mang prefix module: `hierarchyEntity`,
+  `hierarchyRepoInterface`, `hierarchySvcInterface`, `hierarchyRepoImpl`,
+  `hierarchySvcImpl`, `hierarchyHandler`, `hierarchyReq`,
+  `hierarchyTaxonomy`, `hierarchyMetrics`, `hierarchyMigrations` và
+  `hierarchyPubsubHandler`.
 - Admin API: `/admin/hierarchy/...`.
 - Critical admin mutation: `/admin/critical/hierarchy/...`.
 - Customer API đặt `hierarchy` trong resource path hiện hành.
@@ -67,7 +72,6 @@ internal/hierarchy/
 │   ├── repo/
 │   └── service/
 ├── metrics/
-├── model/
 ├── repository/
 ├── service/
 ├── taxonomy/
@@ -87,14 +91,14 @@ internal/hierarchy/
 
 Các package có trách nhiệm duy nhất:
 
-- `domain/entity`: business entity và enum; không chứa JSON transport contract.
+- `domain/entity` (`hierarchyEntity`): business entity và enum; không chứa JSON
+  transport contract.
 - `domain/repo`: repository interface; không khai báo struct.
 - `domain/service`: service interface; không khai báo struct.
 - `transport/http/dto/req`: request JSON struct duy nhất.
 - `transport/http/handler`: ingress validation, mapping và HTTP response.
 - `service`: business decision, system-owned values và orchestration.
 - `repository`: PostgreSQL query, transaction, lock và durable precondition.
-- `model`: row/scanning model nội bộ khi thật sự cần; không đi qua các layer.
 - `taxonomy`: sentinel error ổn định giữa repository, service và handler.
 - `metrics`: internal outcome/latency labels; không định nghĩa HTTP contract.
 
@@ -148,13 +152,24 @@ atomic workflow.
 
 Một thay đổi ở workflow A phải không tạo side effect ngầm lên workflow B.
 
+Interface và implementation chỉ giữ workflow đang có consumer hoặc route thật.
+Không giữ method dự phòng cho RPC, warmup, get/update chưa được wire; khi contract
+mới xuất hiện thì thêm lại trọn handler/service/repository/entity trong cùng
+change-set.
+
 ## 6. Entity và data pipeline
 
-Mỗi workflow sở hữu một business entity phẳng trong `domain/entity`:
+Mỗi workflow sở hữu một business entity phẳng, mang chính tên workflow, trong
+`domain/entity`:
 
-- Chỉ dùng field scalar, UUID, byte slice, enum và timestamp cần thiết.
+- Chỉ dùng field scalar, UUID, byte slice, enum và timestamp cần thiết. List
+  workflow được dùng bounded slice của primitive/UUID để mang permission filter,
+  nhưng không được nhúng entity khác.
 - Không nhúng request DTO hoặc database model.
 - Không nhúng entity của workflow khác.
+- Không tạo entity dùng chung kiểu `Zone`, `Tenant`, `WorkspaceCatalog` rồi
+  truyền chúng qua nhiều workflow. Ví dụ hợp lệ là `CreateZone`, `ListZones`,
+  `ResolveZoneByCode`, `CreateTenantWorkspace` và `DeleteTenantWorkspace`.
 - Không khai báo entity trong interface, handler, service hay repository file.
 - Nếu workflow cần outbox thì outbox là entity thứ hai duy nhất được phép đi vào
   repository cùng business entity.
@@ -238,6 +253,18 @@ Repository phải chuyển expected database outcome thành taxonomy:
   state guard fail phải map thành sentinel error có nghĩa nghiệp vụ.
 - Không trả `pgx.ErrNoRows` hay `*pgconn.PgError` như public workflow contract.
 - Lỗi hạ tầng không dự đoán được có thể wrap/return để handler log và trả 500.
+
+Taxonomy chỉ mô tả behavior dùng chung trong module, không mang tên object:
+
+- `ErrNotFound`.
+- `ErrAlreadyExists`.
+- `ErrConflict`.
+- `ErrInvalidTransition`.
+- `ErrPreconditionFailed`.
+
+Object và workflow đã được xác định bởi operation/log/trace nên không tạo
+`ErrZoneNotFound`, `ErrWorkspaceNotFound` hoặc sentinel tương tự. Không gom hai
+failure semantic khác nhau chỉ vì chúng cùng map HTTP 409.
 
 Idempotency phải dựa trên natural invariant khi có thể: UUID đã gán, unique code
 trong owner scope, unique fingerprint hoặc state no-op. Không tuyên bố

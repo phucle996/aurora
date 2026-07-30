@@ -1,50 +1,21 @@
-package service
+package hierarchySvcInterface
 
 import (
 	"context"
-	entity "controlplane/internal/hierarchy/domain/entity"
 
-	"github.com/google/uuid"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 )
 
-// [COMMENT]: TenantWorkspaceService quản lý các nghiệp vụ Workspace dành riêng cho đối tượng Doanh nghiệp (Enterprise).
-type TenantWorkspaceService interface {
-	// CreateWorkspaceForTenant tạo workspace mới cho Tenant, kiểm tra ràng buộc zone và tenant active
-	CreateWorkspaceForTenant(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error)
-
-	// GetWorkspaceForTenant xem chi tiết thông tin workspace thuộc Tenant
-	GetWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) (*entity.TenantWorkspace, error)
-
-	// ListWorkspacesForTenant lấy danh sách các workspace thuộc Tenant mà user có quyền read
-	ListWorkspacesForTenant(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]*entity.TenantWorkspace, error)
-
-	// ListWorkspaceCatalogForTenant lấy catalog workspace thuộc Tenant trong Zone cụ thể
-	ListWorkspaceCatalogForTenant(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]entity.WorkspaceCatalog, error)
-
-	// UpdateWorkspaceForTenant cập nhật cấu hình/thông tin workspace thuộc Tenant
-	UpdateWorkspaceForTenant(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error)
-
-	// DeleteWorkspaceForTenant xóa workspace thuộc Tenant
-	DeleteWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID, tenantID uuid.UUID) error
+type PersonalWorkspaceService interface {
+	CreateWorkspaceForPersonal(context.Context, *hierarchyEntity.CreatePersonalWorkspace) (*hierarchyEntity.CreatePersonalWorkspace, error)
+	ListWorkspacesForPersonal(context.Context, *hierarchyEntity.ListPersonalWorkspaces) ([]hierarchyEntity.ListPersonalWorkspaces, error)
+	ListWorkspaceCatalogForPersonal(context.Context, *hierarchyEntity.ListPersonalWorkspaceCatalog) ([]hierarchyEntity.ListPersonalWorkspaceCatalog, error)
+	DeleteWorkspaceForPersonal(context.Context, *hierarchyEntity.DeletePersonalWorkspace) error
 }
 
-// [COMMENT]: PersonalWorkspaceService quản lý các nghiệp vụ Workspace dành riêng cho cá nhân (Personal Owner).
-type PersonalWorkspaceService interface {
-	// CreateWorkspaceForPersonal tạo workspace mới cho tài khoản cá nhân, kiểm tra zone active
-	CreateWorkspaceForPersonal(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error)
-
-	// GetWorkspaceForPersonal xem chi tiết thông tin workspace cá nhân
-	GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*entity.PersonalWorkspace, error)
-
-	// ListWorkspacesForPersonal lấy danh sách các workspace cá nhân do user sở hữu hoặc được share quyền
-	ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*entity.WorkspacePersonalListItem, error)
-
-	// ListWorkspaceCatalogForPersonal lấy catalog workspace cá nhân do user sở hữu trong Zone cụ thể
-	ListWorkspaceCatalogForPersonal(ctx context.Context, userID uuid.UUID, zoneID uuid.UUID) ([]entity.WorkspaceCatalog, error)
-
-	// UpdateWorkspaceForPersonal cập nhật cấu hình/thông tin workspace cá nhân
-	UpdateWorkspaceForPersonal(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error)
-
-	// DeleteWorkspaceForPersonal xóa workspace cá nhân
-	DeleteWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID, ownerID uuid.UUID) error
+type TenantWorkspaceService interface {
+	CreateWorkspaceForTenant(context.Context, *hierarchyEntity.CreateTenantWorkspace) (*hierarchyEntity.CreateTenantWorkspace, error)
+	ListWorkspacesForTenant(context.Context, *hierarchyEntity.ListTenantWorkspaces) ([]hierarchyEntity.ListTenantWorkspaces, error)
+	ListWorkspaceCatalogForTenant(context.Context, *hierarchyEntity.ListTenantWorkspaceCatalog) ([]hierarchyEntity.ListTenantWorkspaceCatalog, error)
+	DeleteWorkspaceForTenant(context.Context, *hierarchyEntity.DeleteTenantWorkspace) error
 }

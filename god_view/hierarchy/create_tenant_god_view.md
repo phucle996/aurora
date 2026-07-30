@@ -147,7 +147,7 @@ sequenceDiagram
     Note over Svc: B4: Sinh UUIDv7 cho Tenant mới
     Note over Svc: B5: Thiết lập Status (active) & Timestamps (now)
     
-    Svc->>Repo: CreateTenant(ctx, tenant, ownerID)
+    Svc->>Repo: CreateTenant(ctx, *CreateTenant)
     
     Note over Repo: B6: Một PostgreSQL transaction
     Repo->>DB: INSERT tenant
@@ -157,9 +157,9 @@ sequenceDiagram
     
     alt DB Success (Event 2A)
         DB-->>Repo: 1 row inserted (id, code, name, status, created_at)
-        Repo-->>Svc: *entity.Tenant, nil
+        Repo-->>Svc: *CreateTenant, nil
         Note over Svc: Ghi nhận metric: OutcomeSuccess & Latency
-        Svc-->>Handler: *entity.Tenant, nil
+        Svc-->>Handler: *CreateTenant, nil
         Handler-->>Envoy: HTTP 201 Created (JSON Payload)
         Svc-->>Relay: Non-blocking wake hint after commit
         Relay->>Redis: XADD billing:wallet:tenant:provision-requests + WAITAOF
@@ -168,16 +168,16 @@ sequenceDiagram
         Cost-->>Redis: XACK only after Billing commit
     else DB Unique Violation Code 23505 (Event 2B)
         DB-->>Repo: Error 23505
-        Repo-->>Svc: nil, ErrCodeAlreadyExists
+        Repo-->>Svc: nil, ErrAlreadyExists
         Note over Svc: Ghi nhận metric: OutcomeFailure
-        Svc-->>Handler: nil, ErrCodeAlreadyExists
+        Svc-->>Handler: nil, ErrAlreadyExists
         Handler-->>Envoy: HTTP 409 Conflict ("tenant code already exists")
-    else DB No Rows Affected (Event 2C)
-        DB-->>Repo: No rows
-        Repo-->>Svc: nil, ErrNoRowAffected
+    else Infrastructure/transaction failure (Event 2C)
+        DB-->>Repo: Unexpected database error
+        Repo-->>Svc: raw wrapped infrastructure error
         Note over Svc: Ghi nhận metric: OutcomeFailure
-        Svc-->>Handler: nil, ErrNoRowAffected
-        Handler-->>Envoy: HTTP 400 Bad Request ("tenant creation failed")
+        Svc-->>Handler: raw wrapped infrastructure error
+        Handler-->>Envoy: HTTP 500 Internal Server Error ("internal_error")
     end
 ```
 

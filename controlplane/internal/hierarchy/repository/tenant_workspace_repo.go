@@ -1,9 +1,4 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/hierarchy/repository/tenant_workspace_repo.go
-//            Đặc Tả Hạ Tầng Lưu Trữ & Truy Vấn Workspace Doanh Nghiệp (Tenant Scope)
-// ======================================================================================================
-
-package repository
+package hierarchyRepoImpl
 
 import (
 	"context"
@@ -11,290 +6,162 @@ import (
 	"fmt"
 
 	"controlplane/internal/config"
-	entity "controlplane/internal/hierarchy/domain/entity"
-	model "controlplane/internal/hierarchy/model"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// [COMMENT]: TenantWorkspaceRepoImpl triển khai TenantWorkspaceRepository
 type TenantWorkspaceRepoImpl struct {
-	db                                *pgxpool.Pool
-	schema                            string
-	createWorkspaceQuery              string
-	getWorkspaceByIDQuery             string
-	listAllWorkspacesByTenantQuery    string
-	listWorkspacesByTenantAndIDsQuery string
-	listCatalogAllByTenantQuery       string
-	listCatalogByTenantAndIDsQuery    string
-	updateWorkspaceQuery              string
-	deleteWorkspaceQuery              string
+	db               *pgxpool.Pool
+	createQuery      string
+	listQuery        string
+	listCatalogQuery string
+	deleteQuery      string
 }
 
-// [COMMENT]: NewTenantWorkspaceRepoImpl khởi tạo repo và biên dịch sẵn tất cả câu SQL tránh fmt.Sprintf runtime
-func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *TenantWorkspaceRepoImpl {
+func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyRepoInterface.TenantWorkspaceRepository {
 	schema := cfg.SchemaSQL.Hierarchy
 	return &TenantWorkspaceRepoImpl{
-		db:     db,
-		schema: schema,
-
-		// [COMMENT]: Single-query validation pattern — kiểm tra zone active + tenant active trong cùng INSERT để tránh TOCTOU race condition
-		createWorkspaceQuery: fmt.Sprintf(`
-			WITH zone_check AS (
-				SELECT id FROM %s.zones WHERE id = $5 AND status = 'active'
-			), tenant_check AS (
-				SELECT EXISTS(SELECT 1 FROM %s.tenants WHERE id = $6 AND status = 'active') AS valid
+		db: db,
+		// FOR SHARE keeps concurrent parent status transitions from invalidating
+		// either durable precondition between the checks and insert.
+		createQuery: fmt.Sprintf(`
+			WITH target_zone AS MATERIALIZED (
+				SELECT id FROM %s.zones WHERE id = $5 AND status = 'active' FOR SHARE
+			), target_tenant AS MATERIALIZED (
+				SELECT id FROM %s.tenants WHERE id = $6 AND status = 'active' FOR SHARE
 			), inserted AS (
-				INSERT INTO %s.tenant_workspaces (id, name, code, description, zone_id, tenant_id, owner_id, created_at, updated_at)
-				SELECT $1, $2, $3, $4, $5, $6, $7, now(), now()
-				WHERE EXISTS(SELECT 1 FROM zone_check) AND (SELECT valid FROM tenant_check)
-				RETURNING id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
+				INSERT INTO %s.tenant_workspaces
+					(id, name, code, description, zone_id, tenant_id, owner_id, created_at, updated_at)
+				SELECT $1, $2, $3, $4, target_zone.id, target_tenant.id, $7, $8, $9
+				FROM target_zone CROSS JOIN target_tenant
+				RETURNING id, name, code, COALESCE(description, ''), zone_id, tenant_id, owner_id, created_at, updated_at
 			)
-			SELECT
-				(SELECT COUNT(*) FROM zone_check) AS zone_exists,
-				(SELECT valid FROM tenant_check) AS tenant_valid,
-				COALESCE(i.id, '00000000-0000-0000-0000-000000000000'::uuid) AS id,
-				COALESCE(i.name, '') AS name,
-				COALESCE(i.code, '') AS code,
-				COALESCE(i.description, '') AS description,
-				COALESCE(i.zone_id, '00000000-0000-0000-0000-000000000000'::uuid) AS zone_id,
-				COALESCE(i.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) AS tenant_id,
-				COALESCE(i.owner_id, '00000000-0000-0000-0000-000000000000'::uuid) AS owner_id,
-				COALESCE(i.created_at, now()) AS created_at,
-				COALESCE(i.updated_at, now()) AS updated_at
-			FROM (SELECT 1) AS dummy
-			LEFT JOIN inserted i ON true
+			SELECT EXISTS(SELECT 1 FROM target_zone),
+				EXISTS(SELECT 1 FROM target_tenant),
+				EXISTS(SELECT 1 FROM inserted),
+				COALESCE((SELECT id FROM inserted), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT name FROM inserted), ''),
+				COALESCE((SELECT code FROM inserted), ''),
+				COALESCE((SELECT description FROM inserted), ''),
+				COALESCE((SELECT zone_id FROM inserted), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT tenant_id FROM inserted), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT owner_id FROM inserted), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT created_at FROM inserted), now()),
+				COALESCE((SELECT updated_at FROM inserted), now())
 		`, schema, schema, schema),
-
-		getWorkspaceByIDQuery: fmt.Sprintf(`
-			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at 
-			FROM %s.tenant_workspaces 
-			WHERE id = $1
-		`, schema),
-
-		listAllWorkspacesByTenantQuery: fmt.Sprintf(`
-			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
+		listQuery: fmt.Sprintf(`
+			SELECT id, name, code, COALESCE(description, ''), zone_id, owner_id, created_at
 			FROM %s.tenant_workspaces
-			WHERE tenant_id = $1
+			WHERE tenant_id = $1 AND ($2 OR id = ANY($3))
+			ORDER BY created_at, id
 		`, schema),
-
-		listWorkspacesByTenantAndIDsQuery: fmt.Sprintf(`
-			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
-			FROM %s.tenant_workspaces
-			WHERE tenant_id = $1 AND id = ANY($2)
-		`, schema),
-
-		// [COMMENT]: Catalog queries chỉ SELECT 3 cột tối giản để phục vụ hot path — lọc theo zone_id giúp trả đúng ngữ cảnh deployment hiện tại
-		listCatalogAllByTenantQuery: fmt.Sprintf(`
+		listCatalogQuery: fmt.Sprintf(`
 			SELECT id, code, name
 			FROM %s.tenant_workspaces
-			WHERE tenant_id = $1 AND zone_id = $2
+			WHERE tenant_id = $1 AND zone_id = $2 AND ($3 OR id = ANY($4))
+			ORDER BY created_at, id
 		`, schema),
-
-		listCatalogByTenantAndIDsQuery: fmt.Sprintf(`
-			SELECT id, code, name
-			FROM %s.tenant_workspaces
-			WHERE tenant_id = $1 AND zone_id = $2 AND id = ANY($3)
-		`, schema),
-
-		updateWorkspaceQuery: fmt.Sprintf(`
-			UPDATE %s.tenant_workspaces 
-			SET name = $2, description = $3, updated_at = now() 
-			WHERE id = $1 
-			RETURNING id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
-		`, schema),
-
-		deleteWorkspaceQuery: fmt.Sprintf(`
-			WITH workspace_check AS (
-				SELECT id, tenant_id FROM %s.tenant_workspaces WHERE id = $1 AND tenant_id = $2
-			), total_count AS (
-				SELECT COUNT(*) AS total FROM %s.tenant_workspaces WHERE tenant_id = $2
+		// Locking the complete tenant scope serializes concurrent deletes so two
+		// replicas cannot both observe a count of two and remove the final pair.
+		deleteQuery: fmt.Sprintf(`
+			WITH locked_workspaces AS MATERIALIZED (
+				SELECT id FROM %s.tenant_workspaces WHERE tenant_id = $2 FOR UPDATE
+			), target AS MATERIALIZED (
+				SELECT id FROM locked_workspaces WHERE id = $1
+			), workspace_count AS MATERIALIZED (
+				SELECT COUNT(*) AS total FROM locked_workspaces
 			), deleted AS (
 				DELETE FROM %s.tenant_workspaces
-				WHERE id = $1 AND tenant_id = $2 AND (SELECT total FROM total_count) > 1
+				WHERE id = $1 AND tenant_id = $2 AND (SELECT total FROM workspace_count) > 1
 				RETURNING id
 			)
-			SELECT 
-				EXISTS(SELECT 1 FROM workspace_check) AS exists,
-				(SELECT total FROM total_count) AS total_count,
-				EXISTS(SELECT 1 FROM deleted) AS deleted
-		`, schema, schema, schema),
+			SELECT EXISTS(SELECT 1 FROM target),
+				COALESCE((SELECT total FROM workspace_count), 0),
+				EXISTS(SELECT 1 FROM deleted)
+		`, schema, schema),
 	}
 }
 
-func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error) {
-	var zoneExists int
-	var tenantValid bool
-	var m model.TenantWorkspace
-
-	err := r.db.QueryRow(ctx, r.createWorkspaceQuery,
-		workspace.ID,
-		workspace.Name,
-		workspace.Code,
-		workspace.Description,
-		workspace.ZoneID,
-		workspace.TenantID,
-		workspace.OwnerID,
+func (r *TenantWorkspaceRepoImpl) CreateWorkspaceForTenant(ctx context.Context, in *hierarchyEntity.CreateTenantWorkspace) (*hierarchyEntity.CreateTenantWorkspace, error) {
+	var zoneExists, tenantExists, inserted bool
+	out := &hierarchyEntity.CreateTenantWorkspace{}
+	err := r.db.QueryRow(ctx, r.createQuery,
+		in.ID, in.Name, in.Code, in.Description, in.ZoneID, in.TenantID, in.OwnerID, in.CreatedAt, in.UpdatedAt,
 	).Scan(
-		&zoneExists,
-		&tenantValid,
-		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+		&zoneExists, &tenantExists, &inserted, &out.ID, &out.Name, &out.Code,
+		&out.Description, &out.ZoneID, &out.TenantID, &out.OwnerID, &out.CreatedAt, &out.UpdatedAt,
 	)
-
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, taxonomy.ErrWorkspaceCodeAlreadyExists
-		}
-		return nil, fmt.Errorf("database query error: %w", err)
-	}
-
-	if zoneExists == 0 {
-		return nil, taxonomy.ErrZoneNotFound
-	}
-	if !tenantValid {
-		return nil, taxonomy.ErrTenantNotFound
-	}
-	if m.ID == uuid.Nil {
-		return nil, taxonomy.ErrWorkspaceInsertFailed
-	}
-
-	result := model.TenantWorkspaceModelToEntity(m)
-	return &result, nil
-}
-
-func (r *TenantWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*entity.TenantWorkspace, error) {
-	var m model.TenantWorkspace
-	err := r.db.QueryRow(ctx, r.getWorkspaceByIDQuery, id).Scan(
-		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, taxonomy.ErrWorkspaceNotFound
+			return nil, hierarchyTaxonomy.ErrAlreadyExists
 		}
 		return nil, err
 	}
-	result := model.TenantWorkspaceModelToEntity(m)
-	return &result, nil
+	if !zoneExists || !tenantExists {
+		return nil, hierarchyTaxonomy.ErrNotFound
+	}
+	if !inserted || out.ID == uuid.Nil {
+		return nil, fmt.Errorf("create tenant workspace returned no row")
+	}
+	return out, nil
 }
 
-func (r *TenantWorkspaceRepoImpl) ListAllByTenant(ctx context.Context, tenantID uuid.UUID) ([]*entity.TenantWorkspace, error) {
-	rows, err := r.db.Query(ctx, r.listAllWorkspacesByTenantQuery, tenantID)
+func (r *TenantWorkspaceRepoImpl) ListWorkspacesForTenant(ctx context.Context, in *hierarchyEntity.ListTenantWorkspaces) ([]hierarchyEntity.ListTenantWorkspaces, error) {
+	rows, err := r.db.Query(ctx, r.listQuery, in.TenantID, in.AllWorkspaces, in.AllowedWorkspaceIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var list []*entity.TenantWorkspace
+	items := make([]hierarchyEntity.ListTenantWorkspaces, 0)
 	for rows.Next() {
-		var m model.TenantWorkspace
-		err := rows.Scan(
-			&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
-		)
-		if err != nil {
+		item := hierarchyEntity.ListTenantWorkspaces{TenantID: in.TenantID, RoleID: in.RoleID}
+		if err := rows.Scan(&item.ID, &item.Name, &item.Code, &item.Description, &item.ZoneID, &item.OwnerID, &item.CreatedAt); err != nil {
 			return nil, err
 		}
-		result := model.TenantWorkspaceModelToEntity(m)
-		list = append(list, &result)
+		items = append(items, item)
 	}
-	return list, nil
+	return items, rows.Err()
 }
 
-func (r *TenantWorkspaceRepoImpl) ListByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]*entity.TenantWorkspace, error) {
-	rows, err := r.db.Query(ctx, r.listWorkspacesByTenantAndIDsQuery, tenantID, ids)
+func (r *TenantWorkspaceRepoImpl) ListWorkspaceCatalogForTenant(ctx context.Context, in *hierarchyEntity.ListTenantWorkspaceCatalog) ([]hierarchyEntity.ListTenantWorkspaceCatalog, error) {
+	rows, err := r.db.Query(ctx, r.listCatalogQuery, in.TenantID, in.ZoneID, in.AllWorkspaces, in.AllowedWorkspaceIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var list []*entity.TenantWorkspace
+	items := make([]hierarchyEntity.ListTenantWorkspaceCatalog, 0)
 	for rows.Next() {
-		var m model.TenantWorkspace
-		err := rows.Scan(
-			&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
-		)
-		if err != nil {
+		item := hierarchyEntity.ListTenantWorkspaceCatalog{TenantID: in.TenantID, ZoneID: in.ZoneID, RoleID: in.RoleID}
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name); err != nil {
 			return nil, err
 		}
-		result := model.TenantWorkspaceModelToEntity(m)
-		list = append(list, &result)
+		items = append(items, item)
 	}
-	return list, nil
+	return items, rows.Err()
 }
 
-func (r *TenantWorkspaceRepoImpl) Update(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error) {
-	var m model.TenantWorkspace
-	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, workspace.Description).Scan(
-		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	result := model.TenantWorkspaceModelToEntity(m)
-	return &result, nil
-}
-
-func (r *TenantWorkspaceRepoImpl) Delete(ctx context.Context, id uuid.UUID, tenantID uuid.UUID) error {
-	var exists bool
-	var totalCount int
-	var deleted bool
-
-	err := r.db.QueryRow(ctx, r.deleteWorkspaceQuery, id, tenantID).Scan(&exists, &totalCount, &deleted)
+func (r *TenantWorkspaceRepoImpl) DeleteWorkspaceForTenant(ctx context.Context, in *hierarchyEntity.DeleteTenantWorkspace) error {
+	var exists, deleted bool
+	var total int
+	err := r.db.QueryRow(ctx, r.deleteQuery, in.ID, in.TenantID).Scan(&exists, &total, &deleted)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return taxonomy.ErrWorkspaceNotEmpty
+			return hierarchyTaxonomy.ErrPreconditionFailed
 		}
 		return err
 	}
-
 	if !exists {
-		return taxonomy.ErrWorkspaceNotFound
+		return hierarchyTaxonomy.ErrNotFound
 	}
-	if !deleted {
-		return taxonomy.ErrLastWorkspaceDeletionBlocked
+	if total <= 1 || !deleted {
+		return hierarchyTaxonomy.ErrPreconditionFailed
 	}
 	return nil
-}
-
-// [COMMENT]: ListCatalogAllByTenant lấy catalog tối giản (id, code, name) của toàn bộ workspace thuộc Tenant trong Zone — hot path SELECT 3 cột
-func (r *TenantWorkspaceRepoImpl) ListCatalogAllByTenant(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]entity.WorkspaceCatalog, error) {
-	rows, err := r.db.Query(ctx, r.listCatalogAllByTenantQuery, tenantID, zoneID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var list []entity.WorkspaceCatalog
-	for rows.Next() {
-		var c entity.WorkspaceCatalog
-		if err := rows.Scan(&c.ID, &c.Code, &c.Name); err != nil {
-			return nil, err
-		}
-		list = append(list, c)
-	}
-	return list, nil
-}
-
-// [COMMENT]: ListCatalogByTenantAndIDs lấy catalog tối giản (id, code, name) theo danh sách IDs trong Zone — hot path permission-aware
-func (r *TenantWorkspaceRepoImpl) ListCatalogByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID, ids []uuid.UUID) ([]entity.WorkspaceCatalog, error) {
-	rows, err := r.db.Query(ctx, r.listCatalogByTenantAndIDsQuery, tenantID, zoneID, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var list []entity.WorkspaceCatalog
-	for rows.Next() {
-		var c entity.WorkspaceCatalog
-		if err := rows.Scan(&c.ID, &c.Code, &c.Name); err != nil {
-			return nil, err
-		}
-		list = append(list, c)
-	}
-	return list, nil
 }

@@ -164,6 +164,13 @@ bằng auth generation + owner mode + Zone + workspace + revision. List dùng ke
 cursor và page tối đa 100; Console chỉ tải page tiếp theo theo action hữu hạn. P03
 không đăng ký `POST /instances`.
 
+Zone admission của module bắt buộc capability `managed_service` trong
+`hierarchy.zone_service_type`. Mọi personal/tenant catalog và version-detail query
+kiểm tra durable `zone_services.desired_state=true` trước requirement riêng của
+revision; `actual_state` không phải eligibility SoT. Capability này chưa là runtime
+health signal và không được làm Zone draining khi chưa có observer/policy contract
+riêng.
+
 Mọi handler trả response qua `pkg/apires`: payload vẫn dùng `gin.H`, success envelope
 là `{data,message}`, error envelope là `{error,message}`. Stable taxonomy cần code
 riêng phải được bổ sung theo HTTP status trong `pkg/apires`; handler không gọi
@@ -360,3 +367,36 @@ Nguyên tắc cốt lõi:
 * Published blueprint revision là immutable; muốn sửa phải tạo revision mới.
 * Customer instance luôn pin `template_id + revision + bundle_hash`, không đọc
   “latest template” ở downstream.
+
+### 8. Quy Chuẩn Khởi Tạo Tài Nguyên (Atomic Resource Provisioning Pattern)
+
+Để đảm bảo tính nhất quán dữ liệu, chống Race-Condition, ngăn chặn rác Outbox Event và tối ưu hóa tài nguyên Database, tất cả các workflow khởi tạo Resource (Instance, Resource Object, Stateful Entity) tại Controlplane BẮT BUỘC phải tuân thủ mô hình 2 tầng sau:
+
+#### A. Tầng API / Handler (Static Validation & Fail-Fast ở Memory)
+- **Sanitization & Shape Check:** Parse và validate kiểu dữ liệu, giới hạn kích thước Payload (`http.MaxBytesReader`), kiểm tra cấu hình JSON Schema / Form Contract.
+- **Canonicalization & Hashing:** Chuyển đổi JSON thô (`json.RawMessage`) thành cấu trúc Go rồi `json.Marshal` ngược lại để chuẩn hóa chuỗi JSON (Canonical JSON), dùng làm dấu vân tay SHA256 Hash duy nhất (Idempotent Fingerprint).
+- **Fail-Fast:** Ngắt và trả về lỗi `400 Bad Request` hoặc `422 Unprocessable Entity` ngay lập tức tại RAM nếu dữ liệu sai định dạng. Tuyệt đối KHÔNG mở kết nối Database hay gọi SQL khi Request Body chưa hợp lệ.
+
+#### B. Tầng Database Repository (Atomic CTE Transaction)
+Thực thi duy nhất **01 câu lệnh SQL CTE (Common Table Expression)** trong một Transaction duy nhất. SQL CTE phải thực hiện khóa (Lock) theo thứ tự ưu tiên và kiểm tra nguyên tử 5 nhóm điều kiện:
+
+1. **Workspace & Owner Binding:** Xác thực `workspace_id` gắn đúng với `owner_id` và `zone_id` tương ứng.
+2. **Zone Admission Gate:** Kiểm tra `zone_services` của Zone target xem có `desired_state = true` với dịch vụ tương ứng (VD: `service_type = 'managed_service'`) hay không.
+3. **Zone Capability & Selector Matching:** 
+   - Kiểm tra `zone_selector` (`all` hoặc nằm trong `allow_list`).
+   - Kiểm tra Zone có chứa đầy đủ các năng lực hạ tầng (`all_of`: `storage`, `database`...) mà Resource Blueprint yêu cầu.
+4. **Catalog Integrity & Checksum Verification:** Kiểm tra toàn bộ chuỗi trạng thái (`active`/`available`/`published`) và đối chiếu mã hash SHA256 giữa DB và Receiver Receipt.
+5. **Code Uniqueness & Intent Serialisation:** 
+   - Kiểm tra tính duy nhất của mã `code` trong cùng Workspace.
+   - Trùng `code` + Trùng Intent Payload $\rightarrow$ Trả về Operation/Instance hiện tại (Idempotent Success).
+   - Trùng `code` + Khác Intent Payload $\rightarrow$ Trả về Conflict Error (`ErrCatalogCodeConflict`).
+
+#### 🟢 Atomic Write Commit:
+Chỉ khi TẤT CẢ các bước trên khớp 100%, CTE mới ghi nhận đồng thời trong 1 lần Commit duy nhất:
+- `Resource Instance` (trạng thái `PROVISIONING` / `PENDING`)
+- `Instance Revision` (lưu snapshot configuration + ciphertext)
+- `Resource Operation` (trạng thái `ACCEPTED`)
+- `Outbox Event` (để Job Orchestrator nhặt và gửi sang Kafka)
+
+*Lưu ý:* Nếu bất kỳ điều kiện nào thất bại, PostgreSQL sẽ tự động Rollback toàn bộ Transaction. Không có bản ghi rác nào được tạo và KHÔNG có Outbox Event nào được bắn sang Kafka.
+

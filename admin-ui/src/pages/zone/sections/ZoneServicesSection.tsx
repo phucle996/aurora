@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Server, Database, Layers3, Cpu, PackageCheck, Clock, AlertTriangle } from 'lucide-react'
+import { Server, Database, Layers3, Cpu, PackageCheck, CloudCog, Clock, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Switch } from '@/components/ui/switch'
 import { Fetch } from '@/lib/fetch'
@@ -13,6 +13,7 @@ const fullServiceCatalog = [
   { key: 'kubernetes', label: 'Kubernetes', description: 'Managed Kubernetes clusters.' },
   { key: 'ai', label: 'AI Services', description: 'AI/ML workloads and GPU acceleration.' },
   { key: 'mail', label: 'Mail Services', description: 'Email and messaging services.' },
+  { key: 'managed_service', label: 'Managed Services', description: 'Customer managed-service workloads provisioned on Kubernetes.' },
 ]
 
 export const ServiceIcon = ({ serviceKey }: { serviceKey: string }) => {
@@ -26,7 +27,9 @@ export const ServiceIcon = ({ serviceKey }: { serviceKey: string }) => {
           ? Cpu
           : serviceKey === 'mail'
             ? PackageCheck
-            : Clock
+            : serviceKey === 'managed_service'
+              ? CloudCog
+              : Clock
   return <Icon className="size-4 text-muted-foreground/80" />
 }
 

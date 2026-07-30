@@ -1,16 +1,4 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/hierarchy/service/zone_service.go
-//            Đặc Tả Nghiệp Vụ Quản Lý Vòng Đời Zone & Zone Services
-// ======================================================================================================
-//
-// 📜 THIẾT KẾ & TÁCH BIỆT TRÁCH NHIỆM:
-//   - ZoneService chỉ tập trung vào logic nghiệp vụ và tương tác với Database (Source of Truth).
-//   - Toàn bộ logic quản lý bộ nhớ đệm L2 RAM Cache, đồng bộ phiên bản (Versioning) và cơ chế phát tán
-//     (Redis Pub/Sub Fanout) được che giấu hoàn toàn phía sau lớp cache (ZoneFanoutCache).
-//
-// ======================================================================================================
-
-package service
+package hierarchySvcImpl
 
 import (
 	"context"
@@ -18,14 +6,11 @@ import (
 	"strings"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	metrics "controlplane/internal/hierarchy/metrics"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyMetrics "controlplane/internal/hierarchy/metrics"
 	hierarchyproto "controlplane/internal/hierarchy/transport/proto"
-	"controlplane/pkg/apperr"
-	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -33,229 +18,230 @@ import (
 )
 
 type ZoneService struct {
-	repo hierarchyrepo.ZoneRepository
+	repo hierarchyRepoInterface.ZoneRepository
 	rds  *goredis.Client
 }
 
-func NewZoneService(
-	repo hierarchyrepo.ZoneRepository,
-	rds *goredis.Client,
-) hierarchyservice.ZoneService {
-	return &ZoneService{
-		repo: repo,
-		rds:  rds,
-	}
+func NewZoneService(repo hierarchyRepoInterface.ZoneRepository, rds *goredis.Client) hierarchySvcInterface.ZoneService {
+	return &ZoneService{repo: repo, rds: rds}
 }
 
-func (s *ZoneService) ListZones(ctx context.Context) ([]entity.Zone, error) {
-	// [COMMENT]: Gọi xuống repository ListZones và đo lường thời gian thực thi downstream
-	start := time.Now()
-	zones, err := s.repo.ListZones(ctx)
-	duration := time.Since(start)
+func (s *ZoneService) ListZones(ctx context.Context, in *hierarchyEntity.ListZones) ([]hierarchyEntity.ListZones, error) {
+	startedAt := time.Now()
+	items, err := s.repo.ListZones(ctx, in)
 	if err != nil {
-		metrics.Downstream(ctx, metrics.KindRepo, "ListZones", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZones", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	metrics.Downstream(ctx, metrics.KindRepo, "ListZones", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return zones, nil
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZones", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return items, nil
 }
 
-// AcrListZones phục vụ luồng sync sang ACR chỉ lấy 4 thuộc tính (ID, Code, Name, Status).
-// Triển khai này giúp tối ưu hóa hiệu năng, giảm dung lượng payload khi đồng bộ danh sách Zone qua biên.
-func (s *ZoneService) AcrListZones(ctx context.Context) ([]entity.RPCZone, error) {
-	// [COMMENT]: Gọi xuống repository AcrListZones chuyên biệt và đo lường thời gian thực thi downstream
-	start := time.Now()
-	zones, err := s.repo.AcrListZones(ctx)
-	duration := time.Since(start)
+func (s *ZoneService) ListZoneCatalog(ctx context.Context, in *hierarchyEntity.ListZoneCatalog) ([]hierarchyEntity.ListZoneCatalog, error) {
+	startedAt := time.Now()
+	items, err := s.repo.ListZoneCatalog(ctx, in)
 	if err != nil {
-		// [COMMENT]: Ghi nhận lỗi truy vấn cơ sở dữ liệu kèm thời gian thực thi
-		metrics.Downstream(ctx, metrics.KindRepo, "AcrListZones", metrics.OutcomeFailure, duration, err)
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZoneCatalog", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	// [COMMENT]: Ghi nhận truy vấn cơ sở dữ liệu thành công kèm thời gian thực thi
-	metrics.Downstream(ctx, metrics.KindRepo, "AcrListZones", metrics.OutcomeSuccess, duration, nil)
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return zones, nil
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZoneCatalog", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return items, nil
 }
 
-// CreateZone tạo zone mới + cập nhật cache (tự động đồng bộ các replica).
-func (s *ZoneService) CreateZone(ctx context.Context, input entity.CreateZoneInput) error {
-	now := time.Now().UTC()
+func (s *ZoneService) ResolveZoneByCode(ctx context.Context, in *hierarchyEntity.ResolveZoneByCode) (*hierarchyEntity.ResolveZoneByCode, error) {
+	startedAt := time.Now()
+	out, err := s.repo.ResolveZoneByCode(ctx, in)
+	if err != nil {
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ResolveZoneByCode", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, err
+	}
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ResolveZoneByCode", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return out, nil
+}
+
+func (s *ZoneService) CreateZone(ctx context.Context, in *hierarchyEntity.CreateZone) (*hierarchyEntity.CreateZone, error) {
 	zoneID, err := uuid.NewV7()
 	if err != nil {
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
-		return apperr.Wrap(taxonomy.ErrZoneInvalidInput, err, metrics.OutcomeFailure)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate zone id: %w", err)
 	}
-	zone := entity.Zone{
-		ID:          zoneID,
-		Code:        input.Code,
-		Name:        input.Name,
-		Location:    input.Location,
-		Description: input.Description,
-		Status:      entity.ZoneStatusPlanned,
-		CreatedAt:   &now,
-		UpdatedAt:   &now,
-	}
-	svcs := map[entity.ZoneServiceType]bool{
-		entity.ZoneServiceTypeHypervisor: input.EnableHypervisor,
-		entity.ZoneServiceTypeStorage:    input.EnableStorage,
-		entity.ZoneServiceTypeMail:       input.EnableMail,
-		entity.ZoneServiceTypeKubernetes: input.EnableKubernetes,
-		entity.ZoneServiceTypeAI:         input.EnableAI,
-		entity.ZoneServiceTypeDatabase:   input.EnableDatabase,
-	}
-
-	start := time.Now()
-	if err := s.repo.CreateZone(ctx, zone, svcs); err != nil {
-		duration := time.Since(start)
-		metrics.Downstream(ctx, metrics.KindRepo, "CreateZone", metrics.OutcomeFailure, duration, err)
-		return err
-	}
-
-	// [COMMENT]: Shared Redis is a required app-level dependency. A runtime
-	// write failure remains best-effort because PostgreSQL is the Zone SoT.
-	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zone.Code)))
-	val := fmt.Sprintf("%s:%s", zone.ID, zone.Status)
-	_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
-	s.publishInvalidation(ctx, zoneID, false)
-
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return nil
-}
-
-// GetZoneDetailByID lấy thông tin chi tiết của một Zone kèm theo tất cả các dịch vụ của nó.
-func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*entity.ZoneDetail, error) {
-
-	defer metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	start := time.Now()
-	detail, err := s.repo.GetZoneDetailByID(ctx, id)
+	hypervisorID, err := uuid.NewV7()
 	if err != nil {
-		duration := time.Since(start)
-		metrics.Downstream(ctx, metrics.KindRepo, "GetZoneDetailByID", metrics.OutcomeFailure, duration, err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate hypervisor service id: %w", err)
+	}
+	storageID, err := uuid.NewV7()
+	if err != nil {
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate storage service id: %w", err)
+	}
+	mailID, err := uuid.NewV7()
+	if err != nil {
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate mail service id: %w", err)
+	}
+	kubernetesID, err := uuid.NewV7()
+	if err != nil {
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate kubernetes service id: %w", err)
+	}
+	aiID, err := uuid.NewV7()
+	if err != nil {
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate AI service id: %w", err)
+	}
+	databaseID, err := uuid.NewV7()
+	if err != nil {
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate database service id: %w", err)
+	}
+	managedServiceID, err := uuid.NewV7()
+	if err != nil {
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate managed service id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	in.ID = zoneID
+	in.Status = hierarchyEntity.ZoneStatusPlanned
+	in.HypervisorServiceID = hypervisorID
+	in.StorageServiceID = storageID
+	in.MailServiceID = mailID
+	in.KubernetesServiceID = kubernetesID
+	in.AIServiceID = aiID
+	in.DatabaseServiceID = databaseID
+	in.ManagedServiceID = managedServiceID
+	in.CreatedAt = now
+	in.UpdatedAt = now
+
+	startedAt := time.Now()
+	out, err := s.repo.CreateZone(ctx, in)
+	if err != nil {
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateZone", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateZone", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
 
-	return detail, nil
+	// Shared Redis is rebuildable soft state. PostgreSQL has already committed,
+	// so cache and fanout failures cannot reverse the business outcome.
+	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(out.Code)))
+	redisValue := fmt.Sprintf("%s:%s", out.ID, out.Status)
+	_ = s.rds.Set(ctx, redisKey, redisValue, 24*time.Hour).Err()
+	event := &hierarchyproto.ZoneInvalidatedEvent{
+		ZoneId: out.ID.String(), ZoneCode: out.Code, Status: string(out.Status), Name: out.Name,
+	}
+	if wire, marshalErr := proto.Marshal(event); marshalErr == nil {
+		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
+	}
+
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return out, nil
 }
 
-// UpdateZoneStatus chuyển trạng thái zone.
-func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus entity.ZoneStatus) error {
-	// allowed quy định bản đồ chuyển đổi trạng thái hợp lệ (State Machine Transitions).
-	// Key: Trạng thái đích (toStatus) - Value: Danh sách các trạng thái cũ được phép chuyển đổi sang trạng thái đích.
-	allowed := map[entity.ZoneStatus][]entity.ZoneStatus{
-		// [COMMENT]: Quay lại trạng thái Planned từ Active (để cấu hình lại) hoặc Disabled (vùng đệm kiểm tra trước khi kích hoạt).
-		entity.ZoneStatusPlanned: {entity.ZoneStatusActive, entity.ZoneStatusDisabled},
-		// [BUG FIX]: Kích hoạt (Active) từ Planned, Draining hoặc Maintenance.
-		entity.ZoneStatusActive: {entity.ZoneStatusPlanned, entity.ZoneStatusDraining, entity.ZoneStatusMaintenance},
-		// [COMMENT]: Ép buộc xả tải (Draining) chỉ được phép bắt đầu từ trạng thái đang chạy Active.
-		entity.ZoneStatusDraining: {entity.ZoneStatusActive},
-		// [COMMENT]: Bảo trì (Maintenance) chỉ được kích hoạt sau khi đã xả sạch job (Draining) để tránh gián đoạn dịch vụ.
-		entity.ZoneStatusMaintenance: {entity.ZoneStatusDraining},
-		// [COMMENT]: Vô hiệu hóa (Disabled) chỉ cho phép từ Draining (đã xả sạch job) hoặc Planned (zone chưa từng chạy).
-		entity.ZoneStatusDisabled: {entity.ZoneStatusDraining, entity.ZoneStatusPlanned},
-	}
-
-	allowedOld := append(allowed[toStatus], toStatus)
-	zoneCode, err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
+func (s *ZoneService) GetZoneDetail(ctx context.Context, in *hierarchyEntity.GetZoneDetail) ([]hierarchyEntity.GetZoneDetail, error) {
+	startedAt := time.Now()
+	items, err := s.repo.GetZoneDetail(ctx, in)
 	if err != nil {
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
-		return err
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "GetZoneDetail", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, err
 	}
-
-	// [COMMENT]: Redis propagation is rebuildable soft state and therefore does
-	// not change the committed PostgreSQL outcome when Redis is temporarily down.
-	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(zoneCode)))
-	val := fmt.Sprintf("%s:%s", zoneID, toStatus)
-	_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
-	s.publishInvalidation(ctx, zoneID, false)
-
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return nil
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "GetZoneDetail", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return items, nil
 }
 
-// DeleteZone xóa zone khi đủ 3 preconditions.
-func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
-	deletedCode, err := s.repo.DeleteZone(ctx, zoneID)
-	if err != nil {
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
-		return err
+func (s *ZoneService) UpdateZoneStatus(ctx context.Context, in *hierarchyEntity.UpdateZoneStatus) (*hierarchyEntity.UpdateZoneStatus, error) {
+	switch in.Status {
+	case hierarchyEntity.ZoneStatusPlanned:
+		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusActive, hierarchyEntity.ZoneStatusDisabled, hierarchyEntity.ZoneStatusPlanned}
+	case hierarchyEntity.ZoneStatusActive:
+		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusPlanned, hierarchyEntity.ZoneStatusDraining, hierarchyEntity.ZoneStatusMaintenance, hierarchyEntity.ZoneStatusActive}
+	case hierarchyEntity.ZoneStatusDraining:
+		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusActive, hierarchyEntity.ZoneStatusDraining}
+	case hierarchyEntity.ZoneStatusMaintenance:
+		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusDraining, hierarchyEntity.ZoneStatusMaintenance}
+	case hierarchyEntity.ZoneStatusDisabled:
+		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusDraining, hierarchyEntity.ZoneStatusPlanned, hierarchyEntity.ZoneStatusDisabled}
 	}
 
-	// [COMMENT]: Xóa Shared Redis L2 và phát invalidation nội vùng Central.
-	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(deletedCode)))
+	startedAt := time.Now()
+	out, err := s.repo.UpdateZoneStatus(ctx, in)
+	if err != nil {
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneStatus", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, err
+	}
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneStatus", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+
+	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(out.ZoneCode)))
+	redisValue := fmt.Sprintf("%s:%s", out.ZoneID, out.Status)
+	_ = s.rds.Set(ctx, redisKey, redisValue, 24*time.Hour).Err()
+	event := &hierarchyproto.ZoneInvalidatedEvent{
+		ZoneId: out.ZoneID.String(), ZoneCode: out.ZoneCode, Status: string(out.Status), Name: out.ZoneName,
+	}
+	if wire, marshalErr := proto.Marshal(event); marshalErr == nil {
+		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
+	}
+
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return out, nil
+}
+
+func (s *ZoneService) DeleteZone(ctx context.Context, in *hierarchyEntity.DeleteZone) (*hierarchyEntity.DeleteZone, error) {
+	startedAt := time.Now()
+	out, err := s.repo.DeleteZone(ctx, in)
+	if err != nil {
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteZone", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, err
+	}
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteZone", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
+
+	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(out.ZoneCode)))
 	_ = s.rds.Del(ctx, redisKey).Err()
-	s.publishInvalidation(ctx, zoneID, true, deletedCode)
+	event := &hierarchyproto.ZoneInvalidatedEvent{
+		ZoneId: out.ZoneID.String(), ZoneCode: out.ZoneCode, Deleted: true,
+	}
+	if wire, marshalErr := proto.Marshal(event); marshalErr == nil {
+		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
+	}
 
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return nil
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return out, nil
 }
 
-// UpdateZoneService cập nhật enabled/disabled của một service trong zone.
-func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType entity.ZoneServiceType, enabled bool) (*entity.ZoneService, error) {
-	svc, _, err := s.repo.UpdateZoneService(ctx, zoneID, serviceType, enabled)
+func (s *ZoneService) UpdateZoneService(ctx context.Context, in *hierarchyEntity.UpdateZoneService) (*hierarchyEntity.UpdateZoneService, error) {
+	serviceID, err := uuid.NewV7()
 	if err != nil {
-		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		return nil, fmt.Errorf("generate zone service id: %w", err)
+	}
+	in.ID = serviceID
+
+	startedAt := time.Now()
+	out, err := s.repo.UpdateZoneService(ctx, in)
+	if err != nil {
+		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneService", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
+		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-
-	// [COMMENT]: Phát invalidation vì cấu hình dịch vụ thay đổi.
-	s.publishInvalidation(ctx, zoneID, false)
-
-	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
-	return svc, nil
-}
-
-// AcrResolveZone phân giải một Zone cụ thể theo mã code phục vụ ACR.
-func (s *ZoneService) AcrResolveZone(ctx context.Context, code string) (*entity.RPCZone, error) {
-	zones, err := s.AcrListZones(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, z := range zones {
-		if z.Code == code {
-			return &z, nil
-		}
-	}
-	return nil, nil
-}
-
-// publishInvalidation lấy trạng thái mới nhất của Zone từ database (SoT) và phát
-// Shared Redis PubSub để ACR L1 không giữ topology cũ.
-func (s *ZoneService) publishInvalidation(ctx context.Context, zoneID uuid.UUID, deleted bool, deletedCode ...string) {
-	var code, status, name string
-	if deleted && len(deletedCode) > 0 {
-		code = deletedCode[0]
-	} else {
-		detail, err := s.repo.GetZoneDetailByID(ctx, zoneID)
-		if err == nil && detail != nil {
-			code = detail.Zone.Code
-			status = string(detail.Zone.Status)
-			name = detail.Zone.Name
-		}
-	}
-
-	if code == "" {
-		return
-	}
+	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneService", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
 
 	event := &hierarchyproto.ZoneInvalidatedEvent{
-		ZoneId:   zoneID.String(),
-		ZoneCode: code,
-		Status:   status,
-		Name:     name,
-		Deleted:  deleted,
+		ZoneId: out.ZoneID.String(), ZoneCode: out.ZoneCode, Status: string(out.ZoneStatus), Name: out.ZoneName,
+	}
+	if wire, marshalErr := proto.Marshal(event); marshalErr == nil {
+		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
 	}
 
-	data, err := proto.Marshal(event)
-	if err != nil {
-		logger.SysError("zone_service.publishInvalidation", fmt.Sprintf("Failed to marshal ZoneInvalidatedEvent: %v", err))
-		return
-	}
-
-	// [COMMENT]: PubSub là fast invalidation; Redis key phía trên vẫn là L2 source.
-	// ACR L1 có TTL bounded nên message mất không tạo stale vô hạn.
-	_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", data).Err()
+	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	return out, nil
 }

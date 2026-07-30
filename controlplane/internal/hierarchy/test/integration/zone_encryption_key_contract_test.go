@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"controlplane/internal/hierarchy/migrations"
+	hierarchyMigrations "controlplane/internal/hierarchy/migrations"
 )
 
 func TestZoneEncryptionKeyBaselineHasSecurityAndRaceGuards(t *testing.T) {
-	tables, err := fs.ReadFile(migrations.Files, "000002_hierarchy_tables.up.sql")
+	tables, err := fs.ReadFile(hierarchyMigrations.Files, "000002_hierarchy_tables.up.sql")
 	if err != nil {
 		t.Fatalf("read tables migration: %v", err)
 	}
-	indexes, err := fs.ReadFile(migrations.Files, "000003_hierarchy_indexes.up.sql")
+	indexes, err := fs.ReadFile(hierarchyMigrations.Files, "000003_hierarchy_indexes.up.sql")
 	if err != nil {
 		t.Fatalf("read indexes migration: %v", err)
 	}

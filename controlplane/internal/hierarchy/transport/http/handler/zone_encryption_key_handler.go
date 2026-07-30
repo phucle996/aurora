@@ -1,4 +1,4 @@
-package handler
+package hierarchyHandler
 
 import (
 	"context"
@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
-	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyReq "controlplane/internal/hierarchy/transport/http/dto/req"
 	"controlplane/pkg/apires"
 	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
@@ -27,10 +27,10 @@ import (
 )
 
 type ZoneEncryptionKeyHandler struct {
-	service hierarchyservice.ZoneEncryptionKeyService
+	service hierarchySvcInterface.ZoneEncryptionKeyService
 }
 
-func NewZoneEncryptionKeyHandler(service hierarchyservice.ZoneEncryptionKeyService) *ZoneEncryptionKeyHandler {
+func NewZoneEncryptionKeyHandler(service hierarchySvcInterface.ZoneEncryptionKeyService) *ZoneEncryptionKeyHandler {
 	return &ZoneEncryptionKeyHandler{service: service}
 }
 
@@ -53,7 +53,7 @@ func (h *ZoneEncryptionKeyHandler) RegisterZoneEncryptionKey(c *gin.Context) {
 	}
 
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
-	var request requestdto.RegisterZoneEncryptionKeyRequest
+	var request hierarchyReq.RegisterZoneEncryptionKeyRequest
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
@@ -92,14 +92,14 @@ func (h *ZoneEncryptionKeyHandler) RegisterZoneEncryptionKey(c *gin.Context) {
 	ctx := pkgcontext.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	result, err := h.service.RegisterZoneEncryptionKey(ctx, &entity.RegisterZoneEncryptionKey{
+	result, err := h.service.RegisterZoneEncryptionKey(ctx, &hierarchyEntity.RegisterZoneEncryptionKey{
 		ZoneID: zoneID, Actor: actor, ProofID: proofID, PublicKey: publicKeyBytes,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyZoneNotFound):
-			apires.RespondNotFound(c, "zone not found")
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyMaterialConflict):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
+			apires.RespondNotFound(c, "resource not found")
+		case errors.Is(err, hierarchyTaxonomy.ErrConflict):
 			apires.RespondConflict(c, "public key is already assigned to another zone")
 		default:
 			logger.HandlerError(c, op, err)
@@ -141,7 +141,7 @@ func (h *ZoneEncryptionKeyHandler) ListZoneEncryptionKeys(c *gin.Context) {
 		}
 		limit = parsedLimit
 	}
-	listInput := &entity.ListZoneEncryptionKeys{ZoneID: zoneID, Limit: limit}
+	listInput := &hierarchyEntity.ListZoneEncryptionKeys{ZoneID: zoneID, Limit: limit}
 	if rawCursor := strings.TrimSpace(c.Query("cursor")); rawCursor != "" {
 		decodedCursor, err := base64.RawURLEncoding.Strict().DecodeString(rawCursor)
 		parts := strings.SplitN(string(decodedCursor), "|", 2)
@@ -165,8 +165,8 @@ func (h *ZoneEncryptionKeyHandler) ListZoneEncryptionKeys(c *gin.Context) {
 	defer cancel()
 	items, err := h.service.ListZoneEncryptionKeys(ctx, listInput)
 	if err != nil {
-		if errors.Is(err, taxonomy.ErrZoneEncryptionKeyZoneNotFound) {
-			apires.RespondNotFound(c, "zone not found")
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "resource not found")
 			return
 		}
 		logger.HandlerError(c, op, err)
@@ -218,16 +218,14 @@ func (h *ZoneEncryptionKeyHandler) ActivateZoneEncryptionKey(c *gin.Context) {
 	ctx := pkgcontext.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	result, err := h.service.ActivateZoneEncryptionKey(ctx, &entity.ActivateZoneEncryptionKey{
+	result, err := h.service.ActivateZoneEncryptionKey(ctx, &hierarchyEntity.ActivateZoneEncryptionKey{
 		ZoneID: zoneID, KeyID: keyID, Actor: actor, ProofID: proofID,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyZoneNotFound):
-			apires.RespondNotFound(c, "zone not found")
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyNotFound):
-			apires.RespondNotFound(c, "zone encryption key not found")
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyInvalidTransition):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
+			apires.RespondNotFound(c, "resource not found")
+		case errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition):
 			apires.RespondConflict(c, "zone encryption key cannot be activated from its current state")
 		default:
 			logger.HandlerError(c, op, err)
@@ -266,16 +264,14 @@ func (h *ZoneEncryptionKeyHandler) RetireZoneEncryptionKey(c *gin.Context) {
 	ctx := pkgcontext.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	result, err := h.service.RetireZoneEncryptionKey(ctx, &entity.RetireZoneEncryptionKey{
+	result, err := h.service.RetireZoneEncryptionKey(ctx, &hierarchyEntity.RetireZoneEncryptionKey{
 		ZoneID: zoneID, KeyID: keyID, Actor: actor, ProofID: proofID,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyZoneNotFound):
-			apires.RespondNotFound(c, "zone not found")
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyNotFound):
-			apires.RespondNotFound(c, "zone encryption key not found")
-		case errors.Is(err, taxonomy.ErrZoneEncryptionKeyInvalidTransition):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
+			apires.RespondNotFound(c, "resource not found")
+		case errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition):
 			apires.RespondConflict(c, "active zone encryption key cannot be retired")
 		default:
 			logger.HandlerError(c, op, err)

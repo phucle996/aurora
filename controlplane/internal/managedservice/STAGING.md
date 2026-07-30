@@ -360,6 +360,9 @@ React memory nhưng không gọi mutation trước P04. Query cache key gồm au
 personal/tenant mode, Zone, workspace và revision; HTTP response dùng
 `Cache-Control: private, no-store`. `zone_selector` V1 chỉ có `all`/`allow_list`,
 `capability_requirement.all_of` chỉ dùng static `zone_service_type` desired state.
+Ngoài requirement theo revision, mọi customer catalog/version query bắt buộc Zone
+có `managed_service` enabled; đây là admission capability toàn module, không phải
+runtime health/drain signal trong V1.
 Finite UI widget registry là
 `TEXT|TEXTAREA|NUMBER|SWITCH|SELECT|RADIO|TOKEN_LIST|MULTI_SELECT`.
 

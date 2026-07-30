@@ -1,13 +1,15 @@
-package handler
+package hierarchyPubsubHandler
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
 	hierarchyproto "controlplane/internal/hierarchy/transport/proto"
 	"controlplane/internal/observability"
 	"controlplane/pkg/logger"
@@ -31,7 +33,7 @@ const (
 // NATS Core được giữ cho realtime Central-Zone và không còn nằm trên lookup path ACR-Controlplane.
 type ZoneRedisHandler struct {
 	sharedRedis *goredis.Client
-	zoneService hierarchyservice.ZoneService
+	zoneService hierarchySvcInterface.ZoneService
 	otel        *observability.OTel
 
 	cancel context.CancelFunc
@@ -43,7 +45,7 @@ type ZoneRedisHandler struct {
 
 func NewZoneRedisHandler(
 	sharedRedis *goredis.Client,
-	zoneService hierarchyservice.ZoneService,
+	zoneService hierarchySvcInterface.ZoneService,
 	otel *observability.OTel,
 ) (*ZoneRedisHandler, error) {
 	if sharedRedis == nil || zoneService == nil {
@@ -123,51 +125,9 @@ func (h *ZoneRedisHandler) Start() error {
 
 						switch value.Channel {
 						case getZoneListChannel:
-							var request hierarchyproto.GetZoneListRequest
-							if err := proto.Unmarshal(protobufPayload, &request); err != nil {
-								return
-							}
-							// [COMMENT]: Truy vấn danh sách Zone cho ACR thông qua ZoneService
-							zones, err := h.zoneService.AcrListZones(ctx)
-							if err != nil {
-								logger.HandlerErrorCtx(ctx, getZoneListChannel, err)
-								return
-							}
-							wireZones := make([]*hierarchyproto.ZoneEntry, 0, len(zones))
-							for _, zone := range zones {
-								wireZones = append(wireZones, &hierarchyproto.ZoneEntry{
-									ZoneId:   zone.ID.String(),
-									ZoneCode: zone.Code,
-									Status:   string(zone.Status),
-									Name:     zone.Name,
-								})
-							}
-							response, err := proto.Marshal(&hierarchyproto.GetZoneListResponse{Zones: wireZones})
-							if err == nil {
-								_ = h.sharedRedis.Publish(ctx, getZoneListReplyPrefix+requestID.String(), response).Err()
-							}
+							h.ListZoneCatalog(ctx, requestID, protobufPayload)
 						case resolveZoneChannel:
-							var request hierarchyproto.ResolveZoneRequest
-							if err := proto.Unmarshal(protobufPayload, &request); err != nil {
-								return
-							}
-							// [COMMENT]: Resolve chi tiết Zone theo code
-							zone, err := h.zoneService.AcrResolveZone(ctx, request.ZoneCode)
-							if err != nil {
-								logger.HandlerErrorCtx(ctx, resolveZoneChannel, err)
-								return
-							}
-							response := &hierarchyproto.ResolveZoneResponse{}
-							if zone != nil {
-								response.Found = true
-								response.ZoneId = zone.ID.String()
-								response.Status = string(zone.Status)
-								response.Name = zone.Name
-							}
-							wire, err := proto.Marshal(response)
-							if err == nil {
-								_ = h.sharedRedis.Publish(ctx, resolveZoneReplyPrefix+requestID.String(), wire).Err()
-							}
+							h.ResolveZoneByCode(ctx, requestID, protobufPayload)
 						}
 					}(message)
 				default:
@@ -179,6 +139,57 @@ func (h *ZoneRedisHandler) Start() error {
 		}
 	}()
 	return nil
+}
+
+func (h *ZoneRedisHandler) ListZoneCatalog(ctx context.Context, requestID uuid.UUID, payload []byte) {
+	var request hierarchyproto.GetZoneListRequest
+	if err := proto.Unmarshal(payload, &request); err != nil {
+		return
+	}
+	zones, err := h.zoneService.ListZoneCatalog(ctx, &hierarchyEntity.ListZoneCatalog{})
+	if err != nil {
+		logger.HandlerErrorCtx(ctx, getZoneListChannel, err)
+		return
+	}
+	wireZones := make([]*hierarchyproto.ZoneEntry, 0, len(zones))
+	for _, zone := range zones {
+		wireZones = append(wireZones, &hierarchyproto.ZoneEntry{
+			ZoneId: zone.ID.String(), ZoneCode: zone.Code, Status: string(zone.Status), Name: zone.Name,
+		})
+	}
+	response, err := proto.Marshal(&hierarchyproto.GetZoneListResponse{Zones: wireZones})
+	if err != nil {
+		return
+	}
+	_ = h.sharedRedis.Publish(ctx, getZoneListReplyPrefix+requestID.String(), response).Err()
+}
+
+func (h *ZoneRedisHandler) ResolveZoneByCode(ctx context.Context, requestID uuid.UUID, payload []byte) {
+	var request hierarchyproto.ResolveZoneRequest
+	if err := proto.Unmarshal(payload, &request); err != nil {
+		return
+	}
+	zoneCode := strings.ToLower(strings.TrimSpace(request.ZoneCode))
+	if zoneCode == "" || len(zoneCode) > 63 {
+		return
+	}
+	zone, err := h.zoneService.ResolveZoneByCode(ctx, &hierarchyEntity.ResolveZoneByCode{Code: zoneCode})
+	if err != nil {
+		logger.HandlerErrorCtx(ctx, resolveZoneChannel, err)
+		return
+	}
+	response := &hierarchyproto.ResolveZoneResponse{}
+	if zone.Found {
+		response.Found = true
+		response.ZoneId = zone.ID.String()
+		response.Status = string(zone.Status)
+		response.Name = zone.Name
+	}
+	wire, err := proto.Marshal(response)
+	if err != nil {
+		return
+	}
+	_ = h.sharedRedis.Publish(ctx, resolveZoneReplyPrefix+requestID.String(), wire).Err()
 }
 
 func (h *ZoneRedisHandler) Stop() {

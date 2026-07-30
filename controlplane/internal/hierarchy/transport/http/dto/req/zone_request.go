@@ -14,7 +14,7 @@ SYSTEM BOUNDARY:
 - Type Parsing: Tự động parse chuỗi JSON sang uuid.UUID để đảm bảo type safety trước khi xử lý.
 - Service Layer Handoff: Bàn giao dữ liệu hợp lệ về cú pháp cho domain service layer xử lý logic nghiệp vụ.
 */
-package dto
+package hierarchyReq
 
 import "github.com/google/uuid"
 
@@ -38,6 +38,8 @@ type CreateZoneRequest struct {
 	EnableKubernetes *bool `json:"enable_kubernetes"`
 	// EnableAI xác định xem dịch vụ compute hiệu năng cao GPU/AI clusters có được kích hoạt khi cài đặt hay không.
 	EnableAI *bool `json:"enable_ai"`
+	// EnableManagedService xác định Zone có nhận Managed Service workload của customer hay không.
+	EnableManagedService *bool `json:"enable_managed_service"`
 }
 
 // UpdateZoneStatusRequest định nghĩa dữ liệu đầu vào để cập nhật trạng thái hoạt động của một zone.
@@ -50,7 +52,7 @@ type UpdateZoneStatusRequest struct {
 type UpsertZoneServiceRequest struct {
 	// ZoneID là mã định danh của zone cần cập nhật. Yêu cầu định dạng UUID hợp lệ và không rỗng.
 	ZoneID uuid.UUID `json:"zone_id" binding:"required,uuid"`
-	// ServiceType đại diện cho loại dịch vụ (ví dụ: "hypervisor", "storage", "kubernetes", "mail").
+	// ServiceType đại diện cho loại dịch vụ (ví dụ: "hypervisor", "storage", "kubernetes", "managed_service").
 	ServiceType string `json:"service_type" binding:"required"`
 	// Enabled xác định trạng thái mong muốn của dịch vụ (kích hoạt/hủy kích hoạt).
 	Enabled *bool `json:"enabled"      binding:"required"`

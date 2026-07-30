@@ -1,4 +1,4 @@
-package handler
+package hierarchyPubsubHandler
 
 import (
 	"bytes"

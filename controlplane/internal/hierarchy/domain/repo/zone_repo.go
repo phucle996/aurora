@@ -1,32 +1,18 @@
-package repo
+package hierarchyRepoInterface
 
 import (
 	"context"
-	entity "controlplane/internal/hierarchy/domain/entity"
 
-	"github.com/google/uuid"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 )
 
 type ZoneRepository interface {
-	// trả danh sách zone cho trang quản trị web
-	ListZones(ctx context.Context) ([]entity.Zone, error)
-
-	// AcrListZones truy vấn tối giản danh sách Zone (4 trường) để tối ưu hóa đồng bộ qua NATS.
-	// service này phục vụ acr lấy danh sách để chạy l1 cho phân giải zone context / trả zone catalog cho client
-	AcrListZones(ctx context.Context) ([]entity.RPCZone, error)
-
-	// tạo zone mới
-	CreateZone(ctx context.Context, zone entity.Zone, svcs map[entity.ZoneServiceType]bool) error
-
-	// lấy zone chi tiết kèm theo các dịch vụ cho trang quản trị web
-	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*entity.ZoneDetail, error)
-
-	// update trạng thái zone theo state machine
-	UpdateZoneStatus(ctx context.Context, id uuid.UUID, status entity.ZoneStatus, allowedOld []entity.ZoneStatus) (string, error)
-
-	// xóa zone
-	DeleteZone(ctx context.Context, id uuid.UUID) (string, error)
-
-	// bật tắt các dịch vụ trong zone
-	UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType entity.ZoneServiceType, enabled bool) (*entity.ZoneService, string, error)
+	ListZones(context.Context, *hierarchyEntity.ListZones) ([]hierarchyEntity.ListZones, error)
+	ListZoneCatalog(context.Context, *hierarchyEntity.ListZoneCatalog) ([]hierarchyEntity.ListZoneCatalog, error)
+	ResolveZoneByCode(context.Context, *hierarchyEntity.ResolveZoneByCode) (*hierarchyEntity.ResolveZoneByCode, error)
+	CreateZone(context.Context, *hierarchyEntity.CreateZone) (*hierarchyEntity.CreateZone, error)
+	GetZoneDetail(context.Context, *hierarchyEntity.GetZoneDetail) ([]hierarchyEntity.GetZoneDetail, error)
+	UpdateZoneStatus(context.Context, *hierarchyEntity.UpdateZoneStatus) (*hierarchyEntity.UpdateZoneStatus, error)
+	DeleteZone(context.Context, *hierarchyEntity.DeleteZone) (*hierarchyEntity.DeleteZone, error)
+	UpdateZoneService(context.Context, *hierarchyEntity.UpdateZoneService) (*hierarchyEntity.UpdateZoneService, error)
 }

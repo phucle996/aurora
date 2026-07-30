@@ -1,4 +1,4 @@
-package handler
+package hierarchyHandler
 
 import (
 	"context"
@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
-	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyReq "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/logger"
 
@@ -18,10 +18,10 @@ import (
 )
 
 type ZoneHandler struct {
-	zoneSvc hierarchyservice.ZoneService
+	zoneSvc hierarchySvcInterface.ZoneService
 }
 
-func NewZoneHandler(zoneSvc hierarchyservice.ZoneService) *ZoneHandler {
+func NewZoneHandler(zoneSvc hierarchySvcInterface.ZoneService) *ZoneHandler {
 	return &ZoneHandler{
 		zoneSvc: zoneSvc,
 	}
@@ -29,11 +29,11 @@ func NewZoneHandler(zoneSvc hierarchyservice.ZoneService) *ZoneHandler {
 
 // CreateZone godoc
 // @Summary      Create a new zone
-// @Description  Create a new infrastructure zone with status fixed to "planned" and upsert all 5 zone services
+// @Description  Create a new infrastructure zone with status fixed to "planned" and upsert all supported zone services
 // @Tags         zones
 // @Accept       json
 // @Produce      json
-// @Param        request body requestdto.CreateZoneRequest true "Zone creation request"
+// @Param        request body hierarchyReq.CreateZoneRequest true "Zone creation request"
 // @Success      201 {object} map[string]interface{} "Zone created successfully"
 // @Failure      400 {object} map[string]interface{} "Invalid request"
 // @Failure      409 {object} map[string]interface{} "Zone code already exists"
@@ -45,35 +45,44 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	var request requestdto.CreateZoneRequest
+	var request hierarchyReq.CreateZoneRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind create zone request failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
+	zoneCode := strings.ToLower(strings.TrimSpace(request.Code))
+	zoneName := strings.TrimSpace(request.Name)
+	zoneLocation := strings.TrimSpace(request.Location)
+	if zoneCode == "" || zoneName == "" || zoneLocation == "" {
+		logger.HandlerWarn(c, op, nil, "create zone normalized input is empty")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 
-	err := h.zoneSvc.CreateZone(ctx, entity.CreateZoneInput{
-		Code:             strings.ToLower(strings.TrimSpace(request.Code)),
-		Name:             request.Name,
-		Location:         request.Location,
-		Description:      request.Description,
-		EnableHypervisor: boolValue(request.EnableHypervisor),
-		EnableStorage:    boolValue(request.EnableStorage),
-		EnableMail:       boolValue(request.EnableMail),
-		EnableKubernetes: boolValue(request.EnableKubernetes),
-		EnableAI:         boolValue(request.EnableAI),
+	enableHypervisor := request.EnableHypervisor != nil && *request.EnableHypervisor
+	enableStorage := request.EnableStorage != nil && *request.EnableStorage
+	enableMail := request.EnableMail != nil && *request.EnableMail
+	enableKubernetes := request.EnableKubernetes != nil && *request.EnableKubernetes
+	enableAI := request.EnableAI != nil && *request.EnableAI
+	enableManagedService := request.EnableManagedService != nil && *request.EnableManagedService
+	_, err := h.zoneSvc.CreateZone(ctx, &hierarchyEntity.CreateZone{
+		Code:                 zoneCode,
+		Name:                 zoneName,
+		Location:             zoneLocation,
+		Description:          strings.TrimSpace(request.Description),
+		EnableHypervisor:     enableHypervisor,
+		EnableStorage:        enableStorage,
+		EnableMail:           enableMail,
+		EnableKubernetes:     enableKubernetes,
+		EnableAI:             enableAI,
+		EnableManagedService: enableManagedService,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneInvalidInput):
-			logger.HandlerWarn(c, op, err, "create zone invalid input")
-			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, taxonomy.ErrCodeAlreadyExists):
+		case errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create zone conflict")
 			apires.RespondConflict(c, "resource already exists")
-		case errors.Is(err, taxonomy.ErrZoneServiceInvalidType):
-			logger.HandlerWarn(c, op, err, "create zone invalid service type")
-			apires.RespondBadRequest(c, "invalid request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -97,7 +106,7 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	items, err := h.zoneSvc.ListZones(ctx)
+	items, err := h.zoneSvc.ListZones(ctx, &hierarchyEntity.ListZones{})
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
@@ -145,9 +154,9 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 		return
 	}
 
-	detail, err := h.zoneSvc.GetZoneDetailByID(ctx, zoneID)
+	detail, err := h.zoneSvc.GetZoneDetail(ctx, &hierarchyEntity.GetZoneDetail{ZoneID: zoneID})
 	if err != nil {
-		if errors.Is(err, taxonomy.ErrZoneNotFound) {
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "zone not found")
 			return
 		}
@@ -158,15 +167,19 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 
 	var enabledCount int
 	serviceRows := make([]gin.H, 0)
-	for _, s := range detail.Services {
+	for _, item := range detail {
+		if !item.HasService {
+			continue
+		}
 		// [COMMENT]: Kiểm tra tính hợp lệ của loại service
-		switch s.ServiceType {
-		case entity.ZoneServiceTypeHypervisor,
-			entity.ZoneServiceTypeStorage,
-			entity.ZoneServiceTypeMail,
-			entity.ZoneServiceTypeKubernetes,
-			entity.ZoneServiceTypeAI,
-			entity.ZoneServiceTypeDatabase:
+		switch item.ServiceType {
+		case hierarchyEntity.ZoneServiceTypeHypervisor,
+			hierarchyEntity.ZoneServiceTypeStorage,
+			hierarchyEntity.ZoneServiceTypeMail,
+			hierarchyEntity.ZoneServiceTypeKubernetes,
+			hierarchyEntity.ZoneServiceTypeAI,
+			hierarchyEntity.ZoneServiceTypeDatabase,
+			hierarchyEntity.ZoneServiceTypeManagedService:
 			// Valid
 		default:
 			continue
@@ -174,19 +187,19 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 
 		// [COMMENT]: desiredStateString biểu diễn trạng thái mong muốn: enable hoặc disable
 		desiredStateString := "disable"
-		if s.DesiredState {
+		if item.DesiredState {
 			desiredStateString = "enable"
 			enabledCount++
 		}
 
 		// [COMMENT]: actualStateString biểu diễn trạng thái vận hành thực tế
-		actualStateString := s.ActualState
+		actualStateString := item.ActualState
 		if actualStateString == "" {
 			actualStateString = "unknown"
 		}
 
-		key := string(s.ServiceType)
-		label := string(s.ServiceType)
+		key := string(item.ServiceType)
+		label := string(item.ServiceType)
 		switch key {
 		case "hypervisor":
 			label = "Hypervisor"
@@ -200,6 +213,8 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 			label = "AI"
 		case "database":
 			label = "Database"
+		case "managed_service":
+			label = "Managed Services"
 		}
 
 		serviceRows = append(serviceRows, gin.H{
@@ -210,16 +225,17 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 		})
 	}
 
+	zone := detail[0]
 	apires.RespondSuccess(c, gin.H{
 		"zone": gin.H{
-			"id":          detail.Zone.ID,
-			"code":        detail.Zone.Code,
-			"name":        detail.Zone.Name,
-			"location":    detail.Zone.Location,
-			"description": detail.Zone.Description,
-			"status":      string(detail.Zone.Status),
-			"created_at":  detail.Zone.CreatedAt,
-			"updated_at":  detail.Zone.UpdatedAt,
+			"id":          zone.ZoneID,
+			"code":        zone.ZoneCode,
+			"name":        zone.ZoneName,
+			"location":    zone.ZoneLocation,
+			"description": zone.ZoneDescription,
+			"status":      string(zone.ZoneStatus),
+			"created_at":  zone.ZoneCreatedAt,
+			"updated_at":  zone.ZoneUpdatedAt,
 		},
 		"summary": gin.H{
 			"workspaces":       0,
@@ -242,7 +258,7 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 // @Tags         zones
 // @Accept       json
 // @Produce      json
-// @Param        request body requestdto.UpdateZoneStatusRequest true "Status update request"
+// @Param        request body hierarchyReq.UpdateZoneStatusRequest true "Status update request"
 // @Success      200 {object} map[string]interface{} "Zone status updated successfully"
 // @Failure      400 {object} map[string]interface{} "Invalid request or invalid status"
 // @Failure      404 {object} map[string]interface{} "Zone not found"
@@ -262,29 +278,29 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		return
 	}
 
-	var request requestdto.UpdateZoneStatusRequest
+	var request hierarchyReq.UpdateZoneStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind update zone status request failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
 
-	toStatus := entity.ZoneStatus(strings.ToLower(strings.TrimSpace(request.Status)))
+	toStatus := hierarchyEntity.ZoneStatus(strings.ToLower(strings.TrimSpace(request.Status)))
 	switch toStatus {
-	case entity.ZoneStatusPlanned, entity.ZoneStatusActive, entity.ZoneStatusDraining,
-		entity.ZoneStatusMaintenance, entity.ZoneStatusDisabled:
+	case hierarchyEntity.ZoneStatusPlanned, hierarchyEntity.ZoneStatusActive, hierarchyEntity.ZoneStatusDraining,
+		hierarchyEntity.ZoneStatusMaintenance, hierarchyEntity.ZoneStatusDisabled:
 	default:
 		logger.HandlerWarn(c, op, nil, "update zone invalid status: "+request.Status)
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	err = h.zoneSvc.UpdateZoneStatus(ctx, parsedZoneID, toStatus)
+	_, err = h.zoneSvc.UpdateZoneStatus(ctx, &hierarchyEntity.UpdateZoneStatus{ZoneID: parsedZoneID, Status: toStatus})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneNotFound):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
 			logger.HandlerWarn(c, op, err, "zone not found")
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, taxonomy.ErrZoneInvalidTransition):
+		case errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition):
 			logger.HandlerWarn(c, op, err, "zone invalid transition")
 			apires.RespondConflict(c, "state conflict")
 		default:
@@ -321,12 +337,12 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	if err := h.zoneSvc.DeleteZone(ctx, parsedZoneID); err != nil {
+	if _, err := h.zoneSvc.DeleteZone(ctx, &hierarchyEntity.DeleteZone{ZoneID: parsedZoneID}); err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneNotFound):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
 			logger.HandlerWarn(c, op, err, "zone not found")
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, taxonomy.ErrZoneDeletePreconditionFailed):
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
 			logger.HandlerWarn(c, op, err, "delete precondition failed")
 			apires.RespondConflict(c, "zone delete precondition failed")
 		default:
@@ -344,7 +360,7 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 // @Tags         zone-services
 // @Accept       json
 // @Produce      json
-// @Param        request body requestdto.UpsertZoneServiceRequest true "Service update request"
+// @Param        request body hierarchyReq.UpsertZoneServiceRequest true "Service update request"
 // @Success      200 {object} map[string]interface{} "Zone service updated successfully"
 // @Failure      400 {object} map[string]interface{} "Invalid request or invalid service type"
 // @Failure      404 {object} map[string]interface{} "Zone not found"
@@ -357,7 +373,7 @@ func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	var request requestdto.UpsertZoneServiceRequest
+	var request hierarchyReq.UpsertZoneServiceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind update zone service request failed")
 		apires.RespondBadRequest(c, "invalid request")
@@ -365,24 +381,26 @@ func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 	}
 	parsedZoneID := request.ZoneID
 
-	serviceType := entity.ZoneServiceType(strings.ToLower(strings.TrimSpace(request.ServiceType)))
+	serviceType := hierarchyEntity.ZoneServiceType(strings.ToLower(strings.TrimSpace(request.ServiceType)))
 
 	// check lỗi validate service type
 	switch serviceType {
-	case entity.ZoneServiceTypeHypervisor, entity.ZoneServiceTypeStorage,
-		entity.ZoneServiceTypeMail, entity.ZoneServiceTypeKubernetes, entity.ZoneServiceTypeAI,
-		entity.ZoneServiceTypeDatabase:
+	case hierarchyEntity.ZoneServiceTypeHypervisor, hierarchyEntity.ZoneServiceTypeStorage,
+		hierarchyEntity.ZoneServiceTypeMail, hierarchyEntity.ZoneServiceTypeKubernetes, hierarchyEntity.ZoneServiceTypeAI,
+		hierarchyEntity.ZoneServiceTypeDatabase, hierarchyEntity.ZoneServiceTypeManagedService:
 	default:
 		logger.HandlerWarn(c, op, nil, "update zone service invalid type: "+request.ServiceType)
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	item, err := h.zoneSvc.UpdateZoneService(ctx, parsedZoneID, serviceType, *request.Enabled)
+	item, err := h.zoneSvc.UpdateZoneService(ctx, &hierarchyEntity.UpdateZoneService{
+		ZoneID: parsedZoneID, ServiceType: serviceType, DesiredState: *request.Enabled,
+	})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneServiceZoneNotFound):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, taxonomy.ErrZoneServiceStateConflict):
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
 			apires.RespondConflict(c, "state conflict")
 		default:
 			logger.HandlerError(c, op, err)
@@ -399,11 +417,4 @@ func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 		"created_at":    item.CreatedAt,
 		"updated_at":    item.UpdatedAt,
 	}, "zone service updated")
-}
-
-func boolValue(v *bool) bool {
-	if v == nil {
-		return false
-	}
-	return *v
 }

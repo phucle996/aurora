@@ -3,7 +3,7 @@
 //            Đo Lường Nghiệp Vụ Module Hierarchy (OTel Metrics)
 // ============================================================================
 
-package metrics
+package hierarchyMetrics
 
 import (
 	"context"

@@ -84,7 +84,7 @@ sequenceDiagram
     participant acr as 🛡️ acr Edge Proxy (Rust)
     participant L2 as ⚡ Redis L2 Session
 
-    UI->>acr: POST /api/v1/workspaces<br/>Headers: Authorization (JWT), X-Zone-ID
+    UI->>acr: POST /api/v1/me/hierarchy/workspace/create hoặc /api/v1/tenant/hierarchy/workspaces<br/>Headers: Authorization (JWT)
     Note over acr: B1: Giải mã & Kiểm tra chữ ký JWT
     alt JWT Token không hợp lệ / Hết hạn
         acr-->>UI: HTTP 401 Unauthorized (ErrExpiredToken / ErrInvalidToken)
@@ -140,11 +140,11 @@ sequenceDiagram
     participant CP as 🚀 Controlplane (Go Backend)
     participant DB as 💾 PostgreSQL (SoT Database)
 
-    Envoy->>CP: Forward POST /api/v1/workspaces<br/>Headers: X-Zone-ID, X-Tenant-ID, X-User-ID
+    Envoy->>CP: Forward personal hoặc tenant route<br/>Verified headers: X-Zone-ID, X-User-ID, và X-Tenant-ID cho tenant scope
     
     Note over CP: B1: Bind JSON body & Validate định dạng đầu vào
     alt Tên hoặc Code trống / Code không đúng regex format
-        CP-->>Envoy: HTTP 400 Bad Request (ErrWorkspaceInvalidInput)
+        CP-->>Envoy: HTTP 400 Bad Request tại handler boundary
     end
 
     Note over CP: B2: Sinh ngẫu nhiên ID dạng UUIDv7
@@ -157,10 +157,10 @@ sequenceDiagram
         CP-->>Envoy: HTTP 201 Created (JSON data)
     else Event 2B: Trùng mã Code trong Scope (Unique Violation)
         DB-->>CP: Error Code 23505
-        CP-->>Envoy: HTTP 409 Conflict (ErrWorkspaceCodeAlreadyExists)
+        CP-->>Envoy: HTTP 409 Conflict (ErrAlreadyExists)
     else Event 2C: Zone / Tenant không tồn tại hoặc không Active
         DB-->>CP: zone_exists = 0 hoặc tenant_valid = false
-        CP-->>Envoy: HTTP 404 Not Found (ErrZoneNotFound / ErrTenantNotFound)
+        CP-->>Envoy: HTTP 404 Not Found (ErrNotFound)
     end
 ```
 
@@ -222,11 +222,14 @@ Các ràng buộc nghiệp vụ được siết chặt và thực thi tuyệt đ
 
 ## 🎛️ 4. Đặc Tả Giao Diện Lập Trình (API Spec)
 
-### HTTP Request: `POST /api/v1/workspaces`
+### HTTP Request
+
+- Personal: `POST /api/v1/me/hierarchy/workspace/create`.
+- Tenant: `POST /api/v1/tenant/hierarchy/workspaces`.
 
 #### 📥 Header Parameters:
 * `X-Zone-ID` (String/UUID - Bắt buộc): ID của Zone khởi tạo.
-* `X-Tenant-ID` (String/UUID - Tuỳ chọn): ID của Tenant sở hữu. Nếu không truyền hoặc truyền rỗng, hệ thống tự hiểu đây là Workspace cá nhân.
+* `X-Tenant-ID` (String/UUID): Bắt buộc ở tenant route và không được dùng để đổi scope của personal route.
 * `X-User-ID` (String/UUID - Bắt buộc): ID của User thực hiện request (injected bởi Edge proxy).
 
 #### 📥 Body Parameters (JSON):
@@ -257,7 +260,6 @@ Các ràng buộc nghiệp vụ được siết chặt và thực thi tuyệt đ
 #### ❌ Bảng Mã Lỗi Lập Trình:
 | HTTP Status | Error Sentinel | Nguyên nhân |
 |:---|:---|:---|
-| `400 Bad Request` | `ErrWorkspaceInvalidInput` | `name` hoặc `code` bị rỗng / không đúng định dạng. |
-| `404 Not Found` | `ErrZoneNotFound` | `X-Zone-ID` không tồn tại hoặc không ở trạng thái `active`. |
-| `404 Not Found` | `ErrTenantNotFound` | `X-Tenant-ID` được truyền nhưng không tồn tại hoặc không ở trạng thái `active`. |
-| `409 Conflict` | `ErrWorkspaceCodeAlreadyExists` | Trùng mã `code` trong cùng phạm vi Tenant hoặc cá nhân. |
+| `400 Bad Request` | Handler validation | `name`, `code` hoặc verified context header không hợp lệ. |
+| `404 Not Found` | `ErrNotFound` | Zone hoặc Tenant durable precondition không còn thỏa tại thời điểm ghi. |
+| `409 Conflict` | `ErrAlreadyExists` | Trùng mã `code` trong cùng phạm vi Tenant hoặc cá nhân. |

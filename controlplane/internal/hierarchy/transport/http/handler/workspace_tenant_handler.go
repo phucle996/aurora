@@ -1,4 +1,4 @@
-package handler
+package hierarchyHandler
 
 import (
 	"context"
@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
-	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyReq "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
@@ -20,12 +20,12 @@ import (
 
 // [COMMENT]: WorkspaceTenantHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi doanh nghiệp (Tenant)
 type WorkspaceTenantHandler struct {
-	tenantSvc hierarchyservice.TenantWorkspaceService
+	tenantSvc hierarchySvcInterface.TenantWorkspaceService
 }
 
 // [COMMENT]: NewWorkspaceTenantHandler tạo một thực thể WorkspaceTenantHandler mới
 func NewWorkspaceTenantHandler(
-	tenantSvc hierarchyservice.TenantWorkspaceService,
+	tenantSvc hierarchySvcInterface.TenantWorkspaceService,
 ) *WorkspaceTenantHandler {
 	return &WorkspaceTenantHandler{
 		tenantSvc: tenantSvc,
@@ -40,7 +40,7 @@ func NewWorkspaceTenantHandler(
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) bắt buộc"
 // @Param        X-Tenant-ID header string true "Tenant ID (UUID) bắt buộc"
-// @Param        request     body   requestdto.CreateWorkspaceRequest true "Thông tin khởi tạo workspace"
+// @Param        request     body   hierarchyReq.CreateTenantWorkspaceRequest true "Thông tin khởi tạo workspace"
 // @Success      201 {object} map[string]interface{} "Workspace created"
 // @Router       /api/v1/tenant/hierarchy/workspaces [post]
 func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
@@ -68,16 +68,23 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 	}
 
 	// [COMMENT]: Thực hiện bind JSON request body — dùng DTO riêng cho tenant scope, không lẫn với personal
-	var request requestdto.CreateTenantWorkspaceRequest
+	var request hierarchyReq.CreateTenantWorkspaceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind create workspace request failed")
 		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
+	workspaceName := strings.TrimSpace(request.Name)
+	workspaceCode := strings.ToLower(strings.TrimSpace(request.Code))
+	if workspaceName == "" || workspaceCode == "" || len(workspaceName) > 255 || len(workspaceCode) > 100 {
+		logger.HandlerWarn(c, op, nil, "create tenant workspace normalized input is invalid")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 
-	workspaceEntity := entity.TenantWorkspace{
-		Name:        strings.TrimSpace(request.Name),
-		Code:        strings.ToLower(strings.TrimSpace(request.Code)),
+	workspaceEntity := &hierarchyEntity.CreateTenantWorkspace{
+		Name:        workspaceName,
+		Code:        workspaceCode,
 		Description: request.Description,
 		ZoneID:      zoneID,
 		TenantID:    tenantID,
@@ -88,18 +95,12 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 	workspace, err := h.tenantSvc.CreateWorkspaceForTenant(ctx, workspaceEntity)
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneNotFound):
-			logger.HandlerWarn(c, op, err, "create workspace zone not found or not active")
-			apires.RespondNotFound(c, "zone not found or not active")
-		case errors.Is(err, taxonomy.ErrTenantNotFound):
-			logger.HandlerWarn(c, op, err, "create workspace tenant not found or not active")
-			apires.RespondNotFound(c, "tenant not found or not active")
-		case errors.Is(err, taxonomy.ErrWorkspaceCodeAlreadyExists):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
+			logger.HandlerWarn(c, op, err, "create workspace parent not found or not active")
+			apires.RespondNotFound(c, "resource not found or not active")
+		case errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create workspace code conflict")
 			apires.RespondConflict(c, "workspace code already exists within this scope")
-		case errors.Is(err, taxonomy.ErrNoRowAffected), errors.Is(err, taxonomy.ErrWorkspaceInsertFailed):
-			logger.HandlerWarn(c, op, err, "create workspace constraint violation")
-			apires.RespondBadRequest(c, "workspace creation failed")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -137,7 +138,7 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	userID, ok := pkgcontext.GetUserID(c, op)
+	_, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -155,7 +156,9 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 	}
 
 	// [COMMENT]: Truy vấn danh sách các workspace của tenant được phân quyền truy cập
-	workspaces, err := h.tenantSvc.ListWorkspacesForTenant(ctx, tenantID, userID, roleID)
+	workspaces, err := h.tenantSvc.ListWorkspacesForTenant(ctx, &hierarchyEntity.ListTenantWorkspaces{
+		TenantID: tenantID, RoleID: roleID,
+	})
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
@@ -189,7 +192,7 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 // @Param        X-Zone-ID      header string true "Zone ID (UUID) để lọc catalog"
 // @Param        X-Tenant-ID    header string true "Tenant ID (UUID) bắt buộc"
 // @Param        X-User-Role-ID  header string true "Active Role ID (UUID) bắt buộc"
-// @Success      200 {array}  entity.WorkspaceCatalog "Workspace catalog success"
+// @Success      200 {object} map[string]interface{} "Workspace catalog success"
 // @Router       /api/v1/tenant/hierarchy/workspaces/catalog [get]
 func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 	const op = "hierarchy.workspace.tenant.catalog"
@@ -198,7 +201,7 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	userID, ok := pkgcontext.GetUserID(c, op)
+	_, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -222,7 +225,9 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 	}
 
 	// [COMMENT]: Truy vấn danh mục catalog tối giản dựa trên tenant, zone, user và role
-	catalog, err := h.tenantSvc.ListWorkspaceCatalogForTenant(ctx, tenantID, zoneID, userID, roleID)
+	catalog, err := h.tenantSvc.ListWorkspaceCatalogForTenant(ctx, &hierarchyEntity.ListTenantWorkspaceCatalog{
+		TenantID: tenantID, ZoneID: zoneID, RoleID: roleID,
+	})
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
@@ -270,18 +275,15 @@ func (h *WorkspaceTenantHandler) DeleteWorkspaceTenant(c *gin.Context) {
 		return
 	}
 
-	err = h.tenantSvc.DeleteWorkspaceForTenant(ctx, workspaceID, tenantID)
+	err = h.tenantSvc.DeleteWorkspaceForTenant(ctx, &hierarchyEntity.DeleteTenantWorkspace{ID: workspaceID, TenantID: tenantID})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrWorkspaceNotFound):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
 			logger.HandlerWarn(c, op, err, "workspace not found to delete")
 			apires.RespondNotFound(c, "workspace not found")
-		case errors.Is(err, taxonomy.ErrWorkspaceNotEmpty):
-			logger.HandlerWarn(c, op, err, "delete workspace rejected: active resources exist")
-			apires.RespondConflict(c, "workspace is not empty, active resources exist")
-		case errors.Is(err, taxonomy.ErrLastWorkspaceDeletionBlocked):
-			logger.HandlerWarn(c, op, err, "delete workspace rejected: last remaining workspace")
-			apires.RespondConflict(c, "cannot delete the last remaining workspace")
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
+			logger.HandlerWarn(c, op, err, "delete workspace precondition failed")
+			apires.RespondConflict(c, "workspace delete precondition failed")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")

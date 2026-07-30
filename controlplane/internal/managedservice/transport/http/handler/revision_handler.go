@@ -755,7 +755,7 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 		apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "capability requirement is invalid")
 		return
 	}
-	allowedCapabilities := map[string]struct{}{"mail": {}, "hypervisor": {}, "kubernetes": {}, "ai": {}, "storage": {}, "database": {}}
+	allowedCapabilities := map[string]struct{}{"mail": {}, "hypervisor": {}, "kubernetes": {}, "ai": {}, "storage": {}, "database": {}, "managed_service": {}}
 	seenCapabilities := make(map[string]struct{}, len(requiredCapabilities))
 	for _, rawCapability := range requiredCapabilities {
 		capabilityName, capabilityOK := rawCapability.(string)

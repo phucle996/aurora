@@ -1,27 +1,4 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/hierarchy/repository/zone_repo.go
-//            Đặc Tả Hạ Tầng Lưu Trữ & Quản Trị Cơ Sở Dữ Liệu Zone Topology Registry
-// ======================================================================================================
-//
-// 📜 HIỆP ĐỒNG THIẾT KẾ & TỐI ƯU HÓA HẠ TẦNG (CONTRACT & PEAK PERFORMANCE INFRASTRUCTURE):
-//   - File này chịu trách nhiệm tương tác trực tiếp với Postgres Database cho bảng 'zones' và 'zone_services'.
-//   - Triển khai và áp dụng tối ưu hóa hiệu năng cực hạn (Peak Performance Optimization):
-//
-//     1) TRUY VẤN TĨNH KHỞI TẠO SỚM (STATIC QUERY PRE-COMPUTATION):
-//        * Tất cả chuỗi truy vấn SQL được định dạng schema và biên dịch trước một lần duy nhất tại
-//          hàm khởi tạo `NewZoneRepoImpl`.
-//        * Triệt tiêu hoàn toàn chi phí sử dụng `fmt.Sprintf` tại runtime ở hot path.
-//
-//     2) ATOMIC MULTI-WRITE TRANSACTIONS (GIAO DỊCH ĐỒNG THỜI NGUYÊN TỬ):
-//        * Các tác vụ ghi (Create, Update, Delete, Upsert) được đóng gói chặt chẽ trong database
-//          transaction (`pgx.Tx`), đảm bảo tính nhất quán tuyệt đối.
-//
-// 🎯 SOURCE OF TRUTH (SoT):
-//   - Database schema 'hierarchy.zones' và 'hierarchy.zone_services' là PostgreSQL SoT.
-//
-// ======================================================================================================
-
-package repository
+package hierarchyRepoImpl
 
 import (
 	"context"
@@ -30,10 +7,9 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
-	model "controlplane/internal/hierarchy/model"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -42,406 +18,329 @@ import (
 )
 
 type ZoneRepoImpl struct {
-	db                           *pgxpool.Pool
-	schema                       string
-	listZonesQuery               string
-	rpcListZonesQuery            string
-	createZoneQuery              string
-	getZoneDetailByIDQuery       string
-	updateZoneStatusQuery        string
-	deleteZoneQuery              string
-	hasEnabledZoneSvcQuery       string
-	listZoneSvcByZoneIDQuery     string
-	upsertZoneServiceQuery       string
-	updateZoneServiceStatusQuery string
+	db                     *pgxpool.Pool
+	listZonesQuery         string
+	listZoneCatalogQuery   string
+	resolveZoneByCodeQuery string
+	createZoneQuery        string
+	createZoneServiceQuery string
+	getZoneDetailQuery     string
+	updateZoneStatusQuery  string
+	deleteZoneQuery        string
+	updateZoneServiceQuery string
 }
 
-// NewZoneRepoImpl khởi tạo một thực thể Repository mới cho Zone và biên dịch sẵn các câu lệnh SQL.
-func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyrepo.ZoneRepository {
+func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyRepoInterface.ZoneRepository {
 	schema := cfg.SchemaSQL.Hierarchy
 	return &ZoneRepoImpl{
-		db:     db,
-		schema: schema,
+		db: db,
 		listZonesQuery: fmt.Sprintf(`
-			SELECT id, code, name, location, status, updated_at 
-			FROM %s.zones 
+			SELECT id, code, name, location, status, updated_at
+			FROM %s.zones
 			ORDER BY created_at DESC
 		`, schema),
-		rpcListZonesQuery: fmt.Sprintf(`
-			SELECT id, code, name, status 
-			FROM %s.zones 
+		listZoneCatalogQuery: fmt.Sprintf(`
+			SELECT id, code, name, status
+			FROM %s.zones
 			ORDER BY created_at DESC
+		`, schema),
+		resolveZoneByCodeQuery: fmt.Sprintf(`
+			SELECT id, code, name, status
+			FROM %s.zones
+			WHERE code = $1
+			LIMIT 1
 		`, schema),
 		createZoneQuery: fmt.Sprintf(`
-			INSERT INTO %s.zones (id, code, name, location, description, status, created_at, updated_at) 
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			INSERT INTO %s.zones (id, code, name, location, description, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			RETURNING id, code, name, location, COALESCE(description, ''), status, created_at, updated_at
 		`, schema),
-		getZoneDetailByIDQuery: fmt.Sprintf(`
-			SELECT 
-				z.id, z.code, z.name, z.location, COALESCE(z.description, '') AS description, z.status, z.created_at, z.updated_at,
-				s.id, s.zone_id, s.service_type, s.desired_state, s.actual_state, s.created_at, s.updated_at
+		createZoneServiceQuery: fmt.Sprintf(`
+			INSERT INTO %s.zone_services
+				(id, zone_id, service_type, desired_state, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, now(), now())
+		`, schema),
+		getZoneDetailQuery: fmt.Sprintf(`
+			SELECT z.id, z.code, z.name, z.location, COALESCE(z.description, ''),
+				z.status, z.created_at, z.updated_at,
+				s.id, s.service_type, s.desired_state, s.actual_state, s.created_at, s.updated_at
 			FROM %s.zones z
-			LEFT JOIN %s.zone_services s ON z.id = s.zone_id
+			LEFT JOIN %s.zone_services s ON s.zone_id = z.id
 			WHERE z.id = $1
+			ORDER BY s.service_type
 		`, schema, schema),
+		// The Zone row is the serialization point shared by status, service and
+		// delete workflows; their CTEs must depend on the locked target row.
 		updateZoneStatusQuery: fmt.Sprintf(`
-			WITH target AS (
-				SELECT code FROM %s.zones WHERE id = $1
+			WITH target AS MATERIALIZED (
+				SELECT id, code, name, status::text FROM %s.zones WHERE id = $1 FOR UPDATE
 			), updated AS (
-				UPDATE %s.zones
+				UPDATE %s.zones zone
 				SET status = $2, updated_at = now()
-				WHERE id = $1 AND status = ANY($3)
-				RETURNING code
+				FROM target
+				WHERE zone.id = $1 AND zone.id = target.id AND target.status = ANY($3)
+				RETURNING zone.id
 			)
-			SELECT 
-				EXISTS(SELECT 1 FROM target) AS exists,
-				EXISTS(SELECT 1 FROM updated) AS updated,
-				COALESCE((SELECT code FROM target), '') AS zone_code
+			SELECT EXISTS(SELECT 1 FROM target), EXISTS(SELECT 1 FROM updated),
+				COALESCE((SELECT code FROM target), ''),
+				COALESCE((SELECT name FROM target), ''),
+				COALESCE((SELECT status FROM target), '')
 		`, schema, schema),
 		deleteZoneQuery: fmt.Sprintf(`
-			WITH target AS (
-				SELECT status FROM %s.zones WHERE id = $1
-			), svcs_exist AS (
-				SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND desired_state = true) AS val
+			WITH target AS MATERIALIZED (
+				SELECT id, code, status::text FROM %s.zones WHERE id = $1 FOR UPDATE
+			), enabled_service AS MATERIALIZED (
+				SELECT EXISTS(
+					SELECT 1 FROM %s.zone_services service
+					JOIN target ON target.id = service.zone_id
+					WHERE service.desired_state = true
+				) AS present
 			), deleted AS (
-				DELETE FROM %s.zones
-				WHERE id = $1 
-				  AND status = 'disabled'
-				  AND NOT EXISTS (SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND desired_state = true)
-				RETURNING code
+				DELETE FROM %s.zones zone
+				USING target, enabled_service
+				WHERE zone.id = target.id
+					AND target.status = 'disabled'
+					AND NOT enabled_service.present
+				RETURNING zone.id
 			)
-			SELECT 
-				(SELECT COUNT(*) FROM target) AS exists,
-				COALESCE((SELECT status::text FROM target), '') AS status,
-				(SELECT val FROM svcs_exist) AS has_svcs,
-				COALESCE((SELECT code FROM deleted), '') AS deleted_code
-		`, schema, schema, schema, schema),
-		hasEnabledZoneSvcQuery: fmt.Sprintf(`
-			SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id=$1 AND desired_state=true)
-		`, schema),
-		listZoneSvcByZoneIDQuery: fmt.Sprintf(`
-			SELECT id, zone_id, service_type, desired_state, actual_state, created_at, updated_at 
-			FROM %s.zone_services 
-			WHERE zone_id=$1 
-			ORDER BY service_type
-		`, schema),
-		upsertZoneServiceQuery: fmt.Sprintf(`
-			INSERT INTO %s.zone_services (id, zone_id, service_type, desired_state, created_at, updated_at) 
-			VALUES ($1,$2,$3,$4,now(),now()) 
-			ON CONFLICT (zone_id, service_type) 
-			DO UPDATE SET desired_state=EXCLUDED.desired_state, updated_at=now() 
-			RETURNING id, zone_id, service_type, desired_state, actual_state, created_at, updated_at
-		`, schema),
-		updateZoneServiceStatusQuery: fmt.Sprintf(`
-			WITH target_zone AS (
-				SELECT code, status FROM %s.zones WHERE id = $2
+			SELECT EXISTS(SELECT 1 FROM target),
+				COALESCE((SELECT status FROM target), ''),
+				COALESCE((SELECT present FROM enabled_service), false),
+				EXISTS(SELECT 1 FROM deleted),
+				COALESCE((SELECT code FROM target), '')
+		`, schema, schema, schema),
+		updateZoneServiceQuery: fmt.Sprintf(`
+			WITH target_zone AS MATERIALIZED (
+				SELECT id, code, name, status::text FROM %s.zones WHERE id = $2 FOR UPDATE
 			), upserted AS (
-				INSERT INTO %s.zone_services (id, zone_id, service_type, desired_state, created_at, updated_at)
-				SELECT $1, id, $3, $4, now(), now()
-				FROM %s.zones
-				WHERE id = $2 AND status = 'maintenance'
+				INSERT INTO %s.zone_services
+					(id, zone_id, service_type, desired_state, created_at, updated_at)
+				SELECT $1, target_zone.id, $3, $4, now(), now()
+				FROM target_zone
+				WHERE target_zone.status = 'maintenance'
 				ON CONFLICT (zone_id, service_type)
 				DO UPDATE SET desired_state = EXCLUDED.desired_state, updated_at = now()
 				RETURNING id, zone_id, service_type, desired_state, actual_state, created_at, updated_at
 			)
-			SELECT 
-				(SELECT COUNT(*) FROM target_zone) AS zone_exists,
-				COALESCE((SELECT status::text FROM target_zone), '') AS zone_status,
-				COALESCE((SELECT code FROM target_zone), '') AS zone_code,
-				(SELECT COUNT(*) FROM upserted) AS upsert_success,
-				COALESCE((SELECT id FROM upserted), '00000000-0000-0000-0000-000000000000'::uuid) AS svc_id,
-				COALESCE((SELECT actual_state FROM upserted), 'unknown') AS svc_actual_state,
-				COALESCE((SELECT created_at FROM upserted), now()) AS svc_created,
-				COALESCE((SELECT updated_at FROM upserted), now()) AS svc_updated
-		`, schema, schema, schema),
+			SELECT EXISTS(SELECT 1 FROM target_zone),
+				COALESCE((SELECT status FROM target_zone), ''),
+				EXISTS(SELECT 1 FROM upserted),
+				COALESCE((SELECT code FROM target_zone), ''),
+				COALESCE((SELECT name FROM target_zone), ''),
+				COALESCE((SELECT id FROM upserted), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT zone_id FROM upserted), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT service_type::text FROM upserted), ''),
+				COALESCE((SELECT desired_state FROM upserted), false),
+				COALESCE((SELECT actual_state FROM upserted), 'unknown'),
+				COALESCE((SELECT created_at FROM upserted), now()),
+				COALESCE((SELECT updated_at FROM upserted), now())
+		`, schema, schema),
 	}
 }
 
-// ListZones lấy toàn bộ danh sách các zone trong hệ thống.
-func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]entity.Zone, error) {
+func (r *ZoneRepoImpl) ListZones(ctx context.Context, _ *hierarchyEntity.ListZones) ([]hierarchyEntity.ListZones, error) {
 	rows, err := r.db.Query(ctx, r.listZonesQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := make([]entity.Zone, 0)
+	items := make([]hierarchyEntity.ListZones, 0)
 	for rows.Next() {
-		var value model.Zone
-		if err := rows.Scan(
-			&value.ID,
-			&value.Code,
-			&value.Name,
-			&value.Location,
-			&value.Status,
-			&value.UpdatedAt,
-		); err != nil {
+		var item hierarchyEntity.ListZones
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.Location, &item.Status, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
-		out = append(out, model.ZoneModelToEntity(value))
+		items = append(items, item)
 	}
-	return out, rows.Err()
+	return items, rows.Err()
 }
 
-// AcrListZones lấy danh sách các zone tối giản chỉ bao gồm ID, Code, Name, Status.
-// Phù hợp sử dụng cho các luồng hot-path phục vụ Edge Gateway/ACR Service.
-func (r *ZoneRepoImpl) AcrListZones(ctx context.Context) ([]entity.RPCZone, error) {
-	// Thực hiện truy vấn qua rpcListZonesQuery đã biên dịch trước
-	rows, err := r.db.Query(ctx, r.rpcListZonesQuery)
+func (r *ZoneRepoImpl) ListZoneCatalog(ctx context.Context, _ *hierarchyEntity.ListZoneCatalog) ([]hierarchyEntity.ListZoneCatalog, error) {
+	rows, err := r.db.Query(ctx, r.listZoneCatalogQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := make([]entity.RPCZone, 0)
+	items := make([]hierarchyEntity.ListZoneCatalog, 0)
 	for rows.Next() {
-		var id uuid.UUID
-		var code string
-		var name string
-		var status string
-		// Chỉ scan 4 trường dữ liệu tối giản
-		if err := rows.Scan(&id,
-			&code,
-			&name,
-			&status); err != nil {
+		var item hierarchyEntity.ListZoneCatalog
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.Status); err != nil {
 			return nil, err
 		}
-		out = append(out, entity.RPCZone{
-			ID:     id,
-			Code:   code,
-			Name:   name,
-			Status: entity.ZoneStatus(status),
-		})
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *ZoneRepoImpl) ResolveZoneByCode(ctx context.Context, in *hierarchyEntity.ResolveZoneByCode) (*hierarchyEntity.ResolveZoneByCode, error) {
+	out := &hierarchyEntity.ResolveZoneByCode{Code: in.Code}
+	err := r.db.QueryRow(ctx, r.resolveZoneByCodeQuery, in.Code).Scan(&out.ID, &out.Code, &out.Name, &out.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out.Found = true
+	return out, nil
+}
+
+func (r *ZoneRepoImpl) CreateZone(ctx context.Context, in *hierarchyEntity.CreateZone) (*hierarchyEntity.CreateZone, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	out := &hierarchyEntity.CreateZone{
+		EnableHypervisor: in.EnableHypervisor, EnableStorage: in.EnableStorage,
+		EnableMail: in.EnableMail, EnableKubernetes: in.EnableKubernetes,
+		EnableAI: in.EnableAI, EnableDatabase: in.EnableDatabase,
+		EnableManagedService: in.EnableManagedService,
+		HypervisorServiceID:  in.HypervisorServiceID, StorageServiceID: in.StorageServiceID,
+		MailServiceID: in.MailServiceID, KubernetesServiceID: in.KubernetesServiceID,
+		AIServiceID: in.AIServiceID, DatabaseServiceID: in.DatabaseServiceID,
+		ManagedServiceID: in.ManagedServiceID,
+	}
+	err = tx.QueryRow(ctx, r.createZoneQuery,
+		in.ID, in.Code, in.Name, in.Location, in.Description, in.Status, in.CreatedAt, in.UpdatedAt,
+	).Scan(&out.ID, &out.Code, &out.Name, &out.Location, &out.Description, &out.Status, &out.CreatedAt, &out.UpdatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, hierarchyTaxonomy.ErrAlreadyExists
+		}
+		return nil, err
+	}
+
+	services := []struct {
+		id      uuid.UUID
+		kind    hierarchyEntity.ZoneServiceType
+		enabled bool
+	}{
+		{in.HypervisorServiceID, hierarchyEntity.ZoneServiceTypeHypervisor, in.EnableHypervisor},
+		{in.StorageServiceID, hierarchyEntity.ZoneServiceTypeStorage, in.EnableStorage},
+		{in.MailServiceID, hierarchyEntity.ZoneServiceTypeMail, in.EnableMail},
+		{in.KubernetesServiceID, hierarchyEntity.ZoneServiceTypeKubernetes, in.EnableKubernetes},
+		{in.AIServiceID, hierarchyEntity.ZoneServiceTypeAI, in.EnableAI},
+		{in.DatabaseServiceID, hierarchyEntity.ZoneServiceTypeDatabase, in.EnableDatabase},
+		{in.ManagedServiceID, hierarchyEntity.ZoneServiceTypeManagedService, in.EnableManagedService},
+	}
+	for _, service := range services {
+		if _, err := tx.Exec(ctx, r.createZoneServiceQuery, service.id, in.ID, service.kind, service.enabled); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
-// CreateZone khởi tạo Zone mới kèm theo các services cấu hình trong cùng một transaction.
-func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone entity.Zone, svcs map[entity.ZoneServiceType]bool) error {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	value := model.ZoneEntityToModel(zone)
-	_, err = tx.Exec(ctx,
-		r.createZoneQuery,
-		value.ID,
-		value.Code,
-		value.Name,
-		value.Location,
-		value.Description,
-		value.Status,
-		value.CreatedAt.UTC(),
-		value.UpdatedAt.UTC(),
-	)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return taxonomy.ErrCodeAlreadyExists
-		}
-		return err
-	}
-
-	for svcType, enabled := range svcs {
-		newID, _ := uuid.NewV7()
-		_, err = tx.Exec(ctx,
-			r.upsertZoneServiceQuery,
-			newID,
-			value.ID,
-			string(svcType),
-			enabled,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit(ctx)
-}
-
-// GetZoneDetailByID lấy thông tin chi tiết một Zone kèm theo tất cả các dịch vụ (aggregated flow).
-func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*entity.ZoneDetail, error) {
-	rows, err := r.db.Query(ctx, r.getZoneDetailByIDQuery, id)
+func (r *ZoneRepoImpl) GetZoneDetail(ctx context.Context, in *hierarchyEntity.GetZoneDetail) ([]hierarchyEntity.GetZoneDetail, error) {
+	rows, err := r.db.Query(ctx, r.getZoneDetailQuery, in.ZoneID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var detail *entity.ZoneDetail
+	items := make([]hierarchyEntity.GetZoneDetail, 0)
 	for rows.Next() {
-		var zVal model.Zone
-		var sID, sZoneID *uuid.UUID
-		var sType *string
-		var sDesiredState *bool
-		var sActualState *string
-		var sCreatedAt, sUpdatedAt *time.Time
+		var item hierarchyEntity.GetZoneDetail
+		var serviceID *uuid.UUID
+		var serviceType *string
+		var desiredState *bool
+		var actualState *string
+		var serviceCreatedAt, serviceUpdatedAt *time.Time
 		if err := rows.Scan(
-			&zVal.ID,
-			&zVal.Code,
-			&zVal.Name,
-			&zVal.Location,
-			&zVal.Description,
-			&zVal.Status,
-			&zVal.CreatedAt,
-			&zVal.UpdatedAt,
-			&sID,
-			&sZoneID,
-			&sType,
-			&sDesiredState,
-			&sActualState,
-			&sCreatedAt,
-			&sUpdatedAt,
+			&item.ZoneID, &item.ZoneCode, &item.ZoneName, &item.ZoneLocation,
+			&item.ZoneDescription, &item.ZoneStatus, &item.ZoneCreatedAt, &item.ZoneUpdatedAt,
+			&serviceID, &serviceType, &desiredState, &actualState, &serviceCreatedAt, &serviceUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-
-		if detail == nil {
-			zoneEnt := model.ZoneModelToEntity(zVal)
-			detail = &entity.ZoneDetail{
-				Zone:     zoneEnt,
-				Services: []entity.ZoneService{},
-			}
+		if serviceID != nil && serviceType != nil && desiredState != nil && actualState != nil && serviceCreatedAt != nil && serviceUpdatedAt != nil {
+			item.HasService = true
+			item.ServiceID = *serviceID
+			item.ServiceType = hierarchyEntity.ZoneServiceType(*serviceType)
+			item.DesiredState = *desiredState
+			item.ActualState = *actualState
+			item.ServiceCreatedAt = *serviceCreatedAt
+			item.ServiceUpdatedAt = *serviceUpdatedAt
 		}
-
-		// [COMMENT]: Map các cột từ bảng zone_services bao gồm cả desired_state và actual_state
-		if sID != nil && sZoneID != nil && sType != nil && sDesiredState != nil {
-			actualStateVal := "unknown"
-			if sActualState != nil {
-				actualStateVal = *sActualState
-			}
-			detail.Services = append(detail.Services, entity.ZoneService{
-				ID:           *sID,
-				ZoneID:       *sZoneID,
-				ServiceType:  entity.ZoneServiceType(*sType),
-				DesiredState: *sDesiredState,
-				ActualState:  actualStateVal,
-				CreatedAt:    *sCreatedAt,
-				UpdatedAt:    *sUpdatedAt,
-			})
-		}
+		items = append(items, item)
 	}
-
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	if detail == nil {
-		return nil, taxonomy.ErrZoneNotFound // Not found
+	if len(items) == 0 {
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
-
-	return detail, nil
+	return items, nil
 }
 
-// UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
-func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status entity.ZoneStatus, allowedOld []entity.ZoneStatus) (string, error) {
-	statusStrings := make([]string, len(allowedOld))
-	for i, s := range allowedOld {
-		statusStrings[i] = string(s)
+func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, in *hierarchyEntity.UpdateZoneStatus) (*hierarchyEntity.UpdateZoneStatus, error) {
+	allowed := make([]string, len(in.AllowedFrom))
+	for index, status := range in.AllowedFrom {
+		allowed[index] = string(status)
 	}
-
-	var exists bool
-	var updated bool
-	var zoneCode string
-	// Thực hiện truy vấn kiểm tra sự tồn tại và cập nhật trạng thái theo State Machine.
-	err := r.db.QueryRow(ctx,
-		r.updateZoneStatusQuery,
-		id,
-		string(status),
-		statusStrings,
-	).Scan(
-		&exists,
-		&updated,
-		&zoneCode,
-	)
-	if err != nil {
-		return "", err
+	var exists, updated bool
+	var previousStatus string
+	out := &hierarchyEntity.UpdateZoneStatus{ZoneID: in.ZoneID, Status: in.Status, AllowedFrom: in.AllowedFrom}
+	if err := r.db.QueryRow(ctx, r.updateZoneStatusQuery, in.ZoneID, in.Status, allowed).Scan(
+		&exists, &updated, &out.ZoneCode, &out.ZoneName, &previousStatus,
+	); err != nil {
+		return nil, err
 	}
-	// Trả lỗi nếu bản ghi không tồn tại.
 	if !exists {
-		return "", taxonomy.ErrZoneNotFound
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
-	// Trả lỗi nếu quá trình chuyển đổi trạng thái không hợp lệ.
 	if !updated {
-		return "", taxonomy.ErrZoneInvalidTransition
+		return nil, hierarchyTaxonomy.ErrInvalidTransition
 	}
-	return zoneCode, nil
+	out.StateChanged = previousStatus != string(in.Status)
+	return out, nil
 }
 
-// DeleteZone xóa Zone khỏi cơ sở dữ liệu (hard delete).
-func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
-	var exists int
+func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, in *hierarchyEntity.DeleteZone) (*hierarchyEntity.DeleteZone, error) {
+	var exists, hasServices, deleted bool
 	var status string
-	var hasSvcs bool
-	var deletedCode string
-
-	err := r.db.QueryRow(ctx,
-		r.deleteZoneQuery,
-		id,
-	).Scan(
-		&exists,
-		&status,
-		&hasSvcs,
-		&deletedCode,
-	)
-	if err != nil {
-		return "", err
+	out := &hierarchyEntity.DeleteZone{ZoneID: in.ZoneID}
+	if err := r.db.QueryRow(ctx, r.deleteZoneQuery, in.ZoneID).Scan(
+		&exists, &status, &hasServices, &deleted, &out.ZoneCode,
+	); err != nil {
+		return nil, err
 	}
-
-	if exists == 0 {
-		return "", taxonomy.ErrZoneNotFound
+	if !exists {
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
-	if status != "disabled" || hasSvcs {
-		return "", taxonomy.ErrZoneDeletePreconditionFailed
+	if status != string(hierarchyEntity.ZoneStatusDisabled) || hasServices || !deleted {
+		return nil, hierarchyTaxonomy.ErrPreconditionFailed
 	}
-	return deletedCode, nil
+	return out, nil
 }
 
-// UpdateZoneService cập nhật cấu hình dịch vụ của Zone (DesiredState).
-func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType entity.ZoneServiceType, enabled bool) (*entity.ZoneService, string, error) {
-	newID, _ := uuid.NewV7()
-	var zoneExists int
-	var zoneStatus string
-	var zoneCode string
-	var upsertSuccess int
-	var value model.ZoneService
-
-	// [COMMENT]: Thực hiện cập nhật trạng thái mong muốn của dịch vụ trong phân vùng
-	err := r.db.QueryRow(ctx,
-		r.updateZoneServiceStatusQuery,
-		newID,
-		zoneID,
-		string(serviceType),
-		enabled,
+func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, in *hierarchyEntity.UpdateZoneService) (*hierarchyEntity.UpdateZoneService, error) {
+	var zoneExists, upserted bool
+	var currentStatus string
+	out := &hierarchyEntity.UpdateZoneService{}
+	if err := r.db.QueryRow(ctx, r.updateZoneServiceQuery,
+		in.ID, in.ZoneID, in.ServiceType, in.DesiredState,
 	).Scan(
-		&zoneExists,
-		&zoneStatus,
-		&zoneCode,
-		&upsertSuccess,
-		&value.ID,
-		&value.ActualState, // [COMMENT]: Scan actual_state từ database trả về
-		&value.CreatedAt,
-		&value.UpdatedAt,
-	)
-	if err != nil {
-		return nil, "", err
+		&zoneExists, &currentStatus, &upserted, &out.ZoneCode, &out.ZoneName,
+		&out.ID, &out.ZoneID, &out.ServiceType, &out.DesiredState, &out.ActualState,
+		&out.CreatedAt, &out.UpdatedAt,
+	); err != nil {
+		return nil, err
 	}
-
-	if zoneExists == 0 {
-		return nil, "", taxonomy.ErrZoneServiceZoneNotFound
+	if !zoneExists {
+		return nil, hierarchyTaxonomy.ErrNotFound
 	}
-	if zoneStatus != "maintenance" {
-		return nil, "", taxonomy.ErrZoneServiceStateConflict
+	out.ZoneStatus = hierarchyEntity.ZoneStatus(currentStatus)
+	if currentStatus != string(hierarchyEntity.ZoneStatusMaintenance) || !upserted {
+		return nil, hierarchyTaxonomy.ErrPreconditionFailed
 	}
-	if upsertSuccess == 0 {
-		return nil, "", taxonomy.ErrZoneServiceInvalidInput
-	}
-
-	value.ZoneID = zoneID
-	value.ServiceType = string(serviceType)
-	value.DesiredState = enabled // [COMMENT]: Cấu hình desired_state tương ứng với biến enabled nhận vào
-
-	ent := model.ZoneServiceModelToEntity(value)
-	return &ent, zoneCode, nil
+	return out, nil
 }

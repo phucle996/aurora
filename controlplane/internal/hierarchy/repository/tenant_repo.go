@@ -1,9 +1,4 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/hierarchy/repository/tenant_repo.go
-//            Đặc Tả Hạ Tầng Lưu Trữ & Truy Vấn Tenant
-// ======================================================================================================
-
-package repository
+package hierarchyRepoImpl
 
 import (
 	"context"
@@ -12,14 +7,12 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
-	model "controlplane/internal/hierarchy/model"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
@@ -27,15 +20,13 @@ import (
 
 var tenantWalletProvisionEventNamespace = uuid.MustParse("24bbad2a-d35b-5e77-b548-31b81dbac82c")
 
-// [COMMENT]: TenantRepoImpl triển khai TenantRepository
 type TenantRepoImpl struct {
 	db              *pgxpool.Pool
 	hierarchySchema string
 	iamSchema       string
 }
 
-// [COMMENT]: NewTenantRepoImpl khởi tạo repo
-func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyrepo.TenantRepository {
+func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyRepoInterface.TenantRepository {
 	return &TenantRepoImpl{
 		db:              db,
 		hierarchySchema: cfg.SchemaSQL.Hierarchy,
@@ -43,50 +34,49 @@ func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyrepo.Tenan
 	}
 }
 
-// [COMMENT]: CreateTenant tạo tenant và tự động thêm owner làm member đầu tiên cùng với seeding 5 tenant roles trong 1 transaction
-func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant, ownerID uuid.UUID) (*entity.Tenant, error) {
-	// [COMMENT]: Khởi động database transaction để đảm bảo tính atomic và toàn vẹn dữ liệu
+func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.CreateTenant) (*hierarchyEntity.CreateTenant, error) {
+	// Tenant, owner membership, role snapshots and billing intent form one
+	// aggregate creation boundary; none may commit without the others.
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("tenant repo: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Insert Tenant mới vào bảng tenants
 	queryTenant := fmt.Sprintf(`
 		INSERT INTO %s.tenants (id, code, name, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, now(), now())
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, code, name, status, created_at, updated_at
 	`, r.hierarchySchema)
 
-	var m model.Tenant
+	out := &hierarchyEntity.CreateTenant{OwnerID: in.OwnerID}
 	err = tx.QueryRow(ctx, queryTenant,
-		tenant.ID,
-		tenant.Code,
-		tenant.Name,
-		string(tenant.Status),
-	).Scan(&m.ID, &m.Code, &m.Name, &m.Status, &m.CreatedAt, &m.UpdatedAt)
+		in.ID,
+		in.Code,
+		in.Name,
+		string(in.Status),
+		in.CreatedAt,
+		in.UpdatedAt,
+	).Scan(&out.ID, &out.Code, &out.Name, &out.Status, &out.CreatedAt, &out.UpdatedAt)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, taxonomy.ErrCodeAlreadyExists
+			return nil, hierarchyTaxonomy.ErrAlreadyExists
 		}
 		return nil, err
 	}
 
-	// 2. Insert tenant_membership cho Owner, đánh dấu is_ownership = true
 	queryMembership := fmt.Sprintf(`
 		INSERT INTO %s.tenant_memberships
 			(id, tenant_id, user_id, role, status, is_ownership, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, 'tenant_owner', 'active', true, now(), now())
 	`, r.hierarchySchema)
 
-	if _, err := tx.Exec(ctx, queryMembership, m.ID, ownerID); err != nil {
+	if _, err := tx.Exec(ctx, queryMembership, out.ID, in.OwnerID); err != nil {
 		return nil, fmt.Errorf("tenant repo: insert owner membership: %w", err)
 	}
 
-	// 3. Truy vấn các role của tenant và permissions đi kèm từ schema IAM
 	queryRoles := fmt.Sprintf(`
 		SELECT r.id, r.code, r.name, r.role_level, 
 		       COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
@@ -131,9 +121,9 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant,
 		}
 
 		if mod != "" && obj != "" && beh != "" {
-			// [COMMENT]: Ghép thành key 5 cấp định dạng: <tenant_id>:<workspace_id>:<module>:<object>:<behavior>
-			// WorkspaceID sử dụng nil UUID đại diện cho platform-wide scope của tenant
-			permKey := fmt.Sprintf("%s:00000000-0000-0000-0000-000000000000:%s:%s:%s", m.ID.String(), mod, obj, beh)
+			// Nil workspace is the stable platform-wide scope in the five-part
+			// permission key consumed by authorization caches.
+			permKey := fmt.Sprintf("%s:00000000-0000-0000-0000-000000000000:%s:%s:%s", out.ID.String(), mod, obj, beh)
 			rd.Perms = append(rd.Perms, permKey)
 		}
 	}
@@ -142,7 +132,6 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant,
 		return nil, err
 	}
 
-	// 4. Duyệt qua các vai trò đã gom quyền và seed vào bảng tenant_role của tenant đó
 	queryInsertTenantRole := fmt.Sprintf(`
 		INSERT INTO %s.tenant_role (id, tenant_id, workspace_id, role_id, role_name, role_level, list_perm, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, '00000000-0000-0000-0000-000000000000', $2, $3, $4, $5, now(), now())
@@ -158,7 +147,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant,
 		}
 
 		_, err = tx.Exec(ctx, queryInsertTenantRole,
-			m.ID,
+			out.ID,
 			rd.ID,
 			rd.Name,
 			rd.Level,
@@ -169,16 +158,15 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant,
 		}
 	}
 
-	// 5. Persist the tenant wallet intent in the same transaction. Shared Redis
-	// is only a bounded relay after commit; the outbox row is the durability
+	// Shared Redis is only a bounded relay after commit; the outbox row is the durability
 	// boundary if either Controlplane or Cost Manager is unavailable.
 	occurredAt := time.Now().UTC()
-	eventID := uuid.NewSHA1(tenantWalletProvisionEventNamespace, m.ID[:])
+	eventID := uuid.NewSHA1(tenantWalletProvisionEventNamespace, out.ID[:])
 	eventPayload, err := proto.Marshal(&iamproto.TenantWalletProvisionRequestedV1{
 		EventId:       eventID[:],
 		SchemaVersion: 1,
-		TenantId:      m.ID[:],
-		ActorUserId:   ownerID[:],
+		TenantId:      out.ID[:],
+		ActorUserId:   in.OwnerID[:],
 		Currency:      "USD",
 		OccurredAt:    occurredAt.Format(time.RFC3339Nano),
 	})
@@ -192,113 +180,13 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant,
 		VALUES ($1, 'billing.wallet.tenant.provision.requested.v1', 1, 'TENANT', $2, 1,
 		        $2, 'TENANT', $3, $4, $5)
 		ON CONFLICT (event_id) DO NOTHING
-	`, r.iamSchema), eventID, m.ID, ownerID, eventPayload, occurredAt); err != nil {
+	`, r.iamSchema), eventID, out.ID, in.OwnerID, eventPayload, occurredAt); err != nil {
 		return nil, fmt.Errorf("tenant repo: insert wallet provision outbox: %w", err)
 	}
 
-	// 6. Commit tenant, owner membership, role snapshots and billing intent atomically.
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("tenant repo: commit tx: %w", err)
 	}
 
-	result := model.TenantModelToEntity(m)
-	return &result, nil
-}
-
-// ResolveTenantByDomain tìm Tenant dựa vào domain liên kết.
-func (r *TenantRepoImpl) ResolveTenantByDomain(ctx context.Context, domain string) (*entity.Tenant, error) {
-	query := fmt.Sprintf(`
-		SELECT t.id, t.code, t.name, t.status, t.created_at, t.updated_at
-		FROM %s.tenants t
-		JOIN %s.tenant_domains td ON td.tenant_id = t.id
-		WHERE td.domain = $1 AND t.status = 'active'
-		LIMIT 1
-	`, r.hierarchySchema, r.hierarchySchema)
-
-	var m model.Tenant
-	err := r.db.QueryRow(ctx, query, domain).Scan(
-		&m.ID, &m.Code, &m.Name, &m.Status, &m.CreatedAt, &m.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, taxonomy.ErrTenantNotFound
-		}
-		return nil, err
-	}
-
-	result := model.TenantModelToEntity(m)
-	return &result, nil
-}
-
-// ListTenantsPaged lấy danh sách tenants phân trang để phục vụ warmup chunk.
-// Trả về: danh sách tenant, cờ hasMore để biết còn trang sau không, error.
-func (r *TenantRepoImpl) ListTenantsPaged(ctx context.Context, limit, offset int) ([]entity.Tenant, bool, error) {
-	// Query thêm 1 dòng để kiểm tra xem còn trang sau (hasMore) hay không
-	query := fmt.Sprintf(`
-		SELECT t.id, t.code, t.name, t.status, t.created_at, t.updated_at, td.domain
-		FROM %s.tenants t
-		LEFT JOIN %s.tenant_domains td ON td.tenant_id = t.id AND td.is_primary = true
-		ORDER BY t.created_at ASC
-		LIMIT $1 OFFSET $2
-	`, r.hierarchySchema, r.hierarchySchema)
-
-	rows, err := r.db.Query(ctx, query, limit+1, offset)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-
-	var out []entity.Tenant
-	for rows.Next() {
-		var m model.Tenant
-		var domainOpt *string
-		if err := rows.Scan(
-			&m.ID, &m.Code, &m.Name, &m.Status, &m.CreatedAt, &m.UpdatedAt, &domainOpt,
-		); err != nil {
-			return nil, false, err
-		}
-
-		ent := model.TenantModelToEntity(m)
-		// Trích xuất domain chính gắn vào entity
-		if domainOpt != nil {
-			ent.Domain = *domainOpt
-		}
-		out = append(out, ent)
-	}
-
-	hasMore := false
-	if len(out) > limit {
-		hasMore = true
-		out = out[:limit] // Cắt bớt phần dư
-	}
-
-	return out, hasMore, nil
-}
-
-// CheckMembership kiểm tra user có thuộc tenant không và lấy role tương ứng.
-// Tra vào bảng tenant_memberships để xác định membership status.
-func (r *TenantRepoImpl) CheckMembership(ctx context.Context, tenantID, userID uuid.UUID) (isMember bool, role string, err error) {
-	query := fmt.Sprintf(`
-		SELECT role, status
-		FROM %s.tenant_memberships
-		WHERE tenant_id = $1 AND user_id = $2
-		LIMIT 1
-	`, r.hierarchySchema)
-
-	var memberRole, status string
-	err = r.db.QueryRow(ctx, query, tenantID, userID).Scan(&memberRole, &status)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// [COMMENT]: Không có record → user không thuộc tenant này
-			return false, "", nil
-		}
-		return false, "", err
-	}
-
-	// [COMMENT]: Chỉ xác nhận membership khi status = active
-	if status != "active" {
-		return false, "", nil
-	}
-
-	return true, memberRole, nil
+	return out, nil
 }

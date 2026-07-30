@@ -1,4 +1,4 @@
-package handler
+package hierarchyHandler
 
 import (
 	"context"
@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	entity "controlplane/internal/hierarchy/domain/entity"
-	hierarchyservice "controlplane/internal/hierarchy/domain/service"
-	taxonomy "controlplane/internal/hierarchy/taxonomy"
-	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyReq "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
@@ -20,12 +20,12 @@ import (
 
 // [COMMENT]: WorkspacePersonalHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi cá nhân (Personal/Me)
 type WorkspacePersonalHandler struct {
-	personalSvc hierarchyservice.PersonalWorkspaceService
+	personalSvc hierarchySvcInterface.PersonalWorkspaceService
 }
 
 // [COMMENT]: NewWorkspacePersonalHandler tạo một thực thể WorkspacePersonalHandler mới
 func NewWorkspacePersonalHandler(
-	personalSvc hierarchyservice.PersonalWorkspaceService,
+	personalSvc hierarchySvcInterface.PersonalWorkspaceService,
 ) *WorkspacePersonalHandler {
 	return &WorkspacePersonalHandler{
 		personalSvc: personalSvc,
@@ -39,7 +39,7 @@ func NewWorkspacePersonalHandler(
 // @Accept       json
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) bắt buộc"
-// @Param        request     body   requestdto.CreateWorkspaceRequest true "Thông tin khởi tạo workspace"
+// @Param        request     body   hierarchyReq.CreatePersonalWorkspaceRequest true "Thông tin khởi tạo workspace"
 // @Success      201 {object} map[string]interface{} "Workspace created"
 // @Router       /api/v1/me/hierarchy/workspace/create [post]
 func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
@@ -61,16 +61,23 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 	}
 
 	// [COMMENT]: Thực hiện bind JSON request body — dùng DTO riêng cho personal scope, không lẫn với tenant
-	var request requestdto.CreatePersonalWorkspaceRequest
+	var request hierarchyReq.CreatePersonalWorkspaceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind create workspace request failed")
 		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
+	workspaceName := strings.TrimSpace(request.Name)
+	workspaceCode := strings.ToLower(strings.TrimSpace(request.Code))
+	if workspaceName == "" || workspaceCode == "" || len(workspaceName) > 255 || len(workspaceCode) > 100 {
+		logger.HandlerWarn(c, op, nil, "create personal workspace normalized input is invalid")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 
-	workspaceEntity := entity.PersonalWorkspace{
-		Name:        strings.TrimSpace(request.Name),
-		Code:        strings.ToLower(strings.TrimSpace(request.Code)),
+	workspaceEntity := &hierarchyEntity.CreatePersonalWorkspace{
+		Name:        workspaceName,
+		Code:        workspaceCode,
 		Description: strings.TrimSpace(request.Description),
 		ZoneID:      zoneID,
 		OwnerID:     ownerID,
@@ -80,10 +87,10 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 	workspace, err := h.personalSvc.CreateWorkspaceForPersonal(ctx, workspaceEntity)
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrZoneNotFound):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
 			logger.HandlerWarn(c, op, err, "create workspace zone not found or not active")
 			apires.RespondNotFound(c, "zone not found or not active")
-		case errors.Is(err, taxonomy.ErrWorkspaceCodeAlreadyExists):
+		case errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create workspace code conflict")
 			apires.RespondConflict(c, "workspace code already exists within this scope")
 		default:
@@ -123,7 +130,7 @@ func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 		return
 	}
 	// [COMMENT]: Truy vấn danh sách các personal workspace thông qua service
-	workspaces, err := h.personalSvc.ListWorkspacesForPersonal(ctx, userID)
+	workspaces, err := h.personalSvc.ListWorkspacesForPersonal(ctx, &hierarchyEntity.ListPersonalWorkspaces{OwnerID: userID})
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
@@ -152,7 +159,7 @@ func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) để lọc catalog"
-// @Success      200 {array}  entity.WorkspaceCatalog "Workspace catalog success"
+// @Success      200 {object} map[string]interface{} "Workspace catalog success"
 // @Router       /api/v1/me/hierarchy/workspace/catalog [get]
 func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 	const op = "hierarchy.workspace.personal.catalog"
@@ -173,7 +180,9 @@ func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 	}
 
 	// [COMMENT]: Gọi hot path truy vấn dữ liệu catalog tối giản thông qua service cá nhân
-	catalog, err := h.personalSvc.ListWorkspaceCatalogForPersonal(ctx, userID, zoneID)
+	catalog, err := h.personalSvc.ListWorkspaceCatalogForPersonal(ctx, &hierarchyEntity.ListPersonalWorkspaceCatalog{
+		OwnerID: userID, ZoneID: zoneID,
+	})
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
@@ -221,18 +230,15 @@ func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 		return
 	}
 
-	err = h.personalSvc.DeleteWorkspaceForPersonal(ctx, workspaceID, ownerUserID)
+	err = h.personalSvc.DeleteWorkspaceForPersonal(ctx, &hierarchyEntity.DeletePersonalWorkspace{ID: workspaceID, OwnerID: ownerUserID})
 	if err != nil {
 		switch {
-		case errors.Is(err, taxonomy.ErrWorkspaceNotFound):
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
 			logger.HandlerWarn(c, op, err, "workspace not found to delete")
 			apires.RespondNotFound(c, "workspace not found")
-		case errors.Is(err, taxonomy.ErrWorkspaceNotEmpty):
-			logger.HandlerWarn(c, op, err, "delete workspace rejected: active resources exist")
-			apires.RespondConflict(c, "workspace is not empty, active resources exist")
-		case errors.Is(err, taxonomy.ErrLastWorkspaceDeletionBlocked):
-			logger.HandlerWarn(c, op, err, "delete workspace rejected: last remaining workspace")
-			apires.RespondConflict(c, "cannot delete the last remaining workspace")
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
+			logger.HandlerWarn(c, op, err, "delete workspace precondition failed")
+			apires.RespondConflict(c, "workspace delete precondition failed")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal server error")

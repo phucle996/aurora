@@ -1,4 +1,4 @@
-import { Server, Database, Boxes, Brain, Mail } from 'lucide-react'
+import { Server, Database, Boxes, Brain, Mail, CloudCog } from 'lucide-react'
 import { type ServiceKey } from './ZoneForm'
 
 interface ZonePreviewCardProps {
@@ -15,6 +15,7 @@ const serviceIcons: Record<ServiceKey, React.ComponentType<{ className?: string 
   k8s: Boxes,
   ai: Brain,
   mail: Mail,
+  managed_service: CloudCog,
 }
 
 const serviceNames: Record<ServiceKey, string> = {
@@ -23,6 +24,7 @@ const serviceNames: Record<ServiceKey, string> = {
   k8s: 'Kubernetes',
   ai: 'AI Services',
   mail: 'Mail Services',
+  managed_service: 'Managed Services',
 }
 
 export default function ZonePreviewCard({

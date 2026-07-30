@@ -1,4 +1,4 @@
-package entity
+package hierarchyEntity
 
 import (
 	"time"
@@ -16,62 +16,110 @@ const (
 	ZoneStatusDisabled    ZoneStatus = "disabled"
 )
 
-type Zone struct {
-	ID          uuid.UUID
-	Code        string
-	Name        string
-	Location    string
-	Description string
-	Status      ZoneStatus
-	CreatedAt   *time.Time
-	UpdatedAt   *time.Time
-}
-
-// RPCZone đại diện cho dữ liệu tối giản của một Zone phục vụ đồng bộ qua RPC biên (ACR).
-// Thiết kế này giúp giảm thiểu tải lượng truyền tải mạng và tối ưu bộ nhớ.
-type RPCZone struct {
-	ID     uuid.UUID  // ID định danh duy nhất của zone
-	Code   string     // Mã code viết tắt của zone (e.g. vn-hn-1)
-	Name   string     // Tên hiển thị đầy đủ của zone
-	Status ZoneStatus // Trạng thái vận hành hiện tại của zone
-}
-
-type ZoneDetail struct {
-	Zone     Zone
-	Services []ZoneService
-}
-
 type ZoneServiceType string
 
 const (
-	ZoneServiceTypeHypervisor ZoneServiceType = "hypervisor"
-	ZoneServiceTypeStorage    ZoneServiceType = "storage"
-	ZoneServiceTypeMail       ZoneServiceType = "mail"
-	ZoneServiceTypeKubernetes ZoneServiceType = "kubernetes"
-	ZoneServiceTypeAI         ZoneServiceType = "ai"
-	ZoneServiceTypeDatabase   ZoneServiceType = "database"
+	ZoneServiceTypeHypervisor     ZoneServiceType = "hypervisor"
+	ZoneServiceTypeStorage        ZoneServiceType = "storage"
+	ZoneServiceTypeMail           ZoneServiceType = "mail"
+	ZoneServiceTypeKubernetes     ZoneServiceType = "kubernetes"
+	ZoneServiceTypeAI             ZoneServiceType = "ai"
+	ZoneServiceTypeDatabase       ZoneServiceType = "database"
+	ZoneServiceTypeManagedService ZoneServiceType = "managed_service"
 )
 
-// ZoneService defines the configuration and operational health status of a service inside a specific zone.
-type ZoneService struct {
-	ID           uuid.UUID
-	ZoneID       uuid.UUID
-	ServiceType  ZoneServiceType
-	DesiredState bool   // [COMMENT]: Trạng thái cấu hình mong muốn (true: enable, false: disable)
-	ActualState  string // [COMMENT]: Trạng thái vận hành thực tế nhận từ Dataplane agent (healthy, degraded, down, unknown)
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+type ListZones struct {
+	ID        uuid.UUID
+	Code      string
+	Name      string
+	Location  string
+	Status    ZoneStatus
+	UpdatedAt time.Time
 }
 
-type CreateZoneInput struct {
-	Code             string
-	Name             string
-	Location         string
-	Description      string
-	EnableHypervisor bool
-	EnableStorage    bool
-	EnableMail       bool
-	EnableKubernetes bool
-	EnableAI         bool
-	EnableDatabase   bool
+type ListZoneCatalog struct {
+	ID     uuid.UUID
+	Code   string
+	Name   string
+	Status ZoneStatus
+}
+
+type ResolveZoneByCode struct {
+	ID     uuid.UUID
+	Code   string
+	Name   string
+	Status ZoneStatus
+	Found  bool
+}
+
+type CreateZone struct {
+	ID                   uuid.UUID
+	Code                 string
+	Name                 string
+	Location             string
+	Description          string
+	Status               ZoneStatus
+	EnableHypervisor     bool
+	EnableStorage        bool
+	EnableMail           bool
+	EnableKubernetes     bool
+	EnableAI             bool
+	EnableDatabase       bool
+	EnableManagedService bool
+	HypervisorServiceID  uuid.UUID
+	StorageServiceID     uuid.UUID
+	MailServiceID        uuid.UUID
+	KubernetesServiceID  uuid.UUID
+	AIServiceID          uuid.UUID
+	DatabaseServiceID    uuid.UUID
+	ManagedServiceID     uuid.UUID
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+// GetZoneDetail is one flat database row. Zone fields repeat for each service
+// so no transport or aggregate entity is shared across workflows.
+type GetZoneDetail struct {
+	ZoneID           uuid.UUID
+	ZoneCode         string
+	ZoneName         string
+	ZoneLocation     string
+	ZoneDescription  string
+	ZoneStatus       ZoneStatus
+	ZoneCreatedAt    time.Time
+	ZoneUpdatedAt    time.Time
+	HasService       bool
+	ServiceID        uuid.UUID
+	ServiceType      ZoneServiceType
+	DesiredState     bool
+	ActualState      string
+	ServiceCreatedAt time.Time
+	ServiceUpdatedAt time.Time
+}
+
+type UpdateZoneStatus struct {
+	ZoneID       uuid.UUID
+	Status       ZoneStatus
+	AllowedFrom  []ZoneStatus
+	ZoneCode     string
+	ZoneName     string
+	StateChanged bool
+}
+
+type DeleteZone struct {
+	ZoneID   uuid.UUID
+	ZoneCode string
+}
+
+type UpdateZoneService struct {
+	ID           uuid.UUID
+	ZoneID       uuid.UUID
+	ZoneCode     string
+	ZoneName     string
+	ZoneStatus   ZoneStatus
+	ServiceType  ZoneServiceType
+	DesiredState bool
+	ActualState  string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
