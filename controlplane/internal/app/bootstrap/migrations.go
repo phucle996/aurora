@@ -56,8 +56,8 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 		return fmt.Errorf("migration: acquire lock: %w", err)
 	}
 
-	// core migrations
-	if err := core.ApplyMigrations(ctx, conn, cfg); err != nil {
+	// Hierarchy migrations must precede modules that reference Zone/Workspace.
+	if err := hierarchy.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}
 

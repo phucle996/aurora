@@ -1,4 +1,4 @@
-package hierarchyHandler
+package handler
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/logger"
@@ -18,10 +18,10 @@ import (
 )
 
 type ZoneHandler struct {
-	zoneSvc coreSvcInterface.ZoneService
+	zoneSvc hierarchyservice.ZoneService
 }
 
-func NewZoneHandler(zoneSvc coreSvcInterface.ZoneService) *ZoneHandler {
+func NewZoneHandler(zoneSvc hierarchyservice.ZoneService) *ZoneHandler {
 	return &ZoneHandler{
 		zoneSvc: zoneSvc,
 	}
@@ -38,10 +38,10 @@ func NewZoneHandler(zoneSvc coreSvcInterface.ZoneService) *ZoneHandler {
 // @Failure      400 {object} map[string]interface{} "Invalid request"
 // @Failure      409 {object} map[string]interface{} "Zone code already exists"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones [post]
+// @Router       /admin/critical/hierarchy/zones [post]
 // @Security     AdminAuth
 func (h *ZoneHandler) CreateZone(c *gin.Context) {
-	const op = "zone.create"
+	const op = "hierarchy.zone.create"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -52,7 +52,7 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 		return
 	}
 
-	err := h.zoneSvc.CreateZone(ctx, coreEntity.CreateZoneInput{
+	err := h.zoneSvc.CreateZone(ctx, entity.CreateZoneInput{
 		Code:             strings.ToLower(strings.TrimSpace(request.Code)),
 		Name:             request.Name,
 		Location:         request.Location,
@@ -65,13 +65,13 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrZoneInvalidInput):
+		case errors.Is(err, taxonomy.ErrZoneInvalidInput):
 			logger.HandlerWarn(c, op, err, "create zone invalid input")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, coreTaxonomy.ErrCodeAlreadyExists):
+		case errors.Is(err, taxonomy.ErrCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create zone conflict")
 			apires.RespondConflict(c, "resource already exists")
-		case errors.Is(err, coreTaxonomy.ErrZoneServiceInvalidType):
+		case errors.Is(err, taxonomy.ErrZoneServiceInvalidType):
 			logger.HandlerWarn(c, op, err, "create zone invalid service type")
 			apires.RespondBadRequest(c, "invalid request")
 		default:
@@ -90,10 +90,10 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 // @Produce      json
 // @Success      200 {object} map[string]interface{} "Zones fetched successfully"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones [get]
+// @Router       /admin/hierarchy/zones [get]
 // @Security     AdminAuth
 func (h *ZoneHandler) ListZones(c *gin.Context) {
-	const op = "core.zone.list"
+	const op = "hierarchy.zone.list"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -131,10 +131,10 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 // @Failure      400 {object} map[string]interface{} "Invalid zone_id format"
 // @Failure      404 {object} map[string]interface{} "Zone not found"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/{zone_id} [get]
+// @Router       /admin/hierarchy/zones/{zone_id} [get]
 // @Security     AdminAuth
 func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
-	const op = "core.zone.get"
+	const op = "hierarchy.zone.get"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -147,7 +147,7 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 
 	detail, err := h.zoneSvc.GetZoneDetailByID(ctx, zoneID)
 	if err != nil {
-		if errors.Is(err, coreTaxonomy.ErrZoneNotFound) {
+		if errors.Is(err, taxonomy.ErrZoneNotFound) {
 			apires.RespondNotFound(c, "zone not found")
 			return
 		}
@@ -161,12 +161,12 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 	for _, s := range detail.Services {
 		// [COMMENT]: Kiểm tra tính hợp lệ của loại service
 		switch s.ServiceType {
-		case coreEntity.ZoneServiceTypeHypervisor,
-			coreEntity.ZoneServiceTypeStorage,
-			coreEntity.ZoneServiceTypeMail,
-			coreEntity.ZoneServiceTypeKubernetes,
-			coreEntity.ZoneServiceTypeAI,
-			coreEntity.ZoneServiceTypeDatabase:
+		case entity.ZoneServiceTypeHypervisor,
+			entity.ZoneServiceTypeStorage,
+			entity.ZoneServiceTypeMail,
+			entity.ZoneServiceTypeKubernetes,
+			entity.ZoneServiceTypeAI,
+			entity.ZoneServiceTypeDatabase:
 			// Valid
 		default:
 			continue
@@ -248,10 +248,10 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 // @Failure      404 {object} map[string]interface{} "Zone not found"
 // @Failure      409 {object} map[string]interface{} "Invalid state transition"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/status [patch]
+// @Router       /admin/critical/hierarchy/zones/{zone_id}/status [patch]
 // @Security     AdminAuth
 func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
-	const op = "core.zone.update_status"
+	const op = "hierarchy.zone.update_status"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -269,10 +269,10 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		return
 	}
 
-	toStatus := coreEntity.ZoneStatus(strings.ToLower(strings.TrimSpace(request.Status)))
+	toStatus := entity.ZoneStatus(strings.ToLower(strings.TrimSpace(request.Status)))
 	switch toStatus {
-	case coreEntity.ZoneStatusPlanned, coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDraining,
-		coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled:
+	case entity.ZoneStatusPlanned, entity.ZoneStatusActive, entity.ZoneStatusDraining,
+		entity.ZoneStatusMaintenance, entity.ZoneStatusDisabled:
 	default:
 		logger.HandlerWarn(c, op, nil, "update zone invalid status: "+request.Status)
 		apires.RespondBadRequest(c, "invalid request")
@@ -281,10 +281,10 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 	err = h.zoneSvc.UpdateZoneStatus(ctx, parsedZoneID, toStatus)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
+		case errors.Is(err, taxonomy.ErrZoneNotFound):
 			logger.HandlerWarn(c, op, err, "zone not found")
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, coreTaxonomy.ErrZoneInvalidTransition):
+		case errors.Is(err, taxonomy.ErrZoneInvalidTransition):
 			logger.HandlerWarn(c, op, err, "zone invalid transition")
 			apires.RespondConflict(c, "state conflict")
 		default:
@@ -307,10 +307,10 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 // @Failure      404 {object} map[string]interface{} "Zone not found"
 // @Failure      409 {object} map[string]interface{} "Delete preconditions not met"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/{zone_id} [delete]
+// @Router       /admin/critical/hierarchy/zones/{zone_id} [delete]
 // @Security     AdminAuth
 func (h *ZoneHandler) DeleteZone(c *gin.Context) {
-	const op = "core.zone.delete"
+	const op = "hierarchy.zone.delete"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -323,10 +323,10 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 	}
 	if err := h.zoneSvc.DeleteZone(ctx, parsedZoneID); err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
+		case errors.Is(err, taxonomy.ErrZoneNotFound):
 			logger.HandlerWarn(c, op, err, "zone not found")
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, coreTaxonomy.ErrZoneDeletePreconditionFailed):
+		case errors.Is(err, taxonomy.ErrZoneDeletePreconditionFailed):
 			logger.HandlerWarn(c, op, err, "delete precondition failed")
 			apires.RespondConflict(c, "zone delete precondition failed")
 		default:
@@ -350,10 +350,10 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 // @Failure      404 {object} map[string]interface{} "Zone not found"
 // @Failure      409 {object} map[string]interface{} "Zone not in maintenance status"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/services [put]
+// @Router       /admin/critical/hierarchy/zones/services [put]
 // @Security     AdminAuth
 func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
-	const op = "zone_service.update"
+	const op = "hierarchy.zone_service.update"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -365,13 +365,13 @@ func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 	}
 	parsedZoneID := request.ZoneID
 
-	serviceType := coreEntity.ZoneServiceType(strings.ToLower(strings.TrimSpace(request.ServiceType)))
+	serviceType := entity.ZoneServiceType(strings.ToLower(strings.TrimSpace(request.ServiceType)))
 
 	// check lỗi validate service type
 	switch serviceType {
-	case coreEntity.ZoneServiceTypeHypervisor, coreEntity.ZoneServiceTypeStorage,
-		coreEntity.ZoneServiceTypeMail, coreEntity.ZoneServiceTypeKubernetes, coreEntity.ZoneServiceTypeAI,
-		coreEntity.ZoneServiceTypeDatabase:
+	case entity.ZoneServiceTypeHypervisor, entity.ZoneServiceTypeStorage,
+		entity.ZoneServiceTypeMail, entity.ZoneServiceTypeKubernetes, entity.ZoneServiceTypeAI,
+		entity.ZoneServiceTypeDatabase:
 	default:
 		logger.HandlerWarn(c, op, nil, "update zone service invalid type: "+request.ServiceType)
 		apires.RespondBadRequest(c, "invalid request")
@@ -380,9 +380,9 @@ func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 	item, err := h.zoneSvc.UpdateZoneService(ctx, parsedZoneID, serviceType, *request.Enabled)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrZoneServiceZoneNotFound):
+		case errors.Is(err, taxonomy.ErrZoneServiceZoneNotFound):
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, coreTaxonomy.ErrZoneServiceStateConflict):
+		case errors.Is(err, taxonomy.ErrZoneServiceStateConflict):
 			apires.RespondConflict(c, "state conflict")
 		default:
 			logger.HandlerError(c, op, err)

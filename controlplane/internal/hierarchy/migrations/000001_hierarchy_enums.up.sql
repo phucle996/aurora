@@ -25,6 +25,30 @@ BEGIN
 END
 $$;
 
+-- [COMMENT]: Public encryption key lifecycle is separate from Zone lifecycle.
+-- ACTIVE selects encryption capability for new Zone-bound durable commands;
+-- DECRYPT_ONLY remains available only for retained ciphertext.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'zone_encryption_key_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE zone_encryption_key_status AS ENUM ('staged', 'active', 'decrypt_only', 'retired');
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.zone_encryption_key_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'staged');
+    EXECUTE format('ALTER TYPE %I.zone_encryption_key_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
+    EXECUTE format('ALTER TYPE %I.zone_encryption_key_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'decrypt_only');
+    EXECUTE format('ALTER TYPE %I.zone_encryption_key_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'retired');
+END
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -70,5 +94,4 @@ BEGIN
     EXECUTE format('ALTER TYPE %I.zone_service_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'down');
 END
 $$;
-
 

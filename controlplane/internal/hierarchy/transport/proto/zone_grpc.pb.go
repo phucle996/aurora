@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.30.2
-// source: internal/hierarchy/transport/rpc/proto/zone.proto
+// source: internal/hierarchy/transport/proto/zone.proto
 
-package proto
+package hierarchyproto
 
 import (
 	context "context"
@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ZoneService_GetZoneList_FullMethodName = "/core.rpc.ZoneService/GetZoneList"
-	ZoneService_ResolveZone_FullMethodName = "/core.rpc.ZoneService/ResolveZone"
+	ZoneService_GetZoneList_FullMethodName = "/hierarchy.rpc.ZoneService/GetZoneList"
+	ZoneService_ResolveZone_FullMethodName = "/hierarchy.rpc.ZoneService/ResolveZone"
 )
 
 // ZoneServiceClient is the client API for ZoneService service.
@@ -142,7 +142,7 @@ func _ZoneService_ResolveZone_Handler(srv interface{}, ctx context.Context, dec 
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ZoneService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "core.rpc.ZoneService",
+	ServiceName: "hierarchy.rpc.ZoneService",
 	HandlerType: (*ZoneServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -155,5 +155,5 @@ var ZoneService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/hierarchy/transport/rpc/proto/zone.proto",
+	Metadata: "internal/hierarchy/transport/proto/zone.proto",
 }

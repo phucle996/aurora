@@ -3,7 +3,7 @@
 //            Đặc Tả Hạ Tầng Lưu Trữ & Truy Vấn Workspace Doanh Nghiệp (Tenant Scope)
 // ======================================================================================================
 
-package coreRepoImpl
+package repository
 
 import (
 	"context"
@@ -11,9 +11,9 @@ import (
 	"fmt"
 
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreModel "controlplane/internal/hierarchy/model"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	model "controlplane/internal/hierarchy/model"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -126,10 +126,10 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *TenantWor
 	}
 }
 
-func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
+func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error) {
 	var zoneExists int
 	var tenantValid bool
-	var m coreModel.TenantWorkspace
+	var m model.TenantWorkspace
 
 	err := r.db.QueryRow(ctx, r.createWorkspaceQuery,
 		workspace.ID,
@@ -148,93 +148,93 @@ func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEnti
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, coreTaxonomy.ErrWorkspaceCodeAlreadyExists
+			return nil, taxonomy.ErrWorkspaceCodeAlreadyExists
 		}
 		return nil, fmt.Errorf("database query error: %w", err)
 	}
 
 	if zoneExists == 0 {
-		return nil, coreTaxonomy.ErrZoneNotFound
+		return nil, taxonomy.ErrZoneNotFound
 	}
 	if !tenantValid {
-		return nil, coreTaxonomy.ErrTenantNotFound
+		return nil, taxonomy.ErrTenantNotFound
 	}
 	if m.ID == uuid.Nil {
-		return nil, coreTaxonomy.ErrWorkspaceInsertFailed
+		return nil, taxonomy.ErrWorkspaceInsertFailed
 	}
 
-	result := coreModel.TenantWorkspaceModelToEntity(m)
+	result := model.TenantWorkspaceModelToEntity(m)
 	return &result, nil
 }
 
-func (r *TenantWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.TenantWorkspace, error) {
-	var m coreModel.TenantWorkspace
+func (r *TenantWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*entity.TenantWorkspace, error) {
+	var m model.TenantWorkspace
 	err := r.db.QueryRow(ctx, r.getWorkspaceByIDQuery, id).Scan(
 		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, coreTaxonomy.ErrWorkspaceNotFound
+			return nil, taxonomy.ErrWorkspaceNotFound
 		}
 		return nil, err
 	}
-	result := coreModel.TenantWorkspaceModelToEntity(m)
+	result := model.TenantWorkspaceModelToEntity(m)
 	return &result, nil
 }
 
-func (r *TenantWorkspaceRepoImpl) ListAllByTenant(ctx context.Context, tenantID uuid.UUID) ([]*coreEntity.TenantWorkspace, error) {
+func (r *TenantWorkspaceRepoImpl) ListAllByTenant(ctx context.Context, tenantID uuid.UUID) ([]*entity.TenantWorkspace, error) {
 	rows, err := r.db.Query(ctx, r.listAllWorkspacesByTenantQuery, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []*coreEntity.TenantWorkspace
+	var list []*entity.TenantWorkspace
 	for rows.Next() {
-		var m coreModel.TenantWorkspace
+		var m model.TenantWorkspace
 		err := rows.Scan(
 			&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
-		result := coreModel.TenantWorkspaceModelToEntity(m)
+		result := model.TenantWorkspaceModelToEntity(m)
 		list = append(list, &result)
 	}
 	return list, nil
 }
 
-func (r *TenantWorkspaceRepoImpl) ListByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]*coreEntity.TenantWorkspace, error) {
+func (r *TenantWorkspaceRepoImpl) ListByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]*entity.TenantWorkspace, error) {
 	rows, err := r.db.Query(ctx, r.listWorkspacesByTenantAndIDsQuery, tenantID, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []*coreEntity.TenantWorkspace
+	var list []*entity.TenantWorkspace
 	for rows.Next() {
-		var m coreModel.TenantWorkspace
+		var m model.TenantWorkspace
 		err := rows.Scan(
 			&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
-		result := coreModel.TenantWorkspaceModelToEntity(m)
+		result := model.TenantWorkspaceModelToEntity(m)
 		list = append(list, &result)
 	}
 	return list, nil
 }
 
-func (r *TenantWorkspaceRepoImpl) Update(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
-	var m coreModel.TenantWorkspace
+func (r *TenantWorkspaceRepoImpl) Update(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error) {
+	var m model.TenantWorkspace
 	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, workspace.Description).Scan(
 		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	result := coreModel.TenantWorkspaceModelToEntity(m)
+	result := model.TenantWorkspaceModelToEntity(m)
 	return &result, nil
 }
 
@@ -247,31 +247,31 @@ func (r *TenantWorkspaceRepoImpl) Delete(ctx context.Context, id uuid.UUID, tena
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return coreTaxonomy.ErrWorkspaceNotEmpty
+			return taxonomy.ErrWorkspaceNotEmpty
 		}
 		return err
 	}
 
 	if !exists {
-		return coreTaxonomy.ErrWorkspaceNotFound
+		return taxonomy.ErrWorkspaceNotFound
 	}
 	if !deleted {
-		return coreTaxonomy.ErrLastWorkspaceDeletionBlocked
+		return taxonomy.ErrLastWorkspaceDeletionBlocked
 	}
 	return nil
 }
 
 // [COMMENT]: ListCatalogAllByTenant lấy catalog tối giản (id, code, name) của toàn bộ workspace thuộc Tenant trong Zone — hot path SELECT 3 cột
-func (r *TenantWorkspaceRepoImpl) ListCatalogAllByTenant(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error) {
+func (r *TenantWorkspaceRepoImpl) ListCatalogAllByTenant(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]entity.WorkspaceCatalog, error) {
 	rows, err := r.db.Query(ctx, r.listCatalogAllByTenantQuery, tenantID, zoneID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []coreEntity.WorkspaceCatalog
+	var list []entity.WorkspaceCatalog
 	for rows.Next() {
-		var c coreEntity.WorkspaceCatalog
+		var c entity.WorkspaceCatalog
 		if err := rows.Scan(&c.ID, &c.Code, &c.Name); err != nil {
 			return nil, err
 		}
@@ -281,16 +281,16 @@ func (r *TenantWorkspaceRepoImpl) ListCatalogAllByTenant(ctx context.Context, te
 }
 
 // [COMMENT]: ListCatalogByTenantAndIDs lấy catalog tối giản (id, code, name) theo danh sách IDs trong Zone — hot path permission-aware
-func (r *TenantWorkspaceRepoImpl) ListCatalogByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID, ids []uuid.UUID) ([]coreEntity.WorkspaceCatalog, error) {
+func (r *TenantWorkspaceRepoImpl) ListCatalogByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID, ids []uuid.UUID) ([]entity.WorkspaceCatalog, error) {
 	rows, err := r.db.Query(ctx, r.listCatalogByTenantAndIDsQuery, tenantID, zoneID, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []coreEntity.WorkspaceCatalog
+	var list []entity.WorkspaceCatalog
 	for rows.Next() {
-		var c coreEntity.WorkspaceCatalog
+		var c entity.WorkspaceCatalog
 		if err := rows.Scan(&c.ID, &c.Code, &c.Name); err != nil {
 			return nil, err
 		}

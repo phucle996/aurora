@@ -8,7 +8,7 @@
 // hình phân nhánh API toàn cục của Control Plane.
 //
 // BOUNDARY: Phân tầng các phân hệ theo High Availability:
-//   - Tier 1 Critical: Các module cốt lõi Health, IAM, Core. Bắt buộc chạy ổn định.
+//   - Tier 1 Critical: Health, IAM và Hierarchy. Bắt buộc chạy ổn định.
 //   - Tier 2 Non-critical: Các module vệ tinh Hypervisor, Mail hỗ trợ Graceful Degradation.
 // ============================================================================
 
@@ -28,7 +28,7 @@ import (
 
 // NewGlobalRoutes thực hiện lập đồ thị và đăng ký toàn bộ định tuyến cho các phân hệ của Control Plane.
 func NewGlobalRoutes(router *gin.Engine, m *Modules) {
-	// CONTRACT: Yêu cầu router khác nil. Các module con m.Health, m.IAM, m.Core được đảm bảo không nil
+	// CONTRACT: Yêu cầu router khác nil. Các module con m.Health, m.IAM, m.Hierarchy được đảm bảo không nil
 	// nhờ cơ chế kiểm tra dependency ở cấp độ bootstrap NewGlobalModules.
 	if router == nil {
 		return
@@ -46,8 +46,8 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 	// 2. IAM Module Routing cho Authentication và Authorization
 	iam.RegisterRoutes(router, m.IAM)
 
-	// 3. Core Module Routing cho các nghiệp vụ hệ thống
-	core.RegisterRoutes(router, m.Core)
+	// 3. Hierarchy Module Routing cho Zone/Tenant/Workspace topology.
+	hierarchy.RegisterRoutes(router, m.Hierarchy)
 
 	// ========================================================================
 	// TIER 2 NON-CRITICAL SERVICES

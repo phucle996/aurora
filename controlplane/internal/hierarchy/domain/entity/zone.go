@@ -1,4 +1,4 @@
-package coreEntity
+package entity
 
 import (
 	"time"

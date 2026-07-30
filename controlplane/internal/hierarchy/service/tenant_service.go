@@ -3,17 +3,17 @@
 //            Đặc Tả Nghiệp Vụ Quản Lý Vòng Đời Tenant
 // ======================================================================================================
 
-package zoneSvcImpl
+package service
 
 import (
 	"context"
 	"time"
 
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreMetric "controlplane/internal/hierarchy/metrics"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	metrics "controlplane/internal/hierarchy/metrics"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
@@ -21,7 +21,7 @@ import (
 
 // [COMMENT]: TenantService triển khai TenantService interface với repo dependency
 type TenantService struct {
-	repo                coreRepoInterface.TenantRepository
+	repo                hierarchyrepo.TenantRepository
 	notifyBillingOutbox func()
 }
 
@@ -34,26 +34,26 @@ func (s *TenantService) SetBillingOutboxNotifier(notify func()) {
 
 // [COMMENT]: NewTenantService tạo instance mới của TenantService
 func NewTenantService(
-	repo coreRepoInterface.TenantRepository,
-) coreSvcInterface.TenantService {
+	repo hierarchyrepo.TenantRepository,
+) hierarchyservice.TenantService {
 	return &TenantService{
 		repo: repo,
 	}
 }
 
 // [COMMENT]: CreateTenant thực hiện tạo mới Tenant, sinh UUIDv7, ghi metrics
-func (s *TenantService) CreateTenant(ctx context.Context, tenant coreEntity.Tenant, ownerID uuid.UUID) (*coreEntity.Tenant, error) {
+func (s *TenantService) CreateTenant(ctx context.Context, tenant entity.Tenant, ownerID uuid.UUID) (*entity.Tenant, error) {
 	// [COMMENT]: Sinh UUIDv7 cho tenant mới
 	tenantID, err := uuid.NewV7()
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
-		return nil, apperr.Wrap(coreTaxonomy.ErrGenUUID, err, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		return nil, apperr.Wrap(taxonomy.ErrGenUUID, err, metrics.OutcomeFailure)
 	}
 
 	now := time.Now().UTC()
 
 	tenant.ID = tenantID
-	tenant.Status = coreEntity.TenantStatusActive
+	tenant.Status = entity.TenantStatusActive
 	tenant.CreatedAt = now
 	tenant.UpdatedAt = now
 
@@ -62,14 +62,14 @@ func (s *TenantService) CreateTenant(ctx context.Context, tenant coreEntity.Tena
 	result, err := s.repo.CreateTenant(ctx, tenant, ownerID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "CreateTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
 	// [COMMENT]: Ghi nhận thành công
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "CreateTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	if s.notifyBillingOutbox != nil {
 		s.notifyBillingOutbox()
 	}
@@ -77,32 +77,32 @@ func (s *TenantService) CreateTenant(ctx context.Context, tenant coreEntity.Tena
 }
 
 // ResolveTenantByDomain gọi xuống repository để tìm kiếm Tenant theo domain liên kết
-func (s *TenantService) ResolveTenantByDomain(ctx context.Context, domain string) (*coreEntity.Tenant, error) {
+func (s *TenantService) ResolveTenantByDomain(ctx context.Context, domain string) (*entity.Tenant, error) {
 	start := time.Now()
 	result, err := s.repo.ResolveTenantByDomain(ctx, domain)
 	duration := time.Since(start)
 
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ResolveTenantByDomain", coreMetric.OutcomeFailure, duration, err)
+		metrics.Downstream(ctx, metrics.KindRepo, "ResolveTenantByDomain", metrics.OutcomeFailure, duration, err)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ResolveTenantByDomain", coreMetric.OutcomeSuccess, duration, nil)
+	metrics.Downstream(ctx, metrics.KindRepo, "ResolveTenantByDomain", metrics.OutcomeSuccess, duration, nil)
 	return result, nil
 }
 
 // ListTenantsPaged gọi xuống repository để lấy danh sách tenants phân trang cho Edge warmup
-func (s *TenantService) ListTenantsPaged(ctx context.Context, limit, offset int) ([]coreEntity.Tenant, bool, error) {
+func (s *TenantService) ListTenantsPaged(ctx context.Context, limit, offset int) ([]entity.Tenant, bool, error) {
 	start := time.Now()
 	list, hasMore, err := s.repo.ListTenantsPaged(ctx, limit, offset)
 	duration := time.Since(start)
 
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListTenantsPaged", coreMetric.OutcomeFailure, duration, err)
+		metrics.Downstream(ctx, metrics.KindRepo, "ListTenantsPaged", metrics.OutcomeFailure, duration, err)
 		return nil, false, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListTenantsPaged", coreMetric.OutcomeSuccess, duration, nil)
+	metrics.Downstream(ctx, metrics.KindRepo, "ListTenantsPaged", metrics.OutcomeSuccess, duration, nil)
 	return list, hasMore, nil
 }
 
@@ -113,10 +113,10 @@ func (s *TenantService) CheckMembership(ctx context.Context, tenantID, userID uu
 	duration := time.Since(start)
 
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "CheckMembership", coreMetric.OutcomeFailure, duration, err)
+		metrics.Downstream(ctx, metrics.KindRepo, "CheckMembership", metrics.OutcomeFailure, duration, err)
 		return false, "", err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "CheckMembership", coreMetric.OutcomeSuccess, duration, nil)
+	metrics.Downstream(ctx, metrics.KindRepo, "CheckMembership", metrics.OutcomeSuccess, duration, nil)
 	return isMember, role, nil
 }

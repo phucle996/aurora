@@ -29,9 +29,9 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 		RegisterL1Loaders(modules.CacheEngine, modules)
 	}
 
-	if modules.Core != nil {
-		if err := modules.Core.Bootstrap(ctx); err != nil {
-			return fmt.Errorf("app bootstrap: core module: %w", err)
+	if modules.Hierarchy != nil {
+		if err := modules.Hierarchy.Bootstrap(ctx); err != nil {
+			return fmt.Errorf("app bootstrap: hierarchy module: %w", err)
 		}
 	}
 

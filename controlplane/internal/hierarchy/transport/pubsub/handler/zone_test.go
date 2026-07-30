@@ -1,8 +1,8 @@
-package pubsubHandler
+package handler
 
 import (
 	"bytes"
-	coreProto "controlplane/internal/hierarchy/transport/proto"
+	hierarchyproto "controlplane/internal/hierarchy/transport/proto"
 	"testing"
 
 	"github.com/google/uuid"
@@ -42,7 +42,7 @@ func TestSplitRequestEnvelopeAcceptsEmptyProtobuf(t *testing.T) {
 	if len(protobufPayload) != 0 {
 		t.Fatalf("expected empty protobuf payload, got %d bytes", len(protobufPayload))
 	}
-	var request coreProto.GetZoneListRequest
+	var request hierarchyproto.GetZoneListRequest
 	if err := proto.Unmarshal(protobufPayload, &request); err != nil {
 		t.Fatalf("empty GetZoneListRequest protobuf must decode successfully: %v", err)
 	}

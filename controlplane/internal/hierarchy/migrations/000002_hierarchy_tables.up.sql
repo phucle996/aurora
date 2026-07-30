@@ -25,6 +25,53 @@ COMMENT ON COLUMN zones.status IS 'Operational status of zone lifecycle (planned
 COMMENT ON COLUMN zones.created_at IS 'Timestamp when zone row was created.';
 COMMENT ON COLUMN zones.updated_at IS 'Timestamp when zone row was last updated.';
 
+-- [COMMENT]: Versioned public HPKE capability registered by SRE for one Zone.
+-- Private counterparts are materialized only at Dataplane filesystem boundary
+-- and must never be added to this table, PostgreSQL, Kafka or Zone KV.
+CREATE TABLE IF NOT EXISTS zone_encryption_keys (
+    id UUID PRIMARY KEY,
+    zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+    public_key BYTEA NOT NULL,
+    fingerprint BYTEA NOT NULL,
+    algorithm TEXT NOT NULL DEFAULT 'HPKE_X25519_HKDF_SHA256_AES_256_GCM',
+    status zone_encryption_key_status NOT NULL DEFAULT 'staged',
+    registered_by TEXT NOT NULL,
+    registered_proof_id UUID NOT NULL,
+    activated_by TEXT NULL,
+    activated_proof_id UUID NULL,
+    decrypt_only_by TEXT NULL,
+    decrypt_only_proof_id UUID NULL,
+    retired_by TEXT NULL,
+    retired_proof_id UUID NULL,
+    activated_at TIMESTAMPTZ NULL,
+    decrypt_only_at TIMESTAMPTZ NULL,
+    retired_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_zone_encryption_keys_public_key_size CHECK (octet_length(public_key) = 32),
+    CONSTRAINT ck_zone_encryption_keys_fingerprint_size CHECK (octet_length(fingerprint) = 32),
+    CONSTRAINT ck_zone_encryption_keys_algorithm CHECK (algorithm = 'HPKE_X25519_HKDF_SHA256_AES_256_GCM'),
+    CONSTRAINT ck_zone_encryption_keys_registered_actor CHECK (length(btrim(registered_by)) BETWEEN 1 AND 128),
+    CONSTRAINT ck_zone_encryption_keys_lifecycle CHECK (
+        (status = 'staged' AND activated_at IS NULL AND decrypt_only_at IS NULL AND retired_at IS NULL)
+        OR (status = 'active' AND activated_at IS NOT NULL AND activated_by IS NOT NULL AND activated_proof_id IS NOT NULL AND decrypt_only_at IS NULL AND retired_at IS NULL)
+        OR (status = 'decrypt_only' AND activated_at IS NOT NULL AND decrypt_only_at IS NOT NULL AND decrypt_only_by IS NOT NULL AND decrypt_only_proof_id IS NOT NULL AND retired_at IS NULL)
+        OR (status = 'retired' AND retired_at IS NOT NULL AND retired_by IS NOT NULL AND retired_proof_id IS NOT NULL)
+    )
+);
+
+COMMENT ON TABLE zone_encryption_keys IS 'Versioned public HPKE keys for Zone-bound protected job payloads; never stores a private key.';
+COMMENT ON COLUMN zone_encryption_keys.id IS 'UUIDv7 public key identifier exposed as key_id in transport metadata.';
+COMMENT ON COLUMN zone_encryption_keys.zone_id IS 'Zone receiving ciphertext sealed to this public key.';
+COMMENT ON COLUMN zone_encryption_keys.public_key IS 'Exactly 32 raw X25519 public-key bytes; not secret material.';
+COMMENT ON COLUMN zone_encryption_keys.fingerprint IS 'SHA-256 of raw public_key; globally unique to prevent accidental cross-Zone key-pair reuse.';
+COMMENT ON COLUMN zone_encryption_keys.algorithm IS 'Non-negotiable V1 HPKE suite.';
+COMMENT ON COLUMN zone_encryption_keys.status IS 'Lifecycle state: staged, active, decrypt_only or retired.';
+COMMENT ON COLUMN zone_encryption_keys.registered_proof_id IS 'ACR critical-proof challenge bound to registration request.';
+COMMENT ON COLUMN zone_encryption_keys.activated_proof_id IS 'ACR critical-proof challenge bound to activation request.';
+COMMENT ON COLUMN zone_encryption_keys.decrypt_only_proof_id IS 'Proof that activated the replacement key and atomically demoted this key.';
+COMMENT ON COLUMN zone_encryption_keys.retired_proof_id IS 'ACR critical-proof challenge bound to retirement request.';
+
 -- [COMMENT]: Bảng quản lý dịch vụ kích hoạt theo từng Zone (Zone Services)
 CREATE TABLE IF NOT EXISTS zone_services (
     id UUID PRIMARY KEY,

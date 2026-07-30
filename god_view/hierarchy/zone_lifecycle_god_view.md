@@ -30,6 +30,26 @@
 
 ## 1. Tổng Quan Kiến Trúc
 
+### 1.1 Canonical naming contract
+
+Tên canonical của domain này là **Hierarchy** trên toàn bộ source, runtime và
+public admin API:
+
+- Go module/package root: `hierarchy`; các package con dùng tên theo vai trò
+  như `entity`, `repository`, `service`, `handler`, `dto`, `metrics`.
+- Admin route: `/admin/hierarchy/...`; mutation ảnh hưởng vận hành dùng
+  `/admin/critical/hierarchy/...` để ACR bắt critical proof.
+- Observability: meter `aurora-controlplane.hierarchy` và metric prefix
+  `aurora_controlplane_hierarchy_`.
+- Protobuf descriptor package: `hierarchy.rpc`.
+
+Đây là clean cutover khi hệ thống chưa production: không duy trì alias
+`/admin/core/...`, package `core` hay descriptor `core.rpc`. Controlplane, ACR,
+Cost API và Admin UI phải đổi cùng change-set. Việc đổi descriptor không đổi
+field number hoặc wire type của `ZoneEntry`, vì vậy payload Protobuf đã lưu hoặc
+đang đi qua Shared Redis vẫn byte-compatible; tên gRPC method đầy đủ đổi sang
+`/hierarchy.rpc.ZoneService/...` và mọi producer/consumer phải dùng contract mới.
+
 Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zone:
 
 ```
@@ -124,6 +144,79 @@ Trạng thái đo đạc và phản ánh sức khỏe thực tế (actual_state)
 | **`unhealthy`** | Lỗi logic / probe chưa đủ bằng chứng | Reserved status cho monitor khác; Mail observer hiện derive healthy/degraded/down. | Generic Zone report với `actual_observed_at` fence |
 | **`down`** | Offline hoàn toàn | Không còn fresh successful JMAP probe, service disabled hoặc generic dead-man timeout. | Generic Zone report với `actual_observed_at` fence |
 
+### 2.4 Zone public encryption key lifecycle
+
+Hierarchy PostgreSQL sở hữu **public capability metadata** theo Zone tại
+`zone_encryption_keys`. Đây không phải secret store: bảng chỉ giữ raw X25519
+public key 32 byte, SHA-256 fingerprint, HPKE suite cố định, lifecycle state và
+critical-proof audit evidence. Private counterpart không được nhận qua API,
+không có cột DB và không được ghi vào Kafka, Redis hoặc Zone KV.
+
+```mermaid
+stateDiagram-v2
+    [*] --> staged : SRE register public key
+    staged --> active : SRE activate
+    staged --> retired : cancel unused key
+    active --> decrypt_only : another staged key becomes active
+    decrypt_only --> retired : retention evidence drained
+    retired --> [*] : terminal until Zone hard-delete
+```
+
+Admin-plane contract:
+
+```http
+GET  /admin/hierarchy/zones/{zone_id}/encryption-keys
+POST /admin/critical/hierarchy/zones/{zone_id}/encryption-keys
+POST /admin/critical/hierarchy/zones/{zone_id}/encryption-keys/{key_id}/activate
+POST /admin/critical/hierarchy/zones/{zone_id}/encryption-keys/{key_id}/retire
+```
+
+Register body chỉ có public material canonical:
+
+```json
+{
+  "public_key": "<canonical padded base64 of exactly 32 X25519 bytes>"
+}
+```
+
+Các invariant đã được implementation enforce:
+
+1. Handler là ingress validation duy nhất: giới hạn body 4 KiB, cấm unknown
+   field, yêu cầu canonical Base64 và thử X25519 ECDH để loại low-order point.
+2. Ba mutation bắt buộc `x-user-id=sre`,
+   `x-session-proof-verified=true` và UUID challenge ID hợp lệ. Envoy phải strip
+   các header cùng tên từ request ngoài trước khi ACR inject lại.
+3. Service sinh UUIDv7 và SHA-256 fingerprint; repository không parse hoặc
+   validate lại HTTP input.
+4. Fingerprint có global unique index. Retry register cùng material trong cùng
+   Zone trả lại record hiện hữu; dùng lại cùng key pair cho Zone khác được map
+   thành HTTP `409 Conflict`.
+5. Activate khóa hàng `zones` bằng `FOR UPDATE`, rồi promote target và demote
+   key ACTIVE cũ trong đúng một SQL `UPDATE`. Partial unique index bảo đảm tối
+   đa một ACTIVE key trên mỗi Zone kể cả khi nhiều CP replica chạy đồng thời.
+6. Activate một key đã ACTIVE và retire một key đã RETIRED là no-op idempotent.
+   ACTIVE không được retire trực tiếp; phải được thay thế và chuyển
+   DECRYPT_ONLY trước.
+7. Timeout/network failure sau DB commit có kết quả chưa xác định ở client;
+   caller rehydrate bằng GET rồi retry cùng hành vi với critical proof mới.
+   Không có external side effect và các mutation trên là retry-safe. GET dùng
+   keyset cursor, page mặc định 50 và tối đa 100 để giữ response/memory bounded
+   khi lịch sử rotation tăng lâu dài.
+8. Taxonomy chi tiết chỉ tồn tại nội bộ để metrics, log và handler chọn HTTP
+   status. Response dùng envelope generic của `pkg/apires` (`not found`,
+   `conflict`, `internal_error`), không trả workflow error code cho client.
+
+Giới hạn release hiện tại: API/table lifecycle đã ship nhưng
+`ZoneMetadataSnapshotV1`, Dataplane loaded-key readiness report và protected
+job-payload producer **chưa** sử dụng key này. Vì vậy `ACTIVE` hiện chỉ là
+Controlplane catalog selection, không phải bằng chứng private key đã load tại
+Dataplane. Trước khi producer đầu tiên seal command, change-set transport phải
+thêm readiness fence và retirement CTE phải chứng minh không còn retained
+ciphertext/outbox/DLQ tham chiếu key. Không được suy diễn API lifecycle hiện tại
+thành end-to-end payload encryption đã hoàn thiện. Cùng release gate đó phải mở
+rộng Zone hard-delete precondition để không cascade key metadata khi retained
+ciphertext của Zone vẫn còn.
+
 ---
 
 ---
@@ -140,7 +233,7 @@ Khi SRE Admin gửi yêu cầu tạo phân vùng mới, yêu cầu này bắt bu
 
 **Giao thức request và định dạng Header:**
 ```http
-POST /admin/critical/core/zones
+POST /admin/critical/hierarchy/zones
 Cookie: access_token={jwt}; access_key={key}; access_secret={secret}
 X-Admin-Signature:    {base64 Ed25519 64 bytes}
 X-Admin-Timestamp:    {unix epoch seconds}
@@ -170,7 +263,7 @@ sequenceDiagram
     participant Vault as 🔒 Vault
     participant CP as 🚀 Controlplane
 
-    UI->>Envoy: POST /admin/critical/core/zones
+    UI->>Envoy: POST /admin/critical/hierarchy/zones
     Envoy->>ACR: gRPC CheckRequest (Cookie, Headers, Body)
 
     Note over ACR: ext_authz.rs -> check() [L60]:<br/>Phát hiện path chứa "/critical/"
@@ -202,7 +295,7 @@ sequenceDiagram
     else Case F: Xác thực thành công hoàn toàn
         ACR->>ACR: verify Ed25519 (thành công)
         ACR-->>Envoy: gRPC CheckResponse OK (status 0)
-        Envoy->>CP: Forward Request POST /admin/critical/core/zones
+        Envoy->>CP: Forward Request POST /admin/critical/hierarchy/zones
     end
 ```
 
@@ -233,7 +326,7 @@ sequenceDiagram
     participant DB as 💾 PostgreSQL (SoT)
     participant L1 as ⚡ Shared Cache Redis
 
-    Envoy->>Router: POST /admin/critical/core/zones (Forwarded request)
+    Envoy->>Router: POST /admin/critical/hierarchy/zones (Forwarded request)
     Router->>Midd: Chạy qua chuỗi Global Middlewares
     
     Note over Midd: App level middleware
@@ -272,7 +365,7 @@ sequenceDiagram
    - `middleware.AdminXSSI()`: Phòng chống tấn công Cross-Site Scripting Inclusion.
    - Không áp dụng Go-level authorization middleware vì SRE không cần phân quyền (SRE không phải account mà là phương thức xác minh nên không phân quyền mà là toàn quyền trên /admin api).
 3. **HTTP Handler**: [`zone_handler.go#CreateZone()`](../../controlplane/internal/hierarchy/transport/http/handler/zone_handler.go#L43) giải mã JSON body vào struct `CreateZoneInput`.
-4. **Core Service**: [`zone_service.go#CreateZone()`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) thực hiện validate các quy tắc, tự động gán cứng trạng thái ban đầu của Zone là `planned` (không cho phép gán `active` trực tiếp), sinh ID UUIDv7 mới và gửi tới repo.
+4. **Hierarchy Service**: [`zone_service.go#CreateZone()`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) tự động gán trạng thái ban đầu của Zone là `planned`, sinh ID UUIDv7 mới và gửi tới repo.
 5. **Database Repository**: [`zone_repo.go#CreateZone()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219) mở một cơ cấu giao dịch (Transaction):
    * INSERT bản ghi Zone vào bảng `zones` (status = `'planned'`).
    * UPSERT hàng loạt dịch vụ tương ứng vào bảng `zone_services` với cấu hình mong muốn `desired_state` nhận từ UI (actual_state mặc định là `'unknown'`).
@@ -365,13 +458,12 @@ sequenceDiagram
    * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`ChangefeedWorker`](../../job-orchestrator/src/changefeed/worker.rs).
    * JO đọc full aggregate và publish `ZoneMetadataSnapshotV1` vào Kafka compacted topic riêng Zone.
    * DP leader [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
-   * **Staged Managed Service extension:** Zone configuration sẽ thêm public
-     parameter-encryption keyset versioned (`key_id`, public key, fingerprint,
-     `STAGED|ACTIVE|DECRYPT_ONLY`) vào full metadata snapshot. Đây chỉ là public
-     capability material do SRE register; DP đối chiếu nó với private counterpart
-     mount từ Zone-local Kubernetes Secret và fail-close executor khi mismatch.
-     Private key không được đi vào PostgreSQL, Kafka payload, Central service hay
-     Zone KV. Chưa có field/protobuf/code implementation tại thời điểm tài liệu này.
+   * **Protected payload extension status:** Hierarchy đã có durable public key
+     lifecycle/API (`key_id`, public key, fingerprint,
+     `STAGED|ACTIVE|DECRYPT_ONLY|RETIRED`). Việc đưa public keyset vào full
+     `ZoneMetadataSnapshotV1` và đối chiếu private counterpart mount ở Dataplane
+     vẫn chưa có protobuf/producer/consumer implementation. Private key không
+     được đi vào PostgreSQL, Kafka payload, Central service hay Zone KV.
 2. **Telemetry Pack & Report**:
    * Dataplane [`zone_report`](../../dataplane/src/leader/zone_report.rs) chạy dưới stable `lease.zone.leader`, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
    * Gateway đóng gói `ZoneReport` Protobuf, dùng Zone ID làm record key và `acks=all`.
@@ -404,7 +496,7 @@ sequenceDiagram
     participant Vault as 🔒 Vault
     participant CP as 🚀 Controlplane
 
-    UI->>Envoy: PATCH /admin/critical/core/zones/{zone_id}/status
+    UI->>Envoy: PATCH /admin/critical/hierarchy/zones/{zone_id}/status
     Envoy->>ACR: gRPC CheckRequest (StepUp code + Signature headers)
     
     ACR->>Redis: GET session data
@@ -420,7 +512,7 @@ sequenceDiagram
 ```
 
 * **Tham chiếu code xác thực biên:**
-  * Endpoint routing: `/admin/critical/core/zones/:zone_id/status`
+  * Endpoint routing: `/admin/critical/hierarchy/zones/:zone_id/status`
   * Logic check và verify tương tự luồng khởi tạo, thực thi tại [`ext_authz.rs`](../../acr/src/service/ext_authz.rs#L415).
 
 ---
@@ -441,7 +533,7 @@ sequenceDiagram
     participant DB as 💾 PostgreSQL (SoT)
     participant L1 as ⚡ Kafka Zone reports
 
-    Envoy->>Router: PATCH /admin/critical/core/zones/{zone_id}/status
+    Envoy->>Router: PATCH /admin/critical/hierarchy/zones/{zone_id}/status
     Router->>Midd: Chạy qua chuỗi Global Middlewares
     
     Note over Midd: Middlewares: gin.Recovery, RequestID, OTelTraceContext, OTelHTTPMetrics, AccessLog, AdminXSSI
@@ -535,7 +627,7 @@ sequenceDiagram
     participant Vault as 🔒 Vault
     participant CP as 🚀 Controlplane
 
-    UI->>Envoy: PUT /admin/critical/core/zones/services
+    UI->>Envoy: PUT /admin/critical/hierarchy/zones/services
     Envoy->>ACR: gRPC CheckRequest (StepUp code + Signature headers)
     
     ACR->>Redis: GET session data & SET Nonce NX EX 120
@@ -549,7 +641,7 @@ sequenceDiagram
 ```
 
 * **Tham chiếu code xác thực biên:**
-  * Endpoint routing: `/admin/critical/core/zones/services`
+  * Endpoint routing: `/admin/critical/hierarchy/zones/services`
   * Xác thực tương tự luồng khởi tạo, thực thi tại [`ext_authz.rs`](../../acr/src/service/ext_authz.rs#L415).
 
 ---
@@ -567,7 +659,7 @@ sequenceDiagram
     participant Repo as 🚀 Repo (zone_repo.go)
     participant DB as 💾 PostgreSQL (SoT)
 
-    Envoy->>Router: PUT /admin/critical/core/zones/services
+    Envoy->>Router: PUT /admin/critical/hierarchy/zones/services
     Router->>Midd: Chạy qua chuỗi Global Middlewares
     
     Note over Midd: Middlewares: gin.Recovery, RequestID, OTelTraceContext, OTelHTTPMetrics, AccessLog, AdminXSSI
@@ -594,7 +686,7 @@ sequenceDiagram
    - `middleware.AdminXSSI()`: XSSI guard.
    - Không áp dụng Go-level authorization middleware vì SRE có toàn quyền.
 3. **HTTP Handler**: [`zone_handler.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/transport/http/handler/zone_handler.go#L355) giải mã payload mong muốn.
-4. **Core Service**: [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) kiểm tra trạng thái hiện tại của Zone. Nếu không phải `maintenance` -> trả lỗi `ErrZoneServiceStateConflict`.
+4. **Hierarchy Service**: [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) xử lý workflow và repository CTE trả `ErrZoneServiceStateConflict` nếu Zone không ở `maintenance`.
 5. **Database (Repo)**: [`zone_repo.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L401) chạy truy vấn CTE. Giao dịch chỉ cập nhật/chèn desired_state mới nếu trạng thái Zone khớp `maintenance`.
 
 ---
@@ -657,7 +749,7 @@ sequenceDiagram
     participant Vault as 🔒 Vault
     participant CP as 🚀 Controlplane
 
-    UI->>Envoy: DELETE /admin/critical/core/zones/{zone_id}
+    UI->>Envoy: DELETE /admin/critical/hierarchy/zones/{zone_id}
     Envoy->>ACR: gRPC CheckRequest (StepUp code + Signature headers)
     
     ACR->>Redis: GET session data & SET Nonce NX EX 120
@@ -671,7 +763,7 @@ sequenceDiagram
 ```
 
 * **Tham chiếu code xác thực biên:**
-  * Endpoint routing: `/admin/critical/core/zones/:zone_id`
+  * Endpoint routing: `/admin/critical/hierarchy/zones/:zone_id`
   * Xác thực tương tự luồng khởi tạo, thực thi tại [`ext_authz.rs`](../../acr/src/service/ext_authz.rs#L415).
 
 ---
@@ -690,7 +782,7 @@ sequenceDiagram
     participant DB as 💾 PostgreSQL (SoT)
     participant L1 as ⚡ Kafka metadata topic
 
-    Envoy->>Router: DELETE /admin/critical/core/zones/{zone_id}
+    Envoy->>Router: DELETE /admin/critical/hierarchy/zones/{zone_id}
     Router->>Midd: Chạy qua chuỗi Global Middlewares
     
     Note over Midd: Middlewares: gin.Recovery, RequestID, OTelTraceContext, OTelHTTPMetrics, AccessLog, AdminXSSI
@@ -719,7 +811,7 @@ sequenceDiagram
    - `middleware.AdminXSSI()`: XSSI protection.
    - Không áp dụng Go-level authorization middleware vì SRE có toàn quyền.
 3. **HTTP Handler**: [`zone_handler.go#DeleteZone()`](../../controlplane/internal/hierarchy/transport/http/handler/zone_handler.go#L312) nhận diện ID cần xóa.
-4. **Core Service**: [`zone_service.go#DeleteZone()`](../../controlplane/internal/hierarchy/service/zone_service.go#L177) xác nhận xóa.
+4. **Hierarchy Service**: [`zone_service.go#DeleteZone()`](../../controlplane/internal/hierarchy/service/zone_service.go#L177) điều phối workflow xóa.
 5. **Database Deletion (Repo)**: [`zone_repo.go#DeleteZone()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372) thực thi truy vấn CTE kiểm tra chặt chẽ điều kiện tiên quyết (Zone phải ở status `disabled` và không có dịch vụ nào đang kích hoạt). Nếu thỏa mãn, thực thi xóa cứng ( cascade xóa service, restrict lỗi nếu còn workspaces).
 6. **Cache Purge**: Service thực hiện DEL key `zone:code:{code}` và publish event `gateway:sync` để thông báo cho edge proxy cập nhật bảng định tuyến biên.
 

@@ -1,10 +1,10 @@
-// [COMMENT]: File proto này phải đồng bộ với controlplane/internal/hierarchy/transport/rpc/proto/zone.proto
+// [COMMENT]: File proto này phải đồng bộ với controlplane/internal/hierarchy/transport/proto/zone.proto
 
 syntax = "proto3";
 
-package core.rpc;
+package hierarchy.rpc;
 
-option go_package = "controlplane/internal/hierarchy/transport/rpc/proto";
+option go_package = "controlplane/internal/hierarchy/transport/proto;hierarchyproto";
 
 // ─── Zone Messages ────────────────────────────────────────────────────────────
 

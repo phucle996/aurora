@@ -52,7 +52,7 @@ export default function NewZonePage() {
 
   /**
    * Services được enable khi zone này được tạo.
-   * Default: hypervisor + storage + k8s bật sẵn (core services).
+	 * Default: hypervisor + storage + k8s bật sẵn (baseline services).
    * mail và ai tắt mặc định vì cần cấu hình riêng biệt.
    */
   const [services, setServices] = useState<Record<ServiceKey, boolean>>({
@@ -159,13 +159,13 @@ export default function NewZonePage() {
       //   - Backend đọc accessKey từ HttpOnly cookie (gửi kèm request tự động).
       //   - Đưa vào payload → lộ session ID qua log/trace/network capture.
       //   - Binding với session đã được đảm bảo qua device public key lookup.
-      const payloadStr = `POST\n/admin/critical/core/zones\n\n${bodyHash}\n${timestamp}\n${nonce}`
+      const payloadStr = `POST\n/admin/critical/hierarchy/zones\n\n${bodyHash}\n${timestamp}\n${nonce}`
 
       // Sign payload bằng Ed25519 private key từ IndexedDB.
       // Backend verify bằng device public key đã đăng ký lúc login.
       const signature = await signPayload(payloadStr, deviceKeys.privateKey)
 
-      const response = await Fetch('/admin/critical/core/zones', {
+      const response = await Fetch('/admin/critical/hierarchy/zones', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

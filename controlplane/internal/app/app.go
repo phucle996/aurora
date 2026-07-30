@@ -236,7 +236,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Module Graph bootstrap: toàn bộ module khởi tạo và wiring.
-	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
+	// Lỗi ở đây ảnh hưởng cross-module (IAM, Hierarchy, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
 	modules, err := NewGlobalModules(cfg, db, rds, authRds, app.vault, kafkaProducer, cacheEngine, app.otel)

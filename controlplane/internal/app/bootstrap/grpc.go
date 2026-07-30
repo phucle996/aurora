@@ -272,4 +272,3 @@ type wrappedStream struct {
 func (w *wrappedStream) Context() context.Context {
 	return w.ctx
 }
-

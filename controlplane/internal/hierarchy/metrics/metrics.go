@@ -1,9 +1,9 @@
 // ============================================================================
 // 📂 MODULE: controlplane/internal/hierarchy/metrics/metrics.go
-//            Đo Lường Nghiệp Vụ Module Core (OTel Metrics)
+//            Đo Lường Nghiệp Vụ Module Hierarchy (OTel Metrics)
 // ============================================================================
 
-package coreMetric
+package metrics
 
 import (
 	"context"
@@ -21,10 +21,10 @@ import (
 // ──────────────────────────────────────────────────────────────────────────────
 
 const (
-	KindRepo              = "repo"
-	KindCacheEngineL1     = "cache-engine-l1"
-	KindCacheEngineL2     = "cache-engine-l2"
-	KindCacheEngineFanout = "cache-engine-fanout"
+	KindRepo               = "repo"
+	KindCacheEngineL1      = "cache-engine-l1"
+	KindCacheEngineL2      = "cache-engine-l2"
+	KindCacheEngineFanout  = "cache-engine-fanout"
 	KindCacheEngineExecute = "cache-engine-execute"
 )
 
@@ -42,10 +42,10 @@ const (
 )
 
 var (
-	// serviceCallsCounter đếm tổng số lần gọi service layer Core.
+	// serviceCallsCounter đếm tổng số lần gọi service layer Hierarchy.
 	serviceCallsCounter metric.Int64Counter
 
-	// downstreamDuration đo latency (giây) các tác vụ downstream của module Core.
+	// downstreamDuration đo latency các downstream của Hierarchy.
 	downstreamDuration metric.Float64Histogram
 
 	// initOnce đảm bảo instruments chỉ được tạo một lần duy nhất.
@@ -55,23 +55,23 @@ var (
 // Init khởi tạo các OTel instruments một cách tường minh từ observability/otel.
 func Init(meterProvider metric.MeterProvider) {
 	initOnce.Do(func() {
-		meter := meterProvider.Meter("aurora-controlplane.core")
+		meter := meterProvider.Meter("aurora-controlplane.hierarchy")
 
-		// Counter: đếm tổng số lần gọi service Core
+		// Counter: đếm tổng số lần gọi service Hierarchy.
 		serviceCallsCounter, _ = meter.Int64Counter(
-			"aurora_controlplane_core_service_calls_total",
-			metric.WithDescription("Total core service calls, partitioned by op and outcome."),
+			"aurora_controlplane_hierarchy_service_calls_total",
+			metric.WithDescription("Total hierarchy service calls, partitioned by op and outcome."),
 		)
 
-		// Histogram: đo latency downstream Core (DB, Redis, cache)
+		// Histogram: đo latency downstream Hierarchy (DB, Redis, cache).
 		downstreamDuration, _ = meter.Float64Histogram(
-			"aurora_controlplane_core_downstream_duration_seconds",
-			metric.WithDescription("Latency in seconds of core downstream calls."),
+			"aurora_controlplane_hierarchy_downstream_duration_seconds",
+			metric.WithDescription("Latency in seconds of hierarchy downstream calls."),
 		)
 	})
 }
 
-// ServiceCall ghi nhận một lần gọi service Core.
+// ServiceCall ghi nhận một lần gọi service Hierarchy.
 func ServiceCall(ctx context.Context, outcome string) {
 	if serviceCallsCounter != nil {
 		op := pkgcontext.GetOperation(ctx)
@@ -84,7 +84,7 @@ func ServiceCall(ctx context.Context, outcome string) {
 	}
 }
 
-// Downstream ghi nhận latency của một tác vụ downstream Core.
+// Downstream ghi nhận latency của một tác vụ downstream Hierarchy.
 func Downstream(ctx context.Context, kind, destination, outcome string, duration time.Duration, err error) {
 	if downstreamDuration != nil {
 		status := "ok"

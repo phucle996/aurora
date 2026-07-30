@@ -1,4 +1,4 @@
-package coreReq
+package dto
 
 // [COMMENT]: CreateTenantRequest định nghĩa dữ liệu đầu vào JSON từ client để tạo Tenant
 type CreateTenantRequest struct {

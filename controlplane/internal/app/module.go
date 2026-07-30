@@ -27,8 +27,8 @@ import (
 type Modules struct {
 	// Health là global health/readiness surface của process.
 	Health *healthhandler.HealthHandler
-	// Core là module hạ tầng lõi (secrets/zone...).
-	Core *core.Module
+	// Hierarchy owns Zone, Tenant and Workspace business topology.
+	Hierarchy *hierarchy.Module
 	// IAM là module authn/authz của controlplane.
 	IAM *iam.IAMModule
 	// Hypervisor là module vệ tinh Tier-1 (ảo hóa). Cho phép chạy ở trạng thái suy giảm (Degraded).
@@ -93,13 +93,13 @@ func NewGlobalModules(cfg *config.Config,
 	// GIAI ĐOẠN 2: KHỞI TẠO CÁC PHÂN HỆ TIER-0 (CRITICAL) - SAI LÀ FAIL-FAST
 	// ------------------------------------------------------------------------
 
-	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rds, cacheEngine, otel)
+	// 3) Hierarchy is a critical Controlplane business module.
+	hierarchyModule, err := hierarchy.NewModule(cfg, db, rds, cacheEngine, otel)
 	if err != nil {
-		return nil, fmt.Errorf("app: init critical core module: %w", err)
+		return nil, fmt.Errorf("app: init critical hierarchy module: %w", err)
 	}
-	if coreModule == nil {
-		return nil, errors.New("app: init critical core module: core module is nil")
+	if hierarchyModule == nil {
+		return nil, errors.New("app: init critical hierarchy module: hierarchy module is nil")
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
@@ -110,7 +110,7 @@ func NewGlobalModules(cfg *config.Config,
 	if iamModule == nil {
 		return nil, errors.New("app: init critical iam module: iam module is nil")
 	}
-	if err := coreModule.SetTenantBillingOutboxNotifier(iamModule.NotifyBillingOutbox); err != nil {
+	if err := hierarchyModule.SetTenantBillingOutboxNotifier(iamModule.NotifyBillingOutbox); err != nil {
 		return nil, fmt.Errorf("app: wire tenant billing outbox notifier: %w", err)
 	}
 
@@ -156,7 +156,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	modules := &Modules{
 		Health:         health,
-		Core:           coreModule,
+		Hierarchy:      hierarchyModule,
 		IAM:            iamModule,
 		Hypervisor:     hypervisorModule,
 		Mail:           mailModule,
@@ -175,7 +175,7 @@ func NewGlobalModules(cfg *config.Config,
 // 1) mark health not-ready,
 // 2) stop IAM module,
 // 3) stop Hypervisor module,
-// 4) stop Core module.
+// 4) stop Hierarchy module.
 func (m *Modules) Stop() {
 	if m == nil {
 		return
@@ -202,8 +202,8 @@ func (m *Modules) Stop() {
 	if m.ManagedService != nil {
 		m.ManagedService.Stop()
 	}
-	if m.Core != nil {
-		m.Core.Stop()
+	if m.Hierarchy != nil {
+		m.Hierarchy.Stop()
 	}
 	if m.CacheEngine != nil && m.CacheEngine.L1 != nil {
 		m.CacheEngine.L1.Close()

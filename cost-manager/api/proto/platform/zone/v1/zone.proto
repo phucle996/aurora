@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package core.rpc;
+package hierarchy.rpc;
 
 option go_package = "cost-manager/api/internal/genproto/platform/zone/v1;zonev1";
 

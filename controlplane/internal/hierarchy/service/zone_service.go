@@ -10,7 +10,7 @@
 //
 // ======================================================================================================
 
-package zoneSvcImpl
+package service
 
 import (
 	"context"
@@ -18,12 +18,12 @@ import (
 	"strings"
 	"time"
 
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreMetric "controlplane/internal/hierarchy/metrics"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
-	zoneProto "controlplane/internal/hierarchy/transport/proto"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	metrics "controlplane/internal/hierarchy/metrics"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
+	hierarchyproto "controlplane/internal/hierarchy/transport/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/logger"
 
@@ -33,85 +33,85 @@ import (
 )
 
 type ZoneService struct {
-	repo coreRepoInterface.ZoneRepository
+	repo hierarchyrepo.ZoneRepository
 	rds  *goredis.Client
 }
 
 func NewZoneService(
-	repo coreRepoInterface.ZoneRepository,
+	repo hierarchyrepo.ZoneRepository,
 	rds *goredis.Client,
-) coreSvcInterface.ZoneService {
+) hierarchyservice.ZoneService {
 	return &ZoneService{
 		repo: repo,
 		rds:  rds,
 	}
 }
 
-func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
+func (s *ZoneService) ListZones(ctx context.Context) ([]entity.Zone, error) {
 	// [COMMENT]: Gọi xuống repository ListZones và đo lường thời gian thực thi downstream
 	start := time.Now()
 	zones, err := s.repo.ListZones(ctx)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListZones", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "ListZones", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListZones", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "ListZones", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return zones, nil
 }
 
 // AcrListZones phục vụ luồng sync sang ACR chỉ lấy 4 thuộc tính (ID, Code, Name, Status).
 // Triển khai này giúp tối ưu hóa hiệu năng, giảm dung lượng payload khi đồng bộ danh sách Zone qua biên.
-func (s *ZoneService) AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
+func (s *ZoneService) AcrListZones(ctx context.Context) ([]entity.RPCZone, error) {
 	// [COMMENT]: Gọi xuống repository AcrListZones chuyên biệt và đo lường thời gian thực thi downstream
 	start := time.Now()
 	zones, err := s.repo.AcrListZones(ctx)
 	duration := time.Since(start)
 	if err != nil {
 		// [COMMENT]: Ghi nhận lỗi truy vấn cơ sở dữ liệu kèm thời gian thực thi
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "AcrListZones", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "AcrListZones", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 	// [COMMENT]: Ghi nhận truy vấn cơ sở dữ liệu thành công kèm thời gian thực thi
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "AcrListZones", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "AcrListZones", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return zones, nil
 }
 
 // CreateZone tạo zone mới + cập nhật cache (tự động đồng bộ các replica).
-func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
+func (s *ZoneService) CreateZone(ctx context.Context, input entity.CreateZoneInput) error {
 	now := time.Now().UTC()
 	zoneID, err := uuid.NewV7()
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
-		return apperr.Wrap(coreTaxonomy.ErrZoneInvalidInput, err, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		return apperr.Wrap(taxonomy.ErrZoneInvalidInput, err, metrics.OutcomeFailure)
 	}
-	zone := coreEntity.Zone{
+	zone := entity.Zone{
 		ID:          zoneID,
 		Code:        input.Code,
 		Name:        input.Name,
 		Location:    input.Location,
 		Description: input.Description,
-		Status:      coreEntity.ZoneStatusPlanned,
+		Status:      entity.ZoneStatusPlanned,
 		CreatedAt:   &now,
 		UpdatedAt:   &now,
 	}
-	svcs := map[coreEntity.ZoneServiceType]bool{
-		coreEntity.ZoneServiceTypeHypervisor: input.EnableHypervisor,
-		coreEntity.ZoneServiceTypeStorage:    input.EnableStorage,
-		coreEntity.ZoneServiceTypeMail:       input.EnableMail,
-		coreEntity.ZoneServiceTypeKubernetes: input.EnableKubernetes,
-		coreEntity.ZoneServiceTypeAI:         input.EnableAI,
-		coreEntity.ZoneServiceTypeDatabase:   input.EnableDatabase,
+	svcs := map[entity.ZoneServiceType]bool{
+		entity.ZoneServiceTypeHypervisor: input.EnableHypervisor,
+		entity.ZoneServiceTypeStorage:    input.EnableStorage,
+		entity.ZoneServiceTypeMail:       input.EnableMail,
+		entity.ZoneServiceTypeKubernetes: input.EnableKubernetes,
+		entity.ZoneServiceTypeAI:         input.EnableAI,
+		entity.ZoneServiceTypeDatabase:   input.EnableDatabase,
 	}
 
 	start := time.Now()
 	if err := s.repo.CreateZone(ctx, zone, svcs); err != nil {
 		duration := time.Since(start)
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateZone", coreMetric.OutcomeFailure, duration, err)
+		metrics.Downstream(ctx, metrics.KindRepo, "CreateZone", metrics.OutcomeFailure, duration, err)
 		return err
 	}
 
@@ -123,19 +123,19 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	}
 	s.publishInvalidation(ctx, zoneID, false)
 
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return nil
 }
 
 // GetZoneDetailByID lấy thông tin chi tiết của một Zone kèm theo tất cả các dịch vụ của nó.
-func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*entity.ZoneDetail, error) {
 
-	defer coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	defer metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	start := time.Now()
 	detail, err := s.repo.GetZoneDetailByID(ctx, id)
 	if err != nil {
 		duration := time.Since(start)
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "GetZoneDetailByID", coreMetric.OutcomeFailure, duration, err)
+		metrics.Downstream(ctx, metrics.KindRepo, "GetZoneDetailByID", metrics.OutcomeFailure, duration, err)
 		return nil, err
 	}
 
@@ -143,26 +143,26 @@ func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*cor
 }
 
 // UpdateZoneStatus chuyển trạng thái zone.
-func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) error {
+func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus entity.ZoneStatus) error {
 	// allowed quy định bản đồ chuyển đổi trạng thái hợp lệ (State Machine Transitions).
 	// Key: Trạng thái đích (toStatus) - Value: Danh sách các trạng thái cũ được phép chuyển đổi sang trạng thái đích.
-	allowed := map[coreEntity.ZoneStatus][]coreEntity.ZoneStatus{
+	allowed := map[entity.ZoneStatus][]entity.ZoneStatus{
 		// [COMMENT]: Quay lại trạng thái Planned từ Active (để cấu hình lại) hoặc Disabled (vùng đệm kiểm tra trước khi kích hoạt).
-		coreEntity.ZoneStatusPlanned: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
+		entity.ZoneStatusPlanned: {entity.ZoneStatusActive, entity.ZoneStatusDisabled},
 		// [BUG FIX]: Kích hoạt (Active) từ Planned, Draining hoặc Maintenance.
-		coreEntity.ZoneStatusActive: {coreEntity.ZoneStatusPlanned, coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance},
+		entity.ZoneStatusActive: {entity.ZoneStatusPlanned, entity.ZoneStatusDraining, entity.ZoneStatusMaintenance},
 		// [COMMENT]: Ép buộc xả tải (Draining) chỉ được phép bắt đầu từ trạng thái đang chạy Active.
-		coreEntity.ZoneStatusDraining: {coreEntity.ZoneStatusActive},
+		entity.ZoneStatusDraining: {entity.ZoneStatusActive},
 		// [COMMENT]: Bảo trì (Maintenance) chỉ được kích hoạt sau khi đã xả sạch job (Draining) để tránh gián đoạn dịch vụ.
-		coreEntity.ZoneStatusMaintenance: {coreEntity.ZoneStatusDraining},
+		entity.ZoneStatusMaintenance: {entity.ZoneStatusDraining},
 		// [COMMENT]: Vô hiệu hóa (Disabled) chỉ cho phép từ Draining (đã xả sạch job) hoặc Planned (zone chưa từng chạy).
-		coreEntity.ZoneStatusDisabled: {coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusPlanned},
+		entity.ZoneStatusDisabled: {entity.ZoneStatusDraining, entity.ZoneStatusPlanned},
 	}
 
 	allowedOld := append(allowed[toStatus], toStatus)
 	zoneCode, err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return err
 	}
 
@@ -174,7 +174,7 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	}
 	s.publishInvalidation(ctx, zoneID, false)
 
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return nil
 }
 
@@ -182,7 +182,7 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	deletedCode, err := s.repo.DeleteZone(ctx, zoneID)
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return err
 	}
 
@@ -193,27 +193,27 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	}
 	s.publishInvalidation(ctx, zoneID, true, deletedCode)
 
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return nil
 }
 
 // UpdateZoneService cập nhật enabled/disabled của một service trong zone.
-func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
+func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType entity.ZoneServiceType, enabled bool) (*entity.ZoneService, error) {
 	svc, _, err := s.repo.UpdateZoneService(ctx, zoneID, serviceType, enabled)
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
 	// [COMMENT]: Phát invalidation vì cấu hình dịch vụ thay đổi.
 	s.publishInvalidation(ctx, zoneID, false)
 
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return svc, nil
 }
 
 // AcrResolveZone phân giải một Zone cụ thể theo mã code phục vụ ACR.
-func (s *ZoneService) AcrResolveZone(ctx context.Context, code string) (*coreEntity.RPCZone, error) {
+func (s *ZoneService) AcrResolveZone(ctx context.Context, code string) (*entity.RPCZone, error) {
 	zones, err := s.AcrListZones(ctx)
 	if err != nil {
 		return nil, err
@@ -249,7 +249,7 @@ func (s *ZoneService) publishInvalidation(ctx context.Context, zoneID uuid.UUID,
 		return
 	}
 
-	event := &zoneProto.ZoneInvalidatedEvent{
+	event := &hierarchyproto.ZoneInvalidatedEvent{
 		ZoneId:   zoneID.String(),
 		ZoneCode: code,
 		Status:   status,

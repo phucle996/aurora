@@ -3,7 +3,7 @@
 //            Đặc Tả Nghiệp Vụ Quản Lý Vòng Đời Workspace Doanh Nghiệp (Tenant Scope)
 // ======================================================================================================
 
-package zoneSvcImpl
+package service
 
 import (
 	"context"
@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreMetric "controlplane/internal/hierarchy/metrics"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	metrics "controlplane/internal/hierarchy/metrics"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 
@@ -25,26 +25,26 @@ import (
 
 // [COMMENT]: TenantWorkspaceServiceImpl triển khai TenantWorkspaceService interface
 type TenantWorkspaceServiceImpl struct {
-	repo        coreRepoInterface.TenantWorkspaceRepository
+	repo        hierarchyrepo.TenantWorkspaceRepository
 	cacheEngine *cacheengine.CacheRegistry
 }
 
 // [COMMENT]: NewTenantWorkspaceService tạo instance mới của TenantWorkspaceService
 func NewTenantWorkspaceService(
-	repo coreRepoInterface.TenantWorkspaceRepository,
+	repo hierarchyrepo.TenantWorkspaceRepository,
 	cacheEngine *cacheengine.CacheRegistry,
-) coreSvcInterface.TenantWorkspaceService {
+) hierarchyservice.TenantWorkspaceService {
 	return &TenantWorkspaceServiceImpl{
 		repo:        repo,
 		cacheEngine: cacheEngine,
 	}
 }
 
-func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
+func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error) {
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
-		return nil, apperr.Wrap(coreTaxonomy.ErrGenUUID, err, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		return nil, apperr.Wrap(taxonomy.ErrGenUUID, err, metrics.OutcomeFailure)
 	}
 
 	now := time.Now().UTC()
@@ -56,43 +56,43 @@ func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Contex
 	result, err := s.repo.Create(ctx, workspace)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateWorkspaceForTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "CreateWorkspaceForTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateWorkspaceForTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "CreateWorkspaceForTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) GetWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.TenantWorkspace, error) {
+func (s *TenantWorkspaceServiceImpl) GetWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) (*entity.TenantWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.GetByID(ctx, workspaceID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "GetWorkspaceForTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "GetWorkspaceForTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "GetWorkspaceForTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "GetWorkspaceForTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]*coreEntity.TenantWorkspace, error) {
+func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]*entity.TenantWorkspace, error) {
 	start := time.Now()
 
 	// [COMMENT]: Lấy dữ liệu permissions từ L1 Cache (tenant_role) theo key <role_id>:<tenant_id>
 	val, err := s.cacheEngine.GetOrLoad(ctx, "tenant_role", roleID.String()+":"+tenantID.String())
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 	roleEntry, ok := val.(*iamproto.RoleEntry)
 	if !ok {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, errors.New("invalid cache entry type for tenant_role")
 	}
 
@@ -116,42 +116,42 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context
 	}
 
 	// [COMMENT]: Định tuyến Repo query dựa trên wildcard hoặc danh sách cụ thể
-	var result []*coreEntity.TenantWorkspace
+	var result []*entity.TenantWorkspace
 	if hasWildcard {
 		result, err = s.repo.ListAllByTenant(ctx, tenantID)
 	} else {
 		// [COMMENT]: Nếu không có quyền nào hoặc list trống, trả về empty slice thay vì query lỗi
 		if len(wsIDs) == 0 {
-			coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
-			return []*coreEntity.TenantWorkspace{}, nil
+			metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
+			return []*entity.TenantWorkspace{}, nil
 		}
 		result, err = s.repo.ListByTenantAndIDs(ctx, tenantID, wsIDs)
 	}
 
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspacesForTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspacesForTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspacesForTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspacesForTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) UpdateWorkspaceForTenant(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
+func (s *TenantWorkspaceServiceImpl) UpdateWorkspaceForTenant(ctx context.Context, workspace entity.TenantWorkspace) (*entity.TenantWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.Update(ctx, workspace)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "UpdateWorkspaceForTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "UpdateWorkspaceForTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "UpdateWorkspaceForTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "UpdateWorkspaceForTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
@@ -160,29 +160,29 @@ func (s *TenantWorkspaceServiceImpl) DeleteWorkspaceForTenant(ctx context.Contex
 	err := s.repo.Delete(ctx, workspaceID, tenantID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "DeleteWorkspaceForTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "DeleteWorkspaceForTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "DeleteWorkspaceForTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "DeleteWorkspaceForTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return nil
 }
 
 // [COMMENT]: ListWorkspaceCatalogForTenant hot path catalog — phân giải L1 cache permission rồi gọi query tối giản 3 cột lọc theo zoneID
-func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error) {
+func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]entity.WorkspaceCatalog, error) {
 	start := time.Now()
 
 	// [COMMENT]: Tra cứu cache tenant_role để lấy permissions của role trong tenant
 	val, err := s.cacheEngine.GetOrLoad(ctx, "tenant_role", roleID.String()+":"+tenantID.String())
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 	roleEntry, ok := val.(*iamproto.RoleEntry)
 	if !ok {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, errors.New("invalid cache entry type for tenant_role")
 	}
 
@@ -206,25 +206,25 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.C
 	}
 
 	// [COMMENT]: Gọi catalog query tối giản dựa trên wildcard hoặc danh sách IDs cụ thể
-	var result []coreEntity.WorkspaceCatalog
+	var result []entity.WorkspaceCatalog
 	if hasWildcard {
 		result, err = s.repo.ListCatalogAllByTenant(ctx, tenantID, zoneID)
 	} else {
 		if len(wsIDs) == 0 {
-			coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
-			return []coreEntity.WorkspaceCatalog{}, nil
+			metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
+			return []entity.WorkspaceCatalog{}, nil
 		}
 		result, err = s.repo.ListCatalogByTenantAndIDs(ctx, tenantID, zoneID, wsIDs)
 	}
 
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspaceCatalogForTenant", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspaceCatalogForTenant", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspaceCatalogForTenant", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspaceCatalogForTenant", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }

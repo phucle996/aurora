@@ -131,14 +131,20 @@ không compatible hoặc YAML sau render invalid là terminal
 runtime event và notification chỉ mang taxonomy/hash/bounded diagnostic, không mang
 raw parameter, rendered manifest hay Kubernetes Secret value.
 
-`parameter_key_id` trỏ tới Zone public keyset versioned (`STAGED|ACTIVE|DECRYPT_ONLY`)
-trong CP Zone configuration, được replicate qua existing Zone metadata CDC/Kafka path.
-DP load private counterpart từ Zone-local Kubernetes Secret và fail-close nếu
-fingerprint với metadata không khớp. Key cũ không được destroy theo drain timer đơn
-thuần: retirement CTE phải chứng minh không còn retained instance revision,
-operation/outbox hay DLQ evidence tham chiếu nó. Zone Vault tương lai có thể trở thành
-secret source of truth và materialize Kubernetes Secret qua CSI/operator, nhưng không
-cấp Vault credential cho Controlplane/JO và không làm raw value xuất hiện trong Kafka.
+`parameter_key_id` tương lai trỏ tới Zone public keyset versioned
+(`STAGED|ACTIVE|DECRYPT_ONLY|RETIRED`). AS-IS, Hierarchy đã ship bảng/API quản lý
+public key lifecycle; Zone metadata protobuf/CDC projection và protected-payload
+producer/consumer vẫn chưa ship. Vì vậy không producer nào được coi trạng thái
+`ACTIVE` hiện tại là bằng chứng Dataplane đã load private counterpart. Change-set
+transport phải thêm loaded-key readiness fence trước khi mở producer đầu tiên.
+
+DP sau đó mới load private counterpart từ Zone-local read-only filesystem secret và
+fail-close nếu fingerprint với metadata không khớp. Key cũ không được destroy theo
+drain timer đơn thuần: trước release protected payload, retirement CTE phải được mở
+rộng để chứng minh không còn retained instance revision, operation/outbox hay DLQ
+evidence tham chiếu nó. Zone Vault tương lai có thể trở thành secret source of truth
+và materialize file/Secret qua CSI/operator, nhưng không cấp Vault credential cho
+Controlplane/JO và không làm raw value xuất hiện trong Kafka.
 V1 vẫn dùng Kubernetes Secret trong đúng namespace khi SRE template hoặc operator yêu
 cầu; literal `Secret.data`/`stringData` không được publish vào catalog revision.
 

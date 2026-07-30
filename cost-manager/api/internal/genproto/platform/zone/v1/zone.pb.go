@@ -250,15 +250,15 @@ var File_proto_platform_zone_v1_zone_proto protoreflect.FileDescriptor
 
 const file_proto_platform_zone_v1_zone_proto_rawDesc = "" +
 	"\n" +
-	"!proto/platform/zone/v1/zone.proto\x12\bcore.rpc\"\x14\n" +
+	"!proto/platform/zone/v1/zone.proto\x12\rhierarchy.rpc\"\x14\n" +
 	"\x12GetZoneListRequest\"m\n" +
 	"\tZoneEntry\x12\x17\n" +
 	"\azone_id\x18\x01 \x01(\tR\x06zoneId\x12\x1b\n" +
 	"\tzone_code\x18\x02 \x01(\tR\bzoneCode\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\x12\n" +
-	"\x04name\x18\x04 \x01(\tR\x04name\"@\n" +
-	"\x13GetZoneListResponse\x12)\n" +
-	"\x05zones\x18\x01 \x03(\v2\x13.core.rpc.ZoneEntryR\x05zones\"\x92\x01\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"E\n" +
+	"\x13GetZoneListResponse\x12.\n" +
+	"\x05zones\x18\x01 \x03(\v2\x18.hierarchy.rpc.ZoneEntryR\x05zones\"\x92\x01\n" +
 	"\x14ZoneInvalidatedEvent\x12\x17\n" +
 	"\azone_id\x18\x01 \x01(\tR\x06zoneId\x12\x1b\n" +
 	"\tzone_code\x18\x02 \x01(\tR\bzoneCode\x12\x16\n" +
@@ -280,13 +280,13 @@ func file_proto_platform_zone_v1_zone_proto_rawDescGZIP() []byte {
 
 var file_proto_platform_zone_v1_zone_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_proto_platform_zone_v1_zone_proto_goTypes = []any{
-	(*GetZoneListRequest)(nil),   // 0: core.rpc.GetZoneListRequest
-	(*ZoneEntry)(nil),            // 1: core.rpc.ZoneEntry
-	(*GetZoneListResponse)(nil),  // 2: core.rpc.GetZoneListResponse
-	(*ZoneInvalidatedEvent)(nil), // 3: core.rpc.ZoneInvalidatedEvent
+	(*GetZoneListRequest)(nil),   // 0: hierarchy.rpc.GetZoneListRequest
+	(*ZoneEntry)(nil),            // 1: hierarchy.rpc.ZoneEntry
+	(*GetZoneListResponse)(nil),  // 2: hierarchy.rpc.GetZoneListResponse
+	(*ZoneInvalidatedEvent)(nil), // 3: hierarchy.rpc.ZoneInvalidatedEvent
 }
 var file_proto_platform_zone_v1_zone_proto_depIdxs = []int32{
-	1, // 0: core.rpc.GetZoneListResponse.zones:type_name -> core.rpc.ZoneEntry
+	1, // 0: hierarchy.rpc.GetZoneListResponse.zones:type_name -> hierarchy.rpc.ZoneEntry
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name

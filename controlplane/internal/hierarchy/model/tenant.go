@@ -1,7 +1,7 @@
-package coreModel
+package model
 
 import (
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
+	entity "controlplane/internal/hierarchy/domain/entity"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,7 +37,7 @@ type TenantMembership struct {
 }
 
 // [COMMENT]: TenantEntityToModel chuyển đổi domain entity Tenant sang DB model tương ứng
-func TenantEntityToModel(e coreEntity.Tenant) Tenant {
+func TenantEntityToModel(e entity.Tenant) Tenant {
 	return Tenant{
 		ID:        e.ID,
 		Code:      e.Code,
@@ -49,19 +49,19 @@ func TenantEntityToModel(e coreEntity.Tenant) Tenant {
 }
 
 // [COMMENT]: TenantModelToEntity chuyển đổi DB model Tenant sang domain entity tương ứng
-func TenantModelToEntity(m Tenant) coreEntity.Tenant {
-	return coreEntity.Tenant{
+func TenantModelToEntity(m Tenant) entity.Tenant {
+	return entity.Tenant{
 		ID:        m.ID,
 		Code:      m.Code,
 		Name:      m.Name,
-		Status:    coreEntity.TenantStatus(m.Status),
+		Status:    entity.TenantStatus(m.Status),
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}
 }
 
 // [COMMENT]: TenantDomainEntityToModel chuyển đổi domain entity TenantDomain sang DB model tương ứng
-func TenantDomainEntityToModel(e coreEntity.TenantDomain) TenantDomain {
+func TenantDomainEntityToModel(e entity.TenantDomain) TenantDomain {
 	return TenantDomain{
 		ID:        e.ID,
 		TenantID:  e.TenantID,
@@ -72,8 +72,8 @@ func TenantDomainEntityToModel(e coreEntity.TenantDomain) TenantDomain {
 }
 
 // [COMMENT]: TenantDomainModelToEntity chuyển đổi DB model TenantDomain sang domain entity tương ứng
-func TenantDomainModelToEntity(m TenantDomain) coreEntity.TenantDomain {
-	return coreEntity.TenantDomain{
+func TenantDomainModelToEntity(m TenantDomain) entity.TenantDomain {
+	return entity.TenantDomain{
 		ID:        m.ID,
 		TenantID:  m.TenantID,
 		Domain:    m.Domain,
@@ -83,7 +83,7 @@ func TenantDomainModelToEntity(m TenantDomain) coreEntity.TenantDomain {
 }
 
 // [COMMENT]: TenantMembershipEntityToModel chuyển đổi domain entity TenantMembership sang DB model tương ứng
-func TenantMembershipEntityToModel(e coreEntity.TenantMembership) TenantMembership {
+func TenantMembershipEntityToModel(e entity.TenantMembership) TenantMembership {
 	return TenantMembership{
 		ID:        e.ID,
 		TenantID:  e.TenantID,
@@ -95,12 +95,12 @@ func TenantMembershipEntityToModel(e coreEntity.TenantMembership) TenantMembersh
 }
 
 // [COMMENT]: TenantMembershipModelToEntity chuyển đổi DB model TenantMembership sang domain entity tương ứng
-func TenantMembershipModelToEntity(m TenantMembership) coreEntity.TenantMembership {
-	return coreEntity.TenantMembership{
+func TenantMembershipModelToEntity(m TenantMembership) entity.TenantMembership {
+	return entity.TenantMembership{
 		ID:        m.ID,
 		TenantID:  m.TenantID,
 		UserID:    m.UserID,
-		Status:    coreEntity.MembershipStatus(m.Status),
+		Status:    entity.MembershipStatus(m.Status),
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}

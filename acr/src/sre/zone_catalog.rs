@@ -1,5 +1,5 @@
 // ======================================================================================================
-// 📂 sre/zone_catalog.rs — SRE Admin Zone Catalog Handler (GET /admin/core/zones/catalog)
+// 📂 sre/zone_catalog.rs — SRE Admin Zone Catalog Handler (GET /admin/hierarchy/zones/catalog)
 // ======================================================================================================
 
 use crate::infra::redis::SessionManager;
@@ -21,7 +21,7 @@ pub struct ZoneCatalogEntry {
     pub name: String,
 }
 
-/// [COMMENT]: Intercept GET /admin/core/zones/catalog dành cho SRE Admin.
+/// [COMMENT]: Intercept GET /admin/hierarchy/zones/catalog dành cho SRE Admin.
 pub async fn handle_admin_zone_catalog(
     _session_mgr: &Arc<SessionManager>,
     _token_mgr: &Arc<SreTokenManager>,
@@ -31,7 +31,7 @@ pub async fn handle_admin_zone_catalog(
     method: &str,
     path: &str,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
-    if !(method == "GET" && path.starts_with("/admin/core/zones/catalog")) {
+    if !(method == "GET" && path.starts_with("/admin/hierarchy/zones/catalog")) {
         return None;
     }
 

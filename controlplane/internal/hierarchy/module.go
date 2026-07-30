@@ -1,10 +1,10 @@
 // ======================================================================================================
 // 📂 MODULE: controlplane/internal/hierarchy/module.go
-//            Đặc Tả Quản Lý Vòng Đời & Inject Dependency Core Module
+//            Đặc Tả Quản Lý Vòng Đời & Inject Dependency Hierarchy Module
 // ======================================================================================================
 //
 // 📜 HIỆP ĐỒNG THIẾT KẾ & BOOTSTRAP AN TOÀN (DESIGN CONTRACT & LIFECYCLE):
-//   - Đóng vai trò là trung tâm lắp ghép đồ thị phụ thuộc (Dependency Graph Builder) của Core Module.
+//   - Đóng vai trò là trung tâm lắp ghép dependency graph của Hierarchy Module.
 //   - Quản lý vòng đời chạy nền (Start/Stop) của các tiến trình background an toàn:
 //
 //     1) GRACEFUL LIFECYCLE MANAGEMENT:
@@ -12,11 +12,8 @@
 //          đều được kiểm soát bởi các context cancellation biệt lập.
 //        * Tắt gracefully sạch sẽ toàn bộ tài nguyên khi hệ thống shutdown, ngăn chặn rò rỉ RAM/Socket.
 //
-//     2) PORTABLE gRPC REGISTRATION PORT:
-//        * Cung cấp phương thức `RegisterGRPCServices` cho tầng app bootstrap đăng ký các API RPC của Core.
-//
 // 🎯 SOURCE OF TRUTH (SoT):
-//   - Định hình toàn bộ sơ đồ wiring của Core Module.
+//   - Định hình toàn bộ sơ đồ wiring của Hierarchy Module.
 //
 // 🔒 RANH GIỚI BẢO MẬT & KIẾN TRÚC (CRITICAL ARCHITECTURAL BOUNDARY):
 //   - Ranh giới thiết kế DI (Dependency Injection) khép kín. Không phơi bày cấu trúc persistance thô ra ngoài.
@@ -26,21 +23,23 @@
 //
 // ======================================================================================================
 
-package core
+package hierarchy
 
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreRepoImpl "controlplane/internal/hierarchy/repository"
-	coreSvcImpl "controlplane/internal/hierarchy/service"
-	zoneHandler "controlplane/internal/hierarchy/transport/http/handler"
-	zonePubsubHandler "controlplane/internal/hierarchy/transport/pubsub/handler"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	repository "controlplane/internal/hierarchy/repository"
+	service "controlplane/internal/hierarchy/service"
+	httphandler "controlplane/internal/hierarchy/transport/http/handler"
+	pubsubhandler "controlplane/internal/hierarchy/transport/pubsub/handler"
 
 	"controlplane/internal/observability"
 
@@ -49,29 +48,32 @@ import (
 )
 
 type Module struct {
-	cfg            *config.Config
-	rds            *goredis.Client
-	otel           *observability.OTel
-	zoneRedis      *zonePubsubHandler.ZoneRedisHandler
-	ZoneRepository coreRepoInterface.ZoneRepository
-	ZoneService    coreSvcInterface.ZoneService
-	ZoneHandler    *zoneHandler.ZoneHandler
+	cfg                         *config.Config
+	rds                         *goredis.Client
+	otel                        *observability.OTel
+	zoneRedis                   *pubsubhandler.ZoneRedisHandler
+	ZoneRepository              hierarchyrepo.ZoneRepository
+	ZoneService                 hierarchyservice.ZoneService
+	ZoneHandler                 *httphandler.ZoneHandler
+	ZoneEncryptionKeyRepository hierarchyrepo.ZoneEncryptionKeyRepository
+	ZoneEncryptionKeyService    hierarchyservice.ZoneEncryptionKeyService
+	ZoneEncryptionKeyHandler    *httphandler.ZoneEncryptionKeyHandler
 	// [COMMENT]: Chia ranh giới DB access thành 2 repositories Tenant và Personal
-	TenantWorkspaceRepository   coreRepoInterface.TenantWorkspaceRepository
-	PersonalWorkspaceRepository coreRepoInterface.PersonalWorkspaceRepository
+	TenantWorkspaceRepository   hierarchyrepo.TenantWorkspaceRepository
+	PersonalWorkspaceRepository hierarchyrepo.PersonalWorkspaceRepository
 	// [COMMENT]: Chia ranh giới Service Layer thành 2 services Tenant và Personal
-	TenantWorkspaceService   coreSvcInterface.TenantWorkspaceService
-	PersonalWorkspaceService coreSvcInterface.PersonalWorkspaceService
-	WorkspacePersonalHandler *zoneHandler.WorkspacePersonalHandler
-	WorkspaceTenantHandler   *zoneHandler.WorkspaceTenantHandler
-	TenantRepository         coreRepoInterface.TenantRepository
-	TenantService            coreSvcInterface.TenantService
-	TenantHandler            *zoneHandler.TenantHandler
+	TenantWorkspaceService   hierarchyservice.TenantWorkspaceService
+	PersonalWorkspaceService hierarchyservice.PersonalWorkspaceService
+	WorkspacePersonalHandler *httphandler.WorkspacePersonalHandler
+	WorkspaceTenantHandler   *httphandler.WorkspaceTenantHandler
+	TenantRepository         hierarchyrepo.TenantRepository
+	TenantService            hierarchyservice.TenantService
+	TenantHandler            *httphandler.TenantHandler
 	listenCancel             context.CancelFunc
 	L1Registry               *cacheengine.CacheRegistry
 }
 
-// NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
+// NewModule dựng dependency graph của Hierarchy và trả về Module hoàn chỉnh.
 // Ở đây chúng ta chỉ nhận duy nhất thực thể cacheEngine để truyền vào các service nội bộ.
 func NewModule(
 	cfg *config.Config,
@@ -81,70 +83,89 @@ func NewModule(
 	otel *observability.OTel,
 ) (*Module, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("zone module: config is required")
+		return nil, fmt.Errorf("hierarchy module: config is required")
 	}
 	if db == nil {
-		return nil, fmt.Errorf("zone module: database pool is required")
+		return nil, fmt.Errorf("hierarchy module: database pool is required")
+	}
+	hierarchySchema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
+	if !regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`).MatchString(hierarchySchema) {
+		return nil, fmt.Errorf("hierarchy module: database schema is invalid")
 	}
 
 	// 1) SoT data access for secret lifecycle.
 	// 3) Rotation orchestration - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
+	zoneRepo := repository.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
-		return nil, fmt.Errorf("zone module: zone service unavailable: zone repository is nil")
+		return nil, fmt.Errorf("hierarchy module: zone repository is nil")
 	}
 
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds)
+	zoneService := service.NewZoneService(zoneRepo, rds)
 	if zoneService == nil {
-		return nil, fmt.Errorf("zone module: zone service unavailable: zone service is nil")
+		return nil, fmt.Errorf("hierarchy module: zone service is nil")
 	}
-	zHandler := zoneHandler.NewZoneHandler(zoneService)
+	zHandler := httphandler.NewZoneHandler(zoneService)
 	if zHandler == nil {
-		return nil, fmt.Errorf("zone module: zone handler is nil")
+		return nil, fmt.Errorf("hierarchy module: zone handler is nil")
 	}
-	zoneRedis, err := zonePubsubHandler.NewZoneRedisHandler(rds, zoneService, otel)
+	zoneRedis, err := pubsubhandler.NewZoneRedisHandler(rds, zoneService, otel)
 	if err != nil {
-		return nil, fmt.Errorf("zone module: initialize Shared Redis handler: %w", err)
+		return nil, fmt.Errorf("hierarchy module: initialize Shared Redis handler: %w", err)
+	}
+
+	// [COMMENT]: Hierarchy owns only the public half of each Zone key pair.
+	// Dataplane private-key loading remains a separate filesystem boundary.
+	zoneEncryptionKeyRepo := repository.NewZoneEncryptionKeyRepository(db, hierarchySchema)
+	if zoneEncryptionKeyRepo == nil {
+		return nil, fmt.Errorf("hierarchy module: zone encryption key repository is nil")
+	}
+	zoneEncryptionKeyService := service.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo)
+	if zoneEncryptionKeyService == nil {
+		return nil, fmt.Errorf("hierarchy module: zone encryption key service is nil")
+	}
+	zoneEncryptionKeyHTTPHandler := httphandler.NewZoneEncryptionKeyHandler(zoneEncryptionKeyService)
+	if zoneEncryptionKeyHTTPHandler == nil {
+		return nil, fmt.Errorf("hierarchy module: zone encryption key handler is nil")
 	}
 
 	// 6) Workspace management — repo, service, handler (Chia 2 dòng chảy Tenant và Personal)
-	tenantWorkspaceRepo := coreRepoImpl.NewTenantWorkspaceRepoImpl(cfg, db)
+	tenantWorkspaceRepo := repository.NewTenantWorkspaceRepoImpl(cfg, db)
 	if tenantWorkspaceRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant workspace repository is nil")
 	}
-	personalWorkspaceRepo := coreRepoImpl.NewPersonalWorkspaceRepoImpl(cfg, db)
+	personalWorkspaceRepo := repository.NewPersonalWorkspaceRepoImpl(cfg, db)
 	if personalWorkspaceRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace repository is nil")
 	}
 
-	tenantWorkspaceService := coreSvcImpl.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine)
+	tenantWorkspaceService := service.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine)
 	if tenantWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant workspace service is nil")
 	}
-	personalWorkspaceService := coreSvcImpl.NewPersonalWorkspaceService(personalWorkspaceRepo)
+	personalWorkspaceService := service.NewPersonalWorkspaceService(personalWorkspaceRepo)
 	if personalWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace service is nil")
 	}
-	wPersonalHandler := zoneHandler.NewWorkspacePersonalHandler(personalWorkspaceService)
+	wPersonalHandler := httphandler.NewWorkspacePersonalHandler(personalWorkspaceService)
 	if wPersonalHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: workspace personal handler is nil")
 	}
-	wTenantHandler := zoneHandler.NewWorkspaceTenantHandler(tenantWorkspaceService)
+	wTenantHandler := httphandler.NewWorkspaceTenantHandler(tenantWorkspaceService)
 	if wTenantHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: workspace tenant handler is nil")
 	}
 
 	// 7) Tenant management — repo, service, handler
-	tenantRepo := coreRepoImpl.NewTenantRepoImpl(cfg, db)
+	tenantRepo := repository.NewTenantRepoImpl(cfg, db)
 	if tenantRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant repository is nil")
 	}
-	tenantService := coreSvcImpl.NewTenantService(tenantRepo)
+	tenantService := service.NewTenantService(tenantRepo)
 	if tenantService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant service is nil")
 	}
-	tHandler := zoneHandler.NewTenantHandler(tenantService)
+	tHandler := httphandler.NewTenantHandler(tenantService)
 	if tHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant handler is nil")
 	}
@@ -159,6 +180,9 @@ func NewModule(
 		ZoneRepository:              zoneRepo,
 		ZoneService:                 zoneService,
 		ZoneHandler:                 zHandler,
+		ZoneEncryptionKeyRepository: zoneEncryptionKeyRepo,
+		ZoneEncryptionKeyService:    zoneEncryptionKeyService,
+		ZoneEncryptionKeyHandler:    zoneEncryptionKeyHTTPHandler,
 		TenantWorkspaceRepository:   tenantWorkspaceRepo,
 		PersonalWorkspaceRepository: personalWorkspaceRepo,
 		TenantWorkspaceService:      tenantWorkspaceService,
@@ -173,7 +197,7 @@ func NewModule(
 }
 
 func (m *Module) SetTenantBillingOutboxNotifier(notify func()) error {
-	tenantService, ok := m.TenantService.(*coreSvcImpl.TenantService)
+	tenantService, ok := m.TenantService.(*service.TenantService)
 	if !ok || tenantService == nil {
 		return fmt.Errorf("hierarchy module: concrete tenant service is unavailable")
 	}
@@ -181,7 +205,7 @@ func (m *Module) SetTenantBillingOutboxNotifier(notify func()) error {
 	return nil
 }
 
-// Stop hủy các background goroutine của module Core an toàn.
+// Stop hủy các background goroutine của module Hierarchy an toàn.
 func (m *Module) Stop() {
 	if m == nil {
 		return

@@ -9,6 +9,14 @@ CREATE INDEX IF NOT EXISTS ix_zones_status ON zones(status);
 -- [COMMENT]: Index phục vụ tăng tốc độ lookup dịch vụ theo zone và trạng thái mong muốn
 CREATE INDEX IF NOT EXISTS ix_zone_services_zone_desired_state ON zone_services(zone_id, desired_state);
 
+-- [COMMENT]: Fingerprint is a natural idempotency boundary for registration and
+-- also prevents one private counterpart from being reused across Zone trust boundaries.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_zone_encryption_keys_fingerprint ON zone_encryption_keys(fingerprint);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_zone_encryption_keys_one_active_per_zone
+ON zone_encryption_keys(zone_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS ix_zone_encryption_keys_zone_created
+ON zone_encryption_keys(zone_id, created_at DESC, id DESC);
+
 -- [COMMENT]: Indexes cho các trường trong phân hệ Tenant
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_domains_domain_uidx ON tenant_domains(domain);
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_memberships_tenant_user_uidx ON tenant_memberships(tenant_id, user_id);

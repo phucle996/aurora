@@ -1,7 +1,7 @@
-package coreModel
+package model
 
 import (
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
+	entity "controlplane/internal/hierarchy/domain/entity"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +28,7 @@ type ZoneService struct {
 	UpdatedAt    time.Time `db:"updated_at"`
 }
 
-func ZoneEntityToModel(e coreEntity.Zone) Zone {
+func ZoneEntityToModel(e entity.Zone) Zone {
 	return Zone{
 		ID:          e.ID,
 		Code:        e.Code,
@@ -41,21 +41,21 @@ func ZoneEntityToModel(e coreEntity.Zone) Zone {
 	}
 }
 
-func ZoneModelToEntity(m Zone) coreEntity.Zone {
-	return coreEntity.Zone{
+func ZoneModelToEntity(m Zone) entity.Zone {
+	return entity.Zone{
 		ID:          m.ID,
 		Code:        m.Code,
 		Name:        m.Name,
 		Location:    m.Location,
 		Description: m.Description,
-		Status:      coreEntity.ZoneStatus(m.Status),
+		Status:      entity.ZoneStatus(m.Status),
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
 	}
 }
 
 // ZoneServiceEntityToModel chuyển đổi thực thể domain thành database model để thực thi câu lệnh SQL.
-func ZoneServiceEntityToModel(e coreEntity.ZoneService) ZoneService {
+func ZoneServiceEntityToModel(e entity.ZoneService) ZoneService {
 	return ZoneService{
 		ID:           e.ID,
 		ZoneID:       e.ZoneID,
@@ -68,11 +68,11 @@ func ZoneServiceEntityToModel(e coreEntity.ZoneService) ZoneService {
 }
 
 // ZoneServiceModelToEntity chuyển đổi database model thành thực thể domain phục vụ logic nghiệp vụ.
-func ZoneServiceModelToEntity(m ZoneService) coreEntity.ZoneService {
-	return coreEntity.ZoneService{
+func ZoneServiceModelToEntity(m ZoneService) entity.ZoneService {
+	return entity.ZoneService{
 		ID:           m.ID,
 		ZoneID:       m.ZoneID,
-		ServiceType:  coreEntity.ZoneServiceType(m.ServiceType),
+		ServiceType:  entity.ZoneServiceType(m.ServiceType),
 		DesiredState: m.DesiredState,
 		ActualState:  m.ActualState,
 		CreatedAt:    m.CreatedAt,

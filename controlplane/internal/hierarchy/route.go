@@ -1,4 +1,4 @@
-package core
+package hierarchy
 
 import (
 	"controlplane/internal/http/middleware"
@@ -8,28 +8,43 @@ import (
 
 func RegisterRoutes(router *gin.Engine, module *Module) {
 	// [COMMENT]: Route tạo zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACR chặn bắt song song)
-	router.POST("/admin/critical/core/zones",
+	router.POST("/admin/critical/hierarchy/zones",
 		module.ZoneHandler.CreateZone,
 	)
-	router.GET("/admin/core/zones",
+	router.GET("/admin/hierarchy/zones",
 		module.ZoneHandler.ListZones,
 	)
-	router.GET("/admin/core/zones/:zone_id",
+	router.GET("/admin/hierarchy/zones/:zone_id",
 		module.ZoneHandler.GetDetailZone,
+	)
+	router.GET("/admin/hierarchy/zones/:zone_id/encryption-keys",
+		module.ZoneEncryptionKeyHandler.ListZoneEncryptionKeys,
+	)
+
+	// [COMMENT]: Public-key lifecycle controls which key protects future Zone
+	// commands, so every mutation is structurally bound to ACR critical proof.
+	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys",
+		module.ZoneEncryptionKeyHandler.RegisterZoneEncryptionKey,
+	)
+	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys/:key_id/activate",
+		module.ZoneEncryptionKeyHandler.ActivateZoneEncryptionKey,
+	)
+	router.POST("/admin/critical/hierarchy/zones/:zone_id/encryption-keys/:key_id/retire",
+		module.ZoneEncryptionKeyHandler.RetireZoneEncryptionKey,
 	)
 
 	// [COMMENT]: Route cập nhật trạng thái zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACR chặn bắt song song)
-	router.PATCH("/admin/critical/core/zones/:zone_id/status",
+	router.PATCH("/admin/critical/hierarchy/zones/:zone_id/status",
 		module.ZoneHandler.UpdateZoneStatus,
 	)
 
-	router.DELETE("/admin/critical/core/zones/:zone_id",
+	router.DELETE("/admin/critical/hierarchy/zones/:zone_id",
 		module.ZoneHandler.DeleteZone,
 	)
-	// router.GET("/admin/core/zones/:zone_id/services",
+	// router.GET("/admin/hierarchy/zones/:zone_id/services",
 	// 	module.ZoneHandler.ListZoneServices,
 	// )
-	router.PUT("/admin/critical/core/zones/services",
+	router.PUT("/admin/critical/hierarchy/zones/services",
 		module.ZoneHandler.UpdateZoneService,
 	)
 

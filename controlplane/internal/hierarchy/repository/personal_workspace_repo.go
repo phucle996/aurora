@@ -3,7 +3,7 @@
 //            Đặc Tả Hạ Tầng Lưu Trữ & Truy Vấn Workspace Cá Nhân (Personal Scope)
 // ======================================================================================================
 
-package coreRepoImpl
+package repository
 
 import (
 	"context"
@@ -11,9 +11,9 @@ import (
 	"fmt"
 
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreModel "controlplane/internal/hierarchy/model"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	model "controlplane/internal/hierarchy/model"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -109,10 +109,10 @@ func NewPersonalWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *Persona
 	}
 }
 
-func (r *PersonalWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
+func (r *PersonalWorkspaceRepoImpl) Create(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error) {
 	var zoneExists int
 	var tenantValid bool
-	var m coreModel.PersonalWorkspace
+	var m model.PersonalWorkspace
 
 	err := r.db.QueryRow(ctx, r.createWorkspaceQuery,
 		workspace.ID,
@@ -130,47 +130,47 @@ func (r *PersonalWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEn
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, coreTaxonomy.ErrWorkspaceCodeAlreadyExists
+			return nil, taxonomy.ErrWorkspaceCodeAlreadyExists
 		}
 		return nil, fmt.Errorf("database query error: %w", err)
 	}
 
 	if zoneExists == 0 {
-		return nil, coreTaxonomy.ErrZoneNotFound
+		return nil, taxonomy.ErrZoneNotFound
 	}
 	if m.ID == uuid.Nil {
-		return nil, coreTaxonomy.ErrWorkspaceInsertFailed
+		return nil, taxonomy.ErrWorkspaceInsertFailed
 	}
 
-	result := coreModel.PersonalWorkspaceModelToEntity(m)
+	result := model.PersonalWorkspaceModelToEntity(m)
 	return &result, nil
 }
 
-func (r *PersonalWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.PersonalWorkspace, error) {
-	var m coreModel.PersonalWorkspace
+func (r *PersonalWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*entity.PersonalWorkspace, error) {
+	var m model.PersonalWorkspace
 	err := r.db.QueryRow(ctx, r.getWorkspaceByIDQuery, id).Scan(
 		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, coreTaxonomy.ErrWorkspaceNotFound
+			return nil, taxonomy.ErrWorkspaceNotFound
 		}
 		return nil, err
 	}
-	result := coreModel.PersonalWorkspaceModelToEntity(m)
+	result := model.PersonalWorkspaceModelToEntity(m)
 	return &result, nil
 }
 
-func (r *PersonalWorkspaceRepoImpl) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error) {
+func (r *PersonalWorkspaceRepoImpl) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*entity.WorkspacePersonalListItem, error) {
 	rows, err := r.db.Query(ctx, r.listWorkspacesByOwnerQuery, ownerID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []*coreEntity.WorkspacePersonalListItem
+	var list []*entity.WorkspacePersonalListItem
 	for rows.Next() {
-		var item coreEntity.WorkspacePersonalListItem
+		var item entity.WorkspacePersonalListItem
 		err := rows.Scan(
 			&item.ID, &item.Name, &item.Code, &item.Description, &item.CreatedAt,
 		)
@@ -182,15 +182,15 @@ func (r *PersonalWorkspaceRepoImpl) ListByOwner(ctx context.Context, ownerID uui
 	return list, nil
 }
 
-func (r *PersonalWorkspaceRepoImpl) Update(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
-	var m coreModel.PersonalWorkspace
+func (r *PersonalWorkspaceRepoImpl) Update(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error) {
+	var m model.PersonalWorkspace
 	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, workspace.Description).Scan(
 		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	result := coreModel.PersonalWorkspaceModelToEntity(m)
+	result := model.PersonalWorkspaceModelToEntity(m)
 	return &result, nil
 }
 
@@ -203,31 +203,31 @@ func (r *PersonalWorkspaceRepoImpl) Delete(ctx context.Context, id uuid.UUID, ow
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return coreTaxonomy.ErrWorkspaceNotEmpty
+			return taxonomy.ErrWorkspaceNotEmpty
 		}
 		return err
 	}
 
 	if !exists {
-		return coreTaxonomy.ErrWorkspaceNotFound
+		return taxonomy.ErrWorkspaceNotFound
 	}
 	if !deleted {
-		return coreTaxonomy.ErrLastWorkspaceDeletionBlocked
+		return taxonomy.ErrLastWorkspaceDeletionBlocked
 	}
 	return nil
 }
 
 // [COMMENT]: ListCatalogByOwner lấy catalog tối giản (id, code, name) của workspace cá nhân trong Zone — hot path
-func (r *PersonalWorkspaceRepoImpl) ListCatalogByOwner(ctx context.Context, ownerID uuid.UUID, zoneID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error) {
+func (r *PersonalWorkspaceRepoImpl) ListCatalogByOwner(ctx context.Context, ownerID uuid.UUID, zoneID uuid.UUID) ([]entity.WorkspaceCatalog, error) {
 	rows, err := r.db.Query(ctx, r.listCatalogByOwnerQuery, ownerID, zoneID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []coreEntity.WorkspaceCatalog
+	var list []entity.WorkspaceCatalog
 	for rows.Next() {
-		var c coreEntity.WorkspaceCatalog
+		var c entity.WorkspaceCatalog
 		if err := rows.Scan(&c.ID, &c.Code, &c.Name); err != nil {
 			return nil, err
 		}

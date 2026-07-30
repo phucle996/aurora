@@ -157,9 +157,9 @@ sequenceDiagram
     
     alt DB Success (Event 2A)
         DB-->>Repo: 1 row inserted (id, code, name, status, created_at)
-        Repo-->>Svc: *coreEntity.Tenant, nil
+        Repo-->>Svc: *entity.Tenant, nil
         Note over Svc: Ghi nhận metric: OutcomeSuccess & Latency
-        Svc-->>Handler: *coreEntity.Tenant, nil
+        Svc-->>Handler: *entity.Tenant, nil
         Handler-->>Envoy: HTTP 201 Created (JSON Payload)
         Svc-->>Relay: Non-blocking wake hint after commit
         Relay->>Redis: XADD billing:wallet:tenant:provision-requests + WAITAOF

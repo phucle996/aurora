@@ -22,7 +22,7 @@ const ZONE_REFRESH_FAILURE_BACKOFF: Duration = Duration::from_secs(1);
 
 #[allow(dead_code)]
 pub mod zone_proto {
-    tonic::include_proto!("core.rpc");
+    tonic::include_proto!("hierarchy.rpc");
 }
 
 use prost::Message as _;

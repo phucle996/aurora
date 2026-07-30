@@ -1,17 +1,17 @@
 // ============================================================================
-// 🗺️ ARCHITECTURAL COMPONENT: DATABASE MIGRATION ENGINE (CORE)
+// 🗺️ ARCHITECTURAL COMPONENT: DATABASE MIGRATION ENGINE (HIERARCHY)
 // ============================================================================
-// CONTRACT: Thực hiện cài đặt và nâng cấp cấu trúc database schema cho phân hệ Core
+// CONTRACT: Thực hiện cài đặt và nâng cấp database schema cho phân hệ Hierarchy
 // bằng cách chạy tuần tự các tệp migration SQL đã được nhúng trong ứng dụng.
 //
-// SOT: Các tệp tin SQL trong package coremigrations (thư mục internal/core/migrations/)
-// là nguồn dữ liệu duy nhất quy định database schema của Core module.
+// SOT: Các tệp SQL trong internal/hierarchy/migrations là nguồn dữ liệu duy
+// nhất quy định database schema của Hierarchy module.
 //
 // BOUNDARY: Hoạt động hoàn toàn độc lập và chỉ thay đổi dữ liệu cấu trúc bên trong
-// database schema được thiết lập riêng cho Core, không ảnh hưởng đến các schema khác.
+// database schema được thiết lập riêng cho Hierarchy, không ảnh hưởng schema khác.
 // ============================================================================
 
-package core
+package hierarchy
 
 import (
 	"context"
@@ -28,19 +28,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// coreSchemaIdentPattern kiểm tra tính hợp lệ của tên schema để ngăn ngừa lỗ hổng SQL Injection.
+// hierarchySchemaIdentPattern kiểm tra tính hợp lệ của tên schema để ngăn SQL injection.
 // Do PostgreSQL không cho phép tham số hóa (parameterized query) tên schema trong các câu lệnh DDL động,
 // việc kiểm tra định dạng tên schema trước khi thực thi là bắt buộc.
-var coreSchemaIdentPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+var hierarchySchemaIdentPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// ApplyMigrations thực hiện áp dụng các migration lên database của phân hệ Core.
+// ApplyMigrations áp dụng baseline migration của phân hệ Hierarchy.
 func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config) error {
 	// B1: Kiểm tra tính hợp lệ của connection và cấu hình.
 	if conn == nil {
-		return fmt.Errorf("core migration: connection is nil")
+		return fmt.Errorf("hierarchy migration: connection is nil")
 	}
 	if cfg == nil {
-		return fmt.Errorf("core migration: config is nil")
+		return fmt.Errorf("hierarchy migration: config is nil")
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
 
@@ -69,14 +69,14 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 func ensureMigrationSchema(ctx context.Context, conn *pgxpool.Conn, schema string) error {
 	schema = strings.TrimSpace(schema)
 	if schema == "" {
-		return fmt.Errorf("core migration: schema is required")
+		return fmt.Errorf("hierarchy migration: schema is required")
 	}
 	// Ngăn ngừa SQL Injection trước khi đưa schema name vào câu lệnh CREATE SCHEMA.
-	if !coreSchemaIdentPattern.MatchString(schema) {
-		return fmt.Errorf("core migration: invalid schema name %q", schema)
+	if !hierarchySchemaIdentPattern.MatchString(schema) {
+		return fmt.Errorf("hierarchy migration: invalid schema name %q", schema)
 	}
 	if _, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)); err != nil {
-		return fmt.Errorf("core migration: create schema %s: %w", schema, err)
+		return fmt.Errorf("hierarchy migration: create schema %s: %w", schema, err)
 	}
 	return nil
 }
@@ -85,10 +85,10 @@ func ensureMigrationSchema(ctx context.Context, conn *pgxpool.Conn, schema strin
 func setMigrationSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath string) error {
 	searchPath = strings.TrimSpace(searchPath)
 	if searchPath == "" {
-		return fmt.Errorf("core migration: search_path is required")
+		return fmt.Errorf("hierarchy migration: search_path is required")
 	}
 	if _, err := conn.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %s", searchPath)); err != nil {
-		return fmt.Errorf("core migration: set search_path to %s: %w", searchPath, err)
+		return fmt.Errorf("hierarchy migration: set search_path to %s: %w", searchPath, err)
 	}
 	return nil
 }
@@ -98,7 +98,7 @@ func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module str
 	// B1: Đọc thư mục chứa các tệp tin migration đã được nhúng.
 	entries, err := fs.ReadDir(files, ".")
 	if err != nil {
-		return fmt.Errorf("core migration: read %s embedded migrations: %w", module, err)
+		return fmt.Errorf("hierarchy migration: read %s embedded migrations: %w", module, err)
 	}
 
 	// B2: Lọc các tệp tin có hậu tố .up.sql để tìm các truy vấn nâng cấp cấu trúc.
@@ -121,7 +121,7 @@ func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module str
 	for _, name := range names {
 		queryBytes, err := fs.ReadFile(files, name)
 		if err != nil {
-			return fmt.Errorf("core migration: read %s/%s: %w", module, name, err)
+			return fmt.Errorf("hierarchy migration: read %s/%s: %w", module, name, err)
 		}
 		query := string(queryBytes)
 		if strings.TrimSpace(query) == "" {
@@ -130,7 +130,7 @@ func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module str
 		// Sử dụng simple protocol (QueryExecModeSimpleProtocol) vì pgx mặc định biên dịch trước (prepare) câu lệnh,
 		// vốn không hỗ trợ thực thi nhiều câu lệnh SQL ngăn cách bởi dấu chấm phẩy trong cùng một truy vấn.
 		if _, err := conn.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
-			return fmt.Errorf("core migration: apply %s/%s: %w", module, name, err)
+			return fmt.Errorf("hierarchy migration: apply %s/%s: %w", module, name, err)
 		}
 	}
 

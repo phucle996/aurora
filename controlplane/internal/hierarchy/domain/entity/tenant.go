@@ -1,4 +1,4 @@
-package coreEntity
+package entity
 
 import (
 	"time"
@@ -24,7 +24,7 @@ type Tenant struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	// [COMMENT]: Domain chính gắn với Tenant (phục vụ cho warmup/sync qua gRPC)
-	Domain    string
+	Domain string
 }
 
 // [COMMENT]: TenantDomain đại diện cho một tên miền được liên kết sở hữu bởi Tenant

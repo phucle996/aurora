@@ -1,4 +1,4 @@
-package coreEntity
+package entity
 
 import (
 	"time"
@@ -13,7 +13,7 @@ type PersonalWorkspace struct {
 	Code        string
 	Description string
 	ZoneID      uuid.UUID
-	OwnerID     uuid.UUID  // ID của người sở hữu / quản trị Workspace
+	OwnerID     uuid.UUID // ID của người sở hữu / quản trị Workspace
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -25,8 +25,8 @@ type TenantWorkspace struct {
 	Code        string
 	Description string
 	ZoneID      uuid.UUID
-	TenantID    uuid.UUID  // ID của Tenant sở hữu Workspace (bắt buộc)
-	OwnerID     uuid.UUID  // ID của người tạo ra Workspace
+	TenantID    uuid.UUID // ID của Tenant sở hữu Workspace (bắt buộc)
+	OwnerID     uuid.UUID // ID của người tạo ra Workspace
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

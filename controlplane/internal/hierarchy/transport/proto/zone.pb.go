@@ -2,9 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: zone.proto
+// source: internal/hierarchy/transport/proto/zone.proto
 
-package proto
+package hierarchyproto
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -29,7 +29,7 @@ type GetZoneListRequest struct {
 
 func (x *GetZoneListRequest) Reset() {
 	*x = GetZoneListRequest{}
-	mi := &file_zone_proto_msgTypes[0]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +41,7 @@ func (x *GetZoneListRequest) String() string {
 func (*GetZoneListRequest) ProtoMessage() {}
 
 func (x *GetZoneListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_zone_proto_msgTypes[0]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,7 +54,7 @@ func (x *GetZoneListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetZoneListRequest.ProtoReflect.Descriptor instead.
 func (*GetZoneListRequest) Descriptor() ([]byte, []int) {
-	return file_zone_proto_rawDescGZIP(), []int{0}
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP(), []int{0}
 }
 
 type ZoneEntry struct {
@@ -69,7 +69,7 @@ type ZoneEntry struct {
 
 func (x *ZoneEntry) Reset() {
 	*x = ZoneEntry{}
-	mi := &file_zone_proto_msgTypes[1]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -81,7 +81,7 @@ func (x *ZoneEntry) String() string {
 func (*ZoneEntry) ProtoMessage() {}
 
 func (x *ZoneEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_zone_proto_msgTypes[1]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -94,7 +94,7 @@ func (x *ZoneEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZoneEntry.ProtoReflect.Descriptor instead.
 func (*ZoneEntry) Descriptor() ([]byte, []int) {
-	return file_zone_proto_rawDescGZIP(), []int{1}
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ZoneEntry) GetZoneId() string {
@@ -134,7 +134,7 @@ type GetZoneListResponse struct {
 
 func (x *GetZoneListResponse) Reset() {
 	*x = GetZoneListResponse{}
-	mi := &file_zone_proto_msgTypes[2]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -146,7 +146,7 @@ func (x *GetZoneListResponse) String() string {
 func (*GetZoneListResponse) ProtoMessage() {}
 
 func (x *GetZoneListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_zone_proto_msgTypes[2]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -159,7 +159,7 @@ func (x *GetZoneListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetZoneListResponse.ProtoReflect.Descriptor instead.
 func (*GetZoneListResponse) Descriptor() ([]byte, []int) {
-	return file_zone_proto_rawDescGZIP(), []int{2}
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetZoneListResponse) GetZones() []*ZoneEntry {
@@ -178,7 +178,7 @@ type ResolveZoneRequest struct {
 
 func (x *ResolveZoneRequest) Reset() {
 	*x = ResolveZoneRequest{}
-	mi := &file_zone_proto_msgTypes[3]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -190,7 +190,7 @@ func (x *ResolveZoneRequest) String() string {
 func (*ResolveZoneRequest) ProtoMessage() {}
 
 func (x *ResolveZoneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_zone_proto_msgTypes[3]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -203,7 +203,7 @@ func (x *ResolveZoneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveZoneRequest.ProtoReflect.Descriptor instead.
 func (*ResolveZoneRequest) Descriptor() ([]byte, []int) {
-	return file_zone_proto_rawDescGZIP(), []int{3}
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ResolveZoneRequest) GetZoneCode() string {
@@ -225,7 +225,7 @@ type ResolveZoneResponse struct {
 
 func (x *ResolveZoneResponse) Reset() {
 	*x = ResolveZoneResponse{}
-	mi := &file_zone_proto_msgTypes[4]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -237,7 +237,7 @@ func (x *ResolveZoneResponse) String() string {
 func (*ResolveZoneResponse) ProtoMessage() {}
 
 func (x *ResolveZoneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_zone_proto_msgTypes[4]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -250,7 +250,7 @@ func (x *ResolveZoneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveZoneResponse.ProtoReflect.Descriptor instead.
 func (*ResolveZoneResponse) Descriptor() ([]byte, []int) {
-	return file_zone_proto_rawDescGZIP(), []int{4}
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ResolveZoneResponse) GetFound() bool {
@@ -294,7 +294,7 @@ type ZoneInvalidatedEvent struct {
 
 func (x *ZoneInvalidatedEvent) Reset() {
 	*x = ZoneInvalidatedEvent{}
-	mi := &file_zone_proto_msgTypes[5]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -306,7 +306,7 @@ func (x *ZoneInvalidatedEvent) String() string {
 func (*ZoneInvalidatedEvent) ProtoMessage() {}
 
 func (x *ZoneInvalidatedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_zone_proto_msgTypes[5]
+	mi := &file_internal_hierarchy_transport_proto_zone_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -319,7 +319,7 @@ func (x *ZoneInvalidatedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZoneInvalidatedEvent.ProtoReflect.Descriptor instead.
 func (*ZoneInvalidatedEvent) Descriptor() ([]byte, []int) {
-	return file_zone_proto_rawDescGZIP(), []int{5}
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ZoneInvalidatedEvent) GetZoneId() string {
@@ -357,20 +357,19 @@ func (x *ZoneInvalidatedEvent) GetDeleted() bool {
 	return false
 }
 
-var File_zone_proto protoreflect.FileDescriptor
+var File_internal_hierarchy_transport_proto_zone_proto protoreflect.FileDescriptor
 
-const file_zone_proto_rawDesc = "" +
+const file_internal_hierarchy_transport_proto_zone_proto_rawDesc = "" +
 	"\n" +
-	"\n" +
-	"zone.proto\x12\bcore.rpc\"\x14\n" +
+	"-internal/hierarchy/transport/proto/zone.proto\x12\rhierarchy.rpc\"\x14\n" +
 	"\x12GetZoneListRequest\"m\n" +
 	"\tZoneEntry\x12\x17\n" +
 	"\azone_id\x18\x01 \x01(\tR\x06zoneId\x12\x1b\n" +
 	"\tzone_code\x18\x02 \x01(\tR\bzoneCode\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\x12\n" +
-	"\x04name\x18\x04 \x01(\tR\x04name\"@\n" +
-	"\x13GetZoneListResponse\x12)\n" +
-	"\x05zones\x18\x01 \x03(\v2\x13.core.rpc.ZoneEntryR\x05zones\"1\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"E\n" +
+	"\x13GetZoneListResponse\x12.\n" +
+	"\x05zones\x18\x01 \x03(\v2\x18.hierarchy.rpc.ZoneEntryR\x05zones\"1\n" +
 	"\x12ResolveZoneRequest\x12\x1b\n" +
 	"\tzone_code\x18\x01 \x01(\tR\bzoneCode\"p\n" +
 	"\x13ResolveZoneResponse\x12\x14\n" +
@@ -383,38 +382,38 @@ const file_zone_proto_rawDesc = "" +
 	"\tzone_code\x18\x02 \x01(\tR\bzoneCode\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x18\n" +
-	"\adeleted\x18\x05 \x01(\bR\adeleted2\xa5\x01\n" +
-	"\vZoneService\x12J\n" +
-	"\vGetZoneList\x12\x1c.core.rpc.GetZoneListRequest\x1a\x1d.core.rpc.GetZoneListResponse\x12J\n" +
-	"\vResolveZone\x12\x1c.core.rpc.ResolveZoneRequest\x1a\x1d.core.rpc.ResolveZoneResponseB5Z3controlplane/internal/hierarchy/transport/rpc/protob\x06proto3"
+	"\adeleted\x18\x05 \x01(\bR\adeleted2\xb9\x01\n" +
+	"\vZoneService\x12T\n" +
+	"\vGetZoneList\x12!.hierarchy.rpc.GetZoneListRequest\x1a\".hierarchy.rpc.GetZoneListResponse\x12T\n" +
+	"\vResolveZone\x12!.hierarchy.rpc.ResolveZoneRequest\x1a\".hierarchy.rpc.ResolveZoneResponseB@Z>controlplane/internal/hierarchy/transport/proto;hierarchyprotob\x06proto3"
 
 var (
-	file_zone_proto_rawDescOnce sync.Once
-	file_zone_proto_rawDescData []byte
+	file_internal_hierarchy_transport_proto_zone_proto_rawDescOnce sync.Once
+	file_internal_hierarchy_transport_proto_zone_proto_rawDescData []byte
 )
 
-func file_zone_proto_rawDescGZIP() []byte {
-	file_zone_proto_rawDescOnce.Do(func() {
-		file_zone_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_zone_proto_rawDesc), len(file_zone_proto_rawDesc)))
+func file_internal_hierarchy_transport_proto_zone_proto_rawDescGZIP() []byte {
+	file_internal_hierarchy_transport_proto_zone_proto_rawDescOnce.Do(func() {
+		file_internal_hierarchy_transport_proto_zone_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_hierarchy_transport_proto_zone_proto_rawDesc), len(file_internal_hierarchy_transport_proto_zone_proto_rawDesc)))
 	})
-	return file_zone_proto_rawDescData
+	return file_internal_hierarchy_transport_proto_zone_proto_rawDescData
 }
 
-var file_zone_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
-var file_zone_proto_goTypes = []any{
-	(*GetZoneListRequest)(nil),   // 0: core.rpc.GetZoneListRequest
-	(*ZoneEntry)(nil),            // 1: core.rpc.ZoneEntry
-	(*GetZoneListResponse)(nil),  // 2: core.rpc.GetZoneListResponse
-	(*ResolveZoneRequest)(nil),   // 3: core.rpc.ResolveZoneRequest
-	(*ResolveZoneResponse)(nil),  // 4: core.rpc.ResolveZoneResponse
-	(*ZoneInvalidatedEvent)(nil), // 5: core.rpc.ZoneInvalidatedEvent
+var file_internal_hierarchy_transport_proto_zone_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_internal_hierarchy_transport_proto_zone_proto_goTypes = []any{
+	(*GetZoneListRequest)(nil),   // 0: hierarchy.rpc.GetZoneListRequest
+	(*ZoneEntry)(nil),            // 1: hierarchy.rpc.ZoneEntry
+	(*GetZoneListResponse)(nil),  // 2: hierarchy.rpc.GetZoneListResponse
+	(*ResolveZoneRequest)(nil),   // 3: hierarchy.rpc.ResolveZoneRequest
+	(*ResolveZoneResponse)(nil),  // 4: hierarchy.rpc.ResolveZoneResponse
+	(*ZoneInvalidatedEvent)(nil), // 5: hierarchy.rpc.ZoneInvalidatedEvent
 }
-var file_zone_proto_depIdxs = []int32{
-	1, // 0: core.rpc.GetZoneListResponse.zones:type_name -> core.rpc.ZoneEntry
-	0, // 1: core.rpc.ZoneService.GetZoneList:input_type -> core.rpc.GetZoneListRequest
-	3, // 2: core.rpc.ZoneService.ResolveZone:input_type -> core.rpc.ResolveZoneRequest
-	2, // 3: core.rpc.ZoneService.GetZoneList:output_type -> core.rpc.GetZoneListResponse
-	4, // 4: core.rpc.ZoneService.ResolveZone:output_type -> core.rpc.ResolveZoneResponse
+var file_internal_hierarchy_transport_proto_zone_proto_depIdxs = []int32{
+	1, // 0: hierarchy.rpc.GetZoneListResponse.zones:type_name -> hierarchy.rpc.ZoneEntry
+	0, // 1: hierarchy.rpc.ZoneService.GetZoneList:input_type -> hierarchy.rpc.GetZoneListRequest
+	3, // 2: hierarchy.rpc.ZoneService.ResolveZone:input_type -> hierarchy.rpc.ResolveZoneRequest
+	2, // 3: hierarchy.rpc.ZoneService.GetZoneList:output_type -> hierarchy.rpc.GetZoneListResponse
+	4, // 4: hierarchy.rpc.ZoneService.ResolveZone:output_type -> hierarchy.rpc.ResolveZoneResponse
 	3, // [3:5] is the sub-list for method output_type
 	1, // [1:3] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -422,26 +421,26 @@ var file_zone_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_zone_proto_init() }
-func file_zone_proto_init() {
-	if File_zone_proto != nil {
+func init() { file_internal_hierarchy_transport_proto_zone_proto_init() }
+func file_internal_hierarchy_transport_proto_zone_proto_init() {
+	if File_internal_hierarchy_transport_proto_zone_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_zone_proto_rawDesc), len(file_zone_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_hierarchy_transport_proto_zone_proto_rawDesc), len(file_internal_hierarchy_transport_proto_zone_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_zone_proto_goTypes,
-		DependencyIndexes: file_zone_proto_depIdxs,
-		MessageInfos:      file_zone_proto_msgTypes,
+		GoTypes:           file_internal_hierarchy_transport_proto_zone_proto_goTypes,
+		DependencyIndexes: file_internal_hierarchy_transport_proto_zone_proto_depIdxs,
+		MessageInfos:      file_internal_hierarchy_transport_proto_zone_proto_msgTypes,
 	}.Build()
-	File_zone_proto = out.File
-	file_zone_proto_goTypes = nil
-	file_zone_proto_depIdxs = nil
+	File_internal_hierarchy_transport_proto_zone_proto = out.File
+	file_internal_hierarchy_transport_proto_zone_proto_goTypes = nil
+	file_internal_hierarchy_transport_proto_zone_proto_depIdxs = nil
 }

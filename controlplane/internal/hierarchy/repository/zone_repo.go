@@ -17,11 +17,11 @@
 //          transaction (`pgx.Tx`), đảm bảo tính nhất quán tuyệt đối.
 //
 // 🎯 SOURCE OF TRUTH (SoT):
-//   - Database schema 'core.zones' và 'core.zone_services' dưới PostgreSQL là nguồn tin cậy duy nhất.
+//   - Database schema 'hierarchy.zones' và 'hierarchy.zone_services' là PostgreSQL SoT.
 //
 // ======================================================================================================
 
-package coreRepoImpl
+package repository
 
 import (
 	"context"
@@ -30,10 +30,10 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreModel "controlplane/internal/hierarchy/model"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	model "controlplane/internal/hierarchy/model"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +57,7 @@ type ZoneRepoImpl struct {
 }
 
 // NewZoneRepoImpl khởi tạo một thực thể Repository mới cho Zone và biên dịch sẵn các câu lệnh SQL.
-func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.ZoneRepository {
+func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyrepo.ZoneRepository {
 	schema := cfg.SchemaSQL.Hierarchy
 	return &ZoneRepoImpl{
 		db:     db,
@@ -158,16 +158,16 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 }
 
 // ListZones lấy toàn bộ danh sách các zone trong hệ thống.
-func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
+func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]entity.Zone, error) {
 	rows, err := r.db.Query(ctx, r.listZonesQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := make([]coreEntity.Zone, 0)
+	out := make([]entity.Zone, 0)
 	for rows.Next() {
-		var value coreModel.Zone
+		var value model.Zone
 		if err := rows.Scan(
 			&value.ID,
 			&value.Code,
@@ -178,14 +178,14 @@ func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 		); err != nil {
 			return nil, err
 		}
-		out = append(out, coreModel.ZoneModelToEntity(value))
+		out = append(out, model.ZoneModelToEntity(value))
 	}
 	return out, rows.Err()
 }
 
 // AcrListZones lấy danh sách các zone tối giản chỉ bao gồm ID, Code, Name, Status.
 // Phù hợp sử dụng cho các luồng hot-path phục vụ Edge Gateway/ACR Service.
-func (r *ZoneRepoImpl) AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
+func (r *ZoneRepoImpl) AcrListZones(ctx context.Context) ([]entity.RPCZone, error) {
 	// Thực hiện truy vấn qua rpcListZonesQuery đã biên dịch trước
 	rows, err := r.db.Query(ctx, r.rpcListZonesQuery)
 	if err != nil {
@@ -193,7 +193,7 @@ func (r *ZoneRepoImpl) AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, 
 	}
 	defer rows.Close()
 
-	out := make([]coreEntity.RPCZone, 0)
+	out := make([]entity.RPCZone, 0)
 	for rows.Next() {
 		var id uuid.UUID
 		var code string
@@ -206,25 +206,25 @@ func (r *ZoneRepoImpl) AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, 
 			&status); err != nil {
 			return nil, err
 		}
-		out = append(out, coreEntity.RPCZone{
+		out = append(out, entity.RPCZone{
 			ID:     id,
 			Code:   code,
 			Name:   name,
-			Status: coreEntity.ZoneStatus(status),
+			Status: entity.ZoneStatus(status),
 		})
 	}
 	return out, nil
 }
 
 // CreateZone khởi tạo Zone mới kèm theo các services cấu hình trong cùng một transaction.
-func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
+func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone entity.Zone, svcs map[entity.ZoneServiceType]bool) error {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	value := coreModel.ZoneEntityToModel(zone)
+	value := model.ZoneEntityToModel(zone)
 	_, err = tx.Exec(ctx,
 		r.createZoneQuery,
 		value.ID,
@@ -239,7 +239,7 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return coreTaxonomy.ErrCodeAlreadyExists
+			return taxonomy.ErrCodeAlreadyExists
 		}
 		return err
 	}
@@ -262,16 +262,16 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 }
 
 // GetZoneDetailByID lấy thông tin chi tiết một Zone kèm theo tất cả các dịch vụ (aggregated flow).
-func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*entity.ZoneDetail, error) {
 	rows, err := r.db.Query(ctx, r.getZoneDetailByIDQuery, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var detail *coreEntity.ZoneDetail
+	var detail *entity.ZoneDetail
 	for rows.Next() {
-		var zVal coreModel.Zone
+		var zVal model.Zone
 		var sID, sZoneID *uuid.UUID
 		var sType *string
 		var sDesiredState *bool
@@ -298,10 +298,10 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 		}
 
 		if detail == nil {
-			zoneEnt := coreModel.ZoneModelToEntity(zVal)
-			detail = &coreEntity.ZoneDetail{
+			zoneEnt := model.ZoneModelToEntity(zVal)
+			detail = &entity.ZoneDetail{
 				Zone:     zoneEnt,
-				Services: []coreEntity.ZoneService{},
+				Services: []entity.ZoneService{},
 			}
 		}
 
@@ -311,10 +311,10 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 			if sActualState != nil {
 				actualStateVal = *sActualState
 			}
-			detail.Services = append(detail.Services, coreEntity.ZoneService{
+			detail.Services = append(detail.Services, entity.ZoneService{
 				ID:           *sID,
 				ZoneID:       *sZoneID,
-				ServiceType:  coreEntity.ZoneServiceType(*sType),
+				ServiceType:  entity.ZoneServiceType(*sType),
 				DesiredState: *sDesiredState,
 				ActualState:  actualStateVal,
 				CreatedAt:    *sCreatedAt,
@@ -328,14 +328,14 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 	}
 
 	if detail == nil {
-		return nil, coreTaxonomy.ErrZoneNotFound // Not found
+		return nil, taxonomy.ErrZoneNotFound // Not found
 	}
 
 	return detail, nil
 }
 
 // UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
-func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (string, error) {
+func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status entity.ZoneStatus, allowedOld []entity.ZoneStatus) (string, error) {
 	statusStrings := make([]string, len(allowedOld))
 	for i, s := range allowedOld {
 		statusStrings[i] = string(s)
@@ -360,11 +360,11 @@ func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 	}
 	// Trả lỗi nếu bản ghi không tồn tại.
 	if !exists {
-		return "", coreTaxonomy.ErrZoneNotFound
+		return "", taxonomy.ErrZoneNotFound
 	}
 	// Trả lỗi nếu quá trình chuyển đổi trạng thái không hợp lệ.
 	if !updated {
-		return "", coreTaxonomy.ErrZoneInvalidTransition
+		return "", taxonomy.ErrZoneInvalidTransition
 	}
 	return zoneCode, nil
 }
@@ -390,22 +390,22 @@ func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, er
 	}
 
 	if exists == 0 {
-		return "", coreTaxonomy.ErrZoneNotFound
+		return "", taxonomy.ErrZoneNotFound
 	}
 	if status != "disabled" || hasSvcs {
-		return "", coreTaxonomy.ErrZoneDeletePreconditionFailed
+		return "", taxonomy.ErrZoneDeletePreconditionFailed
 	}
 	return deletedCode, nil
 }
 
 // UpdateZoneService cập nhật cấu hình dịch vụ của Zone (DesiredState).
-func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
+func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType entity.ZoneServiceType, enabled bool) (*entity.ZoneService, string, error) {
 	newID, _ := uuid.NewV7()
 	var zoneExists int
 	var zoneStatus string
 	var zoneCode string
 	var upsertSuccess int
-	var value coreModel.ZoneService
+	var value model.ZoneService
 
 	// [COMMENT]: Thực hiện cập nhật trạng thái mong muốn của dịch vụ trong phân vùng
 	err := r.db.QueryRow(ctx,
@@ -429,19 +429,19 @@ func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 	}
 
 	if zoneExists == 0 {
-		return nil, "", coreTaxonomy.ErrZoneServiceZoneNotFound
+		return nil, "", taxonomy.ErrZoneServiceZoneNotFound
 	}
 	if zoneStatus != "maintenance" {
-		return nil, "", coreTaxonomy.ErrZoneServiceStateConflict
+		return nil, "", taxonomy.ErrZoneServiceStateConflict
 	}
 	if upsertSuccess == 0 {
-		return nil, "", coreTaxonomy.ErrZoneServiceInvalidInput
+		return nil, "", taxonomy.ErrZoneServiceInvalidInput
 	}
 
 	value.ZoneID = zoneID
 	value.ServiceType = string(serviceType)
 	value.DesiredState = enabled // [COMMENT]: Cấu hình desired_state tương ứng với biến enabled nhận vào
 
-	ent := coreModel.ZoneServiceModelToEntity(value)
+	ent := model.ZoneServiceModelToEntity(value)
 	return &ent, zoneCode, nil
 }

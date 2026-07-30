@@ -49,7 +49,7 @@ import ZoneServicesSection from './sections/ZoneServicesSection'
 import ZoneQuickLinksSection from './sections/ZoneQuickLinksSection'
 
 // ─── Domain Types ───────────────────────────────────────────────────────────
-// Mirrors the API contract from GET /admin/core/zones/:zone_id
+// Mirrors the API contract from GET /admin/hierarchy/zones/:zone_id
 
 type ZoneStatus = 'planned' | 'active' | 'draining' | 'maintenance' | 'disabled'
 
@@ -232,7 +232,7 @@ export default function ZoneDetailPage() {
   // Zone ID is stable for the lifetime of this page
   const zoneID = useMemo(() => getZoneIDFromPath(), [])
 
-  // ── Core data state ──────────────────────────────────────────────────────
+  // ── Zone data state ──────────────────────────────────────────────────────
   const [detail, setDetail] = useState<ZoneDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -262,7 +262,7 @@ export default function ZoneDetailPage() {
     setLoading(true)
     setError('')
     try {
-      const response = await Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`)
+      const response = await Fetch(`/admin/hierarchy/zones/${encodeURIComponent(zoneID)}`)
       if (!response.ok) throw new Error(await readErrorMessage(response))
 
       const payload = (await response.json()) as ZoneDetailResponse
@@ -345,7 +345,7 @@ export default function ZoneDetailPage() {
     if (nextName && nextName !== detail.zone.name) body.name = nextName
     if (nextDescription !== detail.zone.description) body.description = nextDescription || ''
     if (Object.keys(body).length === 0) return // nothing changed
-    void Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`, {
+    void Fetch(`/admin/hierarchy/zones/${encodeURIComponent(zoneID)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -386,7 +386,7 @@ export default function ZoneDetailPage() {
       const bodyHash = await sha256Hex(bodyString)
       const timestamp = Math.floor(Date.now() / 1000).toString()
       const nonce = generateNonce()
-      const path = `/admin/critical/core/zones/${encodeURIComponent(zoneID)}/status`
+      const path = `/admin/critical/hierarchy/zones/${encodeURIComponent(zoneID)}/status`
       const payloadStr = `PATCH\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`
       const signature = await signPayload(payloadStr, deviceKeys.privateKey)
 
@@ -428,7 +428,7 @@ export default function ZoneDetailPage() {
         throw new Error('Security keys are missing on this device. Please log out and sign in again to register your keys.')
       }
 
-      const path = `/admin/critical/core/zones/${encodeURIComponent(zoneID)}`
+      const path = `/admin/critical/hierarchy/zones/${encodeURIComponent(zoneID)}`
       const bodyHash = await sha256Hex("")
       const timestamp = Math.floor(Date.now() / 1000).toString()
       const nonce = generateNonce()

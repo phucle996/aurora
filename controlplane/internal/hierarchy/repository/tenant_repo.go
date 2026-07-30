@@ -3,7 +3,7 @@
 //            Đặc Tả Hạ Tầng Lưu Trữ & Truy Vấn Tenant
 // ======================================================================================================
 
-package coreRepoImpl
+package repository
 
 import (
 	"context"
@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreModel "controlplane/internal/hierarchy/model"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	model "controlplane/internal/hierarchy/model"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
@@ -35,7 +35,7 @@ type TenantRepoImpl struct {
 }
 
 // [COMMENT]: NewTenantRepoImpl khởi tạo repo
-func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.TenantRepository {
+func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyrepo.TenantRepository {
 	return &TenantRepoImpl{
 		db:              db,
 		hierarchySchema: cfg.SchemaSQL.Hierarchy,
@@ -44,7 +44,7 @@ func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.T
 }
 
 // [COMMENT]: CreateTenant tạo tenant và tự động thêm owner làm member đầu tiên cùng với seeding 5 tenant roles trong 1 transaction
-func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant coreEntity.Tenant, ownerID uuid.UUID) (*coreEntity.Tenant, error) {
+func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant entity.Tenant, ownerID uuid.UUID) (*entity.Tenant, error) {
 	// [COMMENT]: Khởi động database transaction để đảm bảo tính atomic và toàn vẹn dữ liệu
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -59,7 +59,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant coreEntity.Ten
 		RETURNING id, code, name, status, created_at, updated_at
 	`, r.hierarchySchema)
 
-	var m coreModel.Tenant
+	var m model.Tenant
 	err = tx.QueryRow(ctx, queryTenant,
 		tenant.ID,
 		tenant.Code,
@@ -70,7 +70,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant coreEntity.Ten
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return nil, coreTaxonomy.ErrCodeAlreadyExists
+			return nil, taxonomy.ErrCodeAlreadyExists
 		}
 		return nil, err
 	}
@@ -201,12 +201,12 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, tenant coreEntity.Ten
 		return nil, fmt.Errorf("tenant repo: commit tx: %w", err)
 	}
 
-	result := coreModel.TenantModelToEntity(m)
+	result := model.TenantModelToEntity(m)
 	return &result, nil
 }
 
 // ResolveTenantByDomain tìm Tenant dựa vào domain liên kết.
-func (r *TenantRepoImpl) ResolveTenantByDomain(ctx context.Context, domain string) (*coreEntity.Tenant, error) {
+func (r *TenantRepoImpl) ResolveTenantByDomain(ctx context.Context, domain string) (*entity.Tenant, error) {
 	query := fmt.Sprintf(`
 		SELECT t.id, t.code, t.name, t.status, t.created_at, t.updated_at
 		FROM %s.tenants t
@@ -215,24 +215,24 @@ func (r *TenantRepoImpl) ResolveTenantByDomain(ctx context.Context, domain strin
 		LIMIT 1
 	`, r.hierarchySchema, r.hierarchySchema)
 
-	var m coreModel.Tenant
+	var m model.Tenant
 	err := r.db.QueryRow(ctx, query, domain).Scan(
 		&m.ID, &m.Code, &m.Name, &m.Status, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, coreTaxonomy.ErrTenantNotFound
+			return nil, taxonomy.ErrTenantNotFound
 		}
 		return nil, err
 	}
 
-	result := coreModel.TenantModelToEntity(m)
+	result := model.TenantModelToEntity(m)
 	return &result, nil
 }
 
 // ListTenantsPaged lấy danh sách tenants phân trang để phục vụ warmup chunk.
 // Trả về: danh sách tenant, cờ hasMore để biết còn trang sau không, error.
-func (r *TenantRepoImpl) ListTenantsPaged(ctx context.Context, limit, offset int) ([]coreEntity.Tenant, bool, error) {
+func (r *TenantRepoImpl) ListTenantsPaged(ctx context.Context, limit, offset int) ([]entity.Tenant, bool, error) {
 	// Query thêm 1 dòng để kiểm tra xem còn trang sau (hasMore) hay không
 	query := fmt.Sprintf(`
 		SELECT t.id, t.code, t.name, t.status, t.created_at, t.updated_at, td.domain
@@ -248,9 +248,9 @@ func (r *TenantRepoImpl) ListTenantsPaged(ctx context.Context, limit, offset int
 	}
 	defer rows.Close()
 
-	var out []coreEntity.Tenant
+	var out []entity.Tenant
 	for rows.Next() {
-		var m coreModel.Tenant
+		var m model.Tenant
 		var domainOpt *string
 		if err := rows.Scan(
 			&m.ID, &m.Code, &m.Name, &m.Status, &m.CreatedAt, &m.UpdatedAt, &domainOpt,
@@ -258,7 +258,7 @@ func (r *TenantRepoImpl) ListTenantsPaged(ctx context.Context, limit, offset int
 			return nil, false, err
 		}
 
-		ent := coreModel.TenantModelToEntity(m)
+		ent := model.TenantModelToEntity(m)
 		// Trích xuất domain chính gắn vào entity
 		if domainOpt != nil {
 			ent.Domain = *domainOpt

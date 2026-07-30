@@ -1,6 +1,7 @@
 services:
 
   controlplane1:
+    cpuset: "0-5"
     build:
       context: .
       # Chạy Dockerfile.prod: biên dịch Go binary tĩnh (CGO_ENABLED=0), image runtime chỉ ~30MB.
@@ -44,6 +45,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   controlplane2:
+    cpuset: "0-5"
     build:
       context: .
       dockerfile: Dockerfile.prod
@@ -83,6 +85,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   controlplane3:
+    cpuset: "0-5"
     build:
       context: .
       dockerfile: Dockerfile.prod
@@ -122,6 +125,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   envoy:
+    cpuset: "0-5"
     image: envoyproxy/envoy:v1.38.3
     container_name: controlplane-envoy
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
@@ -156,6 +160,7 @@ services:
     restart: unless-stopped
 
   zone-public-edge-gateway:
+    cpuset: "0-5"
     image: envoyproxy/envoy:v1.38.3
     container_name: zone-public-edge-gateway
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
@@ -170,6 +175,7 @@ services:
     restart: unless-stopped
 
   clickhouse:
+    cpuset: "0-5"
     image: clickhouse/clickhouse-server:latest
     container_name: clickhouse-server
     environment:
@@ -183,6 +189,7 @@ services:
     restart: unless-stopped
 
   psql:
+    cpuset: "0-5"
     image: postgres:18
     container_name: controlplane-psql
     command: [ "postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10" ]
@@ -207,6 +214,7 @@ services:
     restart: unless-stopped
 
   changefeed-init:
+    cpuset: "0-5"
     image: postgres:18
     environment:
       PGHOST: psql
@@ -224,6 +232,7 @@ services:
     restart: "no"
 
   billing-psql:
+    cpuset: "0-5"
     image: postgres:18
     container_name: billing-psql
     environment:
@@ -242,6 +251,7 @@ services:
     restart: unless-stopped
 
   cost-manager:
+    cpuset: "0-5"
     build:
       context: ../cost-manager
       dockerfile: Dockerfile.dev
@@ -269,6 +279,7 @@ services:
     restart: unless-stopped
 
   pbouncer:
+    cpuset: "0-5"
     image: edoburu/pgbouncer:latest
     container_name: controlplane-pbouncer
     environment:
@@ -309,6 +320,7 @@ services:
     restart: unless-stopped
 
   psql-exporter:
+    cpuset: "0-5"
     image: prometheuscommunity/postgres-exporter:v0.19.1
     container_name: controlplane-psql-exporter
     environment:
@@ -330,6 +342,7 @@ services:
     command: [ "--disable-default-metrics", "--no-collector.database", "--no-collector.locks", "--no-collector.replication", "--no-collector.replication_slot", "--no-collector.roles", "--no-collector.stat_bgwriter", "--no-collector.stat_database", "--no-collector.stat_progress_vacuum", "--no-collector.stat_user_tables", "--no-collector.statio_user_tables", "--no-collector.wal" ]
 
   redis-exporter:
+    cpuset: "0-5"
     image: oliver006/redis_exporter:v1.85.0
     container_name: controlplane-redis-exporter
     command: [ "-redis.addr=redis://controlplane-cp-redis:6379" ]
@@ -342,6 +355,7 @@ services:
     restart: unless-stopped
 
   acr-redis:
+    cpuset: "0-5"
     image: redis:8.8.0
     container_name: controlplane-acr-redis
     # [COMMENT]: DB 0 duy nhất tương thích Redis Cluster; prefix + ACL cô lập session và authz projection.
@@ -359,6 +373,7 @@ services:
     restart: unless-stopped
 
   cp-redis:
+    cpuset: "0-5"
     image: redis:8.8.0
     container_name: controlplane-cp-redis
     # [COMMENT]: AOF phục hồi bounded Stream sau restart; volatile-lru chỉ được
@@ -376,6 +391,7 @@ services:
     restart: unless-stopped
 
   nats:
+    cpuset: "0-5"
     image: nats:2.10-alpine
     container_name: controlplane-nats
     # [COMMENT]: NATS Core trung tâm chỉ chở realtime soft state; ownership nội vùng dùng Shared Redis.
@@ -394,6 +410,7 @@ services:
 
   # [COMMENT]: Dev local chạy 1 combined broker/controller KRaft; replication=1 để tiết kiệm tài nguyên CPU.
   kafka-1:
+    cpuset: "0-5"
     image: apache/kafka:3.9.0
     container_name: aurora-kafka-1
     environment:
@@ -429,6 +446,7 @@ services:
 
   # [COMMENT]: Topic provisioning cho Single-node Kafka trong môi trường Dev.
   kafka-init:
+    cpuset: "0-5"
     image: apache/kafka:3.9.0
     container_name: aurora-kafka-init
     depends_on:
@@ -459,6 +477,7 @@ services:
     restart: "no"
 
   kafka-ui:
+    cpuset: "0-5"
     image: provectuslabs/kafka-ui:v0.7.2
     container_name: aurora-kafka-ui
     environment:
@@ -473,6 +492,7 @@ services:
     restart: unless-stopped
 
   nats-zone-z1:
+    cpuset: "0-5"
     image: nats:2.10-alpine
     container_name: dataplane-zone-z1-nats
     # [COMMENT]: Database KV riêng của Zone 1; JetStream file storage không dùng chung NATS Core trung tâm.
@@ -490,6 +510,7 @@ services:
     restart: unless-stopped
 
   dataplane-vn-n1:
+    cpuset: "0-5"
     build:
       context: ../dataplane
       dockerfile: Dockerfile.prod
@@ -525,6 +546,7 @@ services:
           memory: 256M
 
   dataplane-vn-n2:
+    cpuset: "0-5"
     build:
       context: ../dataplane
       dockerfile: Dockerfile.prod
@@ -550,6 +572,7 @@ services:
     restart: unless-stopped
 
   dataplane-vn-n3:
+    cpuset: "0-5"
     build:
       context: ../dataplane
       dockerfile: Dockerfile.prod
@@ -575,6 +598,7 @@ services:
     restart: unless-stopped
 
   otel-collector:
+    cpuset: "0-5"
     image: otel/opentelemetry-collector-contrib:0.154.0
     container_name: controlplane-otel-collector
     # Chạy với quyền root (0:0) để có quyền đọc file logs trong /var/lib/docker/containers
@@ -601,6 +625,7 @@ services:
     restart: unless-stopped
 
   victoriatraces:
+    cpuset: "0-5"
     image: victoriametrics/victoria-traces:latest
     container_name: controlplane-victoriatraces
     command:
@@ -613,6 +638,7 @@ services:
     restart: unless-stopped
 
   victoriametrics:
+    cpuset: "0-5"
     image: victoriametrics/victoria-metrics:latest
     container_name: controlplane-victoriametrics
     command:
@@ -625,6 +651,7 @@ services:
     restart: unless-stopped
 
   victorialogs:
+    cpuset: "0-5"
     image: victoriametrics/victoria-logs:latest
     container_name: controlplane-victorialogs
     command:
@@ -637,6 +664,7 @@ services:
     restart: unless-stopped
 
   grafana:
+    cpuset: "0-5"
     image: grafana/grafana:11.6
     container_name: controlplane-grafana
     environment:
@@ -666,6 +694,7 @@ services:
     restart: unless-stopped
 
   cloud-console:
+    cpuset: "0-5"
     build:
       context: ../cloud-console
       dockerfile: Dockerfile.prod
@@ -678,6 +707,7 @@ services:
     restart: unless-stopped
 
   admin-ui-nginx:
+    cpuset: "0-5"
     build:
       context: ../admin-ui
       dockerfile: Dockerfile.nginx
@@ -687,6 +717,7 @@ services:
     restart: unless-stopped
 
   cost-console-nginx:
+    cpuset: "0-5"
     build:
       context: ../cost-console
       dockerfile: Dockerfile.nginx
@@ -700,6 +731,7 @@ services:
     restart: unless-stopped
 
   job-orchestrator:
+    cpuset: "0-5"
     build:
       context: ../job-orchestrator
       dockerfile: Dockerfile
@@ -735,6 +767,7 @@ services:
     restart: unless-stopped
 
   centrifugo:
+    cpuset: "0-5"
     image: centrifugo/centrifugo:v5
     container_name: aurora-centrifugo
     ports:
@@ -756,6 +789,7 @@ services:
     restart: unless-stopped
 
   acr:
+    cpuset: "0-5"
     build:
       context: ../acr
       dockerfile: Dockerfile
@@ -778,6 +812,7 @@ services:
     restart: unless-stopped
 
   notification-service:
+    cpuset: "0-5"
     build:
       context: ../notification-service
       dockerfile: Dockerfile
@@ -800,6 +835,7 @@ services:
     restart: unless-stopped
 
   scylla:
+    cpuset: "0-5"
     image: scylladb/scylla:2026.2.1
     container_name: aurora-timeline-scylla
     command:
@@ -823,6 +859,7 @@ services:
     restart: unless-stopped
 
   vault:
+    cpuset: "0-5"
     image: hashicorp/vault:2.0
     user: "0:0"
 
@@ -840,6 +877,7 @@ services:
     restart: unless-stopped
 
   stalwart:
+    cpuset: "0-5"
     image: stalwartlabs/stalwart:v0.16.11
     container_name: stalwart
     restart: unless-stopped
@@ -860,6 +898,7 @@ services:
           - stalwart-mail
 
   minio:
+    cpuset: "0-5"
     image: minio/minio:RELEASE.2024-06-06T09-36-42Z
     container_name: minio
     ports:

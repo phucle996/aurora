@@ -3,17 +3,17 @@
 //            Đặc Tả Nghiệp Vụ Quản Lý Vòng Đời Workspace Cá Nhân (Personal Scope)
 // ======================================================================================================
 
-package zoneSvcImpl
+package service
 
 import (
 	"context"
 	"time"
 
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreRepoInterface "controlplane/internal/hierarchy/domain/repo"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreMetric "controlplane/internal/hierarchy/metrics"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyrepo "controlplane/internal/hierarchy/domain/repo"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	metrics "controlplane/internal/hierarchy/metrics"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
@@ -21,23 +21,23 @@ import (
 
 // [COMMENT]: PersonalWorkspaceServiceImpl triển khai PersonalWorkspaceService interface
 type PersonalWorkspaceServiceImpl struct {
-	repo coreRepoInterface.PersonalWorkspaceRepository
+	repo hierarchyrepo.PersonalWorkspaceRepository
 }
 
 // [COMMENT]: NewPersonalWorkspaceService tạo instance mới của PersonalWorkspaceService
 func NewPersonalWorkspaceService(
-	repo coreRepoInterface.PersonalWorkspaceRepository,
-) coreSvcInterface.PersonalWorkspaceService {
+	repo hierarchyrepo.PersonalWorkspaceRepository,
+) hierarchyservice.PersonalWorkspaceService {
 	return &PersonalWorkspaceServiceImpl{
 		repo: repo,
 	}
 }
 
-func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
+func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error) {
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
-		return nil, apperr.Wrap(coreTaxonomy.ErrGenUUID, err, coreMetric.OutcomeFailure)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
+		return nil, apperr.Wrap(taxonomy.ErrGenUUID, err, metrics.OutcomeFailure)
 	}
 
 	now := time.Now().UTC()
@@ -49,58 +49,58 @@ func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Co
 	result, err := s.repo.Create(ctx, workspace)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateWorkspaceForPersonal", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "CreateWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "CreateWorkspaceForPersonal", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "CreateWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.PersonalWorkspace, error) {
+func (s *PersonalWorkspaceServiceImpl) GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*entity.PersonalWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.GetByID(ctx, workspaceID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "GetWorkspaceForPersonal", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "GetWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "GetWorkspaceForPersonal", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "GetWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error) {
+func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*entity.WorkspacePersonalListItem, error) {
 	start := time.Now()
 	result, err := s.repo.ListByOwner(ctx, userID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspacesForPersonal", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspacesForPersonal", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspacesForPersonal", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspacesForPersonal", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) UpdateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
+func (s *PersonalWorkspaceServiceImpl) UpdateWorkspaceForPersonal(ctx context.Context, workspace entity.PersonalWorkspace) (*entity.PersonalWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.Update(ctx, workspace)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "UpdateWorkspaceForPersonal", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "UpdateWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "UpdateWorkspaceForPersonal", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "UpdateWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }
 
@@ -109,28 +109,28 @@ func (s *PersonalWorkspaceServiceImpl) DeleteWorkspaceForPersonal(ctx context.Co
 	err := s.repo.Delete(ctx, workspaceID, ownerID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "DeleteWorkspaceForPersonal", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "DeleteWorkspaceForPersonal", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "DeleteWorkspaceForPersonal", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "DeleteWorkspaceForPersonal", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return nil
 }
 
 // [COMMENT]: ListWorkspaceCatalogForPersonal hot path catalog — query trực tiếp theo owner_id + zone_id, không cần cache
-func (s *PersonalWorkspaceServiceImpl) ListWorkspaceCatalogForPersonal(ctx context.Context, userID uuid.UUID, zoneID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error) {
+func (s *PersonalWorkspaceServiceImpl) ListWorkspaceCatalogForPersonal(ctx context.Context, userID uuid.UUID, zoneID uuid.UUID) ([]entity.WorkspaceCatalog, error) {
 	start := time.Now()
 	result, err := s.repo.ListCatalogByOwner(ctx, userID, zoneID)
 	duration := time.Since(start)
 	if err != nil {
-		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspaceCatalogForPersonal", coreMetric.OutcomeFailure, duration, err)
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspaceCatalogForPersonal", metrics.OutcomeFailure, duration, err)
+		metrics.ServiceCall(ctx, metrics.OutcomeFailure)
 		return nil, err
 	}
 
-	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListWorkspaceCatalogForPersonal", coreMetric.OutcomeSuccess, duration, nil)
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	metrics.Downstream(ctx, metrics.KindRepo, "ListWorkspaceCatalogForPersonal", metrics.OutcomeSuccess, duration, nil)
+	metrics.ServiceCall(ctx, metrics.OutcomeSuccess)
 	return result, nil
 }

@@ -9,4 +9,5 @@ DROP TABLE IF EXISTS tenant_memberships;
 DROP TABLE IF EXISTS tenant_domains;
 DROP TABLE IF EXISTS tenants;
 DROP TABLE IF EXISTS zone_services;
+DROP TABLE IF EXISTS zone_encryption_keys;
 DROP TABLE IF EXISTS zones;

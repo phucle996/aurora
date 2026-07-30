@@ -1,4 +1,4 @@
-package coreTaxonomy
+package taxonomy
 
 import "errors"
 
@@ -16,15 +16,21 @@ var (
 	// ===========================================
 
 	// Zone REST API errors.
-	ErrZoneInvalidInput = errors.New("core zone: invalid input")
+	ErrZoneInvalidInput = errors.New("hierarchy zone: invalid input")
 
-	ErrZoneInvalidTransition        = errors.New("core zone: invalid transition")
-	ErrZoneDeletePreconditionFailed = errors.New("core zone: delete precondition failed")
-	ErrZoneServiceInvalidInput      = errors.New("core zone service: invalid input")
-	ErrZoneServiceZoneNotFound      = errors.New("core zone service: zone not found")
-	ErrZoneServiceInvalidType       = errors.New("core zone service: invalid service type")
-	ErrZoneServiceStateConflict     = errors.New("core zone service: state conflict")
-	ErrZoneCongested                = errors.New("core zone: zone is congested, backpressure limit exceeded")
+	ErrZoneInvalidTransition        = errors.New("hierarchy zone: invalid transition")
+	ErrZoneDeletePreconditionFailed = errors.New("hierarchy zone: delete precondition failed")
+	ErrZoneServiceInvalidInput      = errors.New("hierarchy zone service: invalid input")
+	ErrZoneServiceZoneNotFound      = errors.New("hierarchy zone service: zone not found")
+	ErrZoneServiceInvalidType       = errors.New("hierarchy zone service: invalid service type")
+	ErrZoneServiceStateConflict     = errors.New("hierarchy zone service: state conflict")
+	ErrZoneCongested                = errors.New("hierarchy zone: zone is congested, backpressure limit exceeded")
+
+	// Zone public encryption key lifecycle errors.
+	ErrZoneEncryptionKeyZoneNotFound      = errors.New("hierarchy zone encryption key: zone not found")
+	ErrZoneEncryptionKeyNotFound          = errors.New("hierarchy zone encryption key: key not found")
+	ErrZoneEncryptionKeyMaterialConflict  = errors.New("hierarchy zone encryption key: public key belongs to another zone")
+	ErrZoneEncryptionKeyInvalidTransition = errors.New("hierarchy zone encryption key: invalid transition")
 
 	// Workspace REST API errors.
 	ErrWorkspaceInvalidInput      = errors.New("workspace: invalid input")

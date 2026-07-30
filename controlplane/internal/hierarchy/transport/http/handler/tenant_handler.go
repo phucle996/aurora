@@ -3,7 +3,7 @@
 //            HTTP Handler cho luồng quản lý Tenant
 // ======================================================================================================
 
-package hierarchyHandler
+package handler
 
 import (
 	"context"
@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/context"
@@ -25,11 +25,11 @@ import (
 
 // [COMMENT]: TenantHandler xử lý HTTP requests liên quan đến Tenant
 type TenantHandler struct {
-	tenantSvc coreSvcInterface.TenantService
+	tenantSvc hierarchyservice.TenantService
 }
 
 // [COMMENT]: NewTenantHandler tạo instance handler mới với tenant service dependency
-func NewTenantHandler(tenantSvc coreSvcInterface.TenantService) *TenantHandler {
+func NewTenantHandler(tenantSvc hierarchyservice.TenantService) *TenantHandler {
 	return &TenantHandler{
 		tenantSvc: tenantSvc,
 	}
@@ -50,7 +50,7 @@ func NewTenantHandler(tenantSvc coreSvcInterface.TenantService) *TenantHandler {
 // @Failure      500 {object} map[string]interface{} "Internal server error"
 // @Router       /api/v1/tenants [post]
 func (h *TenantHandler) CreateTenant(c *gin.Context) {
-	const op = "tenant.create"
+	const op = "hierarchy.tenant.create"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
@@ -85,19 +85,19 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 	}
 
 	// [COMMENT]: Gọi service layer tạo tenant
-	tenant, err := h.tenantSvc.CreateTenant(ctx, coreEntity.Tenant{
+	tenant, err := h.tenantSvc.CreateTenant(ctx, entity.Tenant{
 		Name: strings.TrimSpace(request.Name),
 		Code: strings.ToLower(strings.TrimSpace(request.Code)),
 	}, ownerID)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrTenantInvalidInput):
+		case errors.Is(err, taxonomy.ErrTenantInvalidInput):
 			logger.HandlerWarn(c, op, err, "create tenant invalid input")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, coreTaxonomy.ErrCodeAlreadyExists):
+		case errors.Is(err, taxonomy.ErrCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create tenant code conflict")
 			apires.RespondConflict(c, "tenant code already exists")
-		case errors.Is(err, coreTaxonomy.ErrTenantInsertFailed):
+		case errors.Is(err, taxonomy.ErrTenantInsertFailed):
 			logger.HandlerWarn(c, op, err, "create tenant insertion failed")
 			apires.RespondBadRequest(c, "tenant creation failed")
 		default:

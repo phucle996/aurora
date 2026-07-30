@@ -84,7 +84,7 @@ export default function ZoneServicesSection({
       const bodyHash = await sha256Hex(bodyString)
       const timestamp = Math.floor(Date.now() / 1000).toString()
       const nonce = generateNonce()
-      const path = `/admin/critical/core/zones/services`
+      const path = `/admin/critical/hierarchy/zones/services`
       const payloadStr = `PUT\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`
       const signature = await signPayload(payloadStr, deviceKeys.privateKey)
 

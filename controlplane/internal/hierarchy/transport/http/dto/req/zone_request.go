@@ -1,9 +1,9 @@
 /*
-Package coreReq định nghĩa các DTO cho logical zone subdomain.
+Package dto định nghĩa các DTO cho logical zone subdomain.
 
 DESIGN CONTRACTS:
 - Zone mutations (như update status) dùng hoàn toàn DTO payload body thay vì URI path parameters.
-- Chuẩn hóa route thành PATCH /admin/core/zones/status giúp đồng bộ edge gateway và logging.
+- Chuẩn hóa route thành PATCH /admin/hierarchy/zones/status giúp đồng bộ edge gateway và logging.
 
 SOURCE OF TRUTH:
 - Định nghĩa struct ở đây là Source of Truth cho zone handler layer, map trực tiếp từ request body của client.
@@ -14,7 +14,7 @@ SYSTEM BOUNDARY:
 - Type Parsing: Tự động parse chuỗi JSON sang uuid.UUID để đảm bảo type safety trước khi xử lý.
 - Service Layer Handoff: Bàn giao dữ liệu hợp lệ về cú pháp cho domain service layer xử lý logic nghiệp vụ.
 */
-package coreReq
+package dto
 
 import "github.com/google/uuid"
 

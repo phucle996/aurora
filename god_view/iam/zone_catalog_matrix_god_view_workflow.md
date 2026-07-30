@@ -9,13 +9,23 @@
 
 ## 🗺️ 1. Giới Thiệu & Đột Phá Kiến Trúc
 
+### Canonical Hierarchy contract
+
+Zone Catalog thuộc domain **Hierarchy**. Route admin canonical là
+`/admin/hierarchy/zones/catalog`, Protobuf descriptor package là
+`hierarchy.rpc`, và Controlplane observability dùng namespace `hierarchy`.
+Không có compatibility alias `/admin/core/...` hoặc `core.rpc`: ACR,
+Controlplane và các client phải cut over đồng thời. Các field number/wire type
+của message Zone không đổi nên Protobuf binary trên Shared Redis vẫn tương
+thích; chỉ descriptor và full gRPC method name thay đổi.
+
 ### ❓ Phân hệ Zone Catalog tại Biên là gì?
 
 Trước đây, khi client (Browser/App) gọi API lấy danh sách các Zone hoạt động để hiển thị ở Dropdown/Select UI, yêu cầu phải đi qua Envoy Gateway, chuyển tiếp tới Control Plane (Go), kích hoạt middleware xác thực, và truy vấn thông qua L1 sharded cache hoặc PostgreSQL DB. Luồng này tạo ra gánh nặng không cần thiết lên Controlplane và làm tăng độ trễ (latency).
 
 **Đột phá kiến trúc mới:**
 
-1. **Local Intercept (Đánh chặn tại biên)**: Envoy Ext_Authz (acr Service) trực tiếp đánh chặn các HTTP requests dạng `GET /admin/core/zones/catalog` và `GET /api/v1/zones/catalog`.
+1. **Local Intercept (Đánh chặn tại biên)**: Envoy Ext_Authz (acr Service) trực tiếp đánh chặn các HTTP requests dạng `GET /admin/hierarchy/zones/catalog` và `GET /api/v1/zones/catalog`.
 2. **L1 RAM Cache & Single Flight (Đồng bộ bất đối xứng)**: acr Service tự quản lý L1 cache và refresh bằng Protobuf request/reply qua Shared Redis nội vùng Central. Single-flight có recheck freshness sau lock để một burst chỉ tạo tối đa một refresh.
 3. **Local Response (Không Upstream HTTP)**: acr biên dịch JSON và trả trực tiếp `200 OK` bằng Local Denial payload của Envoy. Cache hit không chạm Controlplane; cache miss/stale chỉ dùng bounded Shared Redis refresh, không forward HTTP request sang Controlplane.
 
@@ -27,9 +37,9 @@ Dưới đây là ma trận phân bổ hiển thị danh sách Zone dựa trên 
 
 | Trạng thái Đăng nhập | Phân quyền (Role trong JWT) | Route HTTP Path | Zones hiển thị | Có Zone `global`? |
 | :--- | :--- | :--- | :--- | :--- |
-| **Đã đăng nhập** | `sub == "sre"` | `/admin/core/zones/catalog` | Toàn bộ Zones trong DB (Active, Planned, Draining, Maintenance, Disabled) | **Có** (Virtual Zone code `"global"`) |
+| **Đã đăng nhập** | `sub == "sre"` | `/admin/hierarchy/zones/catalog` | Toàn bộ Zones trong DB (Active, Planned, Draining, Maintenance, Disabled) | **Có** (Virtual Zone code `"global"`) |
 | **Đã đăng nhập** | `sub == uuid` | `/api/v1/zones/catalog` | Chỉ các Zone có status: `active` hoặc `draining` | **Không** (Bắt buộc vào zone cụ thể) |
-| **Chưa đăng nhập** | **Khách hàng vãng lai (Anonymous)** | `/admin/core/zones/catalog` (Trang login admin) | Các Zone có status: `active` hoặc `draining` | **Có** (Virtual Zone code `"global"`) |
+| **Chưa đăng nhập** | **Khách hàng vãng lai (Anonymous)** | `/admin/hierarchy/zones/catalog` (Trang login admin) | Các Zone có status: `active` hoặc `draining` | **Có** (Virtual Zone code `"global"`) |
 | **Chưa đăng nhập** | **Khách hàng vãng lai (Anonymous)** | `/api/v1/zones/catalog` (Trang login user) | Các Zone có status: `active` hoặc `draining` | **Không** |
 
 ### 🛠️ Chi tiết Virtual Zone "global" (Admin Only)
@@ -58,8 +68,8 @@ graph TD
     acr["🛡️ acr Service (Rust - Ext_Authz)"]:::edgeService
     L1Cache["⚡ L1 Cache (RwLock HashMap)"]:::edgeService
     Redis["Shared L2 Redis request/reply"]:::storage
-    CP["⚙️ Control Plane (Go Core)"]:::control
-    DB["🗄️ PostgreSQL (Core DB)"]:::storage
+    CP["⚙️ Controlplane (Hierarchy)"]:::control
+    DB["🗄️ PostgreSQL (Hierarchy schema)"]:::storage
 
     UI -- "1. GET /api/v1/zones/catalog" --> Envoy
     Envoy -- "2. ext_authz Check" --> acr
@@ -141,7 +151,7 @@ sequenceDiagram
         Note over Redis,CP: Empty GetZoneListRequest có payload Protobuf 0 byte;<br/>envelope UUID-only 16 byte vẫn hợp lệ
         Redis->>CP: Fan-out tới các replica
         CP->>Redis: SETNX theo request_id; một replica thắng
-        CP->>DB: Query `id, code, name, status` (RPCListZonesQuery) từ bảng `core.zones`
+        CP->>DB: Query `id, code, name, status` từ bảng `hierarchy.zones`
         DB-->>CP: Trả dữ liệu SQL
         CP->>Redis: Publish correlated ZoneEntry Protobuf reply
         Redis-->>SF: Reply theo request_id
@@ -183,5 +193,5 @@ sequenceDiagram
 ## 🛠️ 6. Nhật ký kiểm tra (Execution Log & Audit Verification)
 
 - **Go controlplane**: Build thành công và pass toàn bộ **157/157 tests**. Các API GetZoneCatalog cũ đã được gỡ bỏ hoàn toàn khỏi Controller/Router và mock tests để giải phóng bộ nhớ.
-- **Metrics & Telemetry**: Hợp nhất toàn bộ metrics của Core Service & Downstream vào duy nhất file `controlplane/internal/core/metrics/metrics.go` chuẩn hóa theo mô hình IAM. Xóa bỏ hoàn toàn file chứa danh sách outcome dư thừa `outcome.go` để tối giản cấu trúc thư mục.
-- **Rust acr (ext_authz)**: Cấu hình intercept thành công hai endpoint `/admin/core/zones/catalog` và `/api/v1/zones/catalog`. Biên dịch ổn định không cảnh báo (Zero Warnings).
+- **Metrics & Telemetry**: Metrics của Hierarchy Service và downstream nằm tại `controlplane/internal/hierarchy/metrics/metrics.go`, dùng namespace `aurora_controlplane_hierarchy_*`.
+- **Rust acr (ext_authz)**: Cấu hình intercept thành công hai endpoint `/admin/hierarchy/zones/catalog` và `/api/v1/zones/catalog`. Biên dịch ổn định không cảnh báo (Zero Warnings).

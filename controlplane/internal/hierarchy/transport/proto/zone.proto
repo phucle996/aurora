@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package core.rpc;
+package hierarchy.rpc;
 
-option go_package = "controlplane/internal/hierarchy/transport/rpc/proto";
+option go_package = "controlplane/internal/hierarchy/transport/proto;hierarchyproto";
 
 message GetZoneListRequest {}
 
@@ -40,5 +40,4 @@ message ZoneInvalidatedEvent {
   string name = 4;
   bool deleted = 5;
 }
-
 

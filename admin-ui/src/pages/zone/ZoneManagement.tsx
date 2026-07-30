@@ -254,7 +254,7 @@ export default function ZoneManagementPage() {
     try {
       // Cơ chế chống trùng lặp request: Nếu có request đang chạy, tái sử dụng Promise cũ
       if (!activeZonesPromise) {
-        activeZonesPromise = Fetch('/admin/core/zones').then(async (response) => {
+        activeZonesPromise = Fetch('/admin/hierarchy/zones').then(async (response) => {
           if (!response.ok) {
             const errText = await readErrorMessage(response)
             throw new Error(errText)

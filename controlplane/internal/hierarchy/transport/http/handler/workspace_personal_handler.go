@@ -1,4 +1,4 @@
-package hierarchyHandler
+package handler
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
-	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
-	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	entity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyservice "controlplane/internal/hierarchy/domain/service"
+	taxonomy "controlplane/internal/hierarchy/taxonomy"
 	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/context"
@@ -20,12 +20,12 @@ import (
 
 // [COMMENT]: WorkspacePersonalHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi cá nhân (Personal/Me)
 type WorkspacePersonalHandler struct {
-	personalSvc coreSvcInterface.PersonalWorkspaceService
+	personalSvc hierarchyservice.PersonalWorkspaceService
 }
 
 // [COMMENT]: NewWorkspacePersonalHandler tạo một thực thể WorkspacePersonalHandler mới
 func NewWorkspacePersonalHandler(
-	personalSvc coreSvcInterface.PersonalWorkspaceService,
+	personalSvc hierarchyservice.PersonalWorkspaceService,
 ) *WorkspacePersonalHandler {
 	return &WorkspacePersonalHandler{
 		personalSvc: personalSvc,
@@ -43,7 +43,7 @@ func NewWorkspacePersonalHandler(
 // @Success      201 {object} map[string]interface{} "Workspace created"
 // @Router       /api/v1/me/hierarchy/workspace/create [post]
 func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
-	const op = "WorkspacePersonalHandler.CreateWorkspacePersonal"
+	const op = "hierarchy.workspace.personal.create"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -68,7 +68,7 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 		return
 	}
 
-	workspaceEntity := coreEntity.PersonalWorkspace{
+	workspaceEntity := entity.PersonalWorkspace{
 		Name:        strings.TrimSpace(request.Name),
 		Code:        strings.ToLower(strings.TrimSpace(request.Code)),
 		Description: strings.TrimSpace(request.Description),
@@ -80,10 +80,10 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 	workspace, err := h.personalSvc.CreateWorkspaceForPersonal(ctx, workspaceEntity)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
+		case errors.Is(err, taxonomy.ErrZoneNotFound):
 			logger.HandlerWarn(c, op, err, "create workspace zone not found or not active")
 			apires.RespondNotFound(c, "zone not found or not active")
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceCodeAlreadyExists):
+		case errors.Is(err, taxonomy.ErrWorkspaceCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create workspace code conflict")
 			apires.RespondConflict(c, "workspace code already exists within this scope")
 		default:
@@ -112,7 +112,7 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 // @Success      200 {object} map[string]interface{} "List workspaces success"
 // @Router       /api/v1/me/hierarchy/workspace/read [get]
 func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
-	const op = "WorkspacePersonalHandler.ListWorkspacesPersonal"
+	const op = "hierarchy.workspace.personal.list"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -152,10 +152,10 @@ func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) để lọc catalog"
-// @Success      200 {array}  coreEntity.WorkspaceCatalog "Workspace catalog success"
+// @Success      200 {array}  entity.WorkspaceCatalog "Workspace catalog success"
 // @Router       /api/v1/me/hierarchy/workspace/catalog [get]
 func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
-	const op = "WorkspacePersonalHandler.GetWorkspaceCatalogPersonal"
+	const op = "hierarchy.workspace.personal.catalog"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -203,7 +203,7 @@ func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 // @Success      200 {object} map[string]interface{} "Workspace deleted successfully"
 // @Router       /api/v1/me/hierarchy/workspace/delete/{workspace_id} [delete]
 func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
-	const op = "WorkspacePersonalHandler.DeleteWorkspacePersonal"
+	const op = "hierarchy.workspace.personal.delete"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
@@ -224,13 +224,13 @@ func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 	err = h.personalSvc.DeleteWorkspaceForPersonal(ctx, workspaceID, ownerUserID)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceNotFound):
+		case errors.Is(err, taxonomy.ErrWorkspaceNotFound):
 			logger.HandlerWarn(c, op, err, "workspace not found to delete")
 			apires.RespondNotFound(c, "workspace not found")
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceNotEmpty):
+		case errors.Is(err, taxonomy.ErrWorkspaceNotEmpty):
 			logger.HandlerWarn(c, op, err, "delete workspace rejected: active resources exist")
 			apires.RespondConflict(c, "workspace is not empty, active resources exist")
-		case errors.Is(err, coreTaxonomy.ErrLastWorkspaceDeletionBlocked):
+		case errors.Is(err, taxonomy.ErrLastWorkspaceDeletionBlocked):
 			logger.HandlerWarn(c, op, err, "delete workspace rejected: last remaining workspace")
 			apires.RespondConflict(c, "cannot delete the last remaining workspace")
 		default:

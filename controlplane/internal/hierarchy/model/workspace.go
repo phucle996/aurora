@@ -1,7 +1,7 @@
-package coreModel
+package model
 
 import (
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
+	entity "controlplane/internal/hierarchy/domain/entity"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,18 +9,18 @@ import (
 
 // [COMMENT]: PersonalWorkspace đại diện cho cấu trúc database mapping của bảng personal_workspaces
 type PersonalWorkspace struct {
-	ID          uuid.UUID  `db:"id"`
-	Name        string     `db:"name"`
-	Code        string     `db:"code"`
-	Description string     `db:"description"`
-	ZoneID      uuid.UUID  `db:"zone_id"`
-	OwnerID     uuid.UUID  `db:"owner_id"`
-	CreatedAt   time.Time  `db:"created_at"`
-	UpdatedAt   time.Time  `db:"updated_at"`
+	ID          uuid.UUID `db:"id"`
+	Name        string    `db:"name"`
+	Code        string    `db:"code"`
+	Description string    `db:"description"`
+	ZoneID      uuid.UUID `db:"zone_id"`
+	OwnerID     uuid.UUID `db:"owner_id"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // [COMMENT]: PersonalWorkspaceEntityToModel chuyển đổi domain entity PersonalWorkspace sang DB model tương ứng
-func PersonalWorkspaceEntityToModel(e coreEntity.PersonalWorkspace) PersonalWorkspace {
+func PersonalWorkspaceEntityToModel(e entity.PersonalWorkspace) PersonalWorkspace {
 	return PersonalWorkspace{
 		ID:          e.ID,
 		Name:        e.Name,
@@ -34,8 +34,8 @@ func PersonalWorkspaceEntityToModel(e coreEntity.PersonalWorkspace) PersonalWork
 }
 
 // [COMMENT]: PersonalWorkspaceModelToEntity chuyển đổi DB model PersonalWorkspace sang domain entity tương ứng
-func PersonalWorkspaceModelToEntity(m PersonalWorkspace) coreEntity.PersonalWorkspace {
-	return coreEntity.PersonalWorkspace{
+func PersonalWorkspaceModelToEntity(m PersonalWorkspace) entity.PersonalWorkspace {
+	return entity.PersonalWorkspace{
 		ID:          m.ID,
 		Name:        m.Name,
 		Code:        m.Code,
@@ -49,19 +49,19 @@ func PersonalWorkspaceModelToEntity(m PersonalWorkspace) coreEntity.PersonalWork
 
 // [COMMENT]: TenantWorkspace đại diện cho cấu trúc database mapping của bảng tenant_workspaces
 type TenantWorkspace struct {
-	ID          uuid.UUID  `db:"id"`
-	Name        string     `db:"name"`
-	Code        string     `db:"code"`
-	Description string     `db:"description"`
-	ZoneID      uuid.UUID  `db:"zone_id"`
-	TenantID    uuid.UUID  `db:"tenant_id"` // Bắt buộc NOT NULL
-	OwnerID     uuid.UUID  `db:"owner_id"`
-	CreatedAt   time.Time  `db:"created_at"`
-	UpdatedAt   time.Time  `db:"updated_at"`
+	ID          uuid.UUID `db:"id"`
+	Name        string    `db:"name"`
+	Code        string    `db:"code"`
+	Description string    `db:"description"`
+	ZoneID      uuid.UUID `db:"zone_id"`
+	TenantID    uuid.UUID `db:"tenant_id"` // Bắt buộc NOT NULL
+	OwnerID     uuid.UUID `db:"owner_id"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // [COMMENT]: TenantWorkspaceEntityToModel chuyển đổi domain entity TenantWorkspace sang DB model tương ứng
-func TenantWorkspaceEntityToModel(e coreEntity.TenantWorkspace) TenantWorkspace {
+func TenantWorkspaceEntityToModel(e entity.TenantWorkspace) TenantWorkspace {
 	return TenantWorkspace{
 		ID:          e.ID,
 		Name:        e.Name,
@@ -76,8 +76,8 @@ func TenantWorkspaceEntityToModel(e coreEntity.TenantWorkspace) TenantWorkspace 
 }
 
 // [COMMENT]: TenantWorkspaceModelToEntity chuyển đổi DB model TenantWorkspace sang domain entity tương ứng
-func TenantWorkspaceModelToEntity(m TenantWorkspace) coreEntity.TenantWorkspace {
-	return coreEntity.TenantWorkspace{
+func TenantWorkspaceModelToEntity(m TenantWorkspace) entity.TenantWorkspace {
+	return entity.TenantWorkspace{
 		ID:          m.ID,
 		Name:        m.Name,
 		Code:        m.Code,
