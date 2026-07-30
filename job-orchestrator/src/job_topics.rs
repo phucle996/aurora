@@ -1,3 +1,8 @@
+// [COMMENT]: P01 compiles the inner contract but deliberately does not make a
+// route dispatchable. P05 must change this only together with JO/DP consumers,
+// topic ACLs and result settlement; an outbox row cannot accidentally enable it.
+const MANAGED_SERVICE_ROUTE_ENABLED: bool = false;
+
 /// Authoritative command/result route allow-list shared by changefeed and
 /// result settlement. Adding a new executor requires updating this boundary
 /// before JO will publish or accept its contract.
@@ -23,6 +28,9 @@ pub fn is_registered(source_domain: &str, job_topic: &str) -> bool {
             job_topic,
             "hypervisor.vm.create" | "hypervisor.image.import" | "hypervisor.image.delete"
         ),
+        "MANAGED_SERVICE" => {
+            MANAGED_SERVICE_ROUTE_ENABLED && job_topic == "managed_service.instance.execute"
+        }
         _ => false,
     }
 }
@@ -42,5 +50,9 @@ mod tests {
         assert!(is_registered("HYPERVISOR", "hypervisor.image.import"));
         assert!(is_registered("HYPERVISOR", "hypervisor.image.delete"));
         assert!(!is_registered("STORAGE", "hypervisor.vm.create"));
+        assert!(!is_registered(
+            "MANAGED_SERVICE",
+            "managed_service.instance.execute"
+        ));
     }
 }

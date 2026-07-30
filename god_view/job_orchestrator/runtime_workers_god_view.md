@@ -11,6 +11,7 @@
 | Storage current usage | Kafka Zone snapshot | Controlplane PostgreSQL + best-effort Shared Redis notification | `src/storage_usage/` |
 | Mail runtime watch | Shared Redis Stream | NATS Core Zone watch | `src/mail_runtime/watch.rs` |
 | Mail runtime report | NATS Core | Shared Redis TTL snapshot + Pub/Sub | `src/mail_runtime/{ingest,reports}.rs` |
+| Managed Service dispatch/result | PostgreSQL WAL → Kafka / Kafka result | Controlplane desired/observed settlement + job timeline | staged, not implemented |
 | Mail projection repair | PostgreSQL snapshot | Kafka Zone command | `src/reconcile/mail/` |
 | Job result settlement | Kafka result | PostgreSQL outbox/aggregate transaction | `src/results/{mail,storage}/` |
 
@@ -34,6 +35,11 @@ flowchart LR
     MR -->|TTL snapshot + Pub/Sub| R
     R --> NS[Notification Service]
     NS --> C[Centrifugo]
+
+    PG -->|Managed Service outbox WAL| MSJ[JO managed_service dispatch/result]
+    MSJ -->|Managed Service command| K
+    K -->|exact Zone command| DP
+    DP -->|Managed Service result| K
 
     CH[(ClickHouse usage)] --> CE[Cost Engine]
 ```
@@ -64,6 +70,10 @@ và ownership projection; Kafka/NATS/Shared Redis notification không là billin
 
 - JO không có Zone KV credential; Dataplane không có Shared Redis/PostgreSQL credential.
 - NATS Core chỉ Central↔Zone soft state. Notification Service và Cost Engine không cần NATS.
+- Managed Service V1 không tạo NATS subject hay runtime consumer tại JO. Customer
+  Logs/Metrics đi từ Zone OTel Collector/Victoria qua Zone Public Edge, không qua JO,
+  Shared Redis, Notification hoặc Centrifugo; terminal lifecycle chỉ đi Kafka result
+  → Controlplane settlement → job notification timeline.
 - Không log/publish customer broker credential, rendered mail, recipient hoặc plaintext secret.
 - Zone lifecycle/owner/routing lấy từ trusted Kafka envelope và PostgreSQL; client field không
   trở thành authority.

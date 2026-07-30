@@ -37,7 +37,7 @@ type Modules struct {
 	Mail *mail.Module
 	// Storage là module vệ tinh Tier-2 (lưu trữ object). Cho phép chạy ở trạng thái suy giảm (Degraded).
 	Storage *storage.StorageModule
-	// ManagedService là shell của catalog dịch vụ SRE; chưa sở hữu workflow runtime.
+	// ManagedService sở hữu SRE catalog/admin workflow; customer runtime vẫn dormant.
 	ManagedService *managedservice.Module
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
 	CacheEngine *cacheengine.CacheRegistry
@@ -114,11 +114,11 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, fmt.Errorf("app: wire tenant billing outbox notifier: %w", err)
 	}
 
-	// Managed Service Platform hiện chỉ dựng boundary và dependency graph.
-	// Chưa có route/business workflow nên module không mở thêm side effect runtime.
+	// Managed Service catalog is a Controlplane durable business module. A bad
+	// PostgreSQL/schema dependency must fail before readiness and route exposure.
 	managedServiceModule, err := managedservice.NewModule(cfg, db, cacheEngine)
 	if err != nil {
-		return nil, fmt.Errorf("app: init managed service module: %w", err)
+		return nil, fmt.Errorf("app: init critical managed service module: %w", err)
 	}
 
 	// ------------------------------------------------------------------------

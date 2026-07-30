@@ -57,7 +57,7 @@ Prefix mặc định là `aurora`.
 | Topic | Key | Producer | Consumer | Policy |
 |---|---|---|---|---|
 | `aurora.jobs.commands.zone.<zone_uuid>.v1` | `job_id` | JO | DP trong Zone | 6+ partitions, delete retention |
-| `aurora.jobs.results.v1` | `job_id` | DP | JO | 12+ partitions, delete retention |
+| `aurora.jobs.results.v1` | `job_id` for existing workloads; Managed Service V1 will use `instance_id` | DP | JO | 12+ partitions, delete retention |
 | `aurora.jobs.dlq.v1` | DLQ `event_id` | DP/JO | SRE tooling | delete retention dài |
 | `aurora.zone.metadata.queries.v1` | `zone_id` | DP | JO | delete retention |
 | `aurora.zone.metadata.<zone_uuid>.v1` | `zone_id` | JO | DP trong Zone | 1 partition, `cleanup.policy=compact` |
@@ -93,6 +93,60 @@ Validation trước side effect:
 - payload size phải bị chặn tại producer/consumer/broker.
 - JO result consumer đối chiếu `event_id + source_domain + job_topic + job_version` với authoritative
   Controlplane outbox trước mutation; mismatch được sanitized-quarantine, không retry vô hạn.
+
+### 3.1. Approved target — Managed Service opaque parameter envelope
+
+> Contract này đã được chốt cho Managed Service nhưng chưa có protobuf/producer/
+> consumer implementation. Nó không thay đổi wire contract của workload hiện hữu.
+
+`BlueprintRevision` của Managed Service giữ hai immutable SRE artifact độc lập:
+flat `template_yaml` và `input_schema`. Controlplane dùng `input_schema` để validate
+HTTP payload ở ingress, nhưng không parse YAML, không enumerate `!aurora/param` và
+không tạo binding giữa schema key với template tag. SRE là owner của sự tương ứng đó.
+
+Sau canonicalization, Controlplane seal toàn bộ parameter map bằng HPKE
+`X25519/HKDF-SHA256/AES-256-GCM` public key active của target Zone. Managed Service
+command tương lai chỉ mang opaque `parameter_envelope`, `parameter_key_id`,
+`input_hash`, `desired_spec_hash`, instance/operation/generation, Zone, blueprint
+revision và bundle hash. AAD phải pin đủ
+`zone_id + instance_id + operation_id + generation + revision + bundle_hash` để
+envelope replay sang instance/Zone/revision khác bị reject.
+
+V1 dùng generic topics đã provision: command là
+`aurora.jobs.commands.zone.<zone_uuid>.v1`, result là `aurora.jobs.results.v1`, DLQ là
+`aurora.jobs.dlq.v1`. Outer `JobCommandV1` có
+`job_id=command_event_id`, `job_topic=managed_service.instance.execute`,
+`source_domain=MANAGED_SERVICE`, `resource_id=instance_id`, `attempt=0..4`; command
+record key là `instance_id`. Inner `ManagedServiceCommandV1` giữ owner/workspace,
+instance code, operation kind/fence, revision IDs, canonical `template_yaml` cùng
+component contract, all hashes và envelope. Result inner contract có unique result
+event, source command event, all fences/hashes, safe observed snapshot và outcome
+`SUCCEEDED|RETRYABLE_FAILURE|TERMINAL_FAILURE`; Managed Service result key cũng là
+`instance_id` để preserve aggregate order.
+
+Chỉ Dataplane đúng Zone giữ private key và mở envelope trong RAM khi render YAML AST.
+Nó thay `!aurora/param <name>` theo exact key; template tag thiếu value, typed node
+không compatible hoặc YAML sau render invalid là terminal
+`SRE_TEMPLATE_INPUT_MISMATCH`, không retry command vô hạn. Result, DLQ, trace, log,
+runtime event và notification chỉ mang taxonomy/hash/bounded diagnostic, không mang
+raw parameter, rendered manifest hay Kubernetes Secret value.
+
+`parameter_key_id` trỏ tới Zone public keyset versioned (`STAGED|ACTIVE|DECRYPT_ONLY`)
+trong CP Zone configuration, được replicate qua existing Zone metadata CDC/Kafka path.
+DP load private counterpart từ Zone-local Kubernetes Secret và fail-close nếu
+fingerprint với metadata không khớp. Key cũ không được destroy theo drain timer đơn
+thuần: retirement CTE phải chứng minh không còn retained instance revision,
+operation/outbox hay DLQ evidence tham chiếu nó. Zone Vault tương lai có thể trở thành
+secret source of truth và materialize Kubernetes Secret qua CSI/operator, nhưng không
+cấp Vault credential cho Controlplane/JO và không làm raw value xuất hiện trong Kafka.
+V1 vẫn dùng Kubernetes Secret trong đúng namespace khi SRE template hoặc operator yêu
+cầu; literal `Secret.data`/`stringData` không được publish vào catalog revision.
+
+Retryable Managed Service result tạo new command event cùng operation/generation và
+attempt tăng; tối đa năm attempt `0..4`, base delay `30s/2m/10m/30m` cộng jitter được
+persist ở outbox `available_at`. JO CDC là primary dispatch; due-retry scan bounded
+chỉ phục hồi timer/restart, không là relay thứ hai hoặc source business state. V1
+không có Managed Service NATS runtime subject hay browser relay.
 
 ## 4. Command path: PostgreSQL WAL → JO → Kafka
 

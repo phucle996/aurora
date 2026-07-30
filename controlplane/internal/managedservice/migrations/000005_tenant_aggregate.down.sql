@@ -1,0 +1,9 @@
+ALTER TABLE IF EXISTS tenant_managed_service_instances
+    DROP CONSTRAINT IF EXISTS fk_tenant_managed_service_instances_pending_revision;
+ALTER TABLE IF EXISTS tenant_managed_service_instances
+    DROP CONSTRAINT IF EXISTS fk_tenant_managed_service_instances_active_revision;
+DROP TABLE IF EXISTS tenant_managed_service_deletion_fences;
+DROP TABLE IF EXISTS tenant_managed_service_result_inbox;
+DROP TABLE IF EXISTS tenant_managed_service_operations;
+DROP TABLE IF EXISTS tenant_managed_service_instance_revisions;
+DROP TABLE IF EXISTS tenant_managed_service_instances;

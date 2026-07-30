@@ -44,7 +44,9 @@ flowchart LR
   Nó không biết Redis command hay Centrifugo HTTP.
 - `application/job_notifications.rs` owns durable job notification delivery:
   it writes Scylla activity/inbox projections before publishing only to
-  `notifications:{user_id}`.
+  `notifications:{user_id}`. Với Managed Service, một operation có một stable
+  timeline identity: `PROCESSING` tạo projection, terminal result update cùng
+  identity và không tạo activity/inbox mới theo status hay attempt.
 - `inbound/activity_stream.rs` owns self-user activity ingestion. It persists
   history only; it never publishes every audit event to Centrifugo.
 - `application/runtime_updates.rs` validates soft-state payloads and publishes
@@ -57,11 +59,27 @@ flowchart LR
 - `inbound/job_stream.rs` và `inbound/activity_stream.rs` sở hữu PEL/XCLAIM,
   ordering, ACK/XDEL và reconnect. Đây là at-least-once; activity poison
   records được ghi quarantine metadata trước ACK, không sao chép raw payload.
-- Scylla writes are idempotent by `(user_id, month_bucket, occurred_at,
-  event_id)` and `(user_id, month_bucket, created_at, notification_id)`.
-  A crash between projections leaves the Redis entry pending for repair.
+- Scylla writes converge theo `(user_id, month_bucket, occurred_at, event_id)`
+  và `(user_id, month_bucket, created_at, notification_id)`. Job terminal event
+  của Managed Service giữ `created_at`/`occurred_at` từ `PROCESSING`, chỉ upsert
+  mutable status fields với `status_version` monotonic và không xóa `read_at`.
+  A crash giữa projections giữ Redis entry pending để repair.
 - `inbound/realtime_pubsub.rs` chỉ xử lý soft-state wake-up. Disconnect có thể
   mất message; snapshot/API authoritative phải phục hồi trạng thái.
+
+### Managed Service boundary — no customer runtime relay
+
+Managed Service không thêm `RealtimeKind`, Redis Pub/Sub producer hay
+`runtime:<user_id>` channel vào Notification Service. V1 không có Dataplane/JO NATS
+runtime protocol cho Managed Service; nó không được relay sang Notification,
+Centrifugo, Zone Public Edge hoặc Browser.
+
+Customer-facing logs/metrics là Zone-local Victoria read path qua
+`zone-observability-stream` và Zone Public Edge, nằm ngoài Notification topology.
+`PROCESSING → SUCCESS|FAILED` vẫn là job notification durable path duy nhất: JO XADD
+`stream:{job_notifications}`, Notification upsert cùng một Scylla timeline/inbox
+identity, rồi publish `notifications:<user_id>`. Đây là business completion; Victoria
+stream không tạo, sửa hoặc xác nhận timeline/operation state.
 
 ## Lifecycle và HA
 

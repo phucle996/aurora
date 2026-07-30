@@ -99,9 +99,10 @@ static_resources:
                           cluster_name: acr_cluster
                         timeout: 2s
                       with_request_body:
-                        # Storage bulk control requests are capped at the same
-                        # 64 KiB boundary enforced by the Zone Control Edge.
-                        max_request_bytes: 65536
+                        # Managed Service critical draft signatures bind the
+                        # exact bounded YAML+contract body. Partial bodies would
+                        # invalidate the security proof, so buffer at most 2 MiB.
+                        max_request_bytes: 2097152
                         allow_partial_message: false
                         pack_as_bytes: true
                       transport_api_version: V3

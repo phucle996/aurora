@@ -46,8 +46,24 @@ graph TD
 ### 3. Không Gian Làm Việc (Workspace)
 * Là thực thể bắt buộc (`Mandatory`), chứa toàn bộ tài nguyên ảo hóa thực tế của khách hàng.
 * Workspace có hai phạm vi sở hữu:
-  * **Enterprise Scope**: Thuộc về một Tenant cụ thể (`tenant_id IS NOT NULL`). Namespace định danh sẽ có dạng: `tenant_code/workspace_code` (Ví dụ: `acme/prod-db`).
-  * **Personal Scope**: Workspace cá nhân trực tiếp thuộc về một User (`tenant_id IS NULL`). Namespace định danh sẽ có dạng: `username/workspace_code` (Ví dụ: `phucle/personal-dev`).
+  * **Enterprise Scope**: Thuộc về một Tenant cụ thể (`tenant_id IS NOT NULL`). Logical ownership namespace có dạng: `tenant_code/workspace_code` (Ví dụ: `acme/prod-db`).
+  * **Personal Scope**: Workspace cá nhân trực tiếp thuộc về một User (`tenant_id IS NULL`). Logical ownership namespace có dạng: `username/workspace_code` (Ví dụ: `phucle/personal-dev`).
+
+Logical ownership namespace phục vụ hierarchy, UI và authorization; nó không phải
+Kubernetes `Namespace` name. Managed Service tạo physical namespace riêng trong
+đúng Zone cluster theo format bijective sau, với `t` cho tenant và `p` cho personal:
+
+```text
+aur-ms-{t|p}-{base32lower_no_padding(owner_uuid_bytes || workspace_uuid_bytes)}
+```
+
+Format này dài 61 ký tự, hợp lệ DNS label và không truncate/hash UUID. Dataplane là
+owner duy nhất của physical namespace. Nó inject `platform.aurora.io/workspace-id`,
+`platform.aurora.io/owner-id`, `platform.aurora.io/managed-service-instance-id` và
+ownership marker Managed Service lên namespace/mọi object namespaced; client,
+Controlplane và SRE template không override reserved metadata. Zone OTel Collector
+chỉ được copy metadata protected này thành telemetry scope, không biến chúng thành
+Kubernetes traffic label.
 
 ---
 

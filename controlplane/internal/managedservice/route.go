@@ -1,8 +1,77 @@
 package managedservice
 
-import "github.com/gin-gonic/gin"
+import (
+	"controlplane/internal/http/middleware"
 
-// RegisterRoutes reserves the module route boundary. Business routes are not
-// registered until their corresponding workflow has a complete
-// handler/service/repository vertical slice.
-func RegisterRoutes(_ *gin.Engine, _ *Module) {}
+	"github.com/gin-gonic/gin"
+)
+
+func RegisterRoutes(router *gin.Engine, module *Module) {
+	admin := router.Group("/admin/managed-services/catalog")
+	{
+		admin.POST("/categories", module.CategoryHandler.CreateCategory)
+		admin.GET("/categories", module.CategoryHandler.ListCategories)
+		admin.GET("/categories/:category_id", module.CategoryHandler.GetCategory)
+		admin.PATCH("/categories/:category_id", module.CategoryHandler.UpdateCategory)
+
+		admin.POST("/definitions", module.DefinitionHandler.CreateDefinition)
+		admin.GET("/definitions", module.DefinitionHandler.ListDefinitions)
+		admin.GET("/definitions/:definition_id", module.DefinitionHandler.GetDefinition)
+		admin.PATCH("/definitions/:definition_id", module.DefinitionHandler.UpdateDefinition)
+
+		admin.POST("/versions", module.VersionHandler.CreateVersion)
+		admin.GET("/versions", module.VersionHandler.ListVersions)
+		admin.GET("/versions/:version_id", module.VersionHandler.GetVersion)
+		admin.PATCH("/versions/:version_id", module.VersionHandler.UpdateVersion)
+		admin.GET("/versions/:version_id/blueprint", module.BlueprintHandler.GetBlueprintByVersion)
+
+		admin.GET("/blueprints/:blueprint_id", module.BlueprintHandler.GetBlueprint)
+		admin.GET("/blueprints/:blueprint_id/revisions", module.RevisionHandler.ListRevisions)
+		admin.GET("/drafts/:draft_id", module.RevisionHandler.GetDraft)
+		admin.GET("/audit", module.AuditHandler.ListAuditEvents)
+	}
+
+	// [COMMENT]: Every mutation capable of changing the published runtime
+	// contract is structurally routed through ACR's /admin/critical policy.
+	critical := router.Group("/admin/critical/managed-services/catalog")
+	{
+		critical.POST("/categories/:category_id/retire", module.CategoryHandler.RetireCategory)
+		critical.POST("/definitions/:definition_id/retire", module.DefinitionHandler.RetireDefinition)
+		critical.POST("/versions/:version_id/deprecate", module.VersionHandler.DeprecateVersion)
+		critical.POST("/versions/:version_id/retire", module.VersionHandler.RetireVersion)
+
+		critical.POST("/versions/:version_id/blueprints", module.BlueprintHandler.CreateBlueprint)
+		critical.DELETE("/blueprints/:blueprint_id", module.BlueprintHandler.DeleteBlueprint)
+
+		critical.POST("/blueprints/:blueprint_id/drafts", module.RevisionHandler.CreateDraft)
+		critical.PATCH("/drafts/:draft_id", module.RevisionHandler.PatchDraft)
+		critical.POST("/drafts/:draft_id/validate", module.RevisionHandler.ValidateDraft)
+		critical.POST("/drafts/:draft_id/publish", module.RevisionHandler.PublishDraft)
+		critical.POST("/revisions/:revision_id/retire", module.RevisionHandler.RetireRevision)
+		critical.DELETE("/drafts/:draft_id", module.RevisionHandler.DeleteDraft)
+	}
+
+	personal := router.Group("/api/v1/personal/managed-services")
+	{
+		personal.GET("/catalog",
+			middleware.Authorize("managed-service:catalog:read", module.L1Registry, "*"),
+			module.PersonalCatalogHandler.ListPersonalCatalog,
+		)
+		personal.GET("/catalog/versions/:version_id",
+			middleware.Authorize("managed-service:catalog:read", module.L1Registry, "*"),
+			module.PersonalCatalogVersionHandler.GetPersonalCatalogVersion,
+		)
+	}
+
+	tenant := router.Group("/api/v1/tenant/managed-services")
+	{
+		tenant.GET("/catalog",
+			middleware.Authorize("managed-service:catalog:read", module.L1Registry, "*"),
+			module.TenantCatalogHandler.ListTenantCatalog,
+		)
+		tenant.GET("/catalog/versions/:version_id",
+			middleware.Authorize("managed-service:catalog:read", module.L1Registry, "*"),
+			module.TenantCatalogVersionHandler.GetTenantCatalogVersion,
+		)
+	}
+}

@@ -4,9 +4,22 @@ Module **Managed Service Platform** chịu trách nhiệm quản lý catalog d�
 do SRE định nghĩa và desired state của các dịch vụ mà Dataplane sẽ triển khai
 trên Kubernetes đúng Zone trong các workflow sau này.
 
-Ở trạng thái hiện tại, module mới chỉ có boundary và dependency wiring. Chưa
-được phép thêm workflow business, endpoint, bảng PostgreSQL, outbox, Kafka hay
-Kubernetes client vào bộ khung này nếu chưa có contract và God View tương ứng.
+P01 đã ship durable baseline và canonical inner protobuf binding. P02 đã ship SRE
+catalog/admin API, immutable revision workflow và Admin UI. P03 đã ship customer
+catalog/form read-only cho personal/tenant cùng Cloud Console dynamic-form foundation.
+Customer mutation, Kafka producer/consumer Managed Service, renderer và Kubernetes
+client vẫn chưa được mở; các workflow đó chỉ được thêm sau God View/phase tương ứng.
+
+Chi tiết product proposal nằm trong [IDEA.md](./IDEA.md). Trình tự staging từ
+contract tới release gate trước khi tách phase/task nằm trong
+[STAGING.md](./STAGING.md).
+Kế hoạch triển khai theo phase, dependency, owner và acceptance evidence nằm trong
+[PHASES.md](./PHASES.md).
+Source of Truth end-to-end của lifecycle nằm trong
+[Managed Service Lifecycle God View](../../../god_view/managedservice/managed_service_lifecycle_god_view.md).
+Registry ownership cho protobuf inner contract nằm tại
+[contracts/proto/README.md](../../../contracts/proto/README.md); fixture vocabulary
+P00 nằm tại [test/fixtures/CONTRACT.md](./test/fixtures/CONTRACT.md).
 
 ---
 
@@ -15,33 +28,60 @@ Kubernetes client vào bộ khung này nếu chưa có contract và God View tư
 ```text
 internal/managedservice/
 ├── README.md              # Contract và quy chuẩn viết code của module
+├── IDEA.md                # Product idea và contract nền tảng
+├── STAGING.md             # Design/release staging gates
+├── PHASES.md              # Phase/task execution plan
+├── test/                  # Managed Service test suite, cùng layout với IAM
+│   ├── e2e/               # Workflow end-to-end theo God View
+│   ├── fixtures/          # Fixture vocabulary/data, không phải runtime helper
+│   │   └── CONTRACT.md
+│   ├── integration/       # Migration, CTE, transaction và transport boundary
+│   ├── mocks/             # Test doubles cho dependency workflow
+│   └── unit/              # Unit/contract tests độc lập
 ├── bootstrap.go            # Module lifecycle hook (hiện chưa có worker)
-├── module.go              # Dependency Injection wiring của module shell
-├── route.go               # HTTP route boundary; chưa đăng ký business route
+├── migration.go            # Embedded six-file durable baseline migration
+├── migrations/             # 000001..000006 only; no seventh baseline migration
+├── module.go              # Fail-fast wiring của từng object slice
+├── route.go               # Admin metadata/read và critical runtime routes
 ├── domain/                # DDD Core Layer
 │   ├── entity/            # Flat business entity riêng cho từng workflow
-│   ├── repo/              # Một nhóm repository interfaces
-│   └── service/           # Một nhóm service interfaces
-├── model/                 # Persistence models và SQL scanning helpers
+│   ├── repo/              # Repository interface tách theo object
+│   └── service/           # Service interface tách theo object
+├── model/                 # Persistence models và workflow-local SQL scanning
 ├── repository/            # PostgreSQL repository implementations
 ├── service/               # Business Logic Layer
-├── taxonomy/              # Stable error taxonomy và permission constants
+├── taxonomy/              # Stable error taxonomy và route-policy names
 └── transport/             # API Interface Adapters Layer
-    └── http/
-        ├── dto/           # Request-only JSON structs
-        └── handler/        # Gin handlers và inline gin.H responses
+    ├── http/
+    │   ├── dto/           # Request-only JSON structs
+    │   └── handler/        # Gin handlers và inline gin.H responses
+    └── proto/              # Generated binding from contracts/proto/managed_service.proto
 ```
 
-Các thư mục layer được giữ theo cùng convention với IAM, nhưng chưa tạo file
-workflow rỗng. Khi ship workflow đầu tiên, file sẽ được đặt đúng layer:
-`domain/entity`, `domain/repo`, `domain/service`, `model`, `repository`,
-`service`, `taxonomy` và `transport/http/{dto,handler}`. `doc.go` không cần
-thiết cho runtime; package chỉ xuất hiện khi có mã thực sự thuộc package đó.
+Các thư mục layer giữ cùng convention với IAM/Storage. Một file branch sở hữu
+toàn bộ hành vi của đúng một object; không gom toàn catalog vào một file:
+
+```text
+domain/entity/                  category.go ... audit.go
+domain/repo/                    category.go ... audit.go
+domain/service/                 category.go ... audit.go
+repository/                     category_repo.go ... audit_repo.go
+service/                        category_service.go ... audit_service.go
+transport/http/dto/             category.go ... revision.go
+transport/http/handler/         category_handler.go ... audit_handler.go
+```
+
+Mỗi object có interface riêng trong `domain/repo` và `domain/service`; constructor
+implementation trả về interface đó. Trong object, một workflow vẫn là đúng một
+handler method → service method → repository method. Không tạo `helpers.go`,
+`common.go`, generic mapper, generic validator hoặc `MutateInstance`. `doc.go`
+không cần thiết cho runtime; package chỉ xuất hiện khi có mã thực sự thuộc package đó.
 
 Boundary cố định của module:
 
 ```text
-SRE Console
+Admin UI
+    -> Envoy / ACR admin-route policy
     -> Controlplane Managed Service Catalog
     -> Controlplane PostgreSQL
 
@@ -55,6 +95,79 @@ Controlplane
     - không render manifest
     - không publish Kafka trực tiếp
 ```
+
+Managed Service V1 không có NATS Core subject, runtime protobuf hay JO runtime
+consumer. Durable command/result chỉ đi PostgreSQL outbox/WAL → JO → Kafka →
+Dataplane → Kafka result. Không có path Managed Service sang Shared Redis Pub/Sub,
+Notification runtime, Centrifugo runtime, Zone Public Edge hoặc Browser; Console chỉ
+rehydrate operation/timeline durable. Một future NATS soft-state workflow phải có
+concrete JO consumer và God View riêng, không được suy ra từ module này.
+
+```text
+Managed Service workload / Kubernetes telemetry
+    -> Zone OTel Collector
+    -> Zone VictoriaMetrics / VictoriaLogs
+    -> zone-observability-stream (Rust service, Zone-local, read-only)
+    -> Zone Public Edge
+    -> Browser
+```
+
+`zone-observability-stream` là Rust subproject/Deployment riêng của Zone, không
+phải package của Dataplane và không có credential Kafka, NATS, PostgreSQL, Zone KV
+hay Controlplane. Zone Control Edge xử lý assertion/short-lived scoped ticket;
+Zone Public Edge chỉ mở một stream đã được kiểm tra scope tại thời điểm connect.
+Service tự inject scope verified `zone + workspace + owner + instance + component`,
+chỉ chấp nhận panel/query allow-list và không nhận raw PromQL/LogsQL. Terminal
+operation vẫn đi Kafka/Controlplane/timeline durable path.
+
+SRE catalog là admin-plane riêng:
+
+```text
+Admin UI
+    -> Envoy / ACR admin-route policy
+    -> /admin/managed-services/catalog/*
+    -> Controlplane object handler tương ứng
+
+Admin UI (runtime/catalog lifecycle mutation)
+    -> Envoy / ACR critical-proof policy
+    -> /admin/critical/managed-services/catalog/*
+    -> Controlplane object handler tương ứng
+```
+
+Route SRE không gắn `middleware.Authorize` tại Controlplane và không đọc RBAC
+permission/level. Envoy phải strip header nội bộ do client gửi, ACR/Envoy là
+gate duy nhất trước khi forward, rồi inject trusted actor identity chỉ để audit
+(`published_by`, `retired_by`). Thiếu actor identity phải fail-close; đó là audit
+boundary, không phải CP tự đánh giá quyền. Route có `/critical/` để ACR verify và
+consume proof bind method/path/body; Controlplane chỉ fail-close nếu marker/challenge
+ID do ACR inject bị thiếu. Blueprint/draft/validate/publish/retire/delete không có
+normal-route mirror: chúng luôn đi thẳng qua `/admin/critical/`. Repository CTE vẫn
+quyết định transition/pin hợp lệ; critical proof không bypass immutable revision,
+FK hoặc hard-delete guard. Customer route vẫn đi qua nhánh
+`/api/v1/personal/managed-services/*` hoặc `/api/v1/tenant/managed-services/*`
+và middleware authorization tương ứng.
+
+P03 customer discovery có đúng bốn route read-only:
+
+```text
+GET /api/v1/personal/managed-services/catalog
+GET /api/v1/personal/managed-services/catalog/versions/:version_id
+GET /api/v1/tenant/managed-services/catalog
+GET /api/v1/tenant/managed-services/catalog/versions/:version_id
+```
+
+Chúng dùng `managed-service:catalog:read`, typed context từ `pkg/context` và CTE
+workflow-local để bind workspace với owner/tenant + Zone. Public response không có
+YAML, component contract, selector/capability hay audit. Server không cache scoped
+catalog trong Redis; response `private, no-store`, còn Console cache RAM được fence
+bằng auth generation + owner mode + Zone + workspace + revision. List dùng keyset
+cursor và page tối đa 100; Console chỉ tải page tiếp theo theo action hữu hạn. P03
+không đăng ký `POST /instances`.
+
+Mọi handler trả response qua `pkg/apires`: payload vẫn dùng `gin.H`, success envelope
+là `{data,message}`, error envelope là `{error,message}`. Stable taxonomy cần code
+riêng phải được bổ sung theo HTTP status trong `pkg/apires`; handler không gọi
+`c.JSON` trực tiếp và không tạo generic `respondError` dùng chung giữa workflow.
 
 Tên business được chuẩn hóa:
 
@@ -82,6 +195,9 @@ internal/managedservice/test/
 └── unit/         # Handler/service/model theo public contract
 ```
 
+Test hiện có migration/route contract, canonical protobuf và revision-handler
+security/validation boundary. `mocks/` cũng chia theo object, không tạo mock module chung.
+
 Chạy test module:
 
 ```bash
@@ -108,13 +224,33 @@ database transaction, CTE, constraint hoặc outbox durability.
   endpoint Kubernetes hoặc customer credential.
 * Global app migration runner là owner của transaction. Module migration không
   được tự mở transaction lồng nhau nếu caller đã mở transaction.
-* Bộ khung hiện tại chưa có durable table nên chưa tạo `migrations/` và chưa
-  đăng ký migration giả.
+* P01 đã sở hữu đúng sáu cặp baseline tại `migrations/000001` tới `000006` và
+  `migration.go` đã được global app migration runner gọi trong cùng transaction/
+  advisory lock. Baseline gồm system catalog, immutable blueprint revision, physical
+  personal/tenant aggregate và outbox; không có route hoặc dispatcher đang hoạt động.
 
-Migration của module sẽ được thêm ở top-level `migration.go` và
-`migrations/` khi workflow đầu tiên sở hữu durable state. Transaction và
-advisory lock vẫn thuộc global app migration runner; module không mở transaction
-lồng nhau.
+S09 đã chốt physical ownership cho persistence:
+
+```text
+managed_service.service_categories ... catalog_audit_events
+    # System data, không có prefix sre_ và không owner/workspace/Zone.
+
+managed_service.personal_managed_service_*
+    # Customer aggregate thuộc personal workspace.
+
+managed_service.tenant_managed_service_*
+    # Customer aggregate thuộc tenant workspace.
+
+managed_service.managed_service_outbox_records
+    # Module transport evidence theo cùng shape Storage/Mail. Nó mang owner snapshot
+    # cho routing/audit, nhưng không biến customer aggregate thành bảng polymorphic.
+```
+
+SRE là admin workflow/actor, không phải owner của catalog table. `published_by`
+hoặc `retired_by` chỉ giữ audit provenance. Customer instance `code` là immutable
+DNS label tối đa 35 ký tự và Kubernetes workload-name base; `name` chỉ là display
+metadata. Mọi customer operation/result/fence nằm trong đúng physical personal hoặc
+tenant branch, không dùng bảng polymorphic chung.
 
 ### 2. Comment xen kẽ trong Code (`// [COMMENT]: ...`)
 
@@ -142,11 +278,15 @@ revision := input.TemplateRevision
 
 * Handler là nơi đầu tiên nhận HTTP request và là nơi validate:
   - path/query/body;
-  - code, version, UUID và pagination;
+  - code DNS-label ≤35, version, UUID và pagination;
   - JSON Schema/UI Schema/manifest contract khi workflow publish blueprint;
   - ownership/routing context đã được Envoy/ACR inject.
 * Service và repository tin tưởng entity đã được handler normalize.
 * Service/repository không parse lại DTO và không lặp lại HTTP validation.
+* Handler không sinh resource UUID, draft UUID hoặc audit-event UUID. Các field
+  system-generated được để `uuid.Nil` khi map request sang entity; đúng service
+  workflow sinh UUID còn thiếu trước khi gọi repository. Service giữ nguyên UUID
+  đã có để một retry nội bộ tiếp tục dùng cùng identity.
 * Dataplane vẫn validate lại Protobuf, Zone binding, revision hash và rendered
   Kubernetes object vì đó là một transport trust boundary mới, không phải
   business validation lặp lại trong Controlplane.
@@ -201,6 +341,7 @@ Handler
 Service
   Entity
   → xử lý business rule
+  → sinh system UUID/AuditID còn thiếu và giữ nguyên identity đã có
   → tạo Outbox Entity nếu workflow thật sự cần event
 
 Repository

@@ -16,6 +16,16 @@ pub mod transport_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.transport.v1.rs"));
 }
 
+// [COMMENT]: The inner Managed Service payload is generated from the single root
+// contract even while its route remains disabled. Keeping it separate from the outer
+// transport module prevents accidental field coupling between unrelated workloads.
+// Protobuf enum values intentionally retain their wire-safe names; do not rename
+// generated variants just to satisfy a Rust-only lint.
+#[allow(clippy::enum_variant_names)]
+pub mod managed_service_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.managedservice.v1.rs"));
+}
+
 #[derive(Default)]
 pub struct KafkaRebalanceFence {
     epoch: AtomicU64,
@@ -436,7 +446,8 @@ impl KafkaTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::PartitionSettlement;
+    use super::{managed_service_proto, PartitionSettlement};
+    use prost::Message;
 
     #[test]
     fn settlement_waits_for_lower_registered_offset() {
@@ -454,5 +465,31 @@ mod tests {
         state.register(12);
         assert_eq!(state.mark_terminal(10), Some(11));
         assert_eq!(state.mark_terminal(12), Some(13));
+    }
+
+    #[test]
+    fn managed_service_root_contract_round_trips_while_route_is_disabled() {
+        let command = managed_service_proto::ManagedServiceCommandV1 {
+            command_event_id: vec![1; 16],
+            operation_id: vec![2; 16],
+            instance_id: vec![3; 16],
+            owner_type:
+                managed_service_proto::ManagedServiceOwnerTypeV1::ManagedServiceOwnerTypePersonal
+                    as i32,
+            owner_id: vec![4; 16],
+            workspace_id: vec![5; 16],
+            zone_id: vec![6; 16],
+            instance_code: "orders-kafka".to_string(),
+            generation: 1,
+            parameter_envelope: b"fixture-envelope-v1".to_vec(),
+            parameter_envelope_sha256: vec![7; 32],
+            schema_version: 1,
+            ..Default::default()
+        };
+        let bytes = command.encode_to_vec();
+        let decoded = managed_service_proto::ManagedServiceCommandV1::decode(bytes.as_slice())
+            .expect("decode canonical Managed Service command");
+        assert_eq!(decoded.zone_id, vec![6; 16]);
+        assert_eq!(decoded.parameter_envelope, b"fixture-envelope-v1");
     }
 }

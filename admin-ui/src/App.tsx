@@ -24,6 +24,7 @@ const ZoneManagementPage = lazy(() => import('@/pages/zone/ZoneManagement'))
 const NewZonePage = lazy(() => import('@/pages/zone/NewZone'))
 const ZoneDetailPage = lazy(() => import('@/pages/zone/ZoneDetail'))
 const ResourcePlatformAdminPage = lazy(() => import('@/pages/resource-platform/ResourcePlatformAdmin'))
+const ManagedServicesPage = lazy(() => import('@/pages/managed-services/ManagedServices'))
 
 function LazyPage({ component: Component }: { component: ComponentType }) {
   return (
@@ -233,6 +234,12 @@ const resourcePlatformRoute = createRoute({
   component: withAdminSession(ResourcePlatformAdminPage),
 })
 
+const managedServicesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/managed-services',
+  component: withAdminSession(ManagedServicesPage),
+})
+
 const adminLoginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/auth/admin',
@@ -248,6 +255,7 @@ const routeTree = rootRoute.addChildren([
   newZoneRoute,
   hypervisorImagesRoute,
   resourcePlatformRoute,
+  managedServicesRoute,
   adminLoginRoute,
 ])
 

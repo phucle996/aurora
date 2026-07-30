@@ -9,6 +9,7 @@ import (
 	"controlplane/internal/hypervisor" // [NEW COMMENT]: Import phân hệ Hypervisor để thực thi migrations
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/managedservice"
 	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
@@ -62,6 +63,12 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 
 	// iam migrations
 	if err := iam.ApplyMigrations(ctx, conn, cfg); err != nil {
+		return err
+	}
+
+	// [COMMENT]: Managed Service rows reference durable workspace/Zone metadata, so
+	// this baseline runs only after the hierarchy schema has been installed.
+	if err := managedservice.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}
 

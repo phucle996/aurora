@@ -1,0 +1,3 @@
+DROP TRIGGER IF EXISTS trg_managed_service_outbox_immutable ON managed_service_outbox_records;
+DROP FUNCTION IF EXISTS reject_managed_service_outbox_payload_rewrite();
+DROP TABLE IF EXISTS managed_service_outbox_records;

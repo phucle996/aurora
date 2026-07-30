@@ -133,6 +133,15 @@ pub mod transport_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.transport.v1.rs"));
 }
 
+// [COMMENT]: This is the canonical inner contract. No local .proto copy is allowed
+// even though P01 does not register a Managed Service producer or consumer yet.
+// Protobuf enum values intentionally retain their wire-safe names; do not rename
+// generated variants just to satisfy a Rust-only lint.
+#[allow(clippy::enum_variant_names)]
+pub mod managed_service_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.managedservice.v1.rs"));
+}
+
 pub struct KafkaTransport {
     producer: Arc<Producer>,
     bootstrap_servers: String,
@@ -381,4 +390,36 @@ fn kafka_tls(config: &KafkaConfig) -> Result<TlsConfig, String> {
         }
     }
     Ok(tls)
+}
+
+#[cfg(test)]
+mod managed_service_contract_tests {
+    use super::managed_service_proto;
+    use prost::Message;
+
+    #[test]
+    fn managed_service_root_contract_round_trips_before_route_registration() {
+        let command = managed_service_proto::ManagedServiceCommandV1 {
+            command_event_id: vec![1; 16],
+            operation_id: vec![2; 16],
+            instance_id: vec![3; 16],
+            owner_type:
+                managed_service_proto::ManagedServiceOwnerTypeV1::ManagedServiceOwnerTypePersonal
+                    as i32,
+            owner_id: vec![4; 16],
+            workspace_id: vec![5; 16],
+            zone_id: vec![6; 16],
+            instance_code: "orders-kafka".to_string(),
+            generation: 1,
+            parameter_envelope: b"fixture-envelope-v1".to_vec(),
+            parameter_envelope_sha256: vec![7; 32],
+            schema_version: 1,
+            ..Default::default()
+        };
+        let bytes = command.encode_to_vec();
+        let decoded = managed_service_proto::ManagedServiceCommandV1::decode(bytes.as_slice())
+            .expect("decode canonical Managed Service command");
+        assert_eq!(decoded.instance_id, vec![3; 16]);
+        assert_eq!(decoded.parameter_envelope, b"fixture-envelope-v1");
+    }
 }

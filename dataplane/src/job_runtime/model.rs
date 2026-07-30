@@ -152,6 +152,21 @@ impl ValidatedJob {
             .unwrap_or_default();
         match (workload, command.source_domain.as_str()) {
             ("mail", "MAIL") | ("storage", "STORAGE") | ("hypervisor", "HYPERVISOR") => {}
+            ("managed_service", "MANAGED_SERVICE") => {
+                // [COMMENT]: Inner proto may exist in P01, but no P01 executor is
+                // allowed to consume it. This explicit rejection prevents a future
+                // accidental topic/ACL change from creating a partial runtime path.
+                return Err(JobValidationError::new(
+                    "JOB_WORKLOAD_DISABLED",
+                    "managed_service workload is not enabled on this Dataplane",
+                ));
+            }
+            ("managed_service", _) => {
+                return Err(JobValidationError::new(
+                    "JOB_SOURCE_DOMAIN_MISMATCH",
+                    "source_domain does not own the declared workload",
+                ));
+            }
             ("mail" | "storage" | "hypervisor", _) => {
                 return Err(JobValidationError::new(
                     "JOB_SOURCE_DOMAIN_MISMATCH",
@@ -350,6 +365,15 @@ mod tests {
         command.source_domain = "HYPERVISOR".to_string();
         let job = ValidatedJob::from_command(command, "zone-a", 5).expect("valid command");
         assert_eq!(job.job_topic, "hypervisor.vm.create");
+    }
+
+    #[test]
+    fn validation_keeps_managed_service_route_disabled() {
+        let mut command = command();
+        command.job_topic = "managed_service.instance.execute".to_string();
+        command.source_domain = "MANAGED_SERVICE".to_string();
+        let error = ValidatedJob::from_command(command, "zone-a", 5).unwrap_err();
+        assert_eq!(error.code, "JOB_WORKLOAD_DISABLED");
     }
 
     #[test]

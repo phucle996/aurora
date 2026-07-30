@@ -93,13 +93,9 @@ export async function getOrCreateDeviceKeys(): Promise<{ publicKey: string; priv
 }
 
 export function generateNonce(): string {
-  const arr = new Uint8Array(16)
-  crypto.getRandomValues(arr)
-  let nonce = ''
-  arr.forEach((b) => {
-    nonce += b.toString(16).padStart(2, '0')
-  })
-  return nonce
+  // [COMMENT]: ACR persists the signed nonce only as short-lived replay state.
+  // UUID keeps the downstream proof vocabulary bounded without exposing it.
+  return crypto.randomUUID()
 }
 
 export async function sha256Hex(text: string): Promise<string> {

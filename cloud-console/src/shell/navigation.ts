@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  Boxes,
   Coins,
   HardDrive,
   LayoutDashboard,
@@ -18,6 +19,7 @@ export type NavigationId =
   | "storage"
   | "compute"
   | "mail"
+  | "managed-services"
   | "billing";
 
 export type NavigationItem = {
@@ -98,6 +100,14 @@ export function consoleNavigation(
         { key: "email:consumer", action: "read" },
         { key: "email:template", action: "read" },
       ],
+    },
+    {
+      id: "managed-services",
+      label: "Managed Services",
+      path: "/managed-services",
+      icon: Boxes,
+      breadcrumb: ["Console", "Managed Services"],
+      permission: { key: "managed-service:catalog", action: "read" },
     },
     {
       id: "billing",

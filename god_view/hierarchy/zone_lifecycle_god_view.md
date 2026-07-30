@@ -365,6 +365,13 @@ sequenceDiagram
    * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`ChangefeedWorker`](../../job-orchestrator/src/changefeed/worker.rs).
    * JO đọc full aggregate và publish `ZoneMetadataSnapshotV1` vào Kafka compacted topic riêng Zone.
    * DP leader [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
+   * **Staged Managed Service extension:** Zone configuration sẽ thêm public
+     parameter-encryption keyset versioned (`key_id`, public key, fingerprint,
+     `STAGED|ACTIVE|DECRYPT_ONLY`) vào full metadata snapshot. Đây chỉ là public
+     capability material do SRE register; DP đối chiếu nó với private counterpart
+     mount từ Zone-local Kubernetes Secret và fail-close executor khi mismatch.
+     Private key không được đi vào PostgreSQL, Kafka payload, Central service hay
+     Zone KV. Chưa có field/protobuf/code implementation tại thời điểm tài liệu này.
 2. **Telemetry Pack & Report**:
    * Dataplane [`zone_report`](../../dataplane/src/leader/zone_report.rs) chạy dưới stable `lease.zone.leader`, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
    * Gateway đóng gói `ZoneReport` Protobuf, dùng Zone ID làm record key và `acks=all`.

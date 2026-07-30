@@ -36,7 +36,7 @@ function readCookie(name: string): string | null {
 // sau đó resolve zone_id từ catalog và gọi initWorkspaceContext.
 // Dùng ref để tránh gọi lại trùng khi session re-render không đổi.
 export function WorkspaceInitializer() {
-  const { authenticated, loading, profile } = useUserSession();
+  const { authenticated, loading, profile, renderContext } = useUserSession();
   const { initWorkspaceContext, clearWorkspaceContext } = useWorkspace();
 
   // [COMMENT]: Track context key (zone_code:tenant) để detect thay đổi và tránh double-init
@@ -54,7 +54,7 @@ export function WorkspaceInitializer() {
 
     // [COMMENT]: user_id bắt buộc từ profile — nếu profile chưa load xong thì chờ
     const userID = profile?.user_id;
-    if (!userID) return;
+    if (!userID || !renderContext) return;
 
     // [COMMENT]: Đọc zone_code từ cookie do ACR set sau khi login
     // Cookie name "zone_code" phải khớp với ACR session cookie
@@ -62,7 +62,8 @@ export function WorkspaceInitializer() {
     if (!zoneCode) return;
 
     // [COMMENT]: Context key để detect khi zone thay đổi (switch zone → cookie thay đổi)
-    const contextKey = `${zoneCode}:personal`; // TODO: thêm tenant khi wired
+    const ownerMode = renderContext.is_personal ? "personal" : "tenant";
+    const contextKey = `${zoneCode}:${ownerMode}`;
     if (lastContextRef.current === contextKey) return;
     lastContextRef.current = contextKey;
 
@@ -70,12 +71,12 @@ export function WorkspaceInitializer() {
     // Console never forwards those values as authorization claims.
     void (async () => {
       try {
-        await initWorkspaceContext({ tenantContext: false });
+        await initWorkspaceContext({ tenantContext: !renderContext.is_personal });
       } catch (err) {
         console.error("[WorkspaceInitializer] Failed to init workspace context:", err);
       }
     })();
-  }, [authenticated, loading, profile, initWorkspaceContext, clearWorkspaceContext]);
+  }, [authenticated, loading, profile, renderContext, initWorkspaceContext, clearWorkspaceContext]);
 
   // [COMMENT]: Không render gì — chỉ là side-effect manager
   return null;

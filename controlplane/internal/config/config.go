@@ -146,11 +146,12 @@ type GRPCCfg struct {
 
 // SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
-	Hierarchy  string
-	IAM        string
-	Mail       string
-	Hypervisor string // [NEW COMMENT]: Tên SQL schema lưu trữ thông tin của phân hệ Hypervisor Nodes
-	Storage    string // [COMMENT]: Tên SQL schema dành riêng cho phân hệ Object Storage (MinIO)
+	Hierarchy      string
+	IAM            string
+	Mail           string
+	Hypervisor     string // [NEW COMMENT]: Tên SQL schema lưu trữ thông tin của phân hệ Hypervisor Nodes
+	Storage        string // [COMMENT]: Tên SQL schema dành riêng cho phân hệ Object Storage (MinIO)
+	ManagedService string // [COMMENT]: Durable desired state của Managed Service Platform, không chứa runtime hoặc secret plaintext.
 }
 
 // LoadConfig đọc cấu hình từ environment variables của hệ thống.
@@ -311,11 +312,12 @@ func LoadConfig() (*Config, error) {
 			KeyPath:    getEnv("OTEL_TLS_KEY", ""),
 		},
 		SchemaSQL: SchemaSQLCfg{
-			Hierarchy:  "hierarchy",
-			IAM:        "iam",
-			Mail:       "mail",
-			Hypervisor: "hypervisor", // [NEW COMMENT]: Khởi tạo giá trị mặc định là schema 'hypervisor'
-			Storage:    "storage",    // [COMMENT]: Khởi tạo tên schema mặc định cho Object Storage là 'storage'
+			Hierarchy:      "hierarchy",
+			IAM:            "iam",
+			Mail:           "mail",
+			Hypervisor:     "hypervisor", // [NEW COMMENT]: Khởi tạo giá trị mặc định là schema 'hypervisor'
+			Storage:        "storage",    // [COMMENT]: Khởi tạo tên schema mặc định cho Object Storage là 'storage'
+			ManagedService: "managed_service",
 		},
 	}
 	return cfg, nil

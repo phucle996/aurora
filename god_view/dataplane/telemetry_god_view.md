@@ -1,7 +1,8 @@
-# Runtime Telemetry — Dataplane và Job Orchestrator God View
+# Runtime Telemetry — Dataplane, Job Orchestrator và Zone Customer Read God View
 
 > [!IMPORTANT]
-> Đây là Source of Truth duy nhất cho telemetry lifecycle của Aurora Dataplane và Job Orchestrator.
+> Đây là Source of Truth duy nhất cho telemetry lifecycle của Aurora Dataplane, Job
+> Orchestrator và customer observability read path trong Zone.
 > Logs, metrics và traces là diagnostic data; chúng không thay thế Kafka result/DLQ,
 > PostgreSQL transaction, Zone Health KV hoặc broker settlement durability boundary.
 
@@ -64,6 +65,55 @@ correlation string riêng có thể lệch khỏi span thực tế.
 JO là process Central đa-Zone: OTel Resource mang `aurora.component.scope=central`, không mang
 `aurora.zone.id`. `service.instance.id` của log, metric và trace cùng dùng một `boot_id`; Zone chỉ
 được gắn trên command/report span tương ứng để không biến một pod JO thành resource thuộc một Zone giả.
+
+### 2.1. Managed Service customer observability read path (staged, not implemented)
+
+Customer telemetry của Managed Service không đọc Dataplane RAM, không subscribe
+NATS và không đi qua JO/Notification/Centrifugo. Luồng duy nhất là:
+
+```mermaid
+flowchart LR
+    MSP[Managed Service pods] --> OC[Zone OTel Collector]
+    OC --> VM[(VictoriaMetrics Zone)]
+    OC --> VL[(VictoriaLogs Zone)]
+    VM --> ZOS[zone-observability-stream]
+    VL --> ZOS
+    ZOS --> ZPE[Zone Public Edge]
+    ZPE --> B[Browser]
+```
+
+Dataplane renderer đã inject protected metadata
+`platform.aurora.io/{workspace-id,owner-id,owner-type,managed-service-instance-id}`
+và protected component label. Zone OTel Collector lookup metadata từ Kubernetes API,
+derive `aurora_workspace_id`, `aurora_owner_id`,
+`aurora_managed_service_instance_id`, `aurora_component_id` rồi overwrite attribute
+cùng tên do workload tự gửi. Đây là telemetry-only dimension: không phải Kubernetes
+traffic label, không được user payload điều khiển và không làm network policy thay đổi.
+
+`aurora_workspace_id`, `aurora_owner_id` và
+`aurora_managed_service_instance_id` có cardinality cao nên chỉ tồn tại trong customer
+Victoria read plane với series/retention budget riêng theo Zone. Chúng không được dùng
+làm metric label health/alert platform hoặc query fan-out qua nhiều instance ngoài
+scope đã verify.
+
+`zone-observability-stream` là Rust Deployment riêng trong Zone. Nó chỉ dùng
+read-only VictoriaMetrics/VictoriaLogs identity và trusted scope mà Zone Public Edge
+inject sau Authorization check. Nó không có Dataplane, NATS, Kafka, Redis,
+PostgreSQL, Zone KV, Kubernetes API hoặc Vault credential. Browser không có Victoria
+credential và không thể gửi raw PromQL/LogsQL, arbitrary label selector hay namespace;
+service derive fixed query từ `panel_id` allow-list và append telemetry filters từ scope.
+
+V1 retention của customer Victoria plane là metrics 7 ngày và logs 3 ngày. Metrics là
+sampled/eventual observation; logs tail là best-effort stream và không cam kết
+ordering/replay sau reconnect. Không result, state machine, billing, audit timeline
+hay authorization decision nào được suy luận từ Victoria. `SUCCESS`/`FAILED` chỉ đến
+từ durable Kafka result/Controlplane settlement.
+
+Service/Public Edge enforce fixed maximum range, sample point, log-line, byte,
+connection duration và in-flight budget. Slow metrics client có thể receive coalesced
+sample; slow logs client bị close/cancel upstream thay vì tạo queue RAM vô hạn. Mất
+Victoria/Collector/stream service chỉ làm observability unavailable/stale, không
+block Dataplane executor hoặc thay đổi business lifecycle.
 
 ## 3. Structured logging
 

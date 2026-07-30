@@ -22,7 +22,12 @@ SRE Admin là phương thức truy cập khẩn cấp/quản trị hệ thống 
 6. **Dynamic Device Binding & Edge Signature Verification**:
    - Khi đăng nhập SRE, client (Admin UI / CLI) tạo cặp khóa Ed25519 (private key non-extractable lưu trong IndexedDB, public key base64-encoded) gửi lên API đăng nhập qua tham số `device_public_key`.
    - Public key này được đính kèm vào `AdminAccessSession` lưu trên Redis L2.
-   - Các request Critical (đường dẫn chứa `/critical/`) bắt buộc phải gửi kèm chữ ký Ed25519, timestamp, và nonce qua các header tương ứng để Rust acr verify trực tiếp tại biên, chống Replay và giả mạo request.
+   - Các request Critical (đường dẫn chứa `/critical/`) gửi `X-Admin-Signature`, `X-Admin-Timestamp`, UUID `X-Admin-Nonce` và `X-Admin-StepUp-Code`. ACR verify Ed25519 trên `METHOD\nPATH\nQUERY\nBODY_SHA256\nTIMESTAMP\nNONCE`, claim nonce bằng Redis `SET NX EX 300`, rồi mới gọi Vault verify TOTP. OTP sai vẫn burn nonce và client phải ký request mới.
+7. **Managed Service catalog critical boundary (đã implement P02):**
+   - Normal route `/admin/managed-services/catalog/*` chỉ có read và category/definition/version metadata create/update. State transition và toàn bộ blueprint/draft/validate/publish/retire/delete chỉ tồn tại dưới `/admin/critical/managed-services/catalog/*`; không có normal mirror.
+   - ACR nhận diện `/critical/`, verify TOTP/chữ ký và consume nonce bind method + path + body; ACR không query Controlplane database để tự quyết định lifecycle/pin.
+   - Sau verify, ACR remove toàn bộ `x-admin-*` và raw `x-session-proof-*`, rồi overwrite `x-session-proof-verified=true` và inject opaque UUID `x-session-proof-challenge-id`. Chữ ký, TOTP, timestamp và nonce không được tới Controlplane/log business; CP fail-close nếu marker thiếu và chỉ dùng challenge ID làm audit provenance.
+   - Critical proof là additional gate, không bypass immutable published revision hoặc FK/pin; hard delete record đang pin vẫn bị Controlplane reject.
 
 ---
 

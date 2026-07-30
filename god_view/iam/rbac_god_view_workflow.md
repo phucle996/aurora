@@ -376,6 +376,7 @@ Hệ thống đi kèm bộ khung vai trò và quyền hạn được cài đặt
 | Hierarchy | `hierarchy:workspace:create`, `hierarchy:workspace:read`, `hierarchy:workspace:update`, `hierarchy:workspace:delete` |
 | Email Delivery / Consumer | `email:consumer:create`, `email:consumer:read`, `email:consumer:update`, `email:consumer:delete` |
 | Email Delivery / Template | `email:template:create`, `email:template:read`, `email:template:publish`, `email:template:delete` |
+| Managed Service discovery | `managed-service:catalog:read` |
 | Billing | `billing:plan:read`, `billing:tier:read`, `billing:tier:publish`, `billing:wallet:read`, `billing:ledger:read`, `billing:subscription:write`, `billing:credit:adjust` |
 
 `email` là tên capability nghiệp vụ được hiển thị cho người dùng và dùng trong RBAC. Các path tương thích

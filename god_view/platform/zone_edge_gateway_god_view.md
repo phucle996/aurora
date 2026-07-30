@@ -12,12 +12,13 @@
 | Zone Public Edge Gateway | Public DNS/TLS | Streaming, connection limits, public route allow-list | Business authorization, Zone KV, Central assertion keys |
 | Zone Control Edge Gateway | Private network and Central Envoy mTLS only | Private route allow-list, bounded bodies, ExtAuthz, upstream routing | Business ownership, Kafka job execution, arbitrary dynamic proxy |
 | Zone Control Authorizer | Zone-private mTLS gRPC | Assertion verification, capability policy, Zone access-record matching | Gateway routing, Central business data, S3/Proxmox credentials |
+| Zone Observability Stream Service | Zone-private; only named Edge routes reach it | Read-only Victoria query shaping and bounded stream delivery | Business authorization, Zone KV, Central assertion keys, Kafka/NATS/PostgreSQL/Vault |
 | ACR | Central ExtAuthz | Trinity verification and Vault-signed Zone control assertion | Zone KV or Zone infrastructure access |
 | Dataplane | Exact Zone | Durable command execution and Zone access projection | HTTP authorization for each browser request |
 
-The gateway names refer to Envoy deployments. The Rust process is
-`zone-control-authorizer`; it is deliberately not named or deployed as a
-gateway.
+The gateway names refer to Envoy deployments. `zone-control-authorizer` and the
+planned Rust subproject `zone-observability-stream` are services, deliberately not
+named or deployed as gateways.
 
 ## 2. Topology
 
@@ -33,6 +34,12 @@ flowchart LR
 
     B -->|short-lived presigned request| ZP[Zone Public Edge Gateway]
     ZP -->|stream, no AWS signing| S3
+
+    B -->|short-lived scoped stream ticket| ZP
+    ZP -->|one connection-open check| ZA
+    ZP -->|trusted injected scope| ZOS[Zone Observability Stream Service]
+    ZOS --> VM[(VictoriaMetrics)]
+    ZOS --> VL[(VictoriaLogs)]
 ```
 
 ACR never sends the HTTP request itself. Central Envoy receives ACR's
@@ -45,13 +52,17 @@ request.
   here.
 - Handles large upload/download bodies and explicitly approved long-lived
   connections. It does not call ACR or Zone Control Authorizer per byte.
+- A named observability stream route calls the same Zone Control Authorizer once
+  at connection open. The route strips the browser ticket and all client-supplied
+  scope headers, then forwards only trusted injected scope to its named upstream.
+  The maximum stream lifetime cannot exceed ticket expiry.
 - Preserves the raw path/query required by SigV4 and never logs the request
   path/query or authorization material.
 - Strips all `x-aurora-*`, Trinity cookie, CSRF and device headers.
 - Does not AWS-sign a request. MinIO validates the short-lived presigned
   signature.
-- Has egress only to the explicitly routed public data service and DNS. It
-  cannot reach Dataplane, Proxmox or Zone NATS KV.
+- Has egress only to the explicitly routed public data/observability service and
+  DNS. It cannot reach Dataplane, Proxmox, Victoria directly or Zone NATS KV.
 - Automatic upstream retries are disabled for streamed requests. Multipart
   clients retry parts using stable part identity.
 - Listener/upstream buffers are bounded per connection; downstream and MinIO
@@ -79,7 +90,48 @@ request.
 - Durable resource creation/import still uses PostgreSQL outbox → JO → Kafka →
   Dataplane. Zone Control Edge does not replace Kafka with synchronous HTTP.
 
-## 5. Zone control assertion v1
+## 5. Generic public observability stream (staged, not implemented)
+
+Managed Service customer telemetry reuses the two existing gateways. It does not
+introduce a workflow-specific gateway and it never routes browser runtime through
+NATS, JO, Shared Redis, Notification Service or Centrifugo.
+
+```text
+Browser
+  → Central assertion/ticket preparation through Zone Control Edge
+  → short-lived opaque scope ticket
+  → Zone Public Edge
+  → one Zone Control Authorizer check
+  → zone-observability-stream
+  → VictoriaMetrics / VictoriaLogs in the same Zone
+```
+
+The preparation capability is generic `observability.read`, not a Managed Service
+specific security principal. Ticket TTL và maximum stream lifetime đều là 5 phút. Nó
+bind target Zone, actor, auth generation, owner, workspace, resource/instance,
+permitted component/panel set, method/path, policy revision, `jti` và expiry. Zone
+Public Edge is opaque to ticket signing material. At stream open it
+delegates validation to Zone Control Authorizer, which compares the ticket/assertion
+with the matching Zone access projection and injects the verified scope. The Rust
+service receives no Central cookie, caller identity header, Zone access handle or
+ticket; it only trusts the injected scope from the Edge.
+
+The public ticket is a distinct assertion audience
+`zone-public-edge-gateway` with capability `observability.read`; a
+`zone-control-edge-gateway` assertion is never accepted by Public Edge. Both profiles
+use the same versioned Central public-key rotation, but the authorizer is the only
+Zone process that verifies them. This keeps Public Edge free of assertion keys and
+prevents a private control assertion from being replayed as a public stream ticket.
+
+The browser request has a fixed route shape and bounded `panel_id`, optional allowed
+component and time range/cursor. It cannot provide PromQL, LogsQL, metric name,
+label selector, namespace, owner/workspace/Zone/instance ID or an upstream URL. The
+service derives a fixed Victoria query from panel policy and appends enforced
+telemetry filters. The ticket is read-only: replay can at most open another bounded
+stream, so connection/rate/duration quotas are the replay harm boundary rather than
+a false distributed exactly-once claim.
+
+## 6. Zone control assertion v1
 
 ACR signs the base64url-encoded JSON bytes using the dedicated asymmetric Vault
 Transit key. Zones receive overlapping versioned public keys only.
@@ -121,7 +173,7 @@ Central Envoy/ACR overwrites client copies. Zone Control Authorizer removes the
 assertion, signature, key ID and opaque access-session header before upstream
 routing.
 
-## 6. Authorization and replay semantics
+## 7. Authorization and replay semantics
 
 1. ACR authenticates the Central session and loads the short-lived Central
    access record from Auth-State Redis.
@@ -149,16 +201,24 @@ for the same payload and `operation_id`; usage delivery and Cost inbox must
 deduplicate the same operation. A future non-idempotent capability must add a
 durable/CAS outcome record before it is allow-listed.
 
-## 7. HA, backpressure and failure semantics
+## 8. HA, backpressure and failure semantics
 
 - Public Edge, Control Edge and Control Authorizer are separate Deployments,
   identities, PDBs and HPA targets with at least three replicas in production.
+- `zone-observability-stream` is a separate Deployment/identity/HPA target. It has
+  read-only egress solely to the Zone Victoria endpoints; it has no route or
+  credential to Dataplane, Kafka, NATS, Redis, Zone KV, Kubernetes API or Vault.
 - Envoy workloads use a currently supported patch line. Production overlays
   mirror, scan and pin the approved image digest rather than tracking a floating
   tag.
 - Public Edge scales primarily on connections/bandwidth; CPU HPA is only a
   baseline until custom metrics are wired. Control Edge scales on request
   pressure and authorizer latency.
+- Observability streams have bounded per-connection query/byte/in-flight budgets.
+  Metrics may coalesce for a slow downstream; logs tail is cancelled/closed rather
+  than queued without bound. A client disconnect cancels the Victoria request. Ticket
+  expiry or auth/workspace/Zone/instance/policy scope change closes the stream; client
+  must acquire a new ticket before reconnect.
 - Authorizer rejects work above its bounded in-flight semaphore. Envoy has
   bounded pending requests/connections and fails closed on overload.
 - ACR assigns `/zone-control/v1/*` an isolated pre/post-auth rate-limit
@@ -174,11 +234,14 @@ durable/CAS outcome record before it is allow-listed.
 - Public Edge outage stops public transfers. Control Edge outage stops new
   control operations/tickets; already issued presigned transfers continue only
   until their TTL.
+- Public Edge, Authorizer, stream service or Victoria outage rejects/terminates the
+  observability stream with a retryable error; it cannot produce a synthetic
+  resource `READY`/`SUCCESS` state or affect a durable operation.
 - Graceful shutdown removes readiness, stops new checks, drains Envoy
   connections and leaves access records to their bounded TTL.
 - No component claims exactly-once across Central, broker, gateway and S3.
 
-## 8. Routing and multi-Zone gate
+## 9. Routing and multi-Zone gate
 
 The checked-in Central Envoy cluster is a single-Zone base template targeting
 `zone-z1`. Production must render one allow-listed private cluster per active
@@ -189,7 +252,7 @@ arbitrary upstream.
 Until private DNS/mTLS identities and allow-listed multi-Zone CDS are
 provisioned, the Zone control route remains staged and must fail closed.
 
-## 9. Observability
+## 10. Observability
 
 - Both Envoy gateways emit structured JSON access logs without cookies,
   assertions, S3 authorization or presigned query strings.
@@ -201,8 +264,11 @@ provisioned, the Zone control route remains staged and must fail closed.
   object key and `operation_id` are not metric labels.
 - Observability is diagnostic. It is not billing evidence or durable operation
   completion.
+- The stream service emits only fixed-cardinality health/query/outcome metrics;
+  customer scope, ticket, raw Victoria query, log line and metric sample are never
+  access-log fields or metric labels.
 
-## 10. Deployment source map
+## 11. Deployment source map
 
 | Concern | Source |
 |---|---|
@@ -212,6 +278,7 @@ provisioned, the Zone control route remains staged and must fail closed.
 | Control workload boundary | `k8s/zone-control-edge-gateway.yaml` |
 | Rust authorizer | `zone-control-edge-gateway/authorizer/src/` |
 | Authorizer workload boundary | `k8s/zone-control-authorizer.yaml` |
+| Zone observability stream service | `zone-observability-stream/` (planned Rust subproject; not checked in yet) |
 | Central assertion producer | `acr/src/storage/control_assertion.rs` |
 | Central private route | `controlplane/dev/envoy/routes/https_routes.yaml` |
 | Zone access projection | `dataplane/src/infra/zone_kv.rs` |

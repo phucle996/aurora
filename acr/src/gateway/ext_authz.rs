@@ -972,7 +972,12 @@ impl Authorization for ExtAuthzService {
                 })
                 .unwrap_or_default();
 
-            if let Err(err_msg) = crate::sre::signature::verify_sre_signature(
+            let step_up_code = client_headers
+                .get("x-admin-stepup-code")
+                .or_else(|| client_headers.get("X-Admin-StepUp-Code"))
+                .map(String::as_str)
+                .unwrap_or_default();
+            let proof_id = match crate::sre::signature::verify_sre_signature(
                 &self.session_mgr,
                 &device_pubkey,
                 client_headers,
@@ -982,17 +987,30 @@ impl Authorization for ExtAuthzService {
             )
             .await
             {
-                Logger::authz_log(
-                    "sre",
-                    method,
-                    authz_log_path,
-                    "DENIED",
-                    &format!("SRE Signature failed: {}", err_msg),
-                );
+                Ok(proof_id) => proof_id,
+                Err(err_msg) => {
+                    Logger::authz_log("sre", method, authz_log_path, "DENIED", &err_msg);
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied("Invalid SRE critical proof"),
+                    )));
+                }
+            };
+
+            // [COMMENT]: Only a device-signed, one-time request may reach
+            // Vault TOTP verification. A failed OTP burns the nonce and forces
+            // a freshly signed request, preventing replay across code windows.
+            if step_up_code.len() != 6
+                || !step_up_code.bytes().all(|value| value.is_ascii_digit())
+                || !matches!(
+                    self.sre_token_mgr.verify_admin_totp(step_up_code).await,
+                    Ok(true)
+                )
+            {
                 return Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied(&format!("SRE signature invalid: {}", err_msg)),
+                    Status::permission_denied("Invalid SRE critical proof"),
                 )));
             }
+            session_proof_challenge_id = Some(proof_id);
         }
 
         let zone_control_signed_headers =
@@ -1173,6 +1191,20 @@ impl Authorization for ExtAuthzService {
             use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
             if let HttpResponse::OkResponse(ref mut ok) = http_resp {
                 use envoy_types::pb::envoy::config::core::v3::HeaderValueOption;
+
+                // [COMMENT]: Cryptographic material is consumed at ACR and
+                // must never cross into a business backend or its access logs.
+                // Verified opaque markers are re-added below after removal.
+                ok.headers_to_remove.extend([
+                    "x-admin-signature".to_string(),
+                    "x-admin-timestamp".to_string(),
+                    "x-admin-nonce".to_string(),
+                    "x-admin-stepup-code".to_string(),
+                    "x-session-proof-signature".to_string(),
+                    "x-session-proof-timestamp".to_string(),
+                    "x-session-proof-challenge-id".to_string(),
+                    "x-session-proof-verified".to_string(),
+                ]);
 
                 if let Some(signed) = zone_control_signed_headers {
                     for (key, value) in [

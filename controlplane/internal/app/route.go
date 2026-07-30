@@ -91,7 +91,8 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 		})
 	}
 
-	// Managed Service Platform hiện chỉ có route boundary; business routes sẽ
-	// được đăng ký cùng từng vertical slice hoàn chỉnh.
+	// Managed Service P03 adds scoped customer catalog/form reads. Customer
+	// lifecycle mutations remain absent until P04 and therefore cannot create an
+	// outbox command or reach a Zone runtime from these routes.
 	managedservice.RegisterRoutes(router, m.ManagedService)
 }
