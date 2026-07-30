@@ -16,6 +16,7 @@ import (
 	"controlplane/internal/managedservice/taxonomy"
 	"controlplane/internal/managedservice/transport/http/dto"
 	"controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,8 @@ func NewDefinitionHandler(service managedservice.DefinitionService) *DefinitionH
 }
 
 func (h *DefinitionHandler) CreateDefinition(c *gin.Context) {
+	const op = "managedservice.definition.create"
+
 	// [COMMENT]: Chỉ SRE mới có quyền tạo definition catalog.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -63,7 +66,7 @@ func (h *DefinitionHandler) CreateDefinition(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(append([]byte(request.Code), nameJSON...), descriptionJSON...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.CreateDefinition(ctx, &entity.CreateDefinition{Actor: actor, CategoryID: categoryID, Code: request.Code, Name: english, Description: strings.TrimSpace(request.Description["en"]), NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -86,6 +89,8 @@ func (h *DefinitionHandler) CreateDefinition(c *gin.Context) {
 }
 
 func (h *DefinitionHandler) ListDefinitions(c *gin.Context) {
+	const op = "managedservice.definition.list"
+
 	// [COMMENT]: Chỉ SRE mới có quyền list definitions.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -114,7 +119,7 @@ func (h *DefinitionHandler) ListDefinitions(c *gin.Context) {
 		limit = value
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	items, err := h.service.ListDefinitions(ctx, &entity.ListDefinitions{CategoryID: categoryID, Limit: limit})
@@ -141,6 +146,8 @@ func (h *DefinitionHandler) ListDefinitions(c *gin.Context) {
 }
 
 func (h *DefinitionHandler) GetDefinition(c *gin.Context) {
+	const op = "managedservice.definition.get"
+
 	// [COMMENT]: Chỉ SRE mới có quyền xem chi tiết definition.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -153,7 +160,7 @@ func (h *DefinitionHandler) GetDefinition(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.GetDefinition(ctx, &entity.GetDefinition{DefinitionID: id})
@@ -180,6 +187,8 @@ func (h *DefinitionHandler) GetDefinition(c *gin.Context) {
 }
 
 func (h *DefinitionHandler) UpdateDefinition(c *gin.Context) {
+	const op = "managedservice.definition.update"
+
 	// [COMMENT]: Chỉ SRE mới có quyền update definition.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -215,7 +224,7 @@ func (h *DefinitionHandler) UpdateDefinition(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(nameJSON, descriptionJSON...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.UpdateDefinition(ctx, &entity.UpdateDefinition{DefinitionID: id, Actor: actor, ExpectedVersion: request.ExpectedVersion, Name: english, Description: strings.TrimSpace(request.Description["en"]), NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -243,6 +252,8 @@ func (h *DefinitionHandler) UpdateDefinition(c *gin.Context) {
 }
 
 func (h *DefinitionHandler) RetireDefinition(c *gin.Context) {
+	const op = "managedservice.definition.retire"
+
 	// [COMMENT]: Retire là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -266,7 +277,7 @@ func (h *DefinitionHandler) RetireDefinition(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.RetireDefinition(ctx, &entity.RetireDefinition{DefinitionID: id, Actor: actor, ProofID: proofID, ExpectedVersion: request.ExpectedVersion})

@@ -2,28 +2,46 @@ package iamSvcImpl
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
 
 // [COMMENT]: RbacTenantService thực thi interface quản lý vai trò trong phạm vi tenant
 type RbacTenantService struct {
-	repo iamRepoInterface.RbacTenantRepository
+	repo    iamRepoInterface.RbacTenantRepository
+	metrics observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewRbacTenantService khởi tạo một thể hiện mới của RbacTenantService
-func NewRbacTenantService(repo iamRepoInterface.RbacTenantRepository) iamSvcInterface.RbacTenantService {
+func NewRbacTenantService(repo iamRepoInterface.RbacTenantRepository, metrics observability.WorkflowRecorder) iamSvcInterface.RbacTenantService {
 	return &RbacTenantService{
-		repo: repo,
+		repo:    repo,
+		metrics: metrics,
 	}
 }
 
 // [COMMENT]: ListTenantRoles lấy danh sách vai trò của một tenant
-func (s *RbacTenantService) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error) {
+func (s *RbacTenantService) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) (out []iamEntity.Role, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			result, reason = observability.ResultRejected, observability.ReasonForbidden
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.ListTenantRoles(ctx, tenantID)
 }
 

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"controlplane/internal/observability"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
@@ -26,6 +28,7 @@ import (
 type PersonalBucketSvcImpl struct {
 	repo    storageRepoInterface.PersonalBucketRepo
 	authRds *goredis.Client
+	metrics observability.WorkflowRecorder
 }
 
 // NewPersonalBucketService wires the repository and the dedicated
@@ -34,8 +37,9 @@ type PersonalBucketSvcImpl struct {
 func NewPersonalBucketService(
 	repo storageRepoInterface.PersonalBucketRepo,
 	authRds *goredis.Client,
+	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalBucketService {
-	return &PersonalBucketSvcImpl{repo: repo, authRds: authRds}
+	return &PersonalBucketSvcImpl{repo: repo, authRds: authRds, metrics: metrics}
 }
 
 // [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
@@ -51,6 +55,10 @@ func buildPersonalBucketPolicy(bucketName string) string {
 }
 
 func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, param *storageEntity.CreatePersonalBucket) (*storageEntity.CreatedBucketResult, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
 	if err != nil {
@@ -93,6 +101,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	// [COMMENT]: Validate tính hợp lệ của JSON policy
 	var js map[string]interface{}
 	if err := json.Unmarshal([]byte(policy), &js); err != nil {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return nil, apperr.Wrap(storageTaxonomy.ErrInvalidPolicy, err, "invalid_policy_format")
 	}
 
@@ -165,10 +174,16 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 
 	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) 3-way CTE: bucket + credential + outbox record
 	if err := s.repo.Create(ctx, bucket, param.WorkspaceID, param.ZoneID, credential, outbox); err != nil {
+		if errors.Is(err, storageTaxonomy.ErrAlreadyExists) {
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
 	// [COMMENT]: Trả về credentials ngay để HTTP handler phản hồi user — secret_key chỉ hiển thị 1 lần này
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &storageEntity.CreatedBucketResult{
 		BucketID:     bucket.ID,
 		BucketName:   bucket.Name,
@@ -180,35 +195,60 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 }
 
 func (s *PersonalBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "get_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return bucket, nil
 }
 
 func (s *PersonalBucketSvcImpl) ListBuckets(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: Liệt kê các bucket theo workspace_id cho luồng cá nhân có check userID và zoneID
 	buckets, err := s.repo.ListByWorkspace(ctx, workspaceID, zoneID, userID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return buckets, nil
 }
 
 // [COMMENT]: ListBucketNames gọi repo để lấy danh sách tên vật lý của các bucket cá nhân
 func (s *PersonalBucketSvcImpl) ListBucketNames(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]string, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	names, err := s.repo.ListNamesByWorkspace(ctx, workspaceID, zoneID, userID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_names_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return names, nil
 }
 
 func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: 1. Lấy thông tin hiện tại của bucket để làm metadata cho outbox payload (name, current quota)
 	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "get_failed")
 	}
 
@@ -257,12 +297,22 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 	// [COMMENT]: 4. Thực thi cập nhật DB và ghi outbox nguyên tử
 	err = s.repo.UpdateQuota(ctx, bucketID, userID, quotaBytes, outbox)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrQuotaExceeded) || errors.Is(err, storageTaxonomy.ErrResizeLimitTooLow) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "update_quota_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
 func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết để xóa sạch trên MinIO
 	accessKeys, err := s.repo.ListAccessKeys(ctx, param.BucketID, param.UserID)
 	if err != nil {
@@ -312,19 +362,26 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 	// [COMMENT]: 4. Thực thi xóa cứng DB và ghi outbox nguyên tử
 	err = s.repo.Delete(ctx, param.BucketID, param.UserID, outbox)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "delete_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
 func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, param *storageEntity.StorageAccessSession) error {
-	if s.authRds == nil {
-		return apperr.Wrap(fmt.Errorf("auth-state redis is not configured"), nil, "access_session_unavailable")
-	}
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	if param == nil || param.AccessSessionID == uuid.Nil || param.ResourceID == uuid.Nil || param.ActorID == uuid.Nil {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return apperr.Wrap(fmt.Errorf("access session identity is incomplete"), nil, "invalid_access_session")
 	}
 	if param.ExpiresAtUnixSeconds <= uint64(time.Now().Unix()) {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return apperr.Wrap(fmt.Errorf("access session expiry is in the past"), nil, "invalid_access_session_expiry")
 	}
 
@@ -352,6 +409,7 @@ func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, 
 	}
 	ttl := time.Until(time.Unix(int64(param.ExpiresAtUnixSeconds), 0))
 	if ttl <= 0 {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return apperr.Wrap(fmt.Errorf("access session ttl is not positive"), nil, "invalid_access_session_expiry")
 	}
 	// The opaque UUID is the lookup handle; the random digest stays inside the
@@ -402,7 +460,9 @@ func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, 
 		return apperr.Wrap(err, err, "create_access_session_command_failed")
 	}
 	if err := s.authRds.Set(ctx, key, encoded, ttl).Err(); err != nil {
+		result, reason = observability.ResultFailure, observability.ReasonUnavailable
 		return apperr.Wrap(err, err, "persist_access_session_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }

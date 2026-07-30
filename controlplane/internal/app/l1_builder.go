@@ -8,6 +8,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -16,7 +17,7 @@ import (
 
 // InitCacheEngine khởi tạo toàn bộ hạ tầng Cache Engine (L1, L2, Fanout, Exec) tập trung.
 // Trả về thực thể CacheRegistry hợp nhất và lỗi (nếu có) phục vụ chiến lược Fail-Close.
-func InitCacheEngine(rdb *goredis.Client, channel string) (*cacheengine.CacheRegistry, error) {
+func InitCacheEngine(rdb *goredis.Client, channel string, metrics observability.CacheRecorder) (*cacheengine.CacheRegistry, error) {
 	if rdb == nil {
 		return nil, fmt.Errorf("cacheengine: redis client is required")
 	}
@@ -28,7 +29,7 @@ func InitCacheEngine(rdb *goredis.Client, channel string) (*cacheengine.CacheReg
 	}
 
 	// 2. Khởi tạo Facade Registry quản lý các sub-packages
-	registry := cacheengine.NewCacheRegistry(l1Cache)
+	registry := cacheengine.NewCacheRegistry(l1Cache, metrics)
 	if registry == nil {
 		return nil, fmt.Errorf("cacheengine: failed to initialize cache registry")
 	}

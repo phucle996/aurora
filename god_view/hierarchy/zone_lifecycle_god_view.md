@@ -37,12 +37,13 @@ public admin API:
 
 - Go module/package root: `hierarchy`; package con mang prefix module như
   `hierarchyEntity`, `hierarchyRepoInterface`, `hierarchySvcInterface`,
-  `hierarchyRepoImpl`, `hierarchySvcImpl`, `hierarchyHandler`, `hierarchyReq`,
-  `hierarchyTaxonomy` và `hierarchyMetrics`.
+  `hierarchyRepoImpl`, `hierarchySvcImpl`, `hierarchyHandler`, `hierarchyReq` và
+  `hierarchyTaxonomy`.
 - Admin route: `/admin/hierarchy/...`; mutation ảnh hưởng vận hành dùng
   `/admin/critical/hierarchy/...` để ACR bắt critical proof.
-- Observability: meter `aurora-controlplane.hierarchy` và metric prefix
-  `aurora_controlplane_hierarchy_`.
+- Observability: workflow recorder bind `module=hierarchy` và metric contract
+  `aurora_controlplane_workflow_*` theo
+  [`telemetry_god_view.md`](../controlplane/telemetry_god_view.md).
 - Protobuf schema package: `hierarchy.rpc`; message hiện được dùng trên Shared
   Redis request/reply, không biểu thị một runtime gRPC hop.
 

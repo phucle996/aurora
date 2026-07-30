@@ -3,9 +3,11 @@ package storageSvcImpl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
+	"controlplane/internal/observability"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
@@ -23,22 +25,30 @@ import (
 type PersonalCredentialSvcImpl struct {
 	repo       storageRepoInterface.PersonalCredentialRepo
 	bucketRepo storageRepoInterface.PersonalBucketRepo
+	metrics    observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewPersonalCredentialService tạo mới instance thực thi PersonalCredentialService.
 func NewPersonalCredentialService(
 	repo storageRepoInterface.PersonalCredentialRepo,
 	bucketRepo storageRepoInterface.PersonalBucketRepo,
+	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalCredentialService {
 	return &PersonalCredentialSvcImpl{
 		repo:       repo,
 		bucketRepo: bucketRepo,
+		metrics:    metrics,
 	}
 }
 
 func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param *storageEntity.CreatePersonalCredential) (*storageEntity.CreatedPersonalCredential, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: Kiểm tra an toàn: Đảm bảo policy JSON chỉ cho phép truy cập vào đúng bucketName được truyền
 	if !validatePolicyBucketName(param.Policy, param.BucketName) {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return nil, apperr.Wrap(storageTaxonomy.ErrInvalidPolicy, storageTaxonomy.ErrInvalidPolicy, "policy_violates_bucket_boundary")
 	}
 
@@ -105,17 +115,28 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	// [COMMENT]: Thực thi chèn đồng thời Credential và Outbox record với xác thực chéo scope
 	bucketID, err := s.repo.Create(ctx, param, outbox)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrAlreadyExists) {
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
 	createdCred.BucketID = bucketID
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return createdCred, nil
 }
 
 func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: Validate bucket ownership using GetByID check
 	bucket, err := s.bucketRepo.GetByID(ctx, bucketID, userID)
 	if err != nil || bucket == nil {
+		result, reason = observability.ResultRejected, observability.ReasonNotFound
 		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
 	}
 
@@ -124,10 +145,14 @@ func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketI
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return creds, nil
 }
 
 func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param *storageEntity.DeletePersonalCredential) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
@@ -171,9 +196,13 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 	// [COMMENT]: Thực thi xóa cứng Credential khỏi DB và chèn Outbox event nguyên tử.
 	// CTE tự validate ownership chain trước khi ghi immutable zone_id.
 	if err := s.repo.Delete(ctx, param, outbox); err != nil {
+		if errors.Is(err, storageTaxonomy.ErrCredentialNotFound) || errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "delete_failed")
 	}
 
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 

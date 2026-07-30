@@ -101,6 +101,9 @@ func NewModule(
 	if cacheEngine == nil {
 		return nil, errors.New("iam module: cache engine is nil")
 	}
+	if otel == nil {
+		return nil, errors.New("iam module: observability is nil")
+	}
 
 	// ------------------------------------------------------------------------
 	// 🔄 GIAI ĐOẠN 2: CORE REPOSITORIES & CACHES BOOTSTRAPPING
@@ -167,8 +170,9 @@ func NewModule(
 	// 💼 GIAI ĐOẠN 3: SERVICE LAYER INITIALIZATION
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
+	workflowMetrics := otel.WorkflowRecorder("iam")
 
-	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, rds)
+	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, rds, workflowMetrics)
 	if deviceSelfSvc == nil {
 		return nil, errors.New("iam module: failed to construct device self service")
 	}
@@ -183,7 +187,7 @@ func NewModule(
 		return nil, fmt.Errorf("iam module: failed to initialize Device Redis handler: %w", err)
 	}
 
-	devicePlatformSvc := iamSvcImpl.NewDevicePlatformService(devicePlatformRepo)
+	devicePlatformSvc := iamSvcImpl.NewDevicePlatformService(devicePlatformRepo, workflowMetrics)
 	if devicePlatformSvc == nil {
 		return nil, errors.New("iam module: failed to construct device platform service")
 	}
@@ -202,7 +206,7 @@ func NewModule(
 	// ------------------------------------------------------------------------
 
 	// [COMMENT]: Khởi tạo Session Refresh Service sử dụng platform và tenant RBAC repos
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, rbacPlatformRepo, rbacTenantRepo, cacheEngine)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, rbacPlatformRepo, rbacTenantRepo, cacheEngine, workflowMetrics)
 	if refreshSvc == nil {
 		return nil, errors.New("iam module: failed to construct session refresh service")
 	}
@@ -232,7 +236,7 @@ func NewModule(
 	}
 
 	// [COMMENT]: Khởi tạo MFA service chịu trách nhiệm xử lý business logic MFA và kiểm tra nil
-	mfaSvc := iamSvcImpl.NewMfaService(vaultClient, mfaRepo, authRedis)
+	mfaSvc := iamSvcImpl.NewMfaService(vaultClient, mfaRepo, authRedis, workflowMetrics)
 	if mfaSvc == nil {
 		return nil, errors.New("iam module: failed to construct mfa service implementation")
 	}
@@ -248,12 +252,13 @@ func NewModule(
 		cacheEngine, oneTimeTokenSvc, verificationPublisher,
 		billingOutboxRelay, mfaSvc,
 		nil,
+		workflowMetrics,
 	)
 	if authSvc == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
 	}
 
-	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, authRedis, rds)
+	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, authRedis, rds, workflowMetrics)
 	if userService == nil {
 		return nil, errors.New("iam module: failed to construct core user service implementation")
 	}
@@ -287,12 +292,13 @@ func NewModule(
 		cacheEngine,
 		authRedis,
 		rds,
+		workflowMetrics,
 	)
 	if rbacPlatformSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC platform service")
 	}
 
-	rbacTenantSvc := iamSvcImpl.NewRbacTenantService(rbacTenantRepo)
+	rbacTenantSvc := iamSvcImpl.NewRbacTenantService(rbacTenantRepo, workflowMetrics)
 	if rbacTenantSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC tenant service")
 	}

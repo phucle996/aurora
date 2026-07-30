@@ -7,8 +7,8 @@
 //     chịu toàn bộ trách nhiệm về vòng đời hệ thống (Start/Stop).
 //   - Startup Ordering: Tuân thủ nghiêm ngặt thứ tự khởi động để tránh race condition
 //     hoặc thao tác trên tài nguyên chưa sẵn sàng:
-//       Security -> Infra (PSQL / Redis) -> Migrations -> Policy Engine
-//       -> Observability -> HTTP Engine -> Modules -> gRPC -> Routes.
+//       Security -> Observability -> Infra (PSQL / Redis / Kafka) -> Migrations
+//       -> HTTP Engine -> Modules -> gRPC -> Routes.
 //   - Single Cleanup Path: Toàn bộ đường dẫn lỗi bootstrap đều gọi app.Stop() trước khi trả về
 //     lỗi để đảm bảo không rò rỉ tài nguyên (Resource Leak).
 //
@@ -20,10 +20,8 @@
 //                                                 không làm bootstrap loop vì pending-login có recovery.
 //   [FAIL-CLOSE] Schema Migrations:               Bắt buộc, schema sai thì data corruption ngay lập tức.
 //   [FAIL-CLOSE] Policy Engine:                   Bắt buộc, không có policy thì không thể điều phối runtime.
-//   [FAIL-OPEN / FAIL-CLOSE] OTel Tracing:        Được điều khiển bởi FailStrategy trong Policy Engine
-//                                                 (fail_open -> NullOTel/nil, fail_close -> abort).
-//   [FAIL-OPEN / FAIL-CLOSE] Prometheus:          Được điều khiển bởi FailStrategy trong Policy Engine
-//                                                 (fail_open -> NullPrometheus, fail_close -> abort).
+//   [FAIL-OPEN / FAIL-CLOSE] OTel telemetry:      Tracing và metrics cùng tuân theo OTel FailStrategy
+//                                                 (fail_open -> no-op providers, fail_close -> abort).
 //   [FAIL-CLOSE] Rate Limiter:                    SetFailOpen(false) -> mất Redis thì chặn toàn bộ request.
 //   [FAIL-CLOSE] HTTP Trusted Proxies:            Sai cấu hình IP có thể bypass CIDR guard, phải crash.
 //   [FAIL-CLOSE] Module Graph:                    Fail-fast, module lỗi thì toàn bộ cross-module wiring sai.
@@ -71,7 +69,6 @@ type App struct {
 	cfg        *config.Config
 	modules    *Modules
 	otel       *observability.OTel
-	prom       *observability.Metrics
 	httpServer *http.Server
 	grpc       *bootstrap.GRPC
 	psql       *pgxpool.Pool
@@ -105,11 +102,28 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	app.vault = vaultClient
 
+	// Telemetry is initialized before business infrastructure so PostgreSQL,
+	// Redis, Kafka and migrations share the same tracer and metric recorder.
+	otelObs, err := observability.InitOTel(ctx, &cfg.OTel, cfg.App.AppName)
+	if err != nil {
+		if cfg.OTel.FailStrategy != "fail_open" {
+			app.Stop()
+			return nil, fmt.Errorf("bootstrap: otel init failed [FAIL-CLOSE]: %w", err)
+		}
+		logger.SysWarn("bootstrap", fmt.Sprintf("otel init failed [FAIL-OPEN]: %v. Using no-op telemetry.", err))
+		otelObs = observability.NewNoopOTel(cfg.App.AppName)
+	}
+	if otelObs == nil || otelObs.Metrics() == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: telemetry dependency is required")
+	}
+	app.otel = otelObs
+
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Infrastructure bootstrap: PostgreSQL.
 	// Mất kết nối DB -> toàn bộ nghiệp vụ đọc/ghi dữ liệu tê liệt -> abort.
 	// --------------------------------------------------------------------
-	db, err := psql.NewPostgres(ctx, vaultClient, &cfg.Psql)
+	db, err := psql.NewPostgres(ctx, vaultClient, &cfg.Psql, otelObs.DependencyRecorder())
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: psql init failed: %w", err)
@@ -124,7 +138,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// [FAIL-CLOSE] Infrastructure bootstrap: Redis (Session / Cache).
 	// Mất Redis chính -> session/token cache mất hoàn toàn -> abort.
 	// --------------------------------------------------------------------
-	rds, err := redisinfra.NewRedis(ctx, vaultClient, &cfg.Redis, redisinfra.SharedConnectionPath)
+	rds, err := redisinfra.NewRedis(ctx, vaultClient, &cfg.Redis, redisinfra.SharedConnectionPath, otelObs.DependencyRecorder())
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: redis init failed: %w", err)
@@ -135,7 +149,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: redis client is required")
 	}
 	// [COMMENT]: Security-State/AuthZ Redis là deployment và credential riêng; không dùng logical DB.
-	authRds, err := redisinfra.NewRedis(ctx, vaultClient, &cfg.AuthRedis, redisinfra.AuthStateConnectionPath)
+	authRds, err := redisinfra.NewRedis(ctx, vaultClient, &cfg.AuthRedis, redisinfra.AuthStateConnectionPath, otelObs.DependencyRecorder())
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: auth redis init failed: %w", err)
@@ -148,7 +162,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	// [COMMENT]: Chỉ fail-fast cấu hình Kafka/client; broker outage được xử lý tại publish để
 	// luồng mail best-effort không kéo sập toàn bộ Controlplane.
-	kafkaProducer, err := kafkainfra.NewProducer(ctx, &cfg.Kafka)
+	kafkaProducer, err := kafkainfra.NewProducer(ctx, &cfg.Kafka, otelObs.DependencyRecorder())
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: kafka init failed: %w", err)
@@ -167,40 +181,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		app.Stop()
 		return nil, err
 	}
-
-	// Khởi tạo OTel trực tiếp bằng struct cấu hình từ config
-	otelObs, err := observability.InitOTel(ctx, &cfg.OTel, cfg.App.AppName)
-	if err != nil {
-		if cfg.OTel.FailStrategy == "fail_open" {
-			logger.SysWarn("bootstrap", fmt.Sprintf("otel init failed [FAIL-OPEN]: %v. Tracing disabled, continuing startup.", err))
-			otelObs = nil
-			err = nil // clear error, tiếp tục startup bình thường
-		} else {
-			app.Stop()
-			return nil, fmt.Errorf("bootstrap: otel init failed [FAIL-CLOSE]: %w", err)
-		}
-	}
-	app.otel = otelObs
-
-	// --------------------------------------------------------------------
-	// [FAIL-OPEN / FAIL-CLOSE] Observability bootstrap: OTel Metrics.
-	// Chiến lược do cấu hình tĩnh kiểm soát qua cfg.OTel.FailStrategy:
-	//   - fail_open  -> lỗi Metrics thì dùng NullMetrics (no-op), hệ thống tiếp tục.
-	//   - fail_close -> lỗi Metrics thì abort toàn bộ startup.
-	// --------------------------------------------------------------------
-	var promObs *observability.Metrics
-	promObs, err = observability.InitMetrics(cfg.App.AppName)
-	if err != nil {
-		if cfg.OTel.FailStrategy == "fail_open" {
-			logger.SysWarn("bootstrap", fmt.Sprintf("OTel metrics init failed [FAIL-OPEN]: %v. Falling back to NullMetrics.", err))
-			promObs = observability.NullMetrics()
-			err = nil // clear error, tiếp tục startup bình thường
-		} else {
-			app.Stop()
-			return nil, fmt.Errorf("bootstrap: OTel metrics init failed [FAIL-CLOSE]: %w", err)
-		}
-	}
-	app.prom = promObs
 
 	// [COMMENT]: Khởi động cấu hình HTTP Engine
 	// --------------------------------------------------------------------
@@ -227,7 +207,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		middleware.RequestID(),
 		middleware.ContextInjector(),
 		middleware.OTelTraceContext(otelObs),
-		middleware.OTelHTTPMetrics(promObs),
+		middleware.OTelHTTPMetrics(otelObs.Metrics()),
 		middleware.AccessLog(),
 		middleware.AdminXSSI(),
 	)
@@ -236,7 +216,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// [FAIL-CLOSE] Phase 1: Khởi tạo Cache Engine
 	// Cache Engine lỗi hoặc Redis mất kết nối -> abort lập tức (Fail-Close).
 	// --------------------------------------------------------------------
-	cacheEngine, err := InitCacheEngine(rds, "cacheengine:l1:fanout")
+	cacheEngine, err := InitCacheEngine(rds, "cacheengine:l1:fanout", otelObs.CacheRecorder())
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: cache engine init failed [FAIL-CLOSE]: %w", err)
@@ -333,7 +313,7 @@ func (a *App) Start() error {
 //  2. HTTP server shutdown (timeout 20s để drain in-flight requests)
 //  3. gRPC server stop
 //  4. Modules stop (giải phóng background workers)
-//  5. OTel flush + Prometheus state clear
+//  5. OTel metrics/traces flush
 //  6. Cancel root context
 //  7. Đóng PSQL pool và Redis connections
 //
@@ -367,8 +347,6 @@ func (a *App) Stop() {
 		}
 		otelCancel()
 	}
-	observability.ClearCurrentMetrics()
-
 	if a.cancel != nil {
 		a.cancel()
 	}

@@ -15,6 +15,7 @@ import (
 	"controlplane/internal/managedservice/taxonomy"
 	"controlplane/internal/managedservice/transport/http/dto"
 	"controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,8 @@ func NewBlueprintHandler(service managedservice.BlueprintService) *BlueprintHand
 }
 
 func (h *BlueprintHandler) CreateBlueprint(c *gin.Context) {
+	const op = "managedservice.blueprint.create"
+
 	// [COMMENT]: CreateBlueprint là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -68,7 +71,7 @@ func (h *BlueprintHandler) CreateBlueprint(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(append([]byte(request.Code), nameJSON...), descriptionJSON...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.CreateBlueprint(ctx, &entity.CreateBlueprint{Actor: actor, ProofID: proofID, VersionID: versionID, Code: request.Code, Name: english, NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -101,6 +104,8 @@ func (h *BlueprintHandler) CreateBlueprint(c *gin.Context) {
 }
 
 func (h *BlueprintHandler) GetBlueprint(c *gin.Context) {
+	const op = "managedservice.blueprint.get"
+
 	// [COMMENT]: Chỉ SRE mới có quyền xem chi tiết blueprint.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -113,7 +118,7 @@ func (h *BlueprintHandler) GetBlueprint(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.GetBlueprint(ctx, &entity.GetBlueprint{BlueprintID: id})
@@ -141,6 +146,8 @@ func (h *BlueprintHandler) GetBlueprint(c *gin.Context) {
 }
 
 func (h *BlueprintHandler) GetBlueprintByVersion(c *gin.Context) {
+	const op = "managedservice.blueprint.get_by_version"
+
 	// [COMMENT]: Chỉ SRE mới có quyền xem blueprint theo version.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -153,7 +160,7 @@ func (h *BlueprintHandler) GetBlueprintByVersion(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.GetBlueprintByVersion(ctx, &entity.GetBlueprintByVersion{VersionID: versionID})
@@ -181,6 +188,8 @@ func (h *BlueprintHandler) GetBlueprintByVersion(c *gin.Context) {
 }
 
 func (h *BlueprintHandler) DeleteBlueprint(c *gin.Context) {
+	const op = "managedservice.blueprint.delete"
+
 	// [COMMENT]: Delete blueprint là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -204,7 +213,7 @@ func (h *BlueprintHandler) DeleteBlueprint(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	err = h.service.DeleteBlueprint(ctx, &entity.DeleteBlueprint{BlueprintID: id, Actor: actor, ProofID: proofID, ExpectedVersion: request.ExpectedVersion})

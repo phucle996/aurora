@@ -12,15 +12,12 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	hierarchyMetrics "controlplane/internal/hierarchy/metrics"
-	iamMetrics "controlplane/internal/iam/metrics"
-	mailMetrics "controlplane/internal/mail/metrics"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -33,10 +30,18 @@ import (
 
 // OTel quản lý các đối tượng Tracer và Meter của OpenTelemetry.
 type OTel struct {
-	tracer        trace.Tracer
-	meterProvider *sdkmetric.MeterProvider
-	propagator    propagation.TextMapPropagator
-	shutdown      func(context.Context) error
+	tracer     trace.Tracer
+	metrics    *Metrics
+	propagator propagation.TextMapPropagator
+	shutdown   func(context.Context) error
+}
+
+func LocalHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		return "unknown"
+	}
+	return hostname
 }
 
 // InitOTel khởi tạo hệ thống tracing và metrics của OpenTelemetry tĩnh lúc khởi động.
@@ -50,10 +55,29 @@ func InitOTel(ctx context.Context, cfg *config.OTelCfg, serviceName string) (*OT
 		resource.Default(),
 		resource.NewWithAttributes("",
 			attribute.String("service.name", serviceName),
+			attribute.String("service.instance.id", LocalHostname()),
+			attribute.String("aurora.component", "controlplane"),
 		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("observability: init otel resource: %w", err)
+	}
+
+	propagator := propagation.TraceContext{}
+	if !cfg.Enabled {
+		return NewNoopOTel(serviceName), nil
+	}
+
+	// Both exporters must be ready before either global provider is installed.
+	// This keeps fail-close real and prevents a half-observable process.
+	spanExporter, err := newOTLPTraceExporter(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	metricExporter, err := newOTLPMetricExporter(ctx, cfg)
+	if err != nil {
+		_ = spanExporter.Shutdown(ctx)
+		return nil, err
 	}
 
 	// [1] TRACING SETUP
@@ -61,63 +85,42 @@ func InitOTel(ctx context.Context, cfg *config.OTelCfg, serviceName string) (*OT
 	traceOptions := []sdktrace.TracerProviderOption{
 		sdktrace.WithSampler(sampler),
 		sdktrace.WithResource(res),
-	}
-
-	var spanExporter sdktrace.SpanExporter
-	if cfg.Enabled {
-		spanExporter, err = newOTLPTraceExporter(ctx, cfg)
-		if err != nil {
-			return nil, err
-		}
-		traceOptions = append(traceOptions, sdktrace.WithBatcher(spanExporter,
+		sdktrace.WithBatcher(spanExporter,
 			sdktrace.WithBatchTimeout(cfg.BatchTimeout),
 			sdktrace.WithExportTimeout(cfg.ExportTimeout),
 			sdktrace.WithMaxExportBatchSize(cfg.BatchMaxSize),
 			sdktrace.WithMaxQueueSize(cfg.BatchMaxQueue),
-		))
+		),
 	}
 	tp := sdktrace.NewTracerProvider(traceOptions...)
-	otel.SetTracerProvider(tp)
 
 	// [2] METRICS SETUP
-	var meterProvider *sdkmetric.MeterProvider
-	if cfg.Enabled {
-		metricExporter, err := newOTLPMetricExporter(ctx, cfg)
-		if err == nil {
-			reader := sdkmetric.NewPeriodicReader(metricExporter,
-				sdkmetric.WithInterval(30*time.Second),
-			)
-			meterProvider = sdkmetric.NewMeterProvider(
-				sdkmetric.WithResource(res),
-				sdkmetric.WithReader(reader),
-			)
-			otel.SetMeterProvider(meterProvider)
-		}
+	reader := sdkmetric.NewPeriodicReader(metricExporter, sdkmetric.WithInterval(30*time.Second))
+	meterProvider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(res),
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithView(durationHistogramView("aurora_controlplane_http_request_duration_seconds")),
+		sdkmetric.WithView(durationHistogramView("aurora_controlplane_workflow_duration_seconds")),
+		sdkmetric.WithView(durationHistogramView("aurora_controlplane_dependency_duration_seconds")),
+	)
+	metrics, err := NewMetrics(meterProvider)
+	if err != nil {
+		_ = meterProvider.Shutdown(ctx)
+		_ = tp.Shutdown(ctx)
+		return nil, fmt.Errorf("observability: create metric instruments: %w", err)
 	}
 
-	// [3] INITIALIZE MODULE METRICS MANUALLY
-	// Khởi tạo các metrics của từng phân hệ một lần duy nhất lúc khởi động app.
-	// Sử dụng MeterProvider được chỉ định (hoặc fallback về global provider).
-	var mp metric.MeterProvider = otel.GetMeterProvider()
-	if meterProvider != nil {
-		mp = meterProvider
-	}
-	iamMetrics.Init(mp)
-	mailMetrics.Init(mp)
-	hierarchyMetrics.Init(mp)
-
-	propagator := propagation.TraceContext{}
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(meterProvider)
 	otel.SetTextMapPropagator(propagator)
 
 	shutdownFn := func(sCtx context.Context) error {
 		var errs []string
+		if err := meterProvider.Shutdown(sCtx); err != nil {
+			errs = append(errs, fmt.Sprintf("meter: %v", err))
+		}
 		if err := tp.Shutdown(sCtx); err != nil {
 			errs = append(errs, fmt.Sprintf("tracer: %v", err))
-		}
-		if meterProvider != nil {
-			if err := meterProvider.Shutdown(sCtx); err != nil {
-				errs = append(errs, fmt.Sprintf("meter: %v", err))
-			}
 		}
 		if len(errs) > 0 {
 			return fmt.Errorf("otel shutdown error: %s", strings.Join(errs, ", "))
@@ -126,11 +129,54 @@ func InitOTel(ctx context.Context, cfg *config.OTelCfg, serviceName string) (*OT
 	}
 
 	return &OTel{
-		tracer:        tp.Tracer(serviceName),
-		meterProvider: meterProvider,
-		propagator:    propagator,
-		shutdown:      shutdownFn,
+		tracer:     tp.Tracer(serviceName),
+		metrics:    metrics,
+		propagator: propagator,
+		shutdown:   shutdownFn,
 	}, nil
+}
+
+func NewNoopOTel(serviceName string) *OTel {
+	provider := trace.NewNoopTracerProvider()
+	meterProvider := metricnoop.NewMeterProvider()
+	propagator := propagation.TraceContext{}
+	otel.SetTracerProvider(provider)
+	otel.SetMeterProvider(meterProvider)
+	otel.SetTextMapPropagator(propagator)
+	return &OTel{
+		tracer:     provider.Tracer(serviceName),
+		metrics:    NewNoopMetrics(),
+		propagator: propagator,
+		shutdown:   func(context.Context) error { return nil },
+	}
+}
+
+func durationHistogramView(name string) sdkmetric.View {
+	return sdkmetric.NewView(
+		sdkmetric.Instrument{Name: name},
+		sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+			Boundaries: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+		}},
+	)
+}
+
+func (o *OTel) Metrics() *Metrics {
+	if o == nil || o.metrics == nil {
+		return NewNoopMetrics()
+	}
+	return o.metrics
+}
+
+func (o *OTel) WorkflowRecorder(module string) WorkflowRecorder {
+	return o.Metrics().ForModule(module)
+}
+
+func (o *OTel) DependencyRecorder() DependencyRecorder {
+	return o.Metrics()
+}
+
+func (o *OTel) CacheRecorder() CacheRecorder {
+	return o.Metrics()
 }
 
 func newOTLPTraceExporter(ctx context.Context, cfg *config.OTelCfg) (sdktrace.SpanExporter, error) {

@@ -3,13 +3,16 @@ package hypervisorSvcImpl
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
+	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
 	hypervisorproto "controlplane/internal/hypervisor/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -17,19 +20,35 @@ import (
 )
 
 type ImageServiceImpl struct {
-	repo hypervisorRepoInterface.ImageRepository
+	repo    hypervisorRepoInterface.ImageRepository
+	metrics observability.WorkflowRecorder
 }
 
 func NewImageService(
 	repo hypervisorRepoInterface.ImageRepository,
+	metrics observability.WorkflowRecorder,
 ) hypervisorSvcInterface.ImageService {
-	return &ImageServiceImpl{repo: repo}
+	return &ImageServiceImpl{repo: repo, metrics: metrics}
 }
 
 func (s *ImageServiceImpl) RegisterImageMetadata(
 	ctx context.Context,
 	input *hypervisorEntity.RegisterImageMetadata,
-) (*hypervisorEntity.ImageArtifact, error) {
+) (out *hypervisorEntity.ImageArtifact, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, hypervisorTaxonomy.ErrImageConflict):
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		case errors.Is(err, hypervisorTaxonomy.ErrScopeUnavailable):
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	imageID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
@@ -68,21 +87,51 @@ func (s *ImageServiceImpl) ListAdmin(
 	ctx context.Context,
 	zoneID uuid.UUID,
 	limit int32,
-) ([]*hypervisorEntity.ImageArtifact, error) {
+) (out []*hypervisorEntity.ImageArtifact, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.ListAdmin(ctx, zoneID, limit)
 }
 
 func (s *ImageServiceImpl) ListCatalog(
 	ctx context.Context,
 	zoneID uuid.UUID,
-) ([]*hypervisorEntity.ImageArtifact, error) {
+) (out []*hypervisorEntity.ImageArtifact, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.ListCatalog(ctx, zoneID)
 }
 
 func (s *ImageServiceImpl) BeginImport(
 	ctx context.Context,
 	input *hypervisorEntity.ImageImportRequest,
-) (*hypervisorEntity.ImageArtifact, error) {
+) (out *hypervisorEntity.ImageArtifact, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, hypervisorTaxonomy.ErrImageNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, hypervisorTaxonomy.ErrImageStateConflict):
+			result, reason = observability.ResultRejected, observability.ReasonInvalidTransition
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	image, err := s.repo.Get(ctx, input.ImageID, input.ZoneID)
 	if err != nil {
 		return nil, err
@@ -127,7 +176,21 @@ func (s *ImageServiceImpl) BeginImport(
 func (s *ImageServiceImpl) BeginDelete(
 	ctx context.Context,
 	input *hypervisorEntity.ImageDeleteRequest,
-) (*hypervisorEntity.ImageArtifact, error) {
+) (out *hypervisorEntity.ImageArtifact, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, hypervisorTaxonomy.ErrImageNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, hypervisorTaxonomy.ErrImageStateConflict):
+			result, reason = observability.ResultRejected, observability.ReasonInvalidTransition
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	image, err := s.repo.Get(ctx, input.ImageID, input.ZoneID)
 	if err != nil {
 		return nil, err

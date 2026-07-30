@@ -17,6 +17,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/observability"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
@@ -87,7 +88,7 @@ func (h *AuthRedisHandler) Start() error {
 	if h == nil {
 		return errors.New("auth Redis handler is nil")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "iam.auth.pubsub.subscribe"))
 	pubsub := h.sharedRedis.Subscribe(ctx,
 		verifyCredentialsChannel,
 		verifyExternalIdentityChannel,
@@ -155,16 +156,16 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 }
 
 func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.link_external_identity"), 10*time.Second)
 	defer cancel()
 
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.LinkExternalIdentity", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.LinkExternalIdentity", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarn("Redis.LinkExternalIdentity", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.LinkExternalIdentity", "Invalid request id envelope")
 		return
 	}
 	replyChannel := linkExternalIdentityReplyPrefix + requestID.String()
@@ -177,11 +178,11 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 	respond := func(response *iamproto.LinkExternalIdentityResponse) {
 		data, marshalErr := proto.Marshal(response)
 		if marshalErr != nil {
-			logger.SysError("Redis.LinkExternalIdentity", "Failed to marshal response")
+			logger.SysErrorCtx(ctx, "Redis.LinkExternalIdentity", "Failed to marshal response")
 			return
 		}
 		if publishErr := h.sharedRedis.Publish(ctx, replyChannel, data).Err(); publishErr != nil {
-			logger.SysError("Redis.LinkExternalIdentity", "Failed to publish response")
+			logger.SysErrorCtx(ctx, "Redis.LinkExternalIdentity", "Failed to publish response")
 		}
 	}
 
@@ -256,7 +257,7 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
 			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "ACCOUNT_UNAVAILABLE"})
 		default:
-			logger.SysError("Redis.LinkExternalIdentity", "Social identity link failed")
+			logger.SysErrorCtx(ctx, "Redis.LinkExternalIdentity", "Social identity link failed")
 			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "AUTHENTICATION_UNAVAILABLE"})
 		}
 		return
@@ -265,16 +266,16 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 }
 
 func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_external_identity"), 10*time.Second)
 	defer cancel()
 
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.VerifyExternalIdentity", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyExternalIdentity", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarn("Redis.VerifyExternalIdentity", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyExternalIdentity", "Invalid request id envelope")
 		return
 	}
 	replyChannel := verifyExternalIdentityReplyPrefix + requestID.String()
@@ -287,11 +288,11 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 	respond := func(resp *iamproto.VerifyExternalIdentityResponse) {
 		respData, marshalErr := proto.Marshal(resp)
 		if marshalErr != nil {
-			logger.SysError("Redis.VerifyExternalIdentity", "Failed to marshal response payload")
+			logger.SysErrorCtx(ctx, "Redis.VerifyExternalIdentity", "Failed to marshal response payload")
 			return
 		}
 		if publishErr := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); publishErr != nil {
-			logger.SysError("Redis.VerifyExternalIdentity", "Failed to send Redis reply")
+			logger.SysErrorCtx(ctx, "Redis.VerifyExternalIdentity", "Failed to send Redis reply")
 		}
 	}
 	var req iamproto.VerifyExternalIdentityRequest
@@ -402,7 +403,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 				ErrorMessage: "INVALID_EXTERNAL_IDENTITY",
 			})
 		default:
-			logger.SysError("Redis.VerifyExternalIdentity", "External identity verification failed")
+			logger.SysErrorCtx(ctx, "Redis.VerifyExternalIdentity", "External identity verification failed")
 			respond(&iamproto.VerifyExternalIdentityResponse{
 				Valid:        false,
 				ErrorMessage: "AUTHENTICATION_UNAVAILABLE",
@@ -438,7 +439,7 @@ func optionalString(value string) *string {
 // 1. LUỒNG XÁC THỰC CREDENTIALS (VerifyUserCredentials)
 // =========================================================================
 func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_credentials"), 10*time.Second)
 	defer cancel()
 
 	var span trace.Span
@@ -454,12 +455,12 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 	// [COMMENT]: PubSub fan-out tới mọi CP replica, vì vậy request_id là bắt buộc để chỉ một
 	// replica được phép chạm DB và phát refresh token cho cùng một lần đăng nhập.
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.VerifyUserCredentials", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarn("Redis.VerifyUserCredentials", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
@@ -477,17 +478,17 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		}
 		respData, err := proto.Marshal(resp)
 		if err != nil {
-			logger.SysError("Redis.VerifyUserCredentials", "Failed to marshal response payload")
+			logger.SysErrorCtx(ctx, "Redis.VerifyUserCredentials", "Failed to marshal response payload")
 			return
 		}
 		if err := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); err != nil {
-			logger.SysError("Redis.VerifyUserCredentials", "Failed to send Redis reply")
+			logger.SysErrorCtx(ctx, "Redis.VerifyUserCredentials", "Failed to send Redis reply")
 		}
 	}
 
 	var req iamproto.VerifyUserCredentialsRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
-		logger.SysError("Redis.VerifyUserCredentials", "Failed to unmarshal request data")
+		logger.SysErrorCtx(ctx, "Redis.VerifyUserCredentials", "Failed to unmarshal request data")
 		respond(&iamproto.VerifyUserCredentialsResponse{
 			Valid:        false,
 			ErrorMessage: "invalid request payload",
@@ -496,7 +497,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 	}
 
 	if req.Username == "" || req.Password == "" {
-		logger.SysWarn("Redis.VerifyUserCredentials", "Username and password are required")
+		logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Username and password are required")
 		respond(&iamproto.VerifyUserCredentialsResponse{
 			Valid:        false,
 			ErrorMessage: "Username and password are required",
@@ -533,7 +534,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 			return
 		}
 		if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
-			logger.SysWarn("Redis.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
+			logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
 			respond(&iamproto.VerifyUserCredentialsResponse{
 				Valid:        false,
 				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
@@ -541,14 +542,14 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 			return
 		}
 		if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
-			logger.SysWarn("Redis.VerifyUserCredentials", "Login attempt failed: invalid credentials")
+			logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Login attempt failed: invalid credentials")
 			respond(&iamproto.VerifyUserCredentialsResponse{
 				Valid:        false,
 				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
 			})
 			return
 		}
-		logger.SysError("Redis.VerifyUserCredentials", "Failed to verify credentials due to system error")
+		logger.SysErrorCtx(ctx, "Redis.VerifyUserCredentials", "Failed to verify credentials due to system error")
 		respond(&iamproto.VerifyUserCredentialsResponse{
 			Valid:        false,
 			ErrorMessage: "authentication service temporarily unavailable",
@@ -574,15 +575,15 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 }
 
 func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_mfa_challenge"), 10*time.Second)
 	defer cancel()
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.VerifyMfaChallenge", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyMfaChallenge", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarn("Redis.VerifyMfaChallenge", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyMfaChallenge", "Invalid request id envelope")
 		return
 	}
 	replyChannel := verifyMfaChallengeReplyPrefix + requestID.String()
@@ -594,7 +595,7 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 	respond := func(resp *iamproto.VerifyMfaChallengeResponse) {
 		data, marshalErr := proto.Marshal(resp)
 		if marshalErr != nil {
-			logger.SysError("Redis.VerifyMfaChallenge", "Failed to marshal response payload")
+			logger.SysErrorCtx(ctx, "Redis.VerifyMfaChallenge", "Failed to marshal response payload")
 			return
 		}
 		_ = h.sharedRedis.Publish(context.Background(), replyChannel, data).Err()
@@ -654,7 +655,7 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
 			respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "AUTHENTICATION_UNAVAILABLE"})
 		default:
-			logger.SysError("Redis.VerifyMfaChallenge", "MFA login verification failed")
+			logger.SysErrorCtx(ctx, "Redis.VerifyMfaChallenge", "MFA login verification failed")
 			respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "AUTHENTICATION_UNAVAILABLE"})
 		}
 		return
@@ -707,7 +708,7 @@ func validMFALoginCode(method, code string) bool {
 // 2. LUỒNG XÁC THỰC OPAQUE REFRESH TOKEN (VerifyOpaqueRefreshToken)
 // =========================================================================
 func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_opaque_token"), 10*time.Second)
 	defer cancel()
 
 	var span trace.Span
@@ -723,12 +724,12 @@ func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
 	// [COMMENT]: Refresh rotation là side effect; khóa request ngăn nhiều CP replica cùng
 	// xác minh/rotate một opaque token khi nhận chung một Redis PubSub message.
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.VerifyOpaqueRefreshToken", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarn("Redis.VerifyOpaqueRefreshToken", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
@@ -745,17 +746,17 @@ func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
 		}
 		respData, err := proto.Marshal(resp)
 		if err != nil {
-			logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to marshal response payload")
+			logger.SysErrorCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Failed to marshal response payload")
 			return
 		}
 		if err := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); err != nil {
-			logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to send Redis reply")
+			logger.SysErrorCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Failed to send Redis reply")
 		}
 	}
 
 	var req iamproto.VerifyOpaqueRefreshTokenRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
-		logger.SysError("Redis.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
+		logger.SysErrorCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
 		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
 			Valid:        false,
 			ErrorMessage: "invalid request payload",
@@ -809,7 +810,7 @@ func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
 // 3. LUỒNG THU HỒI REFRESH TOKEN (RevokeOpaqueRefreshToken)
 // =========================================================================
 func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.revoke_opaque_token"), 10*time.Second)
 	defer cancel()
 
 	var span trace.Span
@@ -825,12 +826,12 @@ func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
 	// [COMMENT]: Revoke cũng dùng request envelope và distributed lock để không khuếch đại
 	// write load theo số lượng CP replica.
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.RevokeOpaqueRefreshToken", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarn("Redis.RevokeOpaqueRefreshToken", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
@@ -843,13 +844,13 @@ func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
 
 	var req iamproto.RevokeOpaqueRefreshTokenRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
-		logger.SysError("Redis.RevokeOpaqueRefreshToken", "Failed to unmarshal request data")
+		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to unmarshal request data")
 		return
 	}
 
 	err = h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)
 	if err != nil {
-		logger.SysError("Redis.RevokeOpaqueRefreshToken", fmt.Sprintf("Failed to revoke refresh token: %s", err.Error()))
+		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", fmt.Sprintf("Failed to revoke refresh token: %s", err.Error()))
 	}
 
 	if replyChannel != "" {

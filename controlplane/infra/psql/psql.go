@@ -28,7 +28,12 @@ type connectionRecord struct {
 	KeyPath       string `json:"key_path"`
 }
 
-func NewPostgres(ctx context.Context, vaultClient *vault.Client, cfg *config.PsqlCfg) (*pgxpool.Pool, error) {
+func NewPostgres(
+	ctx context.Context,
+	vaultClient *vault.Client,
+	cfg *config.PsqlCfg,
+	metrics observability.DependencyRecorder,
+) (*pgxpool.Pool, error) {
 	var connection connectionRecord
 	if err := vaultClient.ReadJSON(ctx, connectionPath, &connection); err != nil {
 		return nil, fmt.Errorf("psql: read Vault connection record: %w", err)
@@ -47,7 +52,7 @@ func NewPostgres(ctx context.Context, vaultClient *vault.Client, cfg *config.Psq
 	poolCfg.MinConns = int32(cfg.MinConns)
 	poolCfg.MaxConnLifetime = cfg.MaxConnLife
 	poolCfg.MaxConnIdleTime = cfg.MaxConnIdle
-	poolCfg.ConnConfig.Tracer = observability.NewPGXQueryTracer()
+	poolCfg.ConnConfig.Tracer = observability.NewPGXQueryTracer(metrics)
 
 	var pool *pgxpool.Pool
 

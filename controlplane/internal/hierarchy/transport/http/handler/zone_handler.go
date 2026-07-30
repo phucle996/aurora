@@ -11,6 +11,7 @@ import (
 	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	hierarchyReq "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +43,7 @@ func NewZoneHandler(zoneSvc hierarchySvcInterface.ZoneService) *ZoneHandler {
 // @Security     AdminAuth
 func (h *ZoneHandler) CreateZone(c *gin.Context) {
 	const op = "hierarchy.zone.create"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	var request hierarchyReq.CreateZoneRequest
@@ -103,7 +104,7 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 // @Security     AdminAuth
 func (h *ZoneHandler) ListZones(c *gin.Context) {
 	const op = "hierarchy.zone.list"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	items, err := h.zoneSvc.ListZones(ctx, &hierarchyEntity.ListZones{})
@@ -144,7 +145,7 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 // @Security     AdminAuth
 func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 	const op = "hierarchy.zone.get"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
@@ -268,7 +269,7 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 // @Security     AdminAuth
 func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 	const op = "hierarchy.zone.update_status"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	parsedZoneID, err := uuid.Parse(c.Param("zone_id"))
@@ -327,7 +328,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 // @Security     AdminAuth
 func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 	const op = "hierarchy.zone.delete"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	zoneID := strings.TrimSpace(c.Param("zone_id"))
@@ -370,7 +371,7 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 // @Security     AdminAuth
 func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 	const op = "hierarchy.zone_service.update"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	var request hierarchyReq.UpsertZoneServiceRequest

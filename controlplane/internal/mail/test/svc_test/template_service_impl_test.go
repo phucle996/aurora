@@ -8,6 +8,7 @@ import (
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcImpl "controlplane/internal/mail/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -102,7 +103,7 @@ func TestPersonalTemplateDeleteUsesMonotonicRevisionFence(t *testing.T) {
 		ExpectedRevision: 4,
 	}
 
-	opID, err := mailSvcImpl.NewPersonalTemplateService(repo).DeleteTemplate(context.Background(), req)
+	opID, err := mailSvcImpl.NewPersonalTemplateService(repo, observability.NewNoopWorkflowRecorder()).DeleteTemplate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("DeleteTemplate() error = %v", err)
 	}
@@ -115,7 +116,7 @@ func TestPersonalTemplateDeleteUsesMonotonicRevisionFence(t *testing.T) {
 func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	res, err := mailSvcImpl.NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.CreatePersonalTemplateRequest{
+	res, err := mailSvcImpl.NewPersonalTemplateService(repo, observability.NewNoopWorkflowRecorder()).CreateTemplate(context.Background(), &mailEntity.CreatePersonalTemplateRequest{
 		ActorUserID:     uuid.New(),
 		WorkspaceID:     workspaceID,
 		ZoneID:          uuid.New(),
@@ -135,7 +136,7 @@ func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 func TestPersonalTemplateLeavesPlaceholderDetectionToDataplane(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	_, err := mailSvcImpl.NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.CreatePersonalTemplateRequest{
+	_, err := mailSvcImpl.NewPersonalTemplateService(repo, observability.NewNoopWorkflowRecorder()).CreateTemplate(context.Background(), &mailEntity.CreatePersonalTemplateRequest{
 		ActorUserID:     uuid.New(),
 		WorkspaceID:     workspaceID,
 		ZoneID:          uuid.New(),
@@ -163,7 +164,7 @@ func TestPersonalTemplatePublishAllocatesCandidateWithoutAdvancingActiveHead(t *
 		RawHTML:          "<p>new</p>",
 	}
 
-	res, err := mailSvcImpl.NewPersonalTemplateService(repo).PublishTemplateVersion(context.Background(), req)
+	res, err := mailSvcImpl.NewPersonalTemplateService(repo, observability.NewNoopWorkflowRecorder()).PublishTemplateVersion(context.Background(), req)
 	if err != nil {
 		t.Fatalf("PublishTemplateVersion() error = %v", err)
 	}

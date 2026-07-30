@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -28,16 +30,33 @@ var mailRuntimeWatchEventNamespace = uuid.MustParse("ebf49ec8-ce95-5ddb-9a44-dd8
 type personalConsumerServiceImpl struct {
 	repo        mailRepoInterface.PersonalConsumerRepository
 	sharedRedis *goredis.Client
+	metrics     observability.WorkflowRecorder
 }
 
 // NewPersonalConsumerService khoi tao service quản lý consumer o scope Personal.
-func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepository, sharedRedis *goredis.Client) mailSvcInterface.PersonalConsumerService {
-	return &personalConsumerServiceImpl{repo: repo, sharedRedis: sharedRedis}
+func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepository, sharedRedis *goredis.Client, metrics observability.WorkflowRecorder) mailSvcInterface.PersonalConsumerService {
+	return &personalConsumerServiceImpl{repo: repo, sharedRedis: sharedRedis, metrics: metrics}
 }
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal.
 // [COMMENT]: Handler/DTO layer đã validate va normalize input payload; service tap trung vao domain logic.
-func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.CreatePersonalConsumer) (*mailEntity.CreatePersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.CreatePersonalConsumer) (out *mailEntity.CreatePersonalConsumer, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		case errors.Is(err, mailTaxonomy.ErrWorkspaceNotFound), errors.Is(err, mailTaxonomy.ErrTemplateNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
+			result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; hard-delete giải phóng code nhưng không cho tái sử dụng identity cũ.
 	consumerID := uuid.New()
 	now := time.Now().UTC()
@@ -70,7 +89,6 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *m
 	// [COMMENT]: Match một lần tại producer rồi đóng gói adapter protobuf riêng; JO/outbox không hiểu field của broker.
 	var streamType mailproto.MailStreamType
 	var streamPayload []byte
-	var err error
 	switch consumer.SourceType {
 	case mailEntity.Kafka:
 		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA
@@ -158,17 +176,53 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *m
 }
 
 // GetConsumer lay thong tin consumer theo ID va Personal request.
-func (s *personalConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.GetPersonalConsumer) (*mailEntity.GetPersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.GetPersonalConsumer) (out *mailEntity.GetPersonalConsumer, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		} else if errors.Is(err, mailTaxonomy.ErrConsumerNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.GetByID(ctx, req)
 }
 
 // ListConsumers danh sach consumer theo dieu kien loc va pagination.
-func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.ListPersonalConsumer) ([]*mailEntity.ListPersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.ListPersonalConsumer) (out []*mailEntity.ListPersonalConsumer, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.List(ctx, req)
 }
 
 // UpdateConsumer cap nhat thong tin consumer voi optimistic version check va tao outbox event.
-func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.UpdatePersonalConsumer) (*mailEntity.UpdatePersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.UpdatePersonalConsumer) (out *mailEntity.UpdatePersonalConsumer, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound), errors.Is(err, mailTaxonomy.ErrTemplateNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+			result, reason = observability.ResultRejected, observability.ReasonConflict
+		case errors.Is(err, mailTaxonomy.ErrOperationInProgress):
+			result, reason = observability.ResultRejected, observability.ReasonBusy
+		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
+			result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	// [COMMENT]: API không bao giờ đọc trả ciphertext; envelope rỗng trong full update giữ nguyên cấu hình broker hiện tại.
 	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
 		ActorUserID: req.ActorUserID,
@@ -317,6 +371,7 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 
 // ChangeConsumerState thay doi trang thai pause/resume cua consumer.
 func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.ChangePersonalConsumerState) (*mailEntity.ChangePersonalConsumerState, error) {
+	startedAt := time.Now()
 	// [COMMENT]: Lay consumer hien tai tu repository
 	consumer, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
 		ActorUserID: req.ActorUserID,
@@ -325,11 +380,17 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, r
 		WorkspaceID: req.WorkspaceID,
 	})
 	if err != nil {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if errors.Is(err, mailTaxonomy.ErrConsumerNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 		return nil, err
 	}
 
 	// [COMMENT]: Kiem tra phien ban cau hinh hien tai so voi phien ban ky vọng
 	if consumer.ConfigVersion != req.ExpectedConfigVersion {
+		s.metrics.ObserveWorkflow(ctx, observability.ResultRejected, observability.ReasonConflict, time.Since(startedAt))
 		return nil, mailTaxonomy.ErrVersionConflict
 	}
 
@@ -376,7 +437,23 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, r
 }
 
 // DeleteConsumer xoa consumer va phat tombstone delete event vao outbox.
-func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.DeletePersonalConsumer) error {
+func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.DeletePersonalConsumer) (err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+			result, reason = observability.ResultRejected, observability.ReasonConflict
+		case errors.Is(err, mailTaxonomy.ErrOperationInProgress):
+			result, reason = observability.ResultRejected, observability.ReasonBusy
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
 	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
 		ActorUserID: req.ActorUserID,
@@ -444,7 +521,21 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *m
 	return nil
 }
 
-func (s *personalConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, req *mailEntity.WatchPersonalConsumerRuntime) (*mailEntity.WatchPersonalConsumerRuntime, error) {
+func (s *personalConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, req *mailEntity.WatchPersonalConsumerRuntime) (out *mailEntity.WatchPersonalConsumerRuntime, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, mailTaxonomy.ErrRuntimeUnavailable):
+			result, reason = observability.ResultFailure, observability.ReasonUnavailable
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	// [COMMENT]: PostgreSQL vẫn là authorization boundary; Redis key không bao giờ được dùng để chứng minh ownership.
 	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
 		ActorUserID: req.ActorUserID,
@@ -455,10 +546,6 @@ func (s *personalConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	if s.sharedRedis == nil {
-		return nil, fmt.Errorf("mail personal runtime watch: shared Redis unavailable: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-
 	const watchTTL = 30 * time.Second
 	leaseSeed := uuid.NewString()
 	script := goredis.NewScript(`

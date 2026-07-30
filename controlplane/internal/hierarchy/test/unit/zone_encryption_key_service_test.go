@@ -9,13 +9,14 @@ import (
 	entity "controlplane/internal/hierarchy/domain/entity"
 	serviceimpl "controlplane/internal/hierarchy/service"
 	"controlplane/internal/hierarchy/test/mocks"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
 
 func TestZoneEncryptionKeyServiceOwnsIdentityAndDerivedMetadata(t *testing.T) {
 	repository := &mocks.ZoneEncryptionKeyRepository{}
-	service := serviceimpl.NewZoneEncryptionKeyService(repository)
+	service := serviceimpl.NewZoneEncryptionKeyService(repository, observability.NewNoopWorkflowRecorder())
 	publicKey := bytes.Repeat([]byte{0x21}, 32)
 	in := &entity.RegisterZoneEncryptionKey{PublicKey: publicKey}
 
@@ -39,7 +40,7 @@ func TestZoneEncryptionKeyServiceOwnsIdentityAndDerivedMetadata(t *testing.T) {
 
 func TestZoneEncryptionKeyServicePreservesRetryIdentity(t *testing.T) {
 	repository := &mocks.ZoneEncryptionKeyRepository{}
-	service := serviceimpl.NewZoneEncryptionKeyService(repository)
+	service := serviceimpl.NewZoneEncryptionKeyService(repository, observability.NewNoopWorkflowRecorder())
 	keyID := uuid.MustParse("10000000-0000-7000-8000-000000000001")
 	in := &entity.RegisterZoneEncryptionKey{ID: keyID, PublicKey: bytes.Repeat([]byte{0x42}, 32)}
 
@@ -53,7 +54,7 @@ func TestZoneEncryptionKeyServicePreservesRetryIdentity(t *testing.T) {
 
 func TestZoneEncryptionKeyServiceKeepsWorkflowsIsolated(t *testing.T) {
 	repository := &mocks.ZoneEncryptionKeyRepository{}
-	service := serviceimpl.NewZoneEncryptionKeyService(repository)
+	service := serviceimpl.NewZoneEncryptionKeyService(repository, observability.NewNoopWorkflowRecorder())
 	zoneID := uuid.MustParse("10000000-0000-7000-8000-000000000010")
 	keyID := uuid.MustParse("10000000-0000-7000-8000-000000000011")
 

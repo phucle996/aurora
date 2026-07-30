@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/managedservice/domain/entity"
 	managedserviceimpl "controlplane/internal/managedservice/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -32,7 +33,7 @@ func (r *blueprintRepositorySpy) DeleteBlueprint(_ context.Context, in *entity.D
 
 func TestBlueprintServiceOwnsSystemIdentifiers(t *testing.T) {
 	repo := &blueprintRepositorySpy{}
-	subject := managedserviceimpl.NewBlueprintService(repo)
+	subject := managedserviceimpl.NewBlueprintService(repo, observability.NewNoopWorkflowRecorder())
 
 	if _, err := subject.CreateBlueprint(context.Background(), &entity.CreateBlueprint{}); err != nil {
 		t.Fatalf("create blueprint: %v", err)

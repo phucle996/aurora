@@ -11,6 +11,7 @@ import (
 
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
@@ -61,7 +62,7 @@ func (h *BillingAuthorizationRedisHandler) Start() error {
 	if h == nil {
 		return errors.New("billing authorization Redis handler is nil")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "iam.authorization.billing.subscribe"))
 	pubsub := h.sharedRedis.Subscribe(ctx, billingAuthorizationRequestChannel)
 	// [COMMENT]: Receive is the readiness fence: Cost must never see this replica as a subscriber before Redis accepted SUBSCRIBE.
 	if _, err := pubsub.Receive(ctx); err != nil {
@@ -122,19 +123,21 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 		tenantID = parsedTenantID
 	}
 	replyChannel := billingAuthorizationReplyPrefix + requestID.String()
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.authorization.billing.resolve"), 700*time.Millisecond)
+	defer cancel()
 	respond := func(ok bool, response []byte) {
 		wire := make([]byte, 1, len(response)+1)
 		if ok {
 			wire[0] = 1
 		}
 		wire = append(wire, response...)
-		if err := h.sharedRedis.Publish(context.Background(), replyChannel, wire).Err(); err != nil {
-			logger.SysError("redis.BillingAuthorization", "Failed to publish authorization response")
+		responseCtx, responseCancel := context.WithTimeout(context.WithoutCancel(ctx), 300*time.Millisecond)
+		defer responseCancel()
+		if err := h.sharedRedis.Publish(responseCtx, replyChannel, wire).Err(); err != nil {
+			logger.SysErrorCtx(ctx, "redis.BillingAuthorization", "Failed to publish authorization response")
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
-	defer cancel()
 	lockKey := "iam:authorization:billing:dispatch:" + requestID.String()
 	lockToken := uuid.NewString()
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, lockToken, 2*time.Second).Result()
@@ -143,7 +146,9 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 	}
 	defer func() {
 		// [COMMENT]: Compare-delete avoids deleting a replacement lock if Redis stalls past the original TTL.
-		_ = h.sharedRedis.Eval(context.Background(), `
+		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 300*time.Millisecond)
+		defer releaseCancel()
+		_ = h.sharedRedis.Eval(releaseCtx, `
 			if redis.call("GET", KEYS[1]) == ARGV[1] then
 				return redis.call("DEL", KEYS[1])
 			end
@@ -210,7 +215,7 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 
 		binaryEntry, loadErr := h.platformRepo.GetUserRolePermissions(ctx, userID)
 		if loadErr != nil {
-			logger.SysError("redis.BillingAuthorization", "Failed to load user authorization")
+			logger.SysErrorCtx(ctx, "redis.BillingAuthorization", "Failed to load user authorization")
 			respond(false, []byte("authorization service unavailable"))
 			return
 		}

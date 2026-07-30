@@ -33,7 +33,13 @@ type connectionRecord struct {
 	KeyPath       string `json:"key_path"`
 }
 
-func NewRedis(ctx context.Context, vaultClient *vault.Client, cfg *config.RedisCfg, connectionPath string) (*goredis.Client, error) {
+func NewRedis(
+	ctx context.Context,
+	vaultClient *vault.Client,
+	cfg *config.RedisCfg,
+	connectionPath string,
+	metrics observability.DependencyRecorder,
+) (*goredis.Client, error) {
 	var connection connectionRecord
 	if err := vaultClient.ReadJSON(ctx, connectionPath, &connection); err != nil {
 		return nil, fmt.Errorf("redis: read Vault connection record: %w", err)
@@ -69,7 +75,7 @@ func NewRedis(ctx context.Context, vaultClient *vault.Client, cfg *config.RedisC
 
 	for attempt := 1; attempt <= cfg.MaxRetries; attempt++ {
 		rdb = goredis.NewClient(opts)
-		rdb.AddHook(observability.NewRedisHook())
+		rdb.AddHook(observability.NewRedisHook(metrics))
 
 		pingCtx, pingCancel := context.WithTimeout(ctx, cfg.PingTimeout)
 		lastErr = rdb.Ping(pingCtx).Err()

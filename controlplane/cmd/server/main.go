@@ -45,6 +45,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "controlplane configuration error: %v\n", err)
 		os.Exit(1)
 	}
+	logger.InitLogger(cfg.App.AppName)
 
 	// --------------------------------------------------------------------
 	// 🔄 Thiết lập múi giờ (Timezone) hệ thống nhất quán toàn cục.
@@ -56,11 +57,6 @@ func main() {
 	} else {
 		time.Local = loc
 	}
-
-	// --------------------------------------------------------------------
-	// 🔄 Khởi tạo hệ thống ghi nhận nhật ký hoạt động (Logger) tập trung.
-	// --------------------------------------------------------------------
-	logger.InitLogger()
 
 	// --------------------------------------------------------------------
 	// 🔄 Khởi tạo bộ khung Application Container (Dependency Injection).

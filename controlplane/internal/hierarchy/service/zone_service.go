@@ -2,6 +2,7 @@ package hierarchySvcImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,8 +10,9 @@ import (
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
-	hierarchyMetrics "controlplane/internal/hierarchy/metrics"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	hierarchyproto "controlplane/internal/hierarchy/transport/proto"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -18,92 +20,86 @@ import (
 )
 
 type ZoneService struct {
-	repo hierarchyRepoInterface.ZoneRepository
-	rds  *goredis.Client
+	repo    hierarchyRepoInterface.ZoneRepository
+	rds     *goredis.Client
+	metrics observability.WorkflowRecorder
 }
 
-func NewZoneService(repo hierarchyRepoInterface.ZoneRepository, rds *goredis.Client) hierarchySvcInterface.ZoneService {
-	return &ZoneService{repo: repo, rds: rds}
+func NewZoneService(repo hierarchyRepoInterface.ZoneRepository, rds *goredis.Client, metrics observability.WorkflowRecorder) hierarchySvcInterface.ZoneService {
+	return &ZoneService{repo: repo, rds: rds, metrics: metrics}
 }
 
 func (s *ZoneService) ListZones(ctx context.Context, in *hierarchyEntity.ListZones) ([]hierarchyEntity.ListZones, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	items, err := s.repo.ListZones(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZones", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZones", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return items, nil
 }
 
 func (s *ZoneService) ListZoneCatalog(ctx context.Context, in *hierarchyEntity.ListZoneCatalog) ([]hierarchyEntity.ListZoneCatalog, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	items, err := s.repo.ListZoneCatalog(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZoneCatalog", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListZoneCatalog", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return items, nil
 }
 
 func (s *ZoneService) ResolveZoneByCode(ctx context.Context, in *hierarchyEntity.ResolveZoneByCode) (*hierarchyEntity.ResolveZoneByCode, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	out, err := s.repo.ResolveZoneByCode(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ResolveZoneByCode", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ResolveZoneByCode", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }
 
 func (s *ZoneService) CreateZone(ctx context.Context, in *hierarchyEntity.CreateZone) (*hierarchyEntity.CreateZone, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	zoneID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate zone id: %w", err)
 	}
 	hypervisorID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate hypervisor service id: %w", err)
 	}
 	storageID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate storage service id: %w", err)
 	}
 	mailID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate mail service id: %w", err)
 	}
 	kubernetesID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate kubernetes service id: %w", err)
 	}
 	aiID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate AI service id: %w", err)
 	}
 	databaseID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate database service id: %w", err)
 	}
 	managedServiceID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate managed service id: %w", err)
 	}
 
@@ -120,14 +116,13 @@ func (s *ZoneService) CreateZone(ctx context.Context, in *hierarchyEntity.Create
 	in.CreatedAt = now
 	in.UpdatedAt = now
 
-	startedAt := time.Now()
 	out, err := s.repo.CreateZone(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateZone", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists) {
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateZone", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
 
 	// Shared Redis is rebuildable soft state. PostgreSQL has already committed,
 	// so cache and fanout failures cannot reverse the business outcome.
@@ -141,24 +136,30 @@ func (s *ZoneService) CreateZone(ctx context.Context, in *hierarchyEntity.Create
 		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
 	}
 
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }
 
 func (s *ZoneService) GetZoneDetail(ctx context.Context, in *hierarchyEntity.GetZoneDetail) ([]hierarchyEntity.GetZoneDetail, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	items, err := s.repo.GetZoneDetail(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "GetZoneDetail", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "GetZoneDetail", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return items, nil
 }
 
 func (s *ZoneService) UpdateZoneStatus(ctx context.Context, in *hierarchyEntity.UpdateZoneStatus) (*hierarchyEntity.UpdateZoneStatus, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	switch in.Status {
 	case hierarchyEntity.ZoneStatusPlanned:
 		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusActive, hierarchyEntity.ZoneStatusDisabled, hierarchyEntity.ZoneStatusPlanned}
@@ -172,14 +173,15 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, in *hierarchyEntity.
 		in.AllowedFrom = []hierarchyEntity.ZoneStatus{hierarchyEntity.ZoneStatusDraining, hierarchyEntity.ZoneStatusPlanned, hierarchyEntity.ZoneStatusDisabled}
 	}
 
-	startedAt := time.Now()
 	out, err := s.repo.UpdateZoneStatus(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneStatus", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition) {
+			result, reason = observability.ResultRejected, observability.ReasonInvalidTransition
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneStatus", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
 
 	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(out.ZoneCode)))
 	redisValue := fmt.Sprintf("%s:%s", out.ZoneID, out.Status)
@@ -191,19 +193,23 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, in *hierarchyEntity.
 		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
 	}
 
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }
 
 func (s *ZoneService) DeleteZone(ctx context.Context, in *hierarchyEntity.DeleteZone) (*hierarchyEntity.DeleteZone, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	out, err := s.repo.DeleteZone(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteZone", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteZone", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
 
 	redisKey := fmt.Sprintf("zone:code:%s", strings.ToLower(strings.TrimSpace(out.ZoneCode)))
 	_ = s.rds.Del(ctx, redisKey).Err()
@@ -214,26 +220,30 @@ func (s *ZoneService) DeleteZone(ctx context.Context, in *hierarchyEntity.Delete
 		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
 	}
 
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }
 
 func (s *ZoneService) UpdateZoneService(ctx context.Context, in *hierarchyEntity.UpdateZoneService) (*hierarchyEntity.UpdateZoneService, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	serviceID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate zone service id: %w", err)
 	}
 	in.ID = serviceID
 
-	startedAt := time.Now()
 	out, err := s.repo.UpdateZoneService(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneService", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "UpdateZoneService", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
 
 	event := &hierarchyproto.ZoneInvalidatedEvent{
 		ZoneId: out.ZoneID.String(), ZoneCode: out.ZoneCode, Status: string(out.ZoneStatus), Name: out.ZoneName,
@@ -242,6 +252,6 @@ func (s *ZoneService) UpdateZoneService(ctx context.Context, in *hierarchyEntity
 		_ = s.rds.Publish(ctx, "hierarchy.zone.invalidated", wire).Err()
 	}
 
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }

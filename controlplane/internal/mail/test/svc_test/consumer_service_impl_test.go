@@ -12,6 +12,7 @@ import (
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
@@ -105,7 +106,7 @@ func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
 	command := validPersonalConsumerUpdate(current)
 
 	// [COMMENT]: Gọi service thực thi lệnh cập nhật consumer
-	updated, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).UpdateConsumer(context.Background(), command)
+	updated, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).UpdateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("UpdateConsumer() error = %v", err)
 	}
@@ -156,7 +157,7 @@ func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T)
 		command.DesiredState = mailEntity.ConsumerPaused
 		mutate(command)
 		// [COMMENT]: Kiểm tra service trả về lỗi do thay đổi AAD identity mà không có ciphertext mới
-		if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).UpdateConsumer(context.Background(), command); err == nil {
+		if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).UpdateConsumer(context.Background(), command); err == nil {
 			t.Fatal("AAD identity changed without a replacement encrypted envelope")
 		}
 	}
@@ -166,7 +167,7 @@ func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T)
 func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 	repo, command := &personalConsumerRepoCapture{}, validPersonalConsumer()
 	// [COMMENT]: Thực thi khởi tạo consumer qua mail service implementation
-	consumer, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).CreateConsumer(context.Background(), command)
+	consumer, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("CreateConsumer() error = %v", err)
 	}
@@ -186,13 +187,13 @@ func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 func TestPersonalCreateUsesFreshRuntimeIdentity(t *testing.T) {
 	command := validPersonalConsumer()
 	firstRepo := &personalConsumerRepoCapture{}
-	first, err := mailSvcImpl.NewPersonalConsumerService(firstRepo, nil).CreateConsumer(context.Background(), command)
+	first, err := mailSvcImpl.NewPersonalConsumerService(firstRepo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
 	}
 	retry := *command
 	secondRepo := &personalConsumerRepoCapture{}
-	second, err := mailSvcImpl.NewPersonalConsumerService(secondRepo, nil).CreateConsumer(context.Background(), &retry)
+	second, err := mailSvcImpl.NewPersonalConsumerService(secondRepo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), &retry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +221,7 @@ func TestPersonalRuntimeWatchUsesShortLeaseAndRejectsPreviousEpoch(t *testing.T)
 		Parallelism:   3,
 	}
 	repo := &personalConsumerRepoCapture{current: current}
-	service := mailSvcImpl.NewPersonalConsumerService(repo, redisClient)
+	service := mailSvcImpl.NewPersonalConsumerService(repo, redisClient, observability.NewNoopWorkflowRecorder())
 	request := &mailEntity.WatchPersonalConsumerRuntime{
 		ActorUserID: current.ActorUserID,
 		WorkspaceID: current.WorkspaceID,
@@ -324,7 +325,7 @@ func TestPersonalDeleteUsesNextAllocatorAsTombstoneFence(t *testing.T) {
 		DrainTimeoutSeconds:   30,
 	}
 	// [COMMENT]: Thực thi yêu cầu xóa consumer qua service
-	if err := mailSvcImpl.NewPersonalConsumerService(repo, nil).DeleteConsumer(context.Background(), command); err != nil {
+	if err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).DeleteConsumer(context.Background(), command); err != nil {
 		t.Fatalf("DeleteConsumer() error = %v", err)
 	}
 	var event mailproto.MailConsumerDeleteV1
@@ -356,7 +357,7 @@ func TestPersonalCreateEncodesTheSelectedStreamSuite(t *testing.T) {
 			command.SourceType = test.sourceType
 			repo := &personalConsumerRepoCapture{}
 			// [COMMENT]: Tạo consumer với từng loại Stream Source cụ thể
-			if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).CreateConsumer(context.Background(), command); err != nil {
+			if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command); err != nil {
 				t.Fatalf("CreateConsumer() error = %v", err)
 			}
 

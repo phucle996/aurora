@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/managedservice/domain/entity"
 	managedserviceimpl "controlplane/internal/managedservice/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -52,7 +53,7 @@ func (r *revisionRepositorySpy) DeleteDraft(_ context.Context, in *entity.Delete
 
 func TestRevisionServiceOwnsSystemIdentifiers(t *testing.T) {
 	repo := &revisionRepositorySpy{}
-	subject := managedserviceimpl.NewRevisionService(repo)
+	subject := managedserviceimpl.NewRevisionService(repo, observability.NewNoopWorkflowRecorder())
 
 	if _, err := subject.CreateDraft(context.Background(), &entity.CreateDraft{}); err != nil {
 		t.Fatalf("create draft: %v", err)

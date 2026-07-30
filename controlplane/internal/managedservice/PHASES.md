@@ -257,13 +257,15 @@ contract; no customer API/mutation is enabled yet.
 ### MS-015 — Foundation observability and test harness
 
 * **Owner:** Controlplane/JO/DP observability owners.
-* **Scope:** introduce module metric names/trace attributes with fixed cardinality and
+* **Scope:** bind Managed Service operations vào unified Controlplane metric contract,
+  thêm trace attributes với fixed cardinality và
   test harness for PostgreSQL, Kafka and trusted Zone-binding fixtures. No customer runtime stream.
 * **Acceptance:** every future command can correlate `operation_id`, command event,
   instance ID and trace context without emitting them as platform metric labels; test
   harness can simulate CP commit, duplicate CDC and DP redelivery.
-* **Rollback:** metrics/exporter failure is diagnostic-only and cannot block boot or
-  business transaction.
+* **Rollback:** exporter failure sau bootstrap là diagnostic-only và không rollback
+  business transaction. Bootstrap tuân global OTel `fail_strategy`: `fail_open` dùng
+  no-op provider, còn `fail_close` dừng process trước khi nhận traffic.
 
 ## 7. P02 — SRE catalog, immutable blueprint và admin-plane workflow
 

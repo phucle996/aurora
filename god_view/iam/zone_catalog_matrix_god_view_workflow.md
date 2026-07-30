@@ -193,5 +193,5 @@ sequenceDiagram
 ## 🛠️ 6. Nhật ký kiểm tra (Execution Log & Audit Verification)
 
 - **Go controlplane**: Build thành công và pass toàn bộ **157/157 tests**. Các API GetZoneCatalog cũ đã được gỡ bỏ hoàn toàn khỏi Controller/Router và mock tests để giải phóng bộ nhớ.
-- **Metrics & Telemetry**: Metrics của Hierarchy Service và downstream nằm tại `controlplane/internal/hierarchy/metrics/metrics.go`, dùng namespace `aurora_controlplane_hierarchy_*`.
+- **Metrics & Telemetry**: Hierarchy service dùng module-bound workflow recorder; PostgreSQL/Redis chỉ được đo tại adapter theo [`Controlplane Telemetry God View`](../controlplane/telemetry_god_view.md).
 - **Rust acr (ext_authz)**: Cấu hình intercept thành công hai endpoint `/admin/hierarchy/zones/catalog` và `/api/v1/zones/catalog`. Biên dịch ổn định không cảnh báo (Zero Warnings).

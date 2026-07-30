@@ -16,6 +16,7 @@ import (
 	"controlplane/internal/managedservice/taxonomy"
 	"controlplane/internal/managedservice/transport/http/dto"
 	"controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,8 @@ func NewVersionHandler(service managedservice.VersionService) *VersionHandler {
 }
 
 func (h *VersionHandler) CreateVersion(c *gin.Context) {
+	const op = "managedservice.version.create"
+
 	// [COMMENT]: Chỉ SRE mới có quyền tạo version catalog.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -62,7 +65,7 @@ func (h *VersionHandler) CreateVersion(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(append([]byte(request.Code+request.DisplayVersion), nameJSON...), descriptionJSON...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.CreateVersion(ctx, &entity.CreateVersion{Actor: actor, DefinitionID: definitionID, Code: request.Code, DisplayVersion: request.DisplayVersion, NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -85,6 +88,8 @@ func (h *VersionHandler) CreateVersion(c *gin.Context) {
 }
 
 func (h *VersionHandler) ListVersions(c *gin.Context) {
+	const op = "managedservice.version.list"
+
 	// [COMMENT]: Chỉ SRE mới có quyền list versions.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -113,7 +118,7 @@ func (h *VersionHandler) ListVersions(c *gin.Context) {
 		limit = value
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	items, err := h.service.ListVersions(ctx, &entity.ListVersions{DefinitionID: definitionID, Limit: limit})
@@ -132,6 +137,8 @@ func (h *VersionHandler) ListVersions(c *gin.Context) {
 }
 
 func (h *VersionHandler) GetVersion(c *gin.Context) {
+	const op = "managedservice.version.get"
+
 	// [COMMENT]: Chỉ SRE mới có quyền xem chi tiết version.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -144,7 +151,7 @@ func (h *VersionHandler) GetVersion(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.GetVersion(ctx, &entity.GetVersion{VersionID: id})
@@ -162,6 +169,8 @@ func (h *VersionHandler) GetVersion(c *gin.Context) {
 }
 
 func (h *VersionHandler) UpdateVersion(c *gin.Context) {
+	const op = "managedservice.version.update"
+
 	// [COMMENT]: Chỉ SRE mới có quyền update version.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -198,7 +207,7 @@ func (h *VersionHandler) UpdateVersion(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(nameJSON, descriptionJSON...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.UpdateVersion(ctx, &entity.UpdateVersion{VersionID: id, Actor: actor, ExpectedVersion: request.ExpectedVersion, DisplayVersion: request.DisplayVersion, NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -219,6 +228,8 @@ func (h *VersionHandler) UpdateVersion(c *gin.Context) {
 }
 
 func (h *VersionHandler) DeprecateVersion(c *gin.Context) {
+	const op = "managedservice.version.deprecate"
+
 	// [COMMENT]: Deprecate là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -242,7 +253,7 @@ func (h *VersionHandler) DeprecateVersion(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.DeprecateVersion(ctx, &entity.DeprecateVersion{VersionID: id, Actor: actor, ProofID: proofID, ExpectedVersion: request.ExpectedVersion})
@@ -263,6 +274,8 @@ func (h *VersionHandler) DeprecateVersion(c *gin.Context) {
 }
 
 func (h *VersionHandler) RetireVersion(c *gin.Context) {
+	const op = "managedservice.version.retire"
+
 	// [COMMENT]: Retire là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -286,7 +299,7 @@ func (h *VersionHandler) RetireVersion(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.RetireVersion(ctx, &entity.RetireVersion{VersionID: id, Actor: actor, ProofID: proofID, ExpectedVersion: request.ExpectedVersion})

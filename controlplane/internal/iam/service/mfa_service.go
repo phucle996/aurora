@@ -13,6 +13,7 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/observability"
 	"controlplane/internal/security"
 
 	"github.com/google/uuid"
@@ -26,21 +27,44 @@ type MfaService struct {
 	vault     *vault.Client
 	repo      iamRepoInterface.MfaRepository
 	authRedis *goredis.Client
+	metrics   observability.WorkflowRecorder
 }
 
 func NewMfaService(
 	vaultClient *vault.Client,
 	repo iamRepoInterface.MfaRepository,
 	authRedis *goredis.Client,
+	metrics observability.WorkflowRecorder,
 ) iamSvcInterface.MfaService {
-	return &MfaService{vault: vaultClient, repo: repo, authRedis: authRedis}
+	return &MfaService{vault: vaultClient, repo: repo, authRedis: authRedis, metrics: metrics}
 }
 
-func (s *MfaService) GetUserMfaStatus(ctx context.Context, userID uuid.UUID, callerLevel uint8) (bool, string, error) {
+func (s *MfaService) GetUserMfaStatus(ctx context.Context, userID uuid.UUID, callerLevel uint8) (enabled bool, method string, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		} else if errors.Is(err, iamTaxonomy.ErrNotFound) || errors.Is(err, iamTaxonomy.ErrUserNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			result, reason = observability.ResultRejected, observability.ReasonForbidden
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.GetPlatformStatus(ctx, userID, callerLevel)
 }
 
-func (s *MfaService) GetSelfMfaStatus(ctx context.Context, userID uuid.UUID) (*iamEntity.MFAUserStatus, error) {
+func (s *MfaService) GetSelfMfaStatus(ctx context.Context, userID uuid.UUID) (out *iamEntity.MFAUserStatus, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	setting, recoveryCount, err := s.repo.GetSelfStatus(ctx, userID)
 	if errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {
 		return &iamEntity.MFAUserStatus{Status: iamEntity.MFAStatusDisabled}, nil
@@ -67,7 +91,20 @@ func (s *MfaService) GetLoginSetting(ctx context.Context, userID uuid.UUID) (*ia
 	return setting, nil
 }
 
-func (s *MfaService) StartSetup(ctx context.Context, userID uuid.UUID) (*iamEntity.MFASetupResult, error) {
+func (s *MfaService) StartSetup(ctx context.Context, userID uuid.UUID) (out *iamEntity.MFASetupResult, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		} else if errors.Is(err, iamTaxonomy.ErrMFAAlreadyEnabled) {
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		} else if errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
+			result, reason = observability.ResultFailure, observability.ReasonUnavailable
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	if err := s.repo.SetupStart(ctx, userID); err != nil {
 		return nil, err
 	}
@@ -123,9 +160,14 @@ func (s *MfaService) ConfirmSetup(
 	userID, setupID uuid.UUID,
 	code string,
 ) (*iamEntity.MFAConfirmationResult, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	pendingKey := fmt.Sprintf("iam:mfa:setup:%s", userID)
 	pendingBytes, err := s.authRedis.Get(ctx, pendingKey).Bytes()
 	if errors.Is(err, goredis.Nil) {
+		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		return nil, iamTaxonomy.ErrMFASetupExpired
 	}
 	if err != nil {
@@ -133,6 +175,7 @@ func (s *MfaService) ConfirmSetup(
 	}
 	var pending iamproto.MfaSetupPending
 	if err := proto.Unmarshal(pendingBytes, &pending); err != nil {
+		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		return nil, iamTaxonomy.ErrMFASetupExpired
 	}
 	pendingUserID, userIDErr := uuid.Parse(strings.TrimSpace(pending.GetUserId()))
@@ -144,6 +187,7 @@ func (s *MfaService) ConfirmSetup(
 		pending.GetSchemaVersion() != 1 ||
 		strings.TrimSpace(pending.GetSecretCiphertext()) == "" ||
 		strings.TrimSpace(pending.GetSecretKeyId()) == "" {
+		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		return nil, iamTaxonomy.ErrMFASetupExpired
 	}
 
@@ -167,6 +211,7 @@ func (s *MfaService) ConfirmSetup(
 		}
 	}
 	if acceptedStep < 0 {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, iamTaxonomy.ErrMFAInvalidCode
 	}
 	totpFenceKey := fmt.Sprintf("iam:mfa:totp:%s:%s", userID, pendingSettingID)
@@ -180,6 +225,7 @@ func (s *MfaService) ConfirmSetup(
 		return nil, fmt.Errorf("%w: reserve setup totp step: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
 	if reserved != 1 {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, iamTaxonomy.ErrMFAInvalidCode
 	}
 
@@ -211,13 +257,30 @@ func (s *MfaService) ConfirmSetup(
 		return redis.call("DEL", KEYS[1])
 	`, []string{pendingKey}, string(pendingBytes)).Int64()
 
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &iamEntity.MFAConfirmationResult{
 		EnabledAt:     enabledAt,
 		RecoveryCodes: recoveryCodes,
 	}, nil
 }
 
-func (s *MfaService) RegenerateRecoveryCodes(ctx context.Context, userID uuid.UUID, code string) ([]string, error) {
+func (s *MfaService) RegenerateRecoveryCodes(ctx context.Context, userID uuid.UUID, code string) (out []string, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, iamTaxonomy.ErrMFAInvalidCode), errors.Is(err, iamTaxonomy.ErrRecoveryCodeInvalid):
+			result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
+		case errors.Is(err, iamTaxonomy.ErrPreconditionFailed):
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
+			result, reason = observability.ResultFailure, observability.ReasonUnavailable
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	setting, err := s.repo.RecoveryRegenerateGetSetting(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -273,7 +336,23 @@ func (s *MfaService) RegenerateRecoveryCodes(ctx context.Context, userID uuid.UU
 	return recoveryCodes, nil
 }
 
-func (s *MfaService) Remove(ctx context.Context, userID uuid.UUID, code string) error {
+func (s *MfaService) Remove(ctx context.Context, userID uuid.UUID, code string) (err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, iamTaxonomy.ErrMFAInvalidCode):
+			result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
+		case errors.Is(err, iamTaxonomy.ErrPreconditionFailed):
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
+			result, reason = observability.ResultFailure, observability.ReasonUnavailable
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	setting, err := s.repo.RemoveGetSetting(ctx, userID)
 	if err != nil {
 		return err

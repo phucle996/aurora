@@ -9,6 +9,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -19,10 +20,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type redisHook struct{}
+type redisHook struct {
+	metrics DependencyRecorder
+}
 
-func NewRedisHook() redis.Hook {
-	return redisHook{}
+func NewRedisHook(metrics DependencyRecorder) redis.Hook {
+	return redisHook{metrics: metrics}
 }
 
 func (h redisHook) DialHook(next redis.DialHook) redis.DialHook {
@@ -49,16 +52,30 @@ func (h redisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 
 		err := next(ctx, cmd)
 		metricErr := normalizeRedisError(err)
+		result, reason := ResultSuccess, ReasonNone
+		if errors.Is(err, redis.Nil) {
+			result, reason = ResultRejected, ReasonEmpty
+		} else if metricErr != nil {
+			switch {
+			case errors.Is(metricErr, context.DeadlineExceeded):
+				result, reason = ResultFailure, ReasonTimeout
+			case errors.Is(metricErr, context.Canceled):
+				result, reason = ResultFailure, ReasonCanceled
+			default:
+				result, reason = ResultFailure, ReasonUnavailable
+			}
+		}
+		span.SetAttributes(
+			attribute.String("aurora.result", string(result)),
+			attribute.String("aurora.reason", string(reason)),
+		)
 		if metricErr != nil {
-			span.RecordError(metricErr)
-			span.SetStatus(codes.Error, metricErr.Error())
+			span.SetStatus(codes.Error, string(reason))
 		}
+		// The metric recorder enriches the live client span with the same
+		// bounded dimensions it exports; end only after that boundary.
+		h.metrics.ObserveDependency(ctx, "redis", strings.ToLower(operation), result, reason, time.Since(startedAt))
 		span.End()
-
-		// Ghi nhận dependency latency vào OTel Metrics thông qua Metrics trung tâm
-		if m := CurrentMetrics(); m != nil {
-			m.ObserveDependency("redis", operation, time.Since(startedAt), metricErr)
-		}
 
 		return err
 	}
@@ -80,23 +97,35 @@ func (h redisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 
 		err := next(ctx, cmds)
 		metricErr := normalizeRedisError(err)
+		result, reason := ResultSuccess, ReasonNone
 		if metricErr != nil {
-			span.RecordError(metricErr)
-			span.SetStatus(codes.Error, metricErr.Error())
+			switch {
+			case errors.Is(metricErr, context.DeadlineExceeded):
+				result, reason = ResultFailure, ReasonTimeout
+			case errors.Is(metricErr, context.Canceled):
+				result, reason = ResultFailure, ReasonCanceled
+			default:
+				result, reason = ResultFailure, ReasonUnavailable
+			}
 		}
+		span.SetAttributes(
+			attribute.String("aurora.result", string(result)),
+			attribute.String("aurora.reason", string(reason)),
+		)
+		if metricErr != nil {
+			span.SetStatus(codes.Error, string(reason))
+		}
+		// See ProcessHook: preserve the active span while correlation attributes
+		// are attached by the central dependency recorder.
+		h.metrics.ObserveDependency(ctx, "redis", "pipeline", result, reason, time.Since(startedAt))
 		span.End()
-
-		// Ghi nhận dependency latency pipeline vào OTel Metrics
-		if m := CurrentMetrics(); m != nil {
-			m.ObserveDependency("redis", "PIPELINE", time.Since(startedAt), metricErr)
-		}
 
 		return err
 	}
 }
 
 func normalizeRedisError(err error) error {
-	if err == nil || err == redis.Nil {
+	if err == nil || errors.Is(err, redis.Nil) {
 		return nil
 	}
 	return err

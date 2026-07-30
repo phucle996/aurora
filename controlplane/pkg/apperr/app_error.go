@@ -4,25 +4,22 @@
 // ======================================================================================================
 //
 // 📜 VAI TRÒ:
-//   - Carrier gọn nhẹ mang 2 thứ: Kind (taxonomy errorx để Handler map HTTP code) và Cause (raw debug).
-//   - KHÔNG mang Reason — outcome label được Service quản lý riêng và TRẢ về Handler để log.
-//   - Handler là nơi DUY NHẤT ghi log: nhận outcome từ Service, nhận Cause từ AppError, tự log.
+//   - Carrier gọn nhẹ mang Kind, diagnostic class và Cause đã bị chặn khỏi response.
+//   - KHÔNG mang metric taxonomy; Service ghi result/reason qua recorder trung tâm.
+//   - Handler là nơi DUY NHẤT ghi error log; workflow recorder sở hữu metric/trace outcome.
 //
 // 🔄 CALLSITE FLOW:
 //   Service layer  → apperr.Wrap(ErrXxx, rawErr)
-//                  → iamMetrics.Observe(outcome)   ← defer trong svc, Prometheus label
-//                  → trả (result, outcome, err) về Handler
+//                  → observability workflow recorder   ← defer trong service
+//                  → trả error về Handler
 //                        ↓
 //   Handler layer  → errors.Is(err, ErrXxx)        → map HTTP status code
-//                  → logger.HandlerError(c, op, outcome, err)
-//                       → apperr.LogFields(err)    → inject error_cause (sanitized) vào JSON log
-//                       → log outcome field        → bridge key để SRE join Loki ↔ Prometheus
+//                  → logger.HandlerError(c, op, err)
+//                       → apperr.LogFields(err) → inject error_class và sanitized cause
 //
 // 💡 CORRELATION BRIDGE:
-//   `outcome` string được emit ở cả 2 nơi với CÙNG giá trị:
-//     Prometheus: iam_login_total{outcome="invalid_credentials"}
-//     Loki:       outcome=invalid_credentials (field trong JSON log)
-//   SRE có thể join trực tiếp mà không cần parse error string hay dùng regex.
+//   result/reason thuộc request correlation state do workflow recorder ghi.
+//   AppError class chỉ là diagnostic field; nó không được dùng làm metric label.
 //
 // ⚠️  GIỮ LẠI package này vì:
 //   - errors.Is() chain phụ thuộc Unwrap() → không thể thay bằng errors.New() đơn giản.
@@ -34,22 +31,22 @@ package apperr
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 )
 
-// AppError là carrier lỗi mang 3 thứ: Kind (HTTP mapping), Cause (raw debug), Outcome (bridge key).
-// Outcome là field tùy chọn — được dùng làm correlation key chung giữa Loki log và Prometheus label.
+var credentialURLPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s@/]+@`)
+
+// AppError là carrier lỗi mang Kind, diagnostic Class và raw Cause.
 type AppError struct {
 	// Kind: sentinel error từ module taxonomy — SoT duy nhất để Handler map HTTP status.
 	// Ví dụ: iamTaxonomy.ErrInvalidCredentials → 401, iamTaxonomy.ErrUnavailable → 503.
 	// PHẢI là sentinel error cố định, KHÔNG dùng runtime string.
 	Kind error
 
-	// Outcome: coarse label string để làm correlation key giữa Loki log và Prometheus metric.
-	// Ví dụ: "invalid_credentials", "dependency_error", "success".
-	// Tùy chọn (empty string = không set) — Handler log ra field `outcome` trong JSON log.
-	// Service emit cùng giá trị này lên Prometheus để SRE có thể join hai hệ thống.
-	Outcome string
+	// Class là diagnostic class hữu hạn do workflow chọn. Nó không thay thế
+	// result/reason và không được đưa vào metric label.
+	Class string
 
 	// Cause: raw error gốc từ dependency (db/redis/network/runtime).
 	// Chỉ dùng để log debug qua LogFields() sau khi sanitize — không trả ra client.
@@ -57,7 +54,7 @@ type AppError struct {
 }
 
 // Error trả Kind.Error() để tương thích interface error.
-// Không chứa thêm thông tin — outcome và cause được log riêng tại Handler.
+// Không chứa thêm thông tin — diagnostic class và cause được log riêng tại Handler.
 func (e *AppError) Error() string {
 	if e == nil || e.Kind == nil {
 		return "unknown"
@@ -74,16 +71,15 @@ func (e *AppError) Unwrap() error {
 	return e.Kind
 }
 
-// Wrap tạo AppError từ kind + cause, với outcome tùy chọn.
+// Wrap tạo AppError từ kind + cause, với diagnostic class tùy chọn.
 // Hàm duy nhất để tạo lỗi trong Service Layer — không khởi tạo AppError trực tiếp.
 //   - kind:    sentinel error từ errorx (SoT cho HTTP mapping).
 //   - cause:   raw error từ dependency, nil nếu lỗi thuần business logic.
-//   - outcome: tùy chọn (variadic, lấy phần tử đầu tiên nếu có) — coarse label string
-//     dùng làm bridge key giữa Loki log và Prometheus metric.
-func Wrap(kind error, cause error, outcome ...string) error {
+//   - class: tùy chọn (variadic, lấy phần tử đầu tiên nếu có).
+func Wrap(kind error, cause error, class ...string) error {
 	app := &AppError{Kind: kind, Cause: cause}
-	if len(outcome) > 0 {
-		app.Outcome = strings.TrimSpace(outcome[0])
+	if len(class) > 0 {
+		app.Class = strings.TrimSpace(class[0])
 	}
 	return app
 }
@@ -103,11 +99,11 @@ func As(err error) (*AppError, bool) {
 }
 
 // LogFields trả map để inject vào JSON log tại Handler.
-// Được gọi bởi logger.appendAppErrorFields() trong Handler log path.
+// Được gọi bởi logger trong Handler log path.
 // Trả nil nếu err không phải AppError và không có field nào để emit — logger xử lý nil an toàn.
 //
 // Output fields:
-//   - "outcome"     : bridge key chung với Prometheus label (chỉ có khi Outcome != "").
+//   - "error_class" : bounded diagnostic class (chỉ có khi Class != "").
 //   - "error_cause" : raw Cause đã sanitize (chỉ có khi Cause != nil).
 func LogFields(err error) map[string]any {
 	appErr, ok := As(err)
@@ -115,9 +111,8 @@ func LogFields(err error) map[string]any {
 		return nil
 	}
 	fields := map[string]any{}
-	if o := strings.TrimSpace(appErr.Outcome); o != "" {
-		// outcome là bridge key — cùng giá trị được emit lên Prometheus bởi Service defer.
-		fields["outcome"] = o
+	if class := strings.TrimSpace(appErr.Class); class != "" {
+		fields["error_class"] = class
 	}
 	if appErr.Cause != nil {
 		fields["error_cause"] = sanitizeErrorCause(appErr.Cause.Error())
@@ -128,12 +123,20 @@ func LogFields(err error) map[string]any {
 	return fields
 }
 
+// SanitizeLogText bounds and redacts a diagnostic string before it enters a
+// structured log field or body. It must not be used to make an unsafe value
+// safe for a business response.
+func SanitizeLogText(value string) string {
+	return sanitizeErrorCause(value)
+}
+
 // sanitizeErrorCause làm sạch raw Cause string trước khi đưa vào Loki log.
 // Hai mục tiêu:
 //  1. Bảo mật: redact toàn bộ nếu có dấu hiệu sensitive (token/secret/password/otp/bearer).
 //  2. Kích thước: cắt cứng tại 512 ký tự để tránh Loki ingest bị choke.
 //
-// Callsite duy nhất: LogFields() — không gọi trực tiếp từ nơi khác.
+// LogFields() và logger's bounded message path use this function; callers must
+// never treat its output as safe for a client response.
 func sanitizeErrorCause(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -144,7 +147,15 @@ func sanitizeErrorCause(raw string) string {
 	value = strings.ReplaceAll(value, "\r", " ")
 
 	lower := strings.ToLower(value)
-	sensitiveHints := []string{"token", "secret", "api key", "apikey", "otp", "password", "authorization", "bearer"}
+	if credentialURLPattern.MatchString(value) {
+		// URI userinfo can carry a password even when no conventional field name
+		// appears in the provider error (for example postgres://user:pass@host).
+		return "[redacted_sensitive_cause]"
+	}
+	sensitiveHints := []string{
+		"token", "secret", "credential", "api key", "apikey", "access key",
+		"private key", "otp", "password", "authorization", "bearer",
+	}
 	for _, hint := range sensitiveHints {
 		if strings.Contains(lower, hint) {
 			// Redact toàn bộ — không partial vì context xung quanh vẫn có thể leak.

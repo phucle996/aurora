@@ -13,6 +13,7 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/observability"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
@@ -67,7 +68,7 @@ func (h *DeviceRedisHandler) Start() error {
 	if h == nil {
 		return errors.New("device Redis handler is nil")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "iam.device.pubsub.subscribe"))
 	pubsub := h.sharedRedis.Subscribe(ctx, bulkTouchPresenceChannel)
 	if _, err := pubsub.Receive(ctx); err != nil {
 		cancel()
@@ -130,7 +131,7 @@ func (h *DeviceRedisHandler) Start() error {
 				if ctx.Err() != nil {
 					return
 				}
-				logger.SysError("Redis.EvictedDevices", fmt.Sprintf("Failed to read pending events: %v", err))
+				logger.SysErrorCtx(ctx, "Redis.EvictedDevices", fmt.Sprintf("Failed to read pending events: %v", err))
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
@@ -161,7 +162,7 @@ func (h *DeviceRedisHandler) Start() error {
 					if ctx.Err() != nil {
 						return
 					}
-					logger.SysError("Redis.EvictedDevices", fmt.Sprintf("Failed to read new events: %v", err))
+					logger.SysErrorCtx(ctx, "Redis.EvictedDevices", fmt.Sprintf("Failed to read new events: %v", err))
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
@@ -223,7 +224,7 @@ func (h *DeviceRedisHandler) dispatch(msg *goredis.Message) {
 // 1. LUỒNG CẬP NHẬT BULK PRESENCE (BulkTouchPresence)
 // =========================================================================
 func (h *DeviceRedisHandler) handleBulkTouchPresence(payload []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.device.bulk_touch_presence"), 10*time.Second)
 	defer cancel()
 
 	var span trace.Span
@@ -239,12 +240,12 @@ func (h *DeviceRedisHandler) handleBulkTouchPresence(payload []byte) {
 	// [COMMENT]: PubSub broadcast tới mọi CP replica; event_id 16 byte và SETNX biến
 	// fan-out thành single-consumer trước khi thực hiện bulk UPDATE PostgreSQL.
 	if len(payload) <= 16 {
-		logger.SysWarn("Redis.BulkTouchPresence", "Missing event id envelope")
+		logger.SysWarnCtx(ctx, "Redis.BulkTouchPresence", "Missing event id envelope")
 		return
 	}
 	eventID, err := uuid.FromBytes(payload[:16])
 	if err != nil || eventID == uuid.Nil {
-		logger.SysWarn("Redis.BulkTouchPresence", "Invalid event id envelope")
+		logger.SysWarnCtx(ctx, "Redis.BulkTouchPresence", "Invalid event id envelope")
 		return
 	}
 	acquired, err := h.sharedRedis.SetNX(ctx, "iam:device:dispatch:bulk_touch:"+eventID.String(), "1", 2*time.Minute).Result()
@@ -254,7 +255,7 @@ func (h *DeviceRedisHandler) handleBulkTouchPresence(payload []byte) {
 
 	var req iamproto.BulkTouchDevicesRequest
 	if err := proto.Unmarshal(payload[16:], &req); err != nil {
-		logger.SysError("Redis.BulkTouchPresence", fmt.Sprintf("Failed to unmarshal request: %v", err))
+		logger.SysErrorCtx(ctx, "Redis.BulkTouchPresence", fmt.Sprintf("Failed to unmarshal request: %v", err))
 		return
 	}
 
@@ -273,7 +274,7 @@ func (h *DeviceRedisHandler) handleBulkTouchPresence(payload []byte) {
 	}
 
 	if err := h.deviceSvc.BulkTouchDevices(ctx, updates); err != nil {
-		logger.SysError("Redis.BulkTouchPresence", fmt.Sprintf("Failed to bulk touch devices: %v", err))
+		logger.SysErrorCtx(ctx, "Redis.BulkTouchPresence", fmt.Sprintf("Failed to bulk touch devices: %v", err))
 		return
 	}
 }
@@ -282,7 +283,7 @@ func (h *DeviceRedisHandler) handleBulkTouchPresence(payload []byte) {
 // 2. LUỒNG THU HỒI THIẾT BỊ THỪA DUNG LƯỢNG (EvictedDevices)
 // =========================================================================
 func (h *DeviceRedisHandler) handleEvictedDevices(payload []byte) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.device.evict"), 10*time.Second)
 	defer cancel()
 
 	var span trace.Span
@@ -297,7 +298,7 @@ func (h *DeviceRedisHandler) handleEvictedDevices(payload []byte) bool {
 
 	var req iamproto.EvictedDevicesNotification
 	if err := proto.Unmarshal(payload, &req); err != nil {
-		logger.SysError("Redis.EvictedDevices", fmt.Sprintf("Failed to unmarshal request: %v", err))
+		logger.SysErrorCtx(ctx, "Redis.EvictedDevices", fmt.Sprintf("Failed to unmarshal request: %v", err))
 		return true
 	}
 
@@ -307,16 +308,16 @@ func (h *DeviceRedisHandler) handleEvictedDevices(payload []byte) bool {
 
 	userUUID, err := uuid.Parse(req.UserId)
 	if err != nil {
-		logger.SysError("Redis.EvictedDevices", fmt.Sprintf("Invalid user UUID: %s", req.UserId))
+		logger.SysErrorCtx(ctx, "Redis.EvictedDevices", fmt.Sprintf("Invalid user UUID: %s", req.UserId))
 		return true
 	}
 
 	if err := h.deviceSvc.EvictDevices(ctx, userUUID, req.ClientDeviceIds); err != nil {
-		logger.SysError("Redis.EvictDevices", fmt.Sprintf("Failed to evict devices: %v", err))
+		logger.SysErrorCtx(ctx, "Redis.EvictDevices", fmt.Sprintf("Failed to evict devices: %v", err))
 		return false
 	}
 
-	logger.SysInfo("Redis.EvictDevices", fmt.Sprintf("Successfully evicted %d evicted devices for user_id=%s", len(req.ClientDeviceIds), req.UserId))
+	logger.SysInfoCtx(ctx, "Redis.EvictDevices", fmt.Sprintf("Successfully evicted %d evicted devices for user_id=%s", len(req.ClientDeviceIds), req.UserId))
 	return true
 }
 

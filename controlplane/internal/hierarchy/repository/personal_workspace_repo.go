@@ -31,15 +31,17 @@ func NewPersonalWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarch
 		// the active-parent precondition between the check and insert.
 		createQuery: fmt.Sprintf(`
 			WITH target_zone AS MATERIALIZED (
-				SELECT id FROM %s.zones WHERE id = $5 AND status = 'active' FOR SHARE
+				SELECT id, status FROM %s.zones WHERE id = $5 FOR SHARE
 			), inserted AS (
 				INSERT INTO %s.personal_workspaces
 					(id, name, code, description, zone_id, owner_id, created_at, updated_at)
 				SELECT $1, $2, $3, $4, target_zone.id, $6, $7, $8
 				FROM target_zone
+				WHERE target_zone.status = 'active'
 				RETURNING id, name, code, COALESCE(description, ''), zone_id, owner_id, created_at, updated_at
 			)
 			SELECT EXISTS(SELECT 1 FROM target_zone),
+				COALESCE((SELECT status = 'active' FROM target_zone), false),
 				EXISTS(SELECT 1 FROM inserted),
 				COALESCE((SELECT id FROM inserted), '00000000-0000-0000-0000-000000000000'::uuid),
 				COALESCE((SELECT name FROM inserted), ''),
@@ -84,12 +86,12 @@ func NewPersonalWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarch
 }
 
 func (r *PersonalWorkspaceRepoImpl) CreateWorkspaceForPersonal(ctx context.Context, in *hierarchyEntity.CreatePersonalWorkspace) (*hierarchyEntity.CreatePersonalWorkspace, error) {
-	var zoneExists, inserted bool
+	var zoneExists, zoneActive, inserted bool
 	out := &hierarchyEntity.CreatePersonalWorkspace{}
 	err := r.db.QueryRow(ctx, r.createQuery,
 		in.ID, in.Name, in.Code, in.Description, in.ZoneID, in.OwnerID, in.CreatedAt, in.UpdatedAt,
 	).Scan(
-		&zoneExists, &inserted, &out.ID, &out.Name, &out.Code, &out.Description,
+		&zoneExists, &zoneActive, &inserted, &out.ID, &out.Name, &out.Code, &out.Description,
 		&out.ZoneID, &out.OwnerID, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
@@ -101,6 +103,9 @@ func (r *PersonalWorkspaceRepoImpl) CreateWorkspaceForPersonal(ctx context.Conte
 	}
 	if !zoneExists {
 		return nil, hierarchyTaxonomy.ErrNotFound
+	}
+	if !zoneActive {
+		return nil, hierarchyTaxonomy.ErrPreconditionFailed
 	}
 	if !inserted || out.ID == uuid.Nil {
 		return nil, fmt.Errorf("create personal workspace returned no row")

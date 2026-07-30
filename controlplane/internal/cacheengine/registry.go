@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"controlplane/internal/cacheengine/codec"
@@ -12,6 +13,7 @@ import (
 	"controlplane/internal/cacheengine/l1_cache"
 	"controlplane/internal/cacheengine/l2_cache"
 	"controlplane/internal/cacheengine/l2_lua_executor"
+	"controlplane/internal/observability"
 	"controlplane/pkg/logger"
 
 	"github.com/redis/go-redis/v9"
@@ -70,19 +72,27 @@ type RegisteredLoader struct {
 
 // CacheRegistry quản lý tập trung các loader tĩnh và điều phối L1, L2, Fanout, Executor
 type CacheRegistry struct {
-	L1      Cache
-	L2      L2Cache
-	Fanout  *RedisFanout
-	Exec    L2LuaExecutor
-	loaders map[string]*RegisteredLoader
+	L1        Cache
+	L2        L2Cache
+	Fanout    *RedisFanout
+	Exec      L2LuaExecutor
+	loadersMu sync.RWMutex
+	loaders   map[string]*RegisteredLoader
 }
 
 // NewCacheRegistry khởi tạo một CacheRegistry mới với L1 Cache được bao bọc bởi telemetry decorator.
-func NewCacheRegistry(l1 Cache) *CacheRegistry {
-	return &CacheRegistry{
-		L1:      &telemetryL1Cache{raw: l1},
+func NewCacheRegistry(l1 Cache, metrics observability.CacheRecorder) *CacheRegistry {
+	registry := &CacheRegistry{
 		loaders: make(map[string]*RegisteredLoader),
 	}
+	registry.L1 = &telemetryL1Cache{
+		raw:     l1,
+		metrics: metrics,
+		namespaceRegistered: func(namespace string) bool {
+			return registry.GetLoader(namespace) != nil
+		},
+	}
+	return registry
 }
 
 // Register sử dụng Go Generics để tự động lấy kiểu dữ liệu T của loadFn và sinh hàm Factory tương ứng.
@@ -92,6 +102,8 @@ func Register[T any](
 	ttl time.Duration,
 	loadFn func(ctx context.Context, param string) (T, error),
 ) {
+	r.loadersMu.Lock()
+	defer r.loadersMu.Unlock()
 	r.loaders[namespace] = &RegisteredLoader{
 		Namespace: namespace,
 		TTL:       ttl,
@@ -107,6 +119,8 @@ func Register[T any](
 
 // GetLoader truy xuất thông tin loader đăng ký theo namespace
 func (r *CacheRegistry) GetLoader(namespace string) *RegisteredLoader {
+	r.loadersMu.RLock()
+	defer r.loadersMu.RUnlock()
 	return r.loaders[namespace]
 }
 
@@ -171,8 +185,8 @@ func (r *CacheRegistry) handleFanoutMessage(key string, payload []byte, version 
 
 // GetOrLoad đọc dữ liệu cache từ namespace tương ứng thông qua tham số đầu vào.
 func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param string) (interface{}, error) {
-	loader, ok := r.loaders[namespace]
-	if !ok {
+	loader := r.GetLoader(namespace)
+	if loader == nil {
 		return nil, fmt.Errorf("cacheengine: namespace '%s' is not registered", namespace)
 	}
 
@@ -183,13 +197,13 @@ func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param s
 
 	envelopeVal, err := r.L1.GetOrLoad(cacheKey, loader.TTL, func() (interface{}, error) {
 		// Log thông tin khi gặp Cache Miss trong RAM L1 để tiện theo dõi và debug luồng dữ liệu
-		logger.SysInfo("cache.get_or_load", fmt.Sprintf("L1 cache miss, triggering loader callback: %s", cacheKey))
+		logger.SysInfoCtx(ctx, "cache.get_or_load", fmt.Sprintf("L1 cache miss, triggering loader callback: %s", cacheKey))
 
 		// Gọi loader của caller để nạp dữ liệu gốc từ DB/Service
 		raw, err := loader.Load(ctx, param)
 		if err != nil {
 			// Log lỗi khi hàm loader bị lỗi (ví dụ lỗi kết nối DB, DB query error) và trả lỗi gốc về
-			logger.SysError("cache.get_or_load", fmt.Sprintf("L1 loader execution failed, returning database/service error: %s", err.Error()))
+			logger.SysErrorCtx(ctx, "cache.get_or_load", fmt.Sprintf("L1 loader execution failed, returning database/service error: %s", err.Error()))
 			return nil, err
 		}
 

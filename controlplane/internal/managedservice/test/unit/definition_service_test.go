@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/managedservice/domain/entity"
 	managedserviceimpl "controlplane/internal/managedservice/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -37,7 +38,7 @@ func (r *definitionRepositorySpy) RetireDefinition(_ context.Context, in *entity
 
 func TestDefinitionServiceOwnsSystemIdentifiers(t *testing.T) {
 	repo := &definitionRepositorySpy{}
-	subject := managedserviceimpl.NewDefinitionService(repo)
+	subject := managedserviceimpl.NewDefinitionService(repo, observability.NewNoopWorkflowRecorder())
 
 	if _, err := subject.CreateDefinition(context.Background(), &entity.CreateDefinition{}); err != nil {
 		t.Fatalf("create definition: %v", err)

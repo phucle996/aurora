@@ -13,6 +13,7 @@ import (
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamService "controlplane/internal/iam/service"
+	"controlplane/internal/observability"
 )
 
 type userRepositoryStub struct {
@@ -91,7 +92,7 @@ func TestUserServiceDelegatesUserWorkflows(t *testing.T) {
 		socialLinks: []iamEntity.GetMySocialLinks{{UserID: userID, Provider: "google", State: "linked"}},
 		authMethods: []iamEntity.GetUserAuthMethods{{UserID: userID, Provider: "google", State: "linked"}},
 	}
-	svc := iamService.NewUserService(repo, nil, nil, sharedRedis)
+	svc := iamService.NewUserService(repo, nil, nil, sharedRedis, observability.NewNoopWorkflowRecorder())
 	ctx := context.Background()
 
 	if users, err := svc.ListUsers(ctx, iamEntity.ListUsers{CallerLevel: 1, Limit: 20}); err != nil || len(users) != 1 {
@@ -125,7 +126,7 @@ func TestUserServiceDelegatesUserWorkflows(t *testing.T) {
 
 func TestUserServicePropagatesRepositoryErrors(t *testing.T) {
 	repoErr := errors.New("database unavailable")
-	svc := iamService.NewUserService(&userRepositoryStub{err: repoErr}, nil, nil, nil)
+	svc := iamService.NewUserService(&userRepositoryStub{err: repoErr}, nil, nil, nil, observability.NewNoopWorkflowRecorder())
 	ctx := context.Background()
 	userID := uuid.New()
 
@@ -168,9 +169,9 @@ func TestUserServiceMutationsUseInjectedRedisAndWorkflowEntities(t *testing.T) {
 
 	userID := uuid.New()
 	repo := &userRepositoryStub{}
-	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache(), observability.NewNoopCacheRecorder())
 	registry.L1.Set("user_role:"+userID.String(), "cached", time.Minute)
-	svc := iamService.NewUserService(repo, registry, authRedis, sharedRedis)
+	svc := iamService.NewUserService(repo, registry, authRedis, sharedRedis, observability.NewNoopWorkflowRecorder())
 	ctx := context.Background()
 
 	if err := svc.UpdateUserStatus(ctx, iamEntity.UpdateUserStatus{
@@ -212,7 +213,7 @@ func TestUserServiceResetPasswordHashesBeforeRepositoryCall(t *testing.T) {
 	defer sharedRedis.Close()
 
 	repo := &userRepositoryStub{}
-	svc := iamService.NewUserService(repo, nil, nil, sharedRedis)
+	svc := iamService.NewUserService(repo, nil, nil, sharedRedis, observability.NewNoopWorkflowRecorder())
 	workflow := iamEntity.ResetUserPassword{
 		CallerLevel: 1, TargetUserID: uuid.New(), Password: "A-strong-password-123",
 	}

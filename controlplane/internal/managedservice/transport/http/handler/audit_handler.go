@@ -9,6 +9,7 @@ import (
 	"controlplane/internal/managedservice/domain/entity"
 	managedservice "controlplane/internal/managedservice/domain/service"
 	"controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,8 @@ func NewAuditHandler(service managedservice.AuditService) *AuditHandler {
 }
 
 func (h *AuditHandler) ListAuditEvents(c *gin.Context) {
+	const op = "managedservice.audit.list"
+
 	// [COMMENT]: Chỉ SRE mới được phép truy cập audit log.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -40,7 +43,7 @@ func (h *AuditHandler) ListAuditEvents(c *gin.Context) {
 		limit = parsed
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.ListAuditEvents(ctx, &entity.ListAuditEvents{Limit: limit})

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"time"
 
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
@@ -12,6 +13,7 @@ import (
 	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
 	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
 	hypervisorproto "controlplane/internal/hypervisor/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -19,19 +21,37 @@ import (
 )
 
 type PersonalVMServiceImpl struct {
-	repo hypervisorRepoInterface.PersonalVMRepository
+	repo    hypervisorRepoInterface.PersonalVMRepository
+	metrics observability.WorkflowRecorder
 }
 
 func NewPersonalVMService(
 	repo hypervisorRepoInterface.PersonalVMRepository,
+	metrics observability.WorkflowRecorder,
 ) hypervisorSvcInterface.PersonalVMService {
-	return &PersonalVMServiceImpl{repo: repo}
+	return &PersonalVMServiceImpl{repo: repo, metrics: metrics}
 }
 
 func (s *PersonalVMServiceImpl) Create(
 	ctx context.Context,
 	input *hypervisorEntity.CreatePersonalVM,
-) (*hypervisorEntity.PersonalVMCreateResult, error) {
+) (out *hypervisorEntity.PersonalVMCreateResult, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, hypervisorTaxonomy.ErrNameConflict):
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		case errors.Is(err, hypervisorTaxonomy.ErrImageNotFound), errors.Is(err, hypervisorTaxonomy.ErrNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, hypervisorTaxonomy.ErrImageStateConflict), errors.Is(err, hypervisorTaxonomy.ErrScopeUnavailable):
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
 	image, err := s.repo.GetAvailableImage(ctx, input.ImageID, input.ZoneID)
 	if err != nil {
 		return nil, err
@@ -137,7 +157,15 @@ func (s *PersonalVMServiceImpl) List(
 	zoneID uuid.UUID,
 	ownerUserID uuid.UUID,
 	limit int32,
-) ([]*hypervisorEntity.PersonalVM, error) {
+) (out []*hypervisorEntity.PersonalVM, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.List(ctx, workspaceID, zoneID, ownerUserID, limit)
 }
 
@@ -146,6 +174,16 @@ func (s *PersonalVMServiceImpl) Get(
 	vmID uuid.UUID,
 	workspaceID uuid.UUID,
 	ownerUserID uuid.UUID,
-) (*hypervisorEntity.PersonalVM, error) {
+) (out *hypervisorEntity.PersonalVM, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		} else if errors.Is(err, hypervisorTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.Get(ctx, vmID, workspaceID, ownerUserID)
 }

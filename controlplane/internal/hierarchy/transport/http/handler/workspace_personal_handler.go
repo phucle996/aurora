@@ -88,8 +88,11 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
-			logger.HandlerWarn(c, op, err, "create workspace zone not found or not active")
-			apires.RespondNotFound(c, "zone not found or not active")
+			logger.HandlerWarn(c, op, err, "create workspace parent not found")
+			apires.RespondNotFound(c, "resource not found")
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
+			logger.HandlerWarn(c, op, err, "create workspace parent precondition failed")
+			apires.RespondConflict(c, "resource precondition failed")
 		case errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create workspace code conflict")
 			apires.RespondConflict(c, "workspace code already exists within this scope")

@@ -16,6 +16,7 @@ import (
 	"controlplane/internal/managedservice/taxonomy"
 	"controlplane/internal/managedservice/transport/http/dto"
 	"controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -64,7 +65,7 @@ func (h *CategoryHandler) CreateCategory(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(append(append([]byte(request.Code), nameJSON...), descriptionJSON...), []byte(request.IconKey)...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.CreateCategory(ctx, &entity.CreateCategory{Actor: actor, Code: request.Code, Name: english, Description: strings.TrimSpace(request.Description["en"]), NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -91,6 +92,8 @@ func (h *CategoryHandler) CreateCategory(c *gin.Context) {
 }
 
 func (h *CategoryHandler) ListCategories(c *gin.Context) {
+	const op = "managedservice.category.list"
+
 	// [COMMENT]: Chỉ SRE mới có quyền list categories.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -109,7 +112,7 @@ func (h *CategoryHandler) ListCategories(c *gin.Context) {
 		limit = parsed
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	items, err := h.service.ListCategories(ctx, &entity.ListCategories{Limit: limit})
@@ -138,6 +141,8 @@ func (h *CategoryHandler) ListCategories(c *gin.Context) {
 }
 
 func (h *CategoryHandler) GetCategory(c *gin.Context) {
+	const op = "managedservice.category.get"
+
 	// [COMMENT]: Chỉ SRE mới có quyền xem chi tiết category.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -151,7 +156,7 @@ func (h *CategoryHandler) GetCategory(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.GetCategory(ctx, &entity.GetCategory{CategoryID: id})
@@ -169,6 +174,8 @@ func (h *CategoryHandler) GetCategory(c *gin.Context) {
 }
 
 func (h *CategoryHandler) UpdateCategory(c *gin.Context) {
+	const op = "managedservice.category.update"
+
 	// [COMMENT]: Chỉ SRE mới có quyền update category.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if actor != "sre" {
@@ -204,7 +211,7 @@ func (h *CategoryHandler) UpdateCategory(c *gin.Context) {
 	}
 
 	hash := sha256.Sum256(append(append(nameJSON, descriptionJSON...), []byte(request.IconKey)...))
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.UpdateCategory(ctx, &entity.UpdateCategory{CategoryID: id, Actor: actor, ExpectedVersion: request.ExpectedVersion, Name: english, Description: strings.TrimSpace(request.Description["en"]), NameI18n: nameJSON, DescriptionI18n: descriptionJSON, IconKey: request.IconKey, AfterHash: hash[:]})
@@ -236,6 +243,8 @@ func (h *CategoryHandler) UpdateCategory(c *gin.Context) {
 }
 
 func (h *CategoryHandler) RetireCategory(c *gin.Context) {
+	const op = "managedservice.category.retire"
+
 	// [COMMENT]: Retire là thao tác critical – bắt buộc phải có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -259,7 +268,7 @@ func (h *CategoryHandler) RetireCategory(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.RetireCategory(ctx, &entity.RetireCategory{CategoryID: id, Actor: actor, ProofID: proofID, ExpectedVersion: request.ExpectedVersion})

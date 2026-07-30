@@ -9,6 +9,7 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
@@ -81,7 +82,7 @@ func (r *BillingOutboxRelay) Notify() {
 }
 
 func (r *BillingOutboxRelay) Start() {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "iam.billing_outbox.relay"))
 	r.cancel = cancel
 	go r.run(ctx)
 }
@@ -113,7 +114,7 @@ func (r *BillingOutboxRelay) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			logger.SysError("iam.billing_outbox.claim", err.Error())
+			logger.SysErrorCtx(ctx, "iam.billing_outbox.claim", err.Error())
 			retryNotBefore = time.Now().Add(retryBackoff)
 			resetBillingOutboxTimer(timer, retryBackoff)
 			retryBackoff *= 2
@@ -222,7 +223,7 @@ func (r *BillingOutboxRelay) publish(ctx context.Context, event iamEntity.Billin
 		return
 	}
 	if err := r.repo.MarkPublished(ctx, event.ID); err != nil {
-		logger.SysError("iam.billing_outbox.mark_published", err.Error())
+		logger.SysErrorCtx(ctx, "iam.billing_outbox.mark_published", err.Error())
 	}
 }
 

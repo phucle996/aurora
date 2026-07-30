@@ -2,12 +2,15 @@ package storageSvcImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"controlplane/internal/observability"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
+	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
@@ -19,13 +22,15 @@ import (
 
 // [COMMENT]: TenantBucketSvcImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Doanh nghiệp.
 type TenantBucketSvcImpl struct {
-	repo storageRepoInterface.TenantBucketRepo
+	repo    storageRepoInterface.TenantBucketRepo
+	metrics observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewTenantBucketService khởi tạo instance thực thi TenantBucketService.
-func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo) storageSvcInterface.TenantBucketService {
+func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo, metrics observability.WorkflowRecorder) storageSvcInterface.TenantBucketService {
 	return &TenantBucketSvcImpl{
-		repo: repo,
+		repo:    repo,
+		metrics: metrics,
 	}
 }
 
@@ -43,6 +48,10 @@ func buildTenantBucketPolicy(bucketName string) string {
 }
 
 func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) (*storageEntity.CreatedBucketResult, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
 	if err != nil {
@@ -138,10 +147,16 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 
 	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) 3-way CTE: bucket + credential + outbox record
 	if err := s.repo.Create(ctx, bucket, credential, outbox); err != nil {
+		if errors.Is(err, storageTaxonomy.ErrAlreadyExists) {
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
 	// [COMMENT]: Trả về credentials ngay để HTTP handler phản hồi user — secret_key chỉ hiển thị 1 lần này
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &storageEntity.CreatedBucketResult{
 		BucketID:     bucket.ID,
 		BucketName:   bucket.Name,
@@ -153,25 +168,45 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 }
 
 func (s *TenantBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.TenantBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	bucket, err := s.repo.GetByID(ctx, bucketID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "get_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return bucket, nil
 }
 
 func (s *TenantBucketSvcImpl) ListBuckets(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	buckets, err := s.repo.ListByTenantAndZone(ctx, tenantID, zoneID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return buckets, nil
 }
 
 func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, quotaBytes int64) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: 1. Lấy thông tin hiện tại của tenant bucket
 	bucket, err := s.repo.GetByID(ctx, bucketID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "get_failed")
 	}
 
@@ -219,15 +254,28 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	// [COMMENT]: 4. Thực thi cập nhật DB và ghi outbox nguyên tử
 	err = s.repo.UpdateQuota(ctx, bucketID, quotaBytes, outbox)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrQuotaExceeded) || errors.Is(err, storageTaxonomy.ErrResizeLimitTooLow) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "update_quota_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
 func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeleteTenantBucket) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: Lấy thông tin bucket để trích xuất TenantID làm OwnerID cho Billing Outbox
 	bucket, err := s.repo.GetByID(ctx, param.BucketID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "get_bucket_failed")
 	}
 
@@ -280,7 +328,11 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 	// [COMMENT]: 4. Thực thi xóa DB và ghi outbox nguyên tử
 	err = s.repo.Delete(ctx, param.BucketID, outbox)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return apperr.Wrap(err, err, "delete_failed")
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }

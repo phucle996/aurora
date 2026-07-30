@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/managedservice/domain/entity"
 	managedserviceimpl "controlplane/internal/managedservice/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -37,7 +38,7 @@ func (r *categoryRepositorySpy) RetireCategory(_ context.Context, in *entity.Ret
 
 func TestCategoryServiceOwnsSystemIdentifiers(t *testing.T) {
 	repo := &categoryRepositorySpy{}
-	subject := managedserviceimpl.NewCategoryService(repo)
+	subject := managedserviceimpl.NewCategoryService(repo, observability.NewNoopWorkflowRecorder())
 
 	created := &entity.CreateCategory{}
 	if _, err := subject.CreateCategory(context.Background(), created); err != nil {
@@ -66,7 +67,7 @@ func TestCategoryServiceOwnsSystemIdentifiers(t *testing.T) {
 
 func TestCategoryServicePreservesExistingIdentifiers(t *testing.T) {
 	repo := &categoryRepositorySpy{}
-	subject := managedserviceimpl.NewCategoryService(repo)
+	subject := managedserviceimpl.NewCategoryService(repo, observability.NewNoopWorkflowRecorder())
 	resourceID := uuid.MustParse("10000000-0000-7000-8000-000000000001")
 	auditID := uuid.MustParse("10000000-0000-7000-8000-000000000002")
 	in := &entity.CreateCategory{ID: resourceID, AuditID: auditID}

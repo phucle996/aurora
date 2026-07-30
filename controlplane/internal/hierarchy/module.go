@@ -76,6 +76,10 @@ func NewModule(
 	if cacheEngine == nil {
 		return nil, fmt.Errorf("hierarchy module: cache registry is required")
 	}
+	if otel == nil {
+		return nil, fmt.Errorf("hierarchy module: observability is required")
+	}
+	metrics := otel.WorkflowRecorder("hierarchy")
 	hierarchySchema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
 	if !regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`).MatchString(hierarchySchema) {
 		return nil, fmt.Errorf("hierarchy module: database schema is invalid")
@@ -89,7 +93,7 @@ func NewModule(
 	}
 
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := hierarchySvcImpl.NewZoneService(zoneRepo, rds)
+	zoneService := hierarchySvcImpl.NewZoneService(zoneRepo, rds, metrics)
 	if zoneService == nil {
 		return nil, fmt.Errorf("hierarchy module: zone service is nil")
 	}
@@ -108,7 +112,7 @@ func NewModule(
 	if zoneEncryptionKeyRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key repository is nil")
 	}
-	zoneEncryptionKeyService := hierarchySvcImpl.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo)
+	zoneEncryptionKeyService := hierarchySvcImpl.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo, metrics)
 	if zoneEncryptionKeyService == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key service is nil")
 	}
@@ -127,11 +131,11 @@ func NewModule(
 		return nil, fmt.Errorf("hierarchy module: personal workspace repository is nil")
 	}
 
-	tenantWorkspaceService := hierarchySvcImpl.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine)
+	tenantWorkspaceService := hierarchySvcImpl.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine, metrics)
 	if tenantWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant workspace service is nil")
 	}
-	personalWorkspaceService := hierarchySvcImpl.NewPersonalWorkspaceService(personalWorkspaceRepo)
+	personalWorkspaceService := hierarchySvcImpl.NewPersonalWorkspaceService(personalWorkspaceRepo, metrics)
 	if personalWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace service is nil")
 	}
@@ -149,7 +153,7 @@ func NewModule(
 	if tenantRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant repository is nil")
 	}
-	tenantService := hierarchySvcImpl.NewTenantService(tenantRepo)
+	tenantService := hierarchySvcImpl.NewTenantService(tenantRepo, metrics)
 	if tenantService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant service is nil")
 	}

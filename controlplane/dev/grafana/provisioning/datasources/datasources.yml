@@ -28,6 +28,10 @@ datasources:
     url: http://controlplane-victoriametrics:8428
     isDefault: true
     editable: false
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger
 
   - name: VictoriaLogs
     uid: victorialogs
@@ -59,6 +63,10 @@ datasources:
     url: http://controlplane-victoriametrics:8428
     isDefault: false
     editable: false
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger
 
   # Datasource PostgreSQL phục vụ giám sát cấu trúc bảng và truy vấn trực tiếp
   - name: PostgreSQL

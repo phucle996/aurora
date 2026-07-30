@@ -107,13 +107,14 @@ Tầng Repository thực hiện lưu trữ bền vững dưới PostgreSQL. Các
 1. **Optimize & Tránh Race Condition**:
    * Khi thực hiện các hành động ghi hoặc cập nhật trạng thái liên quan đến phân cấp quyền lực (Hierarchy), luôn kiểm tra chéo level bảo mật của Actor thực hiện hành động so với Target (Ví dụ: `Actor Level <= Target Level` thì mới cho phép chỉnh sửa).
    * Sử dụng transactions thích hợp đối với các tác vụ ghi đồng thời.
-2. **Tích hợp Telemetry & Metrics tại Service**:
-   * Mọi lời gọi nghiệp vụ quan trọng hoặc các truy vấn xuống Database/Redis downstream đều phải được đo đạc Latency và ghi nhận vào hệ thống Metrics thông qua OTel SDK:
-     ```go
-     start := time.Now()
-     res, err := s.repo.SomeAction(...)
-     observability.CurrentMetrics().ObserveDependency("db", "module.object.action", time.Since(start), err)
-     ```
+2. **Tích hợp Telemetry & Metrics theo ownership**:
+   * Handler gắn operation tĩnh vào context; service ghi đúng một workflow outcome
+     qua `WorkflowRecorder` được module inject.
+   * PostgreSQL, Redis và Kafka dependency metrics chỉ được ghi tại adapter chung;
+     service không đo lại downstream call để tránh double-count.
+   * Không dùng global metric singleton, raw path, UUID, owner/workspace/zone ID,
+     topic, Redis key, SQL text hoặc raw error làm metric label. Contract đầy đủ nằm
+     tại `god_view/controlplane/telemetry_god_view.md`.
 3. **Cơ chế Bảo mật Token & Session**:
    * ACR (Biên) chịu trách nhiệm xác thực Trinity Credentials thô qua cookie và kiểm tra session trạng thái tại Redis L2.
    * Control Plane nhận thông tin định danh và phân quyền an toàn qua các Header đáng tin cậy đã được ACR inject: `x-user-id`, `x-user-level`, `x-tenant-id`, `x-workspace-id`, `x-zone-id`.

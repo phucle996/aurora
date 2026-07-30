@@ -42,11 +42,12 @@ type TimeDriftSnapshot struct {
 type TimeSyncProbe struct {
 	mu       sync.RWMutex
 	snapshot TimeDriftSnapshot
+	metrics  *observability.Metrics
 }
 
 // NewTimeSyncProbe khởi tạo probe với state mặc định unknown.
-func NewTimeSyncProbe() *TimeSyncProbe {
-	return &TimeSyncProbe{snapshot: TimeDriftSnapshot{State: TimeDriftUnknown}}
+func NewTimeSyncProbe(metrics *observability.Metrics) *TimeSyncProbe {
+	return &TimeSyncProbe{snapshot: TimeDriftSnapshot{State: TimeDriftUnknown}, metrics: metrics}
 }
 
 // Start chạy vòng lặp probe định kỳ 30 giây cho tới khi context bị cancel.
@@ -55,17 +56,15 @@ func NewTimeSyncProbe() *TimeSyncProbe {
 // - đây là background loop, không nằm request hot path.
 // - tick() chịu trách nhiệm parse + emit metrics + state-change log.
 func (p *TimeSyncProbe) Start(ctx context.Context) {
-	const op = "app.timesync.probe"
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
-		p.tick()
+		p.tick(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		_ = op
 	}
 }
 
@@ -83,8 +82,9 @@ func (p *TimeSyncProbe) Snapshot() TimeDriftSnapshot {
 // 4) cập nhật snapshot,
 // 5) emit metrics,
 // 6) log khi state thay đổi.
-func (p *TimeSyncProbe) tick() {
-	out, err := exec.Command("chronyc", "tracking").CombinedOutput()
+func (p *TimeSyncProbe) tick(ctx context.Context) {
+	// CommandContext keeps shutdown bounded even if the local chrony socket stalls.
+	out, err := exec.CommandContext(ctx, "chronyc", "tracking").CombinedOutput()
 	snap := TimeDriftSnapshot{Checked: time.Now().UTC(), State: TimeDriftUnknown}
 	if err == nil {
 		if secs, ok := parseChronyTracking(string(out)); ok {
@@ -97,9 +97,7 @@ func (p *TimeSyncProbe) tick() {
 	p.snapshot = snap
 	p.mu.Unlock()
 
-	if prom := observability.CurrentMetrics(); prom != nil {
-		prom.ObserveTimeDrift(snap.Seconds, string(snap.State))
-	}
+	p.metrics.ObserveTimeDrift(ctx, snap.Seconds, string(snap.State))
 	if prev != snap.State {
 		logger.SysInfo("app.timesync.probe", fmt.Sprintf("time drift state changed: %s -> %s", prev, snap.State))
 	}

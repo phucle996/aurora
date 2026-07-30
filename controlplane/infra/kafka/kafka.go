@@ -10,17 +10,23 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	"controlplane/internal/observability"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Producer đóng gói idempotent producer; mọi publish chỉ thành công sau acks=all.
 type Producer struct {
-	client *kgo.Client
+	client  *kgo.Client
+	metrics observability.DependencyRecorder
 }
 
-func NewProducer(ctx context.Context, cfg *config.KafkaCfg) (*Producer, error) {
+func NewProducer(ctx context.Context, cfg *config.KafkaCfg, metrics observability.DependencyRecorder) (*Producer, error) {
 	if cfg == nil || len(cfg.Brokers) == 0 {
 		return nil, errors.New("kafka: at least one bootstrap broker is required")
 	}
@@ -80,18 +86,56 @@ func NewProducer(ctx context.Context, cfg *config.KafkaCfg) (*Producer, error) {
 	}
 	// [COMMENT]: Không Ping broker ở bootstrap: mail xác minh là best-effort và login resend là recovery path.
 	// PublishSync vẫn fail-close theo từng request; Kubernetes không restart toàn Controlplane vì outage Kafka ngắn.
-	return &Producer{client: client}, nil
+	return &Producer{client: client, metrics: metrics}, nil
 }
 
 func (p *Producer) Publish(ctx context.Context, topic string, key, value []byte) error {
+	startedAt := time.Now()
 	if p == nil || p.client == nil {
 		return errors.New("kafka: producer is unavailable")
 	}
-	return p.client.ProduceSync(ctx, &kgo.Record{
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, span := otel.Tracer("aurora-controlplane.kafka").Start(
+		ctx,
+		"kafka.publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+	)
+	defer span.End()
+	// Topic/key/value remain out of telemetry: all can encode customer routing
+	// or data. The central dependency recorder adds only bounded dimensions.
+	span.SetAttributes(
+		attribute.String("messaging.system", "kafka"),
+		attribute.String("messaging.operation", "publish"),
+	)
+	err := p.client.ProduceSync(ctx, &kgo.Record{
 		Topic: topic,
 		Key:   key,
 		Value: value,
 	}).FirstErr()
+	result, reason := observability.ResultSuccess, observability.ReasonNone
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			result, reason = observability.ResultFailure, observability.ReasonTimeout
+		case errors.Is(err, context.Canceled):
+			result, reason = observability.ResultFailure, observability.ReasonCanceled
+		default:
+			result, reason = observability.ResultFailure, observability.ReasonUnavailable
+		}
+	}
+	span.SetAttributes(
+		attribute.String("aurora.result", string(result)),
+		attribute.String("aurora.reason", string(reason)),
+	)
+	if result == observability.ResultFailure {
+		span.SetStatus(codes.Error, string(reason))
+	}
+	// Topic is deliberately excluded: deployments may use per-environment names,
+	// while the stable operation label is sufficient for alerting.
+	p.metrics.ObserveDependency(ctx, "kafka", "publish", result, reason, time.Since(startedAt))
+	return err
 }
 
 func (p *Producer) Close() {

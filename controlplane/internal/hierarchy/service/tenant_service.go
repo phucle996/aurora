@@ -2,13 +2,15 @@ package hierarchySvcImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
-	hierarchyMetrics "controlplane/internal/hierarchy/metrics"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -16,10 +18,11 @@ import (
 type TenantService struct {
 	repo                hierarchyRepoInterface.TenantRepository
 	notifyBillingOutbox func()
+	metrics             observability.WorkflowRecorder
 }
 
-func NewTenantService(repo hierarchyRepoInterface.TenantRepository) hierarchySvcInterface.TenantService {
-	return &TenantService{repo: repo}
+func NewTenantService(repo hierarchyRepoInterface.TenantRepository, metrics observability.WorkflowRecorder) hierarchySvcInterface.TenantService {
+	return &TenantService{repo: repo, metrics: metrics}
 }
 
 // SetBillingOutboxNotifier is wired before readiness. The notification is only
@@ -29,9 +32,12 @@ func (s *TenantService) SetBillingOutboxNotifier(notify func()) {
 }
 
 func (s *TenantService) CreateTenant(ctx context.Context, in *hierarchyEntity.CreateTenant) (*hierarchyEntity.CreateTenant, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	tenantID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate tenant id: %w", err)
 	}
 	now := time.Now().UTC()
@@ -40,15 +46,14 @@ func (s *TenantService) CreateTenant(ctx context.Context, in *hierarchyEntity.Cr
 	in.CreatedAt = now
 	in.UpdatedAt = now
 
-	startedAt := time.Now()
 	out, err := s.repo.CreateTenant(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateTenant", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists) {
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateTenant", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
 	s.notifyBillingOutbox()
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }

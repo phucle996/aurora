@@ -420,16 +420,18 @@ Trong Rust acr (`logger.rs`) và Go Controlplane, Trace ID luôn được trích
 
 ---
 
-### 2. Chỉ Số Giám Sát (Prometheus Metrics & Dashboard)
+### 2. Chỉ Số Giám Sát (OTel Metrics & Dashboard)
 
 Hệ thống theo dõi các chỉ số quan trọng (Golden Signals) để đưa ra cảnh báo sớm về hiệu năng và bảo mật.
 
-#### A. Các chỉ số Prometheus chính
+#### A. Các chỉ số Controlplane chính
 
-- `iam_auth_requests_total{type="trinity"|"opaque", outcome="success"|"failed"|"error"}`: Tổng số lượt xác thực phân loại theo Trinity Credentials hoặc Opaque Refresh Token.
-- `iam_grpc_client_duration_seconds`: Thời gian phản hồi gRPC từ acr sang Go Controlplane (VerifyOpaqueRefreshToken).
-- `iam_redis_operation_duration_seconds{op="get_session"|"register_session"}`: Độ trễ thao tác đọc/ghi trên Redis L2.
-- `iam_vault_sign_duration_seconds`: Độ trễ ký khóa JWT tại HashiCorp Vault.
+- `aurora_controlplane_workflow_calls_total{module="iam",op="iam.auth.verify_opaque_token",result,reason}`.
+- `aurora_controlplane_workflow_duration_seconds{module="iam",op="iam.auth.verify_opaque_token",result,reason}`.
+- `aurora_controlplane_dependency_calls_total{module="iam",op="iam.auth.verify_opaque_token",system,operation,result,reason}`.
+- `aurora_controlplane_dependency_duration_seconds` cho PostgreSQL/Redis adapter latency.
+
+ACR sở hữu session, Vault signing và client-side request metrics của ACR; không gắn chúng vào Controlplane metric namespace.
 
 #### B. PromQL Dashboard & Alerting Rules (Sử dụng cho Grafana Alert)
 
@@ -438,25 +440,24 @@ Hệ thống theo dõi các chỉ số quan trọng (Golden Signals) để đưa
 Cảnh báo kích hoạt nếu các lỗi hạ tầng (Vault/Redis chết) chiếm hơn 1% tổng request trong 2 phút liên tiếp:
 
 ```promql
-sum(rate(iam_auth_requests_total{outcome="error"}[2m])) 
+sum(rate(aurora_controlplane_workflow_calls_total{module="iam",result="failure"}[2m]))
 / 
-sum(rate(iam_auth_requests_total[2m])) * 100 > 1
+clamp_min(sum(rate(aurora_controlplane_workflow_calls_total{module="iam"}[2m])), 0.000001) * 100 > 1
 ```
 
 ##### 🚨 Cảnh báo Phát Hiện Tấn Công Sử Dụng Lại Token (Opaque Token Reuse Detection)
 
-Số lượng token cũ được gửi lên bất thường chỉ thị nguy cơ bị rò rỉ và replay token:
+Replay token là security event của ACR. Controlplane không tạo metric label chi tiết token;
+alert dựa trên ACR security metric/log contract và không suy luận từ business metric.
 
-```promql
-sum(rate(iam_auth_requests_total{type="opaque", outcome="token_reuse_detected"}[5m])) > 0
-```
-
-##### 🚨 Cảnh Báo Độ Trễ gRPC Verify Opaque Token Quá Cao (p99 > 200ms)
+##### 🚨 Cảnh Báo Độ Trễ Verify Opaque Token Quá Cao (p99 > 200ms)
 
 Gây nghẽn tại Gateway do Controlplane phản hồi chậm hoặc DB PostgreSQL quá tải:
 
 ```promql
-histogram_quantile(0.99, sum(rate(iam_grpc_client_duration_seconds_bucket{op="VerifyOpaqueRefreshToken"}[5m])) by (le)) > 0.200
+histogram_quantile(0.99,
+  sum by (le) (rate(aurora_controlplane_workflow_duration_seconds_bucket{module="iam",op="iam.auth.verify_opaque_token"}[5m]))
+) > 0.200
 ```
 
 ---

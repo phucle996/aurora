@@ -43,14 +43,14 @@ Tên canonical duy nhất của module là `hierarchy`:
 - Mọi package con mang prefix module: `hierarchyEntity`,
   `hierarchyRepoInterface`, `hierarchySvcInterface`, `hierarchyRepoImpl`,
   `hierarchySvcImpl`, `hierarchyHandler`, `hierarchyReq`,
-  `hierarchyTaxonomy`, `hierarchyMetrics`, `hierarchyMigrations` và
+  `hierarchyTaxonomy`, `hierarchyMigrations` và
   `hierarchyPubsubHandler`.
 - Admin API: `/admin/hierarchy/...`.
 - Critical admin mutation: `/admin/critical/hierarchy/...`.
 - Customer API đặt `hierarchy` trong resource path hiện hành.
 - Operation: `hierarchy.<object>.<behavior>`.
-- OTel meter: `aurora-controlplane.hierarchy`.
-- Metric prefix: `aurora_controlplane_hierarchy_`.
+- Workflow metrics: recorder bind `module=hierarchy` từ `internal/observability`.
+- Metric contract: `aurora_controlplane_workflow_*`; không có meter/package riêng cho module.
 - Protobuf descriptor package: `hierarchy.rpc`.
 
 Không tạo lại package, alias, route, metric hay operation mang tên module cũ
@@ -71,7 +71,6 @@ internal/hierarchy/
 │   ├── entity/
 │   ├── repo/
 │   └── service/
-├── metrics/
 ├── repository/
 ├── service/
 ├── taxonomy/
@@ -100,7 +99,8 @@ Các package có trách nhiệm duy nhất:
 - `service`: business decision, system-owned values và orchestration.
 - `repository`: PostgreSQL query, transaction, lock và durable precondition.
 - `taxonomy`: sentinel error ổn định giữa repository, service và handler.
-- `metrics`: internal outcome/latency labels; không định nghĩa HTTP contract.
+- `internal/observability`: recorder tập trung cho internal outcome/latency;
+  Hierarchy không sở hữu package metric riêng và metric không định nghĩa HTTP contract.
 
 ## 4. Tổ chức file theo object
 
@@ -265,6 +265,11 @@ Taxonomy chỉ mô tả behavior dùng chung trong module, không mang tên obje
 Object và workflow đã được xác định bởi operation/log/trace nên không tạo
 `ErrZoneNotFound`, `ErrWorkspaceNotFound` hoặc sentinel tương tự. Không gom hai
 failure semantic khác nhau chỉ vì chúng cùng map HTTP 409.
+
+Sự tồn tại và điều kiện trạng thái là hai behavior khác nhau: parent không tồn
+tại trả `ErrNotFound`; parent tồn tại nhưng inactive hoặc không thỏa guard trả
+`ErrPreconditionFailed`. Repository phải trả hai outcome này từ cùng CTE để
+không tạo race giữa bước kiểm tra và mutation.
 
 Idempotency phải dựa trên natural invariant khi có thể: UUID đã gán, unique code
 trong owner scope, unique fingerprint hoặc state no-op. Không tuyên bố

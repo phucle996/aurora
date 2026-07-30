@@ -30,7 +30,7 @@ func NewDeviceSelfHandler(deviceSvc domainservice.DeviceSelfService) *DeviceSelf
 // [COMMENT]: ListMyDevices trả về danh sách thiết bị của chính user
 func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 	const op = "iam.device.list_my_devices"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	userID, ok := pkgcontext.GetUserID(c, op)
@@ -137,7 +137,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 // [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
 func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 	const op = "iam.device.logout_other_devices"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	userID, ok := pkgcontext.GetUserID(c, op)

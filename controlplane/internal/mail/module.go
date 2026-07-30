@@ -13,6 +13,7 @@ import (
 	mailRepoImpl "controlplane/internal/mail/repository"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailHandler "controlplane/internal/mail/transport/http/handler"
+	"controlplane/internal/observability"
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -68,9 +69,9 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the dependency graph for the Mail module.
 // CacheRegistry is shared with IAM so route authorization follows the same L1/L2 permission snapshot.
-func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Client, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
-	if cfg == nil || db == nil || runtimeRedis == nil || cacheEngine == nil {
-		return nil, errors.New("mail module: config, postgres pool, runtime redis, and cache registry are required")
+func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Client, cacheEngine *cacheengine.CacheRegistry, otel *observability.OTel) (*Module, error) {
+	if cfg == nil || db == nil || runtimeRedis == nil || cacheEngine == nil || otel == nil {
+		return nil, errors.New("mail module: config, postgres pool, runtime redis, cache registry, and observability are required")
 	}
 
 	// [COMMENT]: Repository được tách ngay tại DI boundary; không có generic repo tự chọn scope lúc runtime.
@@ -84,10 +85,11 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Clien
 
 	// [COMMENT]: Cache Redis chỉ giữ watch lease và runtime snapshot có TTL; cấu hình business
 	// vẫn nằm trong PostgreSQL và runtime động không đi qua Zone NATS KV.
-	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, runtimeRedis)
-	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, runtimeRedis)
-	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo)
-	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo)
+	workflowMetrics := otel.WorkflowRecorder("mail")
+	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, runtimeRedis, workflowMetrics)
+	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, runtimeRedis, workflowMetrics)
+	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo, workflowMetrics)
+	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo, workflowMetrics)
 	personalConsumerHandler := mailHandler.NewPersonalConsumerHandler(personalConsumerSvc)
 	tenantConsumerHandler := mailHandler.NewTenantConsumerHandler(tenantConsumerSvc)
 	personalTemplateHandler := mailHandler.NewPersonalTemplateHandler(personalTemplateSvc)

@@ -19,6 +19,7 @@ import (
 	"controlplane/internal/managedservice/taxonomy"
 	"controlplane/internal/managedservice/transport/http/dto"
 	"controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -35,6 +36,8 @@ func NewRevisionHandler(service managedservice.RevisionService) *RevisionHandler
 }
 
 func (h *RevisionHandler) CreateDraft(c *gin.Context) {
+	const op = "managedservice.revision.create_draft"
+
 	// [COMMENT]: ACR owns signature, nonce and TOTP verification. Controlplane
 	// only accepts the stripped-and-reinjected proof marker and opaque proof ID.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
@@ -124,7 +127,7 @@ func (h *RevisionHandler) CreateDraft(c *gin.Context) {
 	contractHasher.Write(capabilityJSON)
 	contractHash := contractHasher.Sum(nil)
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.CreateDraft(ctx, &entity.CreateDraft{
@@ -170,6 +173,8 @@ func (h *RevisionHandler) CreateDraft(c *gin.Context) {
 }
 
 func (h *RevisionHandler) GetDraft(c *gin.Context) {
+	const op = "managedservice.revision.get_draft"
+
 	// [COMMENT]: Chỉ SRE mới có quyền xem chi tiết draft.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -182,7 +187,7 @@ func (h *RevisionHandler) GetDraft(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.GetDraft(ctx, &entity.GetDraft{DraftID: draftID})
@@ -220,6 +225,8 @@ func (h *RevisionHandler) GetDraft(c *gin.Context) {
 }
 
 func (h *RevisionHandler) ListRevisions(c *gin.Context) {
+	const op = "managedservice.revision.list"
+
 	// [COMMENT]: Chỉ SRE mới có quyền list revisions của blueprint.
 	if strings.TrimSpace(c.GetHeader("x-user-id")) != "sre" {
 		apires.RespondForbidden(c, "forbidden")
@@ -243,7 +250,7 @@ func (h *RevisionHandler) ListRevisions(c *gin.Context) {
 		limit = parsed
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.ListRevisions(ctx, &entity.ListRevisions{BlueprintID: blueprintID, Limit: limit})
@@ -262,6 +269,8 @@ func (h *RevisionHandler) ListRevisions(c *gin.Context) {
 }
 
 func (h *RevisionHandler) PatchDraft(c *gin.Context) {
+	const op = "managedservice.revision.patch_draft"
+
 	// [COMMENT]: Patch draft là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -349,7 +358,7 @@ func (h *RevisionHandler) PatchDraft(c *gin.Context) {
 	contractHasher.Write(capabilityJSON)
 	contractHash := contractHasher.Sum(nil)
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.PatchDraft(ctx, &entity.PatchDraft{
@@ -397,6 +406,8 @@ func (h *RevisionHandler) PatchDraft(c *gin.Context) {
 }
 
 func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
+	const op = "managedservice.revision.validate_draft"
+
 	// [COMMENT]: Validate draft là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -976,7 +987,7 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 	contractHasher.Write(capabilityJSON)
 	contractHash := contractHasher.Sum(nil)
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.ValidateDraft(ctx, &entity.ValidateDraft{
@@ -1008,6 +1019,8 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 }
 
 func (h *RevisionHandler) PublishDraft(c *gin.Context) {
+	const op = "managedservice.revision.publish_draft"
+
 	// [COMMENT]: Publish là thao tác critical và không thể hoàn tác – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -1039,7 +1052,7 @@ func (h *RevisionHandler) PublishDraft(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.PublishDraft(ctx, &entity.PublishDraft{
@@ -1074,6 +1087,8 @@ func (h *RevisionHandler) PublishDraft(c *gin.Context) {
 }
 
 func (h *RevisionHandler) RetireRevision(c *gin.Context) {
+	const op = "managedservice.revision.retire"
+
 	// [COMMENT]: Retire revision là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -1097,7 +1112,7 @@ func (h *RevisionHandler) RetireRevision(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	result, err := h.service.RetireRevision(ctx, &entity.RetireRevision{
@@ -1121,6 +1136,8 @@ func (h *RevisionHandler) RetireRevision(c *gin.Context) {
 }
 
 func (h *RevisionHandler) DeleteDraft(c *gin.Context) {
+	const op = "managedservice.revision.delete_draft"
+
 	// [COMMENT]: Delete draft là thao tác critical – bắt buộc có verified proof header.
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
 	proofID, proofErr := uuid.Parse(strings.TrimSpace(c.GetHeader("x-session-proof-challenge-id")))
@@ -1144,7 +1161,7 @@ func (h *RevisionHandler) DeleteDraft(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	err := h.service.DeleteDraft(ctx, &entity.DeleteDraft{

@@ -2,20 +2,40 @@ package service
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"controlplane/internal/managedservice/domain/entity"
 	managedrepo "controlplane/internal/managedservice/domain/repo"
 	managedservice "controlplane/internal/managedservice/domain/service"
+	"controlplane/internal/managedservice/taxonomy"
+	"controlplane/internal/observability"
 )
 
 type tenantCatalogVersionService struct {
-	repo managedrepo.TenantCatalogVersionRepository
+	repo    managedrepo.TenantCatalogVersionRepository
+	metrics observability.WorkflowRecorder
 }
 
-func NewTenantCatalogVersionService(repo managedrepo.TenantCatalogVersionRepository) managedservice.TenantCatalogVersionService {
-	return &tenantCatalogVersionService{repo: repo}
+func NewTenantCatalogVersionService(repo managedrepo.TenantCatalogVersionRepository, metrics observability.WorkflowRecorder) managedservice.TenantCatalogVersionService {
+	return &tenantCatalogVersionService{repo: repo, metrics: metrics}
 }
 
-func (s *tenantCatalogVersionService) GetTenantCatalogVersion(ctx context.Context, in *entity.GetTenantCatalogVersion) (*entity.TenantCatalogVersionView, error) {
+func (s *tenantCatalogVersionService) GetTenantCatalogVersion(ctx context.Context, in *entity.GetTenantCatalogVersion) (out *entity.TenantCatalogVersionView, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, taxonomy.ErrCustomerCatalogNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, taxonomy.ErrCustomerCatalogStale):
+			result, reason = observability.ResultRejected, observability.ReasonConflict
+		case errors.Is(err, taxonomy.ErrCustomerCatalogUnavailable):
+			result, reason = observability.ResultFailure, observability.ReasonUnavailable
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
 	return s.repo.GetTenantCatalogVersion(ctx, in)
 }

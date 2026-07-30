@@ -53,7 +53,7 @@ func oneTimeTokenKey(purpose string, userID, eventID uuid.UUID) string {
 
 func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID, eventID uuid.UUID) (string, time.Time, error) {
 	purpose = strings.TrimSpace(purpose)
-	if s.cfg == nil || purpose == "" || userID == uuid.Nil || eventID == uuid.Nil || s.cfg.Security.OneTimeTokenTTL <= 0 ||
+	if purpose == "" || userID == uuid.Nil || eventID == uuid.Nil || s.cfg.Security.OneTimeTokenTTL <= 0 ||
 		s.cfg.Security.OneTimeTokenReplicaAcks < 0 ||
 		(s.cfg.Security.OneTimeTokenReplicaAcks > 0 && s.cfg.Security.OneTimeTokenReplicaWait <= 0) {
 		// [COMMENT]: Config durability sai phải fail closed, không âm thầm biến ACK âm thành chế độ single-node.
@@ -78,7 +78,7 @@ func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID,
 		acked, waitErr := conn.Wait(ctx, required, s.cfg.Security.OneTimeTokenReplicaWait).Result()
 		if waitErr != nil || int(acked) < required {
 			// [COMMENT]: Fail closed trước DB commit; key primary-only bị xóa best-effort để tránh phát mail không đạt durability gate.
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 			_ = conn.Del(cleanupCtx, key).Err()
 			cleanupCancel()
 			replicationErr := waitErr

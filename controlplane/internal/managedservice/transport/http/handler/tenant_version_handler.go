@@ -67,7 +67,7 @@ func (h *TenantCatalogVersionHandler) GetTenantCatalogVersion(c *gin.Context) {
 		expectedRevisionID = parsed
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 	result, err := h.service.GetTenantCatalogVersion(ctx, &entity.GetTenantCatalogVersion{
 		UserID: userID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, VersionID: versionID, ExpectedRevisionID: expectedRevisionID,

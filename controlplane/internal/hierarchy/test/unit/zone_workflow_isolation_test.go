@@ -8,6 +8,7 @@ import (
 
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchySvcImpl "controlplane/internal/hierarchy/service"
+	"controlplane/internal/observability"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -66,7 +67,7 @@ func TestResolveZoneByCodeDoesNotCallListWorkflow(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = redisClient.Close() })
 	repository := &zoneWorkflowRepository{}
-	service := hierarchySvcImpl.NewZoneService(repository, redisClient)
+	service := hierarchySvcImpl.NewZoneService(repository, redisClient, observability.NewNoopWorkflowRecorder())
 
 	result, err := service.ResolveZoneByCode(context.Background(), &hierarchyEntity.ResolveZoneByCode{Code: "zone-1"})
 	if err != nil {
@@ -86,7 +87,7 @@ func TestUpdateZoneStatusDoesNotReadAnotherWorkflowForInvalidation(t *testing.T)
 	})
 	t.Cleanup(func() { _ = redisClient.Close() })
 	repository := &zoneWorkflowRepository{}
-	service := hierarchySvcImpl.NewZoneService(repository, redisClient)
+	service := hierarchySvcImpl.NewZoneService(repository, redisClient, observability.NewNoopWorkflowRecorder())
 
 	_, err := service.UpdateZoneStatus(context.Background(), &hierarchyEntity.UpdateZoneStatus{Status: hierarchyEntity.ZoneStatusActive})
 	if err != nil {

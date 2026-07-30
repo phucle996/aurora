@@ -12,6 +12,7 @@ import (
 	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
 	hierarchyproto "controlplane/internal/hierarchy/transport/proto"
 	"controlplane/internal/observability"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
@@ -60,7 +61,7 @@ func NewZoneRedisHandler(
 }
 
 func (h *ZoneRedisHandler) Start() error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "hierarchy.zone.pubsub.subscribe"))
 	pubsub := h.sharedRedis.Subscribe(ctx, getZoneListChannel, resolveZoneChannel)
 	if _, err := pubsub.Receive(ctx); err != nil {
 		cancel()
@@ -103,7 +104,13 @@ func (h *ZoneRedisHandler) Start() error {
 						}
 						protobufPayload := payload[requestIDSize:]
 
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						operation := "hierarchy.zone.pubsub"
+						if value.Channel == getZoneListChannel {
+							operation = "hierarchy.zone.get_zone_list"
+						} else if value.Channel == resolveZoneChannel {
+							operation = "hierarchy.zone.resolve_zone"
+						}
+						ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), operation), 5*time.Second)
 						defer cancel()
 						// [COMMENT]: Khóa distributed lock theo channel và request ID để tránh xử lý trùng lặp giữa các CP replica
 						lockKey := "hierarchy:zone:dispatch:" + value.Channel + ":" + requestID.String()

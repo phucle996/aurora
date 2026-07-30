@@ -13,9 +13,9 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/observability"
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
@@ -29,6 +29,7 @@ type DeviceSelfService struct {
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
 	registry         *cacheengine.CacheRegistry
 	sharedRedis      *goredis.Client
+	metrics          observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewDeviceSelfService khởi tạo thể hiện DeviceSelfService
@@ -37,17 +38,23 @@ func NewDeviceSelfService(
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
 	sharedRedis *goredis.Client,
+	metrics observability.WorkflowRecorder,
 ) iamSvcInterface.DeviceSelfService {
 	return &DeviceSelfService{
 		deviceRepo:       deviceRepo,
 		refreshTokenRepo: refreshTokenRepo,
 		registry:         registry,
 		sharedRedis:      sharedRedis,
+		metrics:          metrics,
 	}
 }
 
 // [COMMENT]: ListMyDevices lấy danh sách thiết bị của user
 func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	var items []iamEntity.DevicePresence
 	var listErr error
 	var activeDevicesRes *iamproto.GetActiveDevicesResponse
@@ -123,7 +130,7 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 
 	if runtimeErr != nil {
 		// [COMMENT]: Runtime visibility là soft-state; DB list vẫn trả được và IsOnline mặc định false.
-		iamMetrics.Downstream(ctx, "broker", "ListMyDevicesActiveQuery", iamMetrics.OutcomeFailureUnknown, 0, runtimeErr)
+		_ = runtimeErr
 	}
 
 	// Map active devices to O(1) map
@@ -144,30 +151,26 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 			}
 		}
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &iamEntity.DeviceListResult{Devices: items, Total: int64(len(items))}, nil
 }
 
 // [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định theo client_device_id
 func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID uuid.UUID, currentDeviceID uuid.UUID) error {
-	serviceOutcome := iamMetrics.OutcomeSuccess
-	defer func() {
-		iamMetrics.ServiceCall(ctx, serviceOutcome)
-	}()
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	repoStart := time.Now()
 	revokeErr := s.deviceRepo.RevokeMyDevice(ctx, clientDeviceID, userID, currentDeviceID)
 	if revokeErr != nil {
 		if errors.Is(revokeErr, iamTaxonomy.ErrActionNotAllowed) {
-			serviceOutcome = iamMetrics.OutcomePreConditionFailed
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 			return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
 		}
 		if errors.Is(revokeErr, iamTaxonomy.ErrZeroRowsAffected) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomePreConditionFailed, time.Since(repoStart), revokeErr)
-			serviceOutcome = iamMetrics.OutcomePreConditionFailed
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
 			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, revokeErr, "invalid_session")
 		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
-		serviceOutcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 
@@ -177,7 +180,6 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 	}
 	reqBytes, err := proto.Marshal(req)
 	if err != nil {
-		serviceOutcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
 	}
 	// [COMMENT]: Revoke là security command nên ghi Redis Stream durable. Repository là
@@ -186,24 +188,23 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 		Stream: "iam:device:revoke-requests",
 		Values: map[string]any{"payload": reqBytes},
 	}).Err(); err != nil {
-		serviceOutcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
 	}
 
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
 // [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
 func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentDeviceID uuid.UUID) (int64, error) {
-	repoStart := time.Now()
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	otherDeviceIDs, revokeErr := s.deviceRepo.RevokeMyOtherDevices(ctx, userID, &currentDeviceID)
 	if revokeErr != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
-
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 
 	if len(otherDeviceIDs) > 0 {
 		clientDeviceIDs := make([]string, len(otherDeviceIDs))
@@ -226,7 +227,7 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 		}
 	}
 
-	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return int64(len(otherDeviceIDs)), nil
 }
 

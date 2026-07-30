@@ -1,0 +1,172 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "sum by (module, op) (rate(aurora_controlplane_workflow_calls_total{service_name=\"$service\",result=\"failure\"}[5m]))",
+          "legendFormat": "{{module}} / {{op}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Workflow failure rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "description": "Click a trace_id exemplar to inspect the correlated workflow and dependency spans in VictoriaTraces.",
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, module, op) (rate(aurora_controlplane_workflow_duration_seconds_bucket{service_name=\"$service\"}[5m])))",
+          "legendFormat": "p95 {{module}} / {{op}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Workflow p95 latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(aurora_controlplane_http_requests_total{service_name=\"$service\",status_code=~\"5..\"}[5m])) / clamp_min(sum by (route) (rate(aurora_controlplane_http_requests_total{service_name=\"$service\"}[5m])), 0.000001)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HTTP 5xx ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 4,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "sum by (system, operation, reason) (rate(aurora_controlplane_dependency_calls_total{service_name=\"$service\",result=\"failure\"}[5m]))",
+          "legendFormat": "{{system}} / {{operation}} / {{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Dependency failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 5,
+      "description": "Click a trace_id exemplar to inspect the exact dependency call in VictoriaTraces, then pivot to logs by trace_id.",
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, system, operation) (rate(aurora_controlplane_dependency_duration_seconds_bucket{service_name=\"$service\"}[5m])))",
+          "legendFormat": "p99 {{system}} / {{operation}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Dependency p99 latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 16},
+      "id": 6,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "sum by (method) (aurora_controlplane_http_in_flight_requests{service_name=\"$service\"})",
+          "legendFormat": "{{method}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HTTP in flight",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 16},
+      "id": 7,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "sum by (layer, namespace, result) (rate(aurora_controlplane_cache_operations_total{service_name=\"$service\"}[5m]))",
+          "legendFormat": "{{layer}} / {{namespace}} / {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Cache operations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 16},
+      "id": 8,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {
+          "expr": "max by (state) (aurora_controlplane_system_time_sync_state{service_name=\"$service\"})",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Time sync state",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["aurora", "controlplane", "otel"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {"selected": true, "text": "controlplane", "value": "controlplane"},
+        "hide": 0,
+        "label": "Service",
+        "name": "service",
+        "query": "controlplane",
+        "type": "constant"
+      }
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "Aurora Controlplane Overview",
+  "uid": "aurora-controlplane-overview",
+  "version": 1
+}

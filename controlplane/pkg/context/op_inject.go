@@ -1,6 +1,10 @@
 package pkgcontext
 
-import stdcontext "context"
+import (
+	stdcontext "context"
+
+	"controlplane/pkg/logger"
+)
 
 // OperationKeyType là kiểu dữ liệu riêng cho context key của Operation Name (workflow)
 // nhằm bảo đảm an toàn kiểu dữ liệu và tránh xung đột key trong context.
@@ -11,7 +15,8 @@ var OperationKey = OperationKeyType{}
 
 // WithOperation tiêm tên operation/workflow vào Go context hiện tại.
 func WithOperation(ctx stdcontext.Context, op string) stdcontext.Context {
-	// Gán giá trị operation vào context với key an toàn
+	ctx = logger.WithCorrelation(ctx)
+	logger.SetCorrelationOperation(ctx, op)
 	return stdcontext.WithValue(ctx, OperationKey, op)
 }
 

@@ -11,8 +11,8 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/internal/observability"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 
@@ -27,6 +27,7 @@ type SessionRefreshService struct {
 	rbacTenantRepo   iamRepoInterface.RbacTenantRepository   // [COMMENT]: Repo tenant RBAC để check tenant role
 	cacheEngine      *cacheengine.CacheRegistry
 	cfg              *config.Config
+	metrics          observability.WorkflowRecorder
 }
 
 // NewSessionRefreshService khởi tạo một instance mới của SessionRefreshService.
@@ -36,6 +37,7 @@ func NewSessionRefreshService(
 	rbacPlatformRepo iamRepoInterface.RbacPlatformRepository,
 	rbacTenantRepo iamRepoInterface.RbacTenantRepository,
 	cacheEngine *cacheengine.CacheRegistry,
+	metrics observability.WorkflowRecorder,
 ) iamSvcInterface.SessionRefreshService {
 	return &SessionRefreshService{
 		repo:             repo,
@@ -43,6 +45,7 @@ func NewSessionRefreshService(
 		rbacTenantRepo:   rbacTenantRepo,
 		cacheEngine:      cacheEngine,
 		cfg:              cfg,
+		metrics:          metrics,
 	}
 }
 
@@ -84,46 +87,57 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 
 // [COMMENT]: VerifyOpaqueRefreshToken thực hiện kiểm tra tính hợp lệ của Refresh Token
 func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, tenantID *uuid.UUID, userID uuid.UUID) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	// [COMMENT]: 1. Thực hiện băm SHA-256 token thô từ client để so khớp
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
 	refreshContext, err := s.repo.LoadContextByHash(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 		}
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "internal")
 	}
 
 	session := &refreshContext.Session
 	// [COMMENT]: 2. Kiểm tra xem session token đã quá hạn sử dụng hay chưa
 	if time.Now().UTC().After(session.ExpiresAt) {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
 	user := &refreshContext.User
 	// [COMMENT]: 3. Xác minh tính khớp cấu trúc: User ID truyền lên phải khớp với token được lưu
 	if user.ID != userID {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
 	// [COMMENT]: Đối chiếu Tenant ID
 	if tenantID == nil {
 		if session.TenantID != nil {
+			result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 		}
 	} else {
 		if session.TenantID == nil || *session.TenantID != *tenantID {
+			result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 		}
 	}
 
 	// [COMMENT]: 4. Kiểm tra trạng thái tài khoản user (tránh các user bị khóa/treo/chưa kích hoạt)
 	if user.Status == iamEntity.UserStatusPendingActive || user.Status == iamEntity.UserStatusSuspended || user.Status == iamEntity.UserStatusDisabled {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
 	// [COMMENT]: 5. Đảm bảo thiết bị của user không bị thu hồi quyền truy cập (revoked_at IS NULL)
 	if refreshContext.Device == nil || refreshContext.Device.RevokedAt != nil {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
@@ -136,7 +150,7 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		roleIDStr, roleLevel, err = s.rbacTenantRepo.GetRoleIDByTenantID(ctx, *tenantID)
 	}
 	if err != nil {
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "internal")
 	}
 
 	tenantIDStr := ""
@@ -144,6 +158,7 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		tenantIDStr = session.TenantID.String()
 	}
 
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &iamEntity.VerifyOpaqueRefreshTokenResult{
 		Valid:    true,
 		UserID:   user.ID.String(),
@@ -156,22 +171,25 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 
 // [COMMENT]: RevokeOpaqueRefreshToken thực hiện băm token thô nhận từ ACR gRPC và thực thi xóa khỏi database.
 func (s *SessionRefreshService) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	if rawRefreshToken == "" {
+		result, reason = observability.ResultSuccess, observability.ReasonNone
 		return nil
 	}
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
 
-	startLoad := time.Now()
 	_, err := s.repo.DeleteByHash(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrZeroRowsAffected) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
 			return err
 		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteByHash", iamMetrics.OutcomeFailureUnknown, time.Since(startLoad), err)
 		return fmt.Errorf("session refresh: failed to delete refresh token: %w", err)
 	}
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
 
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }

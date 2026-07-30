@@ -44,14 +44,12 @@ func AccessLog() gin.HandlerFunc {
 		c.Next()
 
 		// --------------------------------------------------------------------
-		// 🔄 Phân tích đường dẫn (Path) và route để định danh request.
+		// 🔄 Lấy route template đã đăng ký; raw path do client kiểm soát không
+		// được dùng làm correlation key hoặc log stream dimension.
 		// --------------------------------------------------------------------
-		route := requestPath(c)
+		route := strings.TrimSpace(c.FullPath())
 		if route == "" {
-			route = c.FullPath()
-		}
-		if route == "" {
-			route = "unknown"
+			route = "__unmatched__"
 		}
 
 		// --------------------------------------------------------------------
@@ -77,7 +75,7 @@ func AccessLog() gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		logger.AccessLog(
 			c,
-			route,
+			"",
 			errorCode,
 			requestMethod(c),
 			route,
@@ -86,14 +84,6 @@ func AccessLog() gin.HandlerFunc {
 			requestIP(c),
 		)
 	}
-}
-
-// requestPath trích xuất đường dẫn tương đối của URL.
-func requestPath(c *gin.Context) string {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return ""
-	}
-	return strings.TrimSpace(c.Request.URL.Path)
 }
 
 // requestMethod trích xuất phương thức HTTP của request.

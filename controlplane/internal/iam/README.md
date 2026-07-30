@@ -13,7 +13,6 @@ internal/iam/
 │   ├── entity/          # Cấu trúc dữ liệu bất biến (User, Session, MFA, Role)
 │   ├── repo/            # Repository Interfaces (AuthRepo, MfaRepo, UserRepo, RBACRepo)
 │   └── service/         # Service Interfaces
-├── metrics/             # Prometheus metrics collectors cho IAM
 ├── migration.go         # Tích hợp Go embedFS runner cho SQL migrations
 ├── migrations/          # 6-step SQL Migration Baseline (000001 -> 000006)
 │   ├── 000001_iam_enums.up.sql    # Shared ENUM types (user_status, billing_owner_type, role_scope_type)
@@ -133,8 +132,6 @@ totpResult, err := security.GenerateTOTP("Aurora", userID.String())
   2. **Service (Business Layer)**: Nhận **1 Entity Nghiệp vụ** từ Handler để xử lý logic -> Nếu luồng cần ghi log/bắn sự kiện, Service tạo thêm **Outbox Entity** (Activity Event / Billing Outbox Event).
   3. **Repository (Persistence Layer)**: Tiếp nhận **duy nhất 1 Entity Nghiệp vụ** và các **Entity Outbox** đi kèm (nếu có) -> Thực thi lưu trữ PostgreSQL trong 1 câu SQL CTE / Transaction duy nhất.
 * **Nguyên tắc cốt lõi (Core Rule)**: Trong mọi workflow, **chỉ tồn tại duy nhất 1 Entity Nghiệp vụ**. Nếu xuất hiện Entity thứ 2 trong cùng 1 luồng, đó **bắt buộc phải là Outbox Entity**.
-
-
 
 
 

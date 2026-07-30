@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/managedservice/domain/entity"
 	managedserviceimpl "controlplane/internal/managedservice/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -42,7 +43,7 @@ func (r *versionRepositorySpy) RetireVersion(_ context.Context, in *entity.Retir
 
 func TestVersionServiceOwnsSystemIdentifiers(t *testing.T) {
 	repo := &versionRepositorySpy{}
-	subject := managedserviceimpl.NewVersionService(repo)
+	subject := managedserviceimpl.NewVersionService(repo, observability.NewNoopWorkflowRecorder())
 
 	if _, err := subject.CreateVersion(context.Background(), &entity.CreateVersion{}); err != nil {
 		t.Fatalf("create version: %v", err)

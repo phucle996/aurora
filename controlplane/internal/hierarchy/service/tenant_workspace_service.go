@@ -11,8 +11,9 @@ import (
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
-	hierarchyMetrics "controlplane/internal/hierarchy/metrics"
+	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -20,16 +21,20 @@ import (
 type TenantWorkspaceServiceImpl struct {
 	repo        hierarchyRepoInterface.TenantWorkspaceRepository
 	cacheEngine *cacheengine.CacheRegistry
+	metrics     observability.WorkflowRecorder
 }
 
-func NewTenantWorkspaceService(repo hierarchyRepoInterface.TenantWorkspaceRepository, cacheEngine *cacheengine.CacheRegistry) hierarchySvcInterface.TenantWorkspaceService {
-	return &TenantWorkspaceServiceImpl{repo: repo, cacheEngine: cacheEngine}
+func NewTenantWorkspaceService(repo hierarchyRepoInterface.TenantWorkspaceRepository, cacheEngine *cacheengine.CacheRegistry, metrics observability.WorkflowRecorder) hierarchySvcInterface.TenantWorkspaceService {
+	return &TenantWorkspaceServiceImpl{repo: repo, cacheEngine: cacheEngine, metrics: metrics}
 }
 
 func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Context, in *hierarchyEntity.CreateTenantWorkspace) (*hierarchyEntity.CreateTenantWorkspace, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, fmt.Errorf("generate tenant workspace id: %w", err)
 	}
 	now := time.Now().UTC()
@@ -37,28 +42,32 @@ func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Contex
 	in.CreatedAt = now
 	in.UpdatedAt = now
 
-	startedAt := time.Now()
 	out, err := s.repo.CreateWorkspaceForTenant(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateWorkspaceForTenant", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		switch {
+		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, hierarchyTaxonomy.ErrAlreadyExists):
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "CreateWorkspaceForTenant", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }
 
 func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context, in *hierarchyEntity.ListTenantWorkspaces) ([]hierarchyEntity.ListTenantWorkspaces, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	value, err := s.cacheEngine.GetOrLoad(ctx, "tenant_role", in.RoleID.String()+":"+in.TenantID.String())
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
 	roleEntry, ok := value.(*iamproto.RoleEntry)
 	if !ok {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, errors.New("invalid cache entry type for tenant_role")
 	}
 
@@ -84,25 +93,22 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context
 
 	items, err := s.repo.ListWorkspacesForTenant(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspacesForTenant", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspacesForTenant", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return items, nil
 }
 
 func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.Context, in *hierarchyEntity.ListTenantWorkspaceCatalog) ([]hierarchyEntity.ListTenantWorkspaceCatalog, error) {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	value, err := s.cacheEngine.GetOrLoad(ctx, "tenant_role", in.RoleID.String()+":"+in.TenantID.String())
 	if err != nil {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
 	roleEntry, ok := value.(*iamproto.RoleEntry)
 	if !ok {
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, errors.New("invalid cache entry type for tenant_role")
 	}
 
@@ -128,24 +134,25 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.C
 
 	items, err := s.repo.ListWorkspaceCatalogForTenant(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspaceCatalogForTenant", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
 		return nil, err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "ListWorkspaceCatalogForTenant", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return items, nil
 }
 
 func (s *TenantWorkspaceServiceImpl) DeleteWorkspaceForTenant(ctx context.Context, in *hierarchyEntity.DeleteTenantWorkspace) error {
 	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	err := s.repo.DeleteWorkspaceForTenant(ctx, in)
 	if err != nil {
-		hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteWorkspaceForTenant", hierarchyMetrics.OutcomeFailure, time.Since(startedAt), err)
-		hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeFailure)
+		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
 		return err
 	}
-	hierarchyMetrics.Downstream(ctx, hierarchyMetrics.KindRepo, "DeleteWorkspaceForTenant", hierarchyMetrics.OutcomeSuccess, time.Since(startedAt), nil)
-	hierarchyMetrics.ServiceCall(ctx, hierarchyMetrics.OutcomeSuccess)
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }

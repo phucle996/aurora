@@ -83,7 +83,7 @@ func (h *PersonalCatalogHandler) ListPersonalCatalog(c *gin.Context) {
 		afterVersionID = parsed
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 	result, err := h.service.ListPersonalCatalog(ctx, &entity.ListPersonalCatalog{
 		UserID: userID, WorkspaceID: workspaceID, ZoneID: zoneID, AfterVersionID: afterVersionID, Limit: limit,

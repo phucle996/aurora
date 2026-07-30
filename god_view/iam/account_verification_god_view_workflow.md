@@ -407,19 +407,18 @@ Không sửa balance hoặc status trực tiếp. DLQ replay phải giữ nguyê
 
 ## 10. Observability
 
-Required low-cardinality metrics:
+Controlplane dùng low-cardinality metric contract chung:
 
 | Metric | Labels |
 |---|---|
-| `iam_verification_total` | `outcome` |
-| `iam_verification_duration_seconds` | `outcome` |
-| `iam_billing_outbox_events` | `event_type`, `status` |
-| `iam_billing_outbox_oldest_seconds` | `event_type`, `status` |
-| `billing_wallet_provision_total` | `outcome` |
-| `billing_wallet_consumer_lag` | `consumer` |
-| `billing_wallet_dlq_total` | `reason` bounded taxonomy |
+| `aurora_controlplane_workflow_calls_total` | `module=iam`, `op=iam.auth.verify`, `result`, `reason` |
+| `aurora_controlplane_workflow_duration_seconds` | cùng workflow labels |
+| `aurora_controlplane_dependency_calls_total` | `module`, `op`, `system`, `operation`, `result`, `reason` |
+| `aurora_controlplane_dependency_duration_seconds` | cùng dependency labels |
 
-Không dùng user/event/email/error message làm label. Trace correlation dùng trace ID và event ID trong structured logs, không ghi payload secret.
+JO và Billing sở hữu outbox lag, consumer lag và DLQ metrics của chính chúng; Controlplane
+không định nghĩa lại các metric đó. Không dùng user/event/email/error message làm label.
+Trace correlation dùng trace ID và event ID trong structured logs, không ghi payload secret.
 
 ## 11. Acceptance gates
 

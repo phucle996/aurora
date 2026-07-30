@@ -31,18 +31,21 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyR
 		// either durable precondition between the checks and insert.
 		createQuery: fmt.Sprintf(`
 			WITH target_zone AS MATERIALIZED (
-				SELECT id FROM %s.zones WHERE id = $5 AND status = 'active' FOR SHARE
+				SELECT id, status FROM %s.zones WHERE id = $5 FOR SHARE
 			), target_tenant AS MATERIALIZED (
-				SELECT id FROM %s.tenants WHERE id = $6 AND status = 'active' FOR SHARE
+				SELECT id, status FROM %s.tenants WHERE id = $6 FOR SHARE
 			), inserted AS (
 				INSERT INTO %s.tenant_workspaces
 					(id, name, code, description, zone_id, tenant_id, owner_id, created_at, updated_at)
 				SELECT $1, $2, $3, $4, target_zone.id, target_tenant.id, $7, $8, $9
 				FROM target_zone CROSS JOIN target_tenant
+				WHERE target_zone.status = 'active' AND target_tenant.status = 'active'
 				RETURNING id, name, code, COALESCE(description, ''), zone_id, tenant_id, owner_id, created_at, updated_at
 			)
 			SELECT EXISTS(SELECT 1 FROM target_zone),
+				COALESCE((SELECT status = 'active' FROM target_zone), false),
 				EXISTS(SELECT 1 FROM target_tenant),
+				COALESCE((SELECT status = 'active' FROM target_tenant), false),
 				EXISTS(SELECT 1 FROM inserted),
 				COALESCE((SELECT id FROM inserted), '00000000-0000-0000-0000-000000000000'::uuid),
 				COALESCE((SELECT name FROM inserted), ''),
@@ -88,12 +91,12 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyR
 }
 
 func (r *TenantWorkspaceRepoImpl) CreateWorkspaceForTenant(ctx context.Context, in *hierarchyEntity.CreateTenantWorkspace) (*hierarchyEntity.CreateTenantWorkspace, error) {
-	var zoneExists, tenantExists, inserted bool
+	var zoneExists, zoneActive, tenantExists, tenantActive, inserted bool
 	out := &hierarchyEntity.CreateTenantWorkspace{}
 	err := r.db.QueryRow(ctx, r.createQuery,
 		in.ID, in.Name, in.Code, in.Description, in.ZoneID, in.TenantID, in.OwnerID, in.CreatedAt, in.UpdatedAt,
 	).Scan(
-		&zoneExists, &tenantExists, &inserted, &out.ID, &out.Name, &out.Code,
+		&zoneExists, &zoneActive, &tenantExists, &tenantActive, &inserted, &out.ID, &out.Name, &out.Code,
 		&out.Description, &out.ZoneID, &out.TenantID, &out.OwnerID, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
@@ -105,6 +108,9 @@ func (r *TenantWorkspaceRepoImpl) CreateWorkspaceForTenant(ctx context.Context, 
 	}
 	if !zoneExists || !tenantExists {
 		return nil, hierarchyTaxonomy.ErrNotFound
+	}
+	if !zoneActive || !tenantActive {
+		return nil, hierarchyTaxonomy.ErrPreconditionFailed
 	}
 	if !inserted || out.ID == uuid.Nil {
 		return nil, fmt.Errorf("create tenant workspace returned no row")

@@ -12,6 +12,7 @@ import (
 	repositoryimpl "controlplane/internal/managedservice/repository"
 	serviceimpl "controlplane/internal/managedservice/service"
 	"controlplane/internal/managedservice/transport/http/handler"
+	"controlplane/internal/observability"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -53,7 +54,7 @@ type Module struct {
 	TenantCatalogVersionHandler   *handler.TenantCatalogVersionHandler
 }
 
-func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
+func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.CacheRegistry, otel *observability.OTel) (*Module, error) {
 	// [COMMENT]: Dependency health is an app-construction invariant. Workflow
 	// services therefore never branch on nil infrastructure at request time.
 	if cfg == nil {
@@ -64,6 +65,9 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.Ca
 	}
 	if cacheEngine == nil {
 		return nil, errors.New("managed service module: cache registry is nil")
+	}
+	if otel == nil {
+		return nil, errors.New("managed service module: observability is nil")
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.ManagedService)
 	if !regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`).MatchString(schema) {
@@ -85,16 +89,17 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.Ca
 	tenantCatalogRepository := repositoryimpl.NewTenantCatalogRepository(db, schema, hierarchySchema)
 	tenantCatalogVersionRepository := repositoryimpl.NewTenantCatalogVersionRepository(db, schema, hierarchySchema)
 
-	categoryService := serviceimpl.NewCategoryService(categoryRepository)
-	definitionService := serviceimpl.NewDefinitionService(definitionRepository)
-	versionService := serviceimpl.NewVersionService(versionRepository)
-	blueprintService := serviceimpl.NewBlueprintService(blueprintRepository)
-	revisionService := serviceimpl.NewRevisionService(revisionRepository)
-	auditService := serviceimpl.NewAuditService(auditRepository)
-	personalCatalogService := serviceimpl.NewPersonalCatalogService(personalCatalogRepository)
-	personalCatalogVersionService := serviceimpl.NewPersonalCatalogVersionService(personalCatalogVersionRepository)
-	tenantCatalogService := serviceimpl.NewTenantCatalogService(tenantCatalogRepository)
-	tenantCatalogVersionService := serviceimpl.NewTenantCatalogVersionService(tenantCatalogVersionRepository)
+	workflowMetrics := otel.WorkflowRecorder("managedservice")
+	categoryService := serviceimpl.NewCategoryService(categoryRepository, workflowMetrics)
+	definitionService := serviceimpl.NewDefinitionService(definitionRepository, workflowMetrics)
+	versionService := serviceimpl.NewVersionService(versionRepository, workflowMetrics)
+	blueprintService := serviceimpl.NewBlueprintService(blueprintRepository, workflowMetrics)
+	revisionService := serviceimpl.NewRevisionService(revisionRepository, workflowMetrics)
+	auditService := serviceimpl.NewAuditService(auditRepository, workflowMetrics)
+	personalCatalogService := serviceimpl.NewPersonalCatalogService(personalCatalogRepository, workflowMetrics)
+	personalCatalogVersionService := serviceimpl.NewPersonalCatalogVersionService(personalCatalogVersionRepository, workflowMetrics)
+	tenantCatalogService := serviceimpl.NewTenantCatalogService(tenantCatalogRepository, workflowMetrics)
+	tenantCatalogVersionService := serviceimpl.NewTenantCatalogVersionService(tenantCatalogVersionRepository, workflowMetrics)
 
 	return &Module{
 		L1Registry:         cacheEngine,

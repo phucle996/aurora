@@ -24,6 +24,7 @@ type UserService struct {
 	registry    *cacheengine.CacheRegistry
 	authRedis   *goredis.Client
 	sharedRedis *goredis.Client
+	metrics     observability.WorkflowRecorder
 }
 
 // [COMMENT]: Khởi tạo UserService; dependency availability đã được bảo đảm tại IAM module.
@@ -32,12 +33,14 @@ func NewUserService(
 	registry *cacheengine.CacheRegistry,
 	authRedis *goredis.Client,
 	sharedRedis *goredis.Client,
+	metrics observability.WorkflowRecorder,
 ) iamSvcInterface.UserService {
 	return &UserService{
 		repo:        repo,
 		registry:    registry,
 		authRedis:   authRedis,
 		sharedRedis: sharedRedis,
+		metrics:     metrics,
 	}
 }
 
@@ -46,14 +49,22 @@ func (s *UserService) ListUsers(
 	ctx context.Context,
 	query iamEntity.ListUsers,
 ) ([]iamEntity.ListUsers, error) {
-	start := time.Now()
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	users, err := s.repo.ListUsers(ctx, query)
-	observability.CurrentMetrics().ObserveDependency("db", "iam.users.list", time.Since(start), err)
+	if err == nil {
+		result, reason = observability.ResultSuccess, observability.ReasonNone
+	}
 	return users, err
 }
 
 // [COMMENT]: UpdateUserStatus chỉ nhận entity của riêng workflow status mutation.
 func (s *UserService) UpdateUserStatus(ctx context.Context, workflow iamEntity.UpdateUserStatus) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	if err := s.repo.UpdateUserStatus(ctx, workflow); err != nil {
 		return err
 	}
@@ -71,20 +82,32 @@ func (s *UserService) UpdateUserStatus(ctx context.Context, workflow iamEntity.U
 	if err := s.sharedRedis.Publish(ctx, "authz.invalidate.billing", workflow.TargetUserID.String()).Err(); err != nil {
 		return fmt.Errorf("publish Billing authorization invalidation: %w", err)
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
 // [COMMENT]: GetMyProfile để repository populate cùng entity workflow, không
 // chuyển qua UserProfile dùng chung với register/auth.
 func (s *UserService) GetMyProfile(ctx context.Context, workflow *iamEntity.GetMyProfile) error {
-	return s.repo.GetMyProfile(ctx, workflow)
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+	err := s.repo.GetMyProfile(ctx, workflow)
+	if err == nil {
+		result, reason = observability.ResultSuccess, observability.ReasonNone
+	}
+	return err
 }
 
 // [COMMENT]: UpdateMyProfile giữ một entity phẳng xuyên suốt ba tầng.
 func (s *UserService) UpdateMyProfile(ctx context.Context, workflow *iamEntity.UpdateMyProfile) error {
-	start := time.Now()
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	err := s.repo.UpdateMyProfile(ctx, workflow)
-	observability.CurrentMetrics().ObserveDependency("db", "iam.profile.update_self", time.Since(start), err)
+	if err == nil {
+		result, reason = observability.ResultSuccess, observability.ReasonNone
+	}
 	return err
 }
 
@@ -94,9 +117,13 @@ func (s *UserService) GetMySocialLinks(
 	ctx context.Context,
 	workflow *iamEntity.GetMySocialLinks,
 ) ([]iamEntity.GetMySocialLinks, error) {
-	start := time.Now()
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	links, err := s.repo.GetMySocialLinks(ctx, workflow)
-	observability.CurrentMetrics().ObserveDependency("db", "iam.social_link.get_self", time.Since(start), err)
+	if err == nil {
+		result, reason = observability.ResultSuccess, observability.ReasonNone
+	}
 	return links, err
 }
 
@@ -105,9 +132,10 @@ func (s *UserService) LinkExternalIdentity(
 	ctx context.Context,
 	workflow iamEntity.LinkExternalIdentity,
 ) error {
-	start := time.Now()
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	err := s.repo.LinkExternalIdentity(ctx, workflow)
-	observability.CurrentMetrics().ObserveDependency("db", "iam.social_link.link", time.Since(start), err)
 	if err != nil {
 		return err
 	}
@@ -128,6 +156,7 @@ func (s *UserService) LinkExternalIdentity(
 	}); activityErr != nil {
 		return fmt.Errorf("iam.user_activity.social_link: %w", activityErr)
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
@@ -136,6 +165,10 @@ func (s *UserService) UnlinkMySocialLink(
 	ctx context.Context,
 	workflow iamEntity.UnlinkMySocialLink,
 ) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	linkSlot := fmt.Sprintf("%x", sha256.Sum256([]byte(workflow.UserID.String())))
 	pendingKey := "iam:oauth:link:{" + linkSlot + "}:" + workflow.Provider
 	lockKey := pendingKey + ":lock"
@@ -145,7 +178,7 @@ func (s *UserService) UnlinkMySocialLink(
 		return iamTaxonomy.ErrAuthenticationUnavailable
 	}
 	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 		_ = s.authRedis.Eval(releaseCtx, `
 			if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -159,9 +192,7 @@ func (s *UserService) UnlinkMySocialLink(
 		return fmt.Errorf("%w: invalidate pending social link: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
 
-	start := time.Now()
 	err = s.repo.UnlinkMySocialLink(ctx, workflow)
-	observability.CurrentMetrics().ObserveDependency("db", "iam.social_link.unlink", time.Since(start), err)
 	if err != nil {
 		return err
 	}
@@ -182,6 +213,7 @@ func (s *UserService) UnlinkMySocialLink(
 	}); activityErr != nil {
 		return fmt.Errorf("iam.user_activity.social_unlink: %w", activityErr)
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }
 
@@ -190,7 +222,14 @@ func (s *UserService) GetUserAuthMethods(
 	ctx context.Context,
 	query iamEntity.GetUserAuthMethods,
 ) ([]iamEntity.GetUserAuthMethods, error) {
-	return s.repo.GetUserAuthMethods(ctx, query)
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+	methods, err := s.repo.GetUserAuthMethods(ctx, query)
+	if err == nil {
+		result, reason = observability.ResultSuccess, observability.ReasonNone
+	}
+	return methods, err
 }
 
 // [COMMENT]: Hash password trong service, sau đó xóa plaintext trước khi
@@ -199,6 +238,10 @@ func (s *UserService) ResetUserPassword(
 	ctx context.Context,
 	workflow iamEntity.ResetUserPassword,
 ) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
 	passwordHash, err := security.HashPassword(workflow.Password)
 	if err != nil {
 		return fmt.Errorf("user service: failed to hash new password: %w", err)
@@ -206,9 +249,7 @@ func (s *UserService) ResetUserPassword(
 	workflow.Password = ""
 	workflow.PasswordHash = passwordHash
 
-	start := time.Now()
 	err = s.repo.ResetUserPassword(ctx, workflow)
-	observability.CurrentMetrics().ObserveDependency("db", "iam.users.reset_password", time.Since(start), err)
 	if err != nil {
 		return err
 	}
@@ -229,5 +270,6 @@ func (s *UserService) ResetUserPassword(
 	}); activityErr != nil {
 		return fmt.Errorf("iam.user_activity.password_reset: %w", activityErr)
 	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
 }

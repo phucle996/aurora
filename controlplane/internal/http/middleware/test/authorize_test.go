@@ -10,6 +10,7 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/observability"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,7 +19,7 @@ import (
 // makeRoleCache tạo L1 cache với mock loader cho tenant_role và user_role trả về perms cố định.
 func makeRoleCache(perms []string) *cacheengine.CacheRegistry {
 	l1Cache := cacheengine.NewL1Cache()
-	registry := cacheengine.NewCacheRegistry(l1Cache)
+	registry := cacheengine.NewCacheRegistry(l1Cache, observability.NewNoopCacheRecorder())
 	cacheengine.Register(registry, "tenant_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
 		return &iamproto.RoleEntry{Permissions: perms}, nil
 	})

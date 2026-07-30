@@ -158,9 +158,12 @@ sequenceDiagram
     else Event 2B: Trùng mã Code trong Scope (Unique Violation)
         DB-->>CP: Error Code 23505
         CP-->>Envoy: HTTP 409 Conflict (ErrAlreadyExists)
-    else Event 2C: Zone / Tenant không tồn tại hoặc không Active
-        DB-->>CP: zone_exists = 0 hoặc tenant_valid = false
-        CP-->>Envoy: HTTP 404 Not Found (ErrNotFound)
+	else Event 2C: Zone / Tenant không tồn tại
+		DB-->>CP: zone_exists = false hoặc tenant_exists = false
+		CP-->>Envoy: HTTP 404 Not Found (ErrNotFound)
+	else Event 2D: Zone / Tenant tồn tại nhưng không Active
+		DB-->>CP: zone_active = false hoặc tenant_active = false
+		CP-->>Envoy: HTTP 409 Conflict (ErrPreconditionFailed)
     end
 ```
 
@@ -261,5 +264,6 @@ Các ràng buộc nghiệp vụ được siết chặt và thực thi tuyệt đ
 | HTTP Status | Error Sentinel | Nguyên nhân |
 |:---|:---|:---|
 | `400 Bad Request` | Handler validation | `name`, `code` hoặc verified context header không hợp lệ. |
-| `404 Not Found` | `ErrNotFound` | Zone hoặc Tenant durable precondition không còn thỏa tại thời điểm ghi. |
+| `404 Not Found` | `ErrNotFound` | Zone hoặc Tenant không tồn tại tại thời điểm ghi. |
 | `409 Conflict` | `ErrAlreadyExists` | Trùng mã `code` trong cùng phạm vi Tenant hoặc cá nhân. |
+| `409 Conflict` | `ErrPreconditionFailed` | Zone hoặc Tenant tồn tại nhưng trạng thái không cho phép tạo workspace. |

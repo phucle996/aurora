@@ -5,6 +5,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
+	"controlplane/internal/observability"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageRepoImpl "controlplane/internal/storage/repository"
@@ -71,6 +72,7 @@ func NewModule(
 	rds *goredis.Client,
 	authRds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
+	otel *observability.OTel,
 ) (*StorageModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -90,6 +92,9 @@ func NewModule(
 	}
 	if cacheEngine == nil {
 		return nil, errors.New("storage module: cache engine registry is nil")
+	}
+	if otel == nil {
+		return nil, errors.New("storage module: observability is nil")
 	}
 	// ------------------------------------------------------------------------
 	// 🧱 GIAI ĐOẠN ĐẤU NỐI (WIRING GRAPH SETUP WITH FAIL-FAST CHECKS)
@@ -114,19 +119,20 @@ func NewModule(
 	}
 
 	// 2. Khởi tạo services tách biệt theo scope
-	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo)
+	workflowMetrics := otel.WorkflowRecorder("storage")
+	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, workflowMetrics)
 	if tenantBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant bucket service")
 	}
-	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, authRds)
+	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, authRds, workflowMetrics)
 	if personalBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket service")
 	}
-	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo)
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, workflowMetrics)
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, workflowMetrics)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}

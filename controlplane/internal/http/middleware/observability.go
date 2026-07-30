@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // OTelTraceContext là middleware tích hợp OpenTelemetry Tracing để giám sát phân tán.
@@ -31,6 +32,7 @@ func OTelTraceContext(obs *observability.OTel) gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		ctx := c.Request.Context()
 		ctx = obs.Extract(ctx, c.Request.Header)
+		ctx = logger.WithCorrelation(ctx)
 
 		// --------------------------------------------------------------------
 		// 🔄 Khởi tạo Span con mới đại diện cho thời gian thực thi tại Controlplane.
@@ -60,8 +62,23 @@ func OTelTraceContext(obs *observability.OTel) gin.HandlerFunc {
 			attribute.String("http.route", requestRoute(c)),
 			attribute.Int("http.status_code", c.Writer.Status()),
 		)
-		if len(c.Errors) > 0 {
-			span.RecordError(c.Errors.Last())
+		if correlation, ok := logger.CorrelationFromContext(c.Request.Context()); ok {
+			if correlation.Module != "" {
+				span.SetAttributes(attribute.String("aurora.module", correlation.Module))
+			}
+			if correlation.Operation != "" {
+				span.SetAttributes(attribute.String("aurora.operation", correlation.Operation))
+			}
+			if correlation.Observed {
+				span.SetAttributes(
+					attribute.String("aurora.result", correlation.Result),
+					attribute.String("aurora.reason", correlation.Reason),
+				)
+			}
+		}
+		if c.Writer.Status() >= 500 {
+			// HTTP status is already bounded and does not copy provider errors into traces.
+			span.SetStatus(codes.Error, "http_5xx")
 		}
 	}
 }
@@ -85,13 +102,14 @@ func OTelHTTPMetrics(obs *observability.Metrics) gin.HandlerFunc {
 		}
 
 		start := time.Now()
-		obs.IncInFlight()
-		defer obs.DecInFlight()
+		obs.AddHTTPInFlight(c.Request.Context(), c.Request.Method, 1)
+		defer obs.AddHTTPInFlight(c.Request.Context(), c.Request.Method, -1)
 
 		c.Next()
 
 		// Ghi nhận số liệu thống kê đầy đủ vào OTel Metrics:
-		obs.ObserveRequest(
+		obs.ObserveHTTPRequest(
+			c.Request.Context(),
 			c.Request.Method,
 			requestRoute(c),
 			strconv.Itoa(c.Writer.Status()),
@@ -111,18 +129,17 @@ func requestRoute(c *gin.Context) string {
 		return fullPath
 	}
 
-	// 2. Dự phòng (Fallback): Sử dụng đường dẫn thô nếu không khớp route nào (lỗi 404 hoặc file tĩnh)
-	path := strings.TrimSpace(c.Request.URL.Path)
-	if path == "" {
-		return "/"
-	}
-
-	return path
+	// Raw unmatched paths are attacker-controlled and would create an unbounded
+	// metric label space, so every unmatched request uses one sentinel.
+	return "__unmatched__"
 }
 
 // RequestID chịu trách nhiệm quản lý, kế thừa và đồng bộ mã giao dịch (Request ID) xuyên suốt hệ thống log.
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// The root request must own the carrier before handlers derive timeout
+		// contexts; otherwise access logging cannot observe the service outcome.
+		c.Request = c.Request.WithContext(logger.WithCorrelation(c.Request.Context()))
 		// --------------------------------------------------------------------
 		// 🔄 Ưu tiên hàng đầu: Đọc và kế thừa X-Request-ID được tạo bởi Envoy ở biên giới.
 		// --------------------------------------------------------------------

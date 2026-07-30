@@ -1,308 +1,413 @@
-// ============================================================================
-// 📂 FILE: internal/observability/metrics.go - Hạ Tầng Telemetry OTel Metrics
-// ============================================================================
-//
-// 📌 VAI TRÒ CHỦ ĐẠO (PRIMARY ROLE):
-//   - Thay thế hoàn toàn prometheus.go cũ, chuyển sang native OpenTelemetry Metrics SDK.
-//   - Tất cả metrics được push qua OTLP gRPC đến OTel Collector thay vì pull-based Prometheus.
-//   - Loại bỏ hoàn toàn dependency prometheus/client_golang.
-//
-// 🎯 SOURCE OF TRUTH (SoT):
-//     thông qua dynamic active policy hook.
-//
-// 🔒 RANH GIỚI BẢO MẬT & NGHIỆP VỤ (SECURITY & OPERATIONAL BOUNDARIES):
-//   - Zero-Inbound: Không còn HTTP endpoint /metrics. Tất cả dữ liệu push ra ngoài qua OTLP.
-//   - Thread-safety: Sử dụng atomic.Pointer cho hoán đổi nóng cấu hình chính sách.
-//   - Panic-safe: Tất cả hàm Observe kiểm tra nil trước khi ghi nhận metrics.
-//
-// ============================================================================
-
 package observability
 
 import (
 	"context"
-	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel"
+	pkgcontext "controlplane/pkg/context"
+	"controlplane/pkg/logger"
+
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// ============================================================================
-// 📦 BIẾN TOÀN CỤC & CACHE (GLOBAL VARIABLES)
-// ============================================================================
+type Result string
 
-var (
-	// currentMetrics lưu trữ thực thể Metrics đang hoạt động, truy cập an toàn luồng qua atomic.
-	currentMetrics atomic.Pointer[Metrics]
-
-	// localHostname lưu trữ tên Pod/Container một lần duy nhất để tránh system call lặp lại.
-	localHostname string
-
-	// timeSyncStates dùng cho one-hot encoding trạng thái đồng bộ thời gian, cố định tránh heap alloc.
-	timeSyncStates = []string{"ok", "warning", "critical", "unknown"}
+const (
+	ResultSuccess  Result = "success"
+	ResultRejected Result = "rejected"
+	ResultFailure  Result = "failure"
 )
 
-func init() {
-	// [KHỞI TẠO TĨNH HOSTNAME]: Lấy tên Pod/Container một lần duy nhất khi khởi động.
-	h, err := os.Hostname()
-	if err != nil {
-		h = "unknown_pod"
-	}
-	localHostname = h
+type Reason string
+
+const (
+	ReasonNone               Reason = "none"
+	ReasonInvalidArgument    Reason = "invalid_argument"
+	ReasonNotFound           Reason = "not_found"
+	ReasonAlreadyExists      Reason = "already_exists"
+	ReasonConflict           Reason = "conflict"
+	ReasonPreconditionFailed Reason = "precondition_failed"
+	ReasonInvalidTransition  Reason = "invalid_transition"
+	ReasonUnauthenticated    Reason = "unauthenticated"
+	ReasonForbidden          Reason = "forbidden"
+	ReasonRateLimited        Reason = "rate_limited"
+	ReasonBusy               Reason = "busy"
+	ReasonEmpty              Reason = "empty"
+	ReasonConstraint         Reason = "constraint"
+	ReasonTimeout            Reason = "timeout"
+	ReasonCanceled           Reason = "canceled"
+	ReasonUnavailable        Reason = "unavailable"
+	ReasonInternal           Reason = "internal"
+)
+
+type WorkflowRecorder interface {
+	ObserveWorkflow(context.Context, Result, Reason, time.Duration)
 }
 
-// ============================================================================
-// 📊 CẤU TRÚC DỮ LIỆU TRUNG TÂM (CENTRAL METRICS STRUCT)
-// ============================================================================
+type DependencyRecorder interface {
+	ObserveDependency(context.Context, string, string, Result, Reason, time.Duration)
+}
 
-// Metrics quản lý toàn bộ OTel instruments đo lường trung tâm của Controlplane.
-// Thay thế hoàn toàn struct Prometheus cũ dùng prometheus/client_golang.
+type CacheRecorder interface {
+	ObserveCache(context.Context, string, string, string, string)
+}
+
 type Metrics struct {
-	// OTel Instruments - thay thế prometheus.CounterVec / HistogramVec / Gauge
-	requestTotal    metric.Int64Counter       // Tổng HTTP requests (method, route, status)
-	requestDuration metric.Float64Histogram   // Latency HTTP (method, route, status)
-	inFlight        metric.Int64UpDownCounter // Số request đang xử lý đồng thời
-	dependencyDur   metric.Float64Histogram   // Latency downstream (kind, operation, status)
-	timeDriftGauge  metric.Float64Gauge       // Độ lệch thời gian hệ thống (seconds)
-	timeSyncGauge   metric.Float64Gauge       // Trạng thái đồng bộ thời gian (one-hot)
+	httpRequests       metric.Int64Counter
+	httpDuration       metric.Float64Histogram
+	httpInFlight       metric.Int64UpDownCounter
+	workflowCalls      metric.Int64Counter
+	workflowDuration   metric.Float64Histogram
+	dependencyCalls    metric.Int64Counter
+	dependencyDuration metric.Float64Histogram
+	cacheOperations    metric.Int64Counter
+	timeDrift          metric.Float64Gauge
+	timeSyncState      metric.Float64Gauge
 }
 
-// ============================================================================
-// 📦 HÀM KHỞI TẠO & QUẢN LÝ VÒNG ĐỜI (LIFECYCLE MANAGEMENT)
-// ============================================================================
-
-// LocalHostname trả về định danh Hostname/Pod Name hiện tại đã được cache trong RAM.
-func LocalHostname() string {
-	return localHostname
+type moduleRecorder struct {
+	metrics *Metrics
+	module  string
 }
 
-// NullMetrics khởi tạo thực thể rỗng (Null Object Pattern) cho cơ chế Fail-Open.
-// Khi hệ thống giám sát gặp sự cố, middleware và nghiệp vụ vẫn hoạt động trơn tru
-// do tất cả hàm Observe đều kiểm tra nil trước khi ghi nhận.
-func NullMetrics() *Metrics {
+type noopRecorder struct{}
+
+var timeSyncStates = [...]string{"ok", "warning", "critical", "unknown"}
+
+func NewMetrics(provider metric.MeterProvider) (*Metrics, error) {
+	meter := provider.Meter("aurora-controlplane")
+
+	httpRequests, err := meter.Int64Counter(
+		"aurora_controlplane_http_requests_total",
+		metric.WithDescription("Controlplane HTTP requests by method, route and status code."),
+	)
+	if err != nil {
+		return nil, err
+	}
+	httpDuration, err := meter.Float64Histogram(
+		"aurora_controlplane_http_request_duration_seconds",
+		metric.WithDescription("Controlplane HTTP request latency."),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	httpInFlight, err := meter.Int64UpDownCounter(
+		"aurora_controlplane_http_in_flight_requests",
+		metric.WithDescription("Controlplane HTTP requests currently executing."),
+	)
+	if err != nil {
+		return nil, err
+	}
+	workflowCalls, err := meter.Int64Counter(
+		"aurora_controlplane_workflow_calls_total",
+		metric.WithDescription("Controlplane workflow calls by module, operation, result and reason."),
+	)
+	if err != nil {
+		return nil, err
+	}
+	workflowDuration, err := meter.Float64Histogram(
+		"aurora_controlplane_workflow_duration_seconds",
+		metric.WithDescription("Controlplane workflow latency."),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	dependencyCalls, err := meter.Int64Counter(
+		"aurora_controlplane_dependency_calls_total",
+		metric.WithDescription("Controlplane dependency calls by workflow and bounded dependency outcome."),
+	)
+	if err != nil {
+		return nil, err
+	}
+	dependencyDuration, err := meter.Float64Histogram(
+		"aurora_controlplane_dependency_duration_seconds",
+		metric.WithDescription("Controlplane dependency latency."),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	cacheOperations, err := meter.Int64Counter(
+		"aurora_controlplane_cache_operations_total",
+		metric.WithDescription("Controlplane cache operations by layer, bounded namespace, operation and result."),
+	)
+	if err != nil {
+		return nil, err
+	}
+	timeDrift, err := meter.Float64Gauge(
+		"aurora_controlplane_system_time_drift_seconds",
+		metric.WithDescription("Absolute system time drift from the configured time source."),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	timeSyncState, err := meter.Float64Gauge(
+		"aurora_controlplane_system_time_sync_state",
+		metric.WithDescription("Controlplane time synchronization state as a one-hot gauge."),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Metrics{
+		httpRequests:       httpRequests,
+		httpDuration:       httpDuration,
+		httpInFlight:       httpInFlight,
+		workflowCalls:      workflowCalls,
+		workflowDuration:   workflowDuration,
+		dependencyCalls:    dependencyCalls,
+		dependencyDuration: dependencyDuration,
+		cacheOperations:    cacheOperations,
+		timeDrift:          timeDrift,
+		timeSyncState:      timeSyncState,
+	}, nil
+}
+
+func NewNoopMetrics() *Metrics {
 	return &Metrics{}
 }
 
-// Enabled trả về true nếu Metrics được khởi tạo thành công và đang hoạt động.
+func NewNoopWorkflowRecorder() WorkflowRecorder {
+	return noopRecorder{}
+}
+
+func NewNoopDependencyRecorder() DependencyRecorder {
+	return noopRecorder{}
+}
+
+func NewNoopCacheRecorder() CacheRecorder {
+	return noopRecorder{}
+}
+
 func (m *Metrics) Enabled() bool {
-	return m != nil && m.requestTotal != nil
+	return m != nil && m.httpRequests != nil
 }
 
-// normalizeNamespace chuẩn hóa namespace thành chuỗi hợp lệ cho OpenMetrics naming.
-// Chuyển lowercase, thay dấu gạch ngang/khoảng trắng thành gạch dưới, lọc ký tự đặc biệt.
-func normalizeNamespace(ns string) string {
-	ns = strings.ToLower(strings.TrimSpace(ns))
-	ns = strings.ReplaceAll(ns, "-", "_")
-	ns = strings.ReplaceAll(ns, " ", "_")
-
-	var clean []rune
-	for _, r := range ns {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			clean = append(clean, r)
-		}
-	}
-	ns = string(clean)
-	if ns == "" {
-		ns = "aurora"
-	}
-	return ns
+func (m *Metrics) ForModule(module string) WorkflowRecorder {
+	return moduleRecorder{metrics: m, module: normalizeMetricToken(module, 32)}
 }
 
-// InitMetrics khởi tạo toàn bộ OTel instruments đo lường trung tâm cho Controlplane.
-// Lấy Meter từ Global MeterProvider đã được InitOTel thiết lập trước đó trong bootstrap.
-func InitMetrics(namespace string) (*Metrics, error) {
-	namespace = normalizeNamespace(namespace)
-
-	// Lấy Meter từ Global MeterProvider (thiết lập bởi InitOTel trong app.go bootstrap)
-	meter := otel.Meter("aurora-controlplane")
-
-	// [1] Counter: Tổng số HTTP requests phân loại theo method/route/status
-	requestTotal, err := meter.Int64Counter(
-		namespace+"_http_requests_total",
-		metric.WithDescription("Total number of HTTP requests processed by route/method/status."),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// [2] Histogram: Latency xử lý HTTP requests
-	requestDuration, err := meter.Float64Histogram(
-		namespace+"_http_request_duration_seconds",
-		metric.WithDescription("HTTP request latency by route/method/status."),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// [3] UpDownCounter: Số lượng requests đang xử lý đồng thời (In-Flight)
-	inFlight, err := meter.Int64UpDownCounter(
-		namespace+"_http_in_flight_requests",
-		metric.WithDescription("Current number of in-flight HTTP requests."),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// [4] Histogram: Latency của DB/Redis/Crypto và các dependency bên ngoài
-	dependencyDur, err := meter.Float64Histogram(
-		namespace+"_dependency_duration_seconds",
-		metric.WithDescription("Dependency latency by kind/operation/status."),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// [5] Gauge: Độ lệch thời gian hệ thống (giây) từ nguồn Chrony
-	timeDriftGauge, err := meter.Float64Gauge(
-		namespace+"_system_time_drift_seconds",
-		metric.WithDescription("Absolute system time drift in seconds from chrony source."),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// [6] Gauge: Trạng thái đồng bộ thời gian dạng one-hot (ok/warning/critical/unknown)
-	timeSyncGauge, err := meter.Float64Gauge(
-		namespace+"_system_time_sync_state",
-		metric.WithDescription("Time sync state as one-hot gauge labels."),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	m := &Metrics{
-		requestTotal:    requestTotal,
-		requestDuration: requestDuration,
-		inFlight:        inFlight,
-		dependencyDur:   dependencyDur,
-		timeDriftGauge:  timeDriftGauge,
-		timeSyncGauge:   timeSyncGauge,
-	}
-
-	// Lưu vào biến toàn cục an toàn luồng
-	currentMetrics.Store(m)
-	return m, nil
-}
-
-// ============================================================================
-// 📊 HÀM GHI NHẬN ĐO LƯỜNG (OBSERVE FUNCTIONS)
-// ============================================================================
-
-// CurrentMetrics trả về thực thể Metrics đang hoạt động toàn cục.
-func CurrentMetrics() *Metrics {
-	return currentMetrics.Load()
-}
-
-// ClearCurrentMetrics dọn dẹp và ngắt kết nối thực thể Metrics toàn cục.
-func ClearCurrentMetrics() {
-	currentMetrics.Store(nil)
-}
-
-// IncInFlight tăng số lượng in-flight requests đang xử lý lên 1.
-func (m *Metrics) IncInFlight() {
-	if m != nil && m.inFlight != nil {
-		m.inFlight.Add(context.Background(), 1)
-	}
-}
-
-// DecInFlight giảm số lượng in-flight requests đang xử lý đi 1.
-func (m *Metrics) DecInFlight() {
-	if m != nil && m.inFlight != nil {
-		m.inFlight.Add(context.Background(), -1)
-	}
-}
-
-// ObserveRequest ghi nhận số liệu thống kê HTTP API request.
-// Chuẩn hóa và gán nhãn mặc định an toàn cho các tham số trống.
-func (m *Metrics) ObserveRequest(method, route, status string, duration time.Duration) {
-	if m == nil || m.requestTotal == nil || m.requestDuration == nil {
+func (m *Metrics) ObserveHTTPRequest(ctx context.Context, method, route, statusCode string, duration time.Duration) {
+	if m == nil || m.httpRequests == nil || m.httpDuration == nil {
 		return
 	}
-	// Chuẩn hóa chuỗi input và gán giá trị mặc định an toàn
-	method = strings.TrimSpace(method)
-	route = strings.TrimSpace(route)
-	status = strings.TrimSpace(status)
-	if route == "" {
-		route = "/"
-	}
-	if method == "" {
-		method = "UNKNOWN"
-	}
-	if status == "" {
-		status = "0"
-	}
-
-	ctx := context.Background()
 	attrs := metric.WithAttributes(
-		attribute.String("method", method),
-		attribute.String("route", route),
-		attribute.String("status", status),
+		attribute.String("method", normalizeHTTPMethod(method)),
+		attribute.String("route", normalizeRoute(route)),
+		attribute.String("status_code", normalizeStatusCode(statusCode)),
 	)
-	m.requestTotal.Add(ctx, 1, attrs)
-	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
+	m.httpRequests.Add(ctx, 1, attrs)
+	m.httpDuration.Record(ctx, duration.Seconds(), attrs)
 }
 
-// ObserveDependency ghi nhận latency và phân loại kết quả (ok/error) của dependency bên ngoài.
-// API chung cho mọi module gọi xuống: db, redis, crypto, và bất kỳ kind nào.
-func (m *Metrics) ObserveDependency(kind, operation string, duration time.Duration, err error) {
-	if m == nil || m.dependencyDur == nil {
+func (m *Metrics) AddHTTPInFlight(ctx context.Context, method string, delta int64) {
+	if m == nil || m.httpInFlight == nil {
 		return
 	}
-	kind = strings.TrimSpace(kind)
-	if kind == "" {
-		kind = "unknown"
-	}
-	operation = strings.TrimSpace(operation)
-	if operation == "" {
-		operation = "unknown"
-	}
-	status := "ok"
-	if err != nil {
-		status = "error"
-	}
-	m.dependencyDur.Record(context.Background(), duration.Seconds(),
-		metric.WithAttributes(
-			attribute.String("kind", kind),
-			attribute.String("operation", operation),
-			attribute.String("status", status),
-		),
-	)
+	m.httpInFlight.Add(ctx, delta, metric.WithAttributes(
+		attribute.String("method", normalizeHTTPMethod(method)),
+	))
 }
 
-// ObserveTimeDrift ghi nhận độ lệch thời gian hệ thống và cập nhật trạng thái one-hot tương ứng.
-func (m *Metrics) ObserveTimeDrift(seconds float64, state string) {
-	if m == nil || m.timeDriftGauge == nil || m.timeSyncGauge == nil {
-		return
-	}
-	ctx := context.Background()
-	m.timeDriftGauge.Record(ctx, seconds)
-
-	// Thiết lập trạng thái one-hot: trạng thái khớp nhận 1.0, còn lại nhận 0.0
-	for _, s := range timeSyncStates {
-		v := 0.0
-		if s == state {
-			v = 1.0
+func (r moduleRecorder) ObserveWorkflow(ctx context.Context, result Result, reason Reason, duration time.Duration) {
+	result, reason = normalizeResultReason(result, reason)
+	operation := normalizeOperation(pkgcontext.GetOperation(ctx))
+	logger.SetCorrelationOutcome(ctx, r.module, operation, string(result), string(reason))
+	span := trace.SpanFromContext(ctx)
+	if span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("aurora.module", r.module),
+			attribute.String("aurora.operation", operation),
+			attribute.String("aurora.result", string(result)),
+			attribute.String("aurora.reason", string(reason)),
+		)
+		if result == ResultFailure {
+			span.SetStatus(codes.Error, string(reason))
 		}
-		m.timeSyncGauge.Record(ctx, v, metric.WithAttributes(
-			attribute.String("state", s),
-		))
+	}
+	if r.metrics == nil || r.metrics.workflowCalls == nil || r.metrics.workflowDuration == nil {
+		return
+	}
+	attrs := metric.WithAttributes(
+		attribute.String("module", r.module),
+		attribute.String("op", operation),
+		attribute.String("result", string(result)),
+		attribute.String("reason", string(reason)),
+	)
+	r.metrics.workflowCalls.Add(ctx, 1, attrs)
+	r.metrics.workflowDuration.Record(ctx, duration.Seconds(), attrs)
+}
+
+func (m *Metrics) ObserveDependency(
+	ctx context.Context,
+	system string,
+	operation string,
+	result Result,
+	reason Reason,
+	duration time.Duration,
+) {
+	result, reason = normalizeResultReason(result, reason)
+	op := normalizeOperation(pkgcontext.GetOperation(ctx))
+	module := moduleFromOperation(op)
+	system = normalizeMetricToken(system, 32)
+	operation = normalizeMetricToken(operation, 64)
+
+	// The adapter owns the active client span. Keep its bounded workflow and
+	// dependency dimensions identical to the metric sample without putting IDs
+	// or provider errors in trace attributes.
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String("aurora.module", module),
+			attribute.String("aurora.operation", op),
+			attribute.String("aurora.dependency.system", system),
+			attribute.String("aurora.dependency.operation", operation),
+			attribute.String("aurora.dependency.result", string(result)),
+			attribute.String("aurora.dependency.reason", string(reason)),
+		)
+	}
+	if m == nil || m.dependencyCalls == nil || m.dependencyDuration == nil {
+		return
+	}
+	attrs := metric.WithAttributes(
+		attribute.String("module", module),
+		attribute.String("op", op),
+		attribute.String("system", system),
+		attribute.String("operation", operation),
+		attribute.String("result", string(result)),
+		attribute.String("reason", string(reason)),
+	)
+	m.dependencyCalls.Add(ctx, 1, attrs)
+	m.dependencyDuration.Record(ctx, duration.Seconds(), attrs)
+}
+
+func (m *Metrics) ObserveCache(ctx context.Context, layer, namespace, operation, result string) {
+	if m == nil || m.cacheOperations == nil {
+		return
+	}
+	m.cacheOperations.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("layer", normalizeMetricToken(layer, 16)),
+		attribute.String("namespace", normalizeMetricToken(namespace, 64)),
+		attribute.String("operation", normalizeMetricToken(operation, 32)),
+		attribute.String("result", normalizeMetricToken(result, 16)),
+	))
+}
+
+func (m *Metrics) ObserveTimeDrift(ctx context.Context, seconds float64, state string) {
+	if m == nil || m.timeDrift == nil || m.timeSyncState == nil {
+		return
+	}
+	m.timeDrift.Record(ctx, seconds)
+	for _, knownState := range timeSyncStates {
+		value := 0.0
+		if state == knownState {
+			value = 1
+		}
+		m.timeSyncState.Record(ctx, value, metric.WithAttributes(attribute.String("state", knownState)))
 	}
 }
 
-// ObserveAdminAction ghi nhận hành động quản trị (Admin/Audit actions) trong hệ thống.
-func (m *Metrics) ObserveAdminAction(resource, action, result string) {
-	if m == nil || m.requestTotal == nil {
-		return
+func (noopRecorder) ObserveWorkflow(context.Context, Result, Reason, time.Duration) {}
+
+func (noopRecorder) ObserveDependency(context.Context, string, string, Result, Reason, time.Duration) {
+}
+
+func (noopRecorder) ObserveCache(context.Context, string, string, string, string) {}
+
+func normalizeResultReason(result Result, reason Reason) (Result, Reason) {
+	switch result {
+	case ResultSuccess:
+		return ResultSuccess, ReasonNone
+	case ResultRejected:
+		switch reason {
+		case ReasonInvalidArgument, ReasonNotFound, ReasonAlreadyExists, ReasonConflict,
+			ReasonPreconditionFailed, ReasonInvalidTransition, ReasonUnauthenticated,
+			ReasonForbidden, ReasonRateLimited, ReasonBusy, ReasonEmpty, ReasonConstraint:
+			return result, reason
+		default:
+			return ResultRejected, ReasonConflict
+		}
+	case ResultFailure:
+		switch reason {
+		case ReasonTimeout, ReasonCanceled, ReasonUnavailable, ReasonInternal:
+			return result, reason
+		default:
+			return ResultFailure, ReasonInternal
+		}
+	default:
+		return ResultFailure, ReasonInternal
 	}
-	m.requestTotal.Add(context.Background(), 1,
-		metric.WithAttributes(
-			attribute.String("method", "admin"),
-			attribute.String("route", resource+"."+action),
-			attribute.String("status", result),
-		),
-	)
+}
+
+func normalizeOperation(operation string) string {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation == "" || operation == "unknown" || len(operation) > 128 {
+		return "unknown"
+	}
+	for _, value := range operation {
+		if (value < 'a' || value > 'z') && (value < '0' || value > '9') && value != '.' && value != '_' {
+			return "unknown"
+		}
+	}
+	return operation
+}
+
+func moduleFromOperation(operation string) string {
+	if index := strings.IndexByte(operation, '.'); index > 0 {
+		return normalizeMetricToken(operation[:index], 32)
+	}
+	return "unknown"
+}
+
+func normalizeMetricToken(value string, maxLength int) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || len(value) > maxLength {
+		return "unknown"
+	}
+	for _, current := range value {
+		if (current < 'a' || current > 'z') && (current < '0' || current > '9') && current != '_' && current != '-' {
+			return "unknown"
+		}
+	}
+	return value
+}
+
+func normalizeHTTPMethod(method string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return method
+	default:
+		return "OTHER"
+	}
+}
+
+func normalizeRoute(route string) string {
+	route = strings.TrimSpace(route)
+	if route == "" {
+		return "__unmatched__"
+	}
+	if len(route) > 256 {
+		return "__unmatched__"
+	}
+	return route
+}
+
+func normalizeStatusCode(statusCode string) string {
+	statusCode = strings.TrimSpace(statusCode)
+	if len(statusCode) != 3 || statusCode[0] < '1' || statusCode[0] > '5' {
+		return "000"
+	}
+	for index := 1; index < len(statusCode); index++ {
+		if statusCode[index] < '0' || statusCode[index] > '9' {
+			return "000"
+		}
+	}
+	return statusCode
 }
