@@ -7,10 +7,13 @@ trên Kubernetes đúng Zone trong các workflow sau này.
 P01 đã ship durable baseline và canonical inner protobuf binding. P02 đã ship SRE
 catalog/admin API, immutable revision workflow và Admin UI. P03 đã ship customer
 catalog/form read-only cho personal/tenant cùng Cloud Console dynamic-form foundation.
-P04 hiện đã ship instance/operation read projection và internal rename slice tách riêng
-cho personal/tenant; rename chưa đăng ký public route. Customer create/update/delete/
-retry, Kafka producer/consumer Managed Service, renderer và Kubernetes client vẫn chưa
-được mở; các workflow đó chỉ được thêm sau protected-transport và release gate tương ứng.
+P04 hiện đã ship instance/operation read projection và các vertical slice create,
+resize, rename, delete, manual retry tách riêng cho personal/tenant. Kafka ACK
+không tạo một dispatch-status projection trong Controlplane: JO chỉ cập nhật
+`managed_service_outbox_records.status=PROCESSING` bằng một fence hẹp sau ACK.
+Mutation handler vẫn dormant trong route registry cho đến khi P07 settle result/timeline;
+không có generic configuration/runtime-metadata patch. Kafka producer/consumer Managed
+Service, renderer và Kubernetes client vẫn thuộc các phase sau.
 
 Chi tiết product proposal nằm trong [IDEA.md](./IDEA.md). Trình tự staging từ
 contract tới release gate trước khi tách phase/task nằm trong
@@ -41,8 +44,8 @@ internal/managedservice/
 │   ├── mocks/             # Test doubles cho dependency workflow
 │   └── unit/              # Unit/contract tests độc lập
 ├── bootstrap.go            # Module lifecycle hook (hiện chưa có worker)
-├── migration.go            # Embedded six-file durable baseline migration
-├── migrations/             # 000001..000006 layered schema (enums, tables, indexes, funcs, triggers, seeds)
+├── migration.go            # Embedded durable migration set
+├── migrations/             # 000001..000010 layered schema (baseline, protected payload, delivery epoch, inbox removal)
 ├── module.go              # Fail-fast wiring của từng object slice
 ├── route.go               # Admin metadata/read và critical runtime routes
 ├── domain/                # DDD Core Layer
@@ -166,7 +169,8 @@ bằng auth generation + owner mode + Zone + workspace + revision. List dùng ke
 cursor và page tối đa 100; Console chỉ tải page tiếp theo theo action hữu hạn. P03
 không đăng ký `POST /instances`.
 
-P04 customer instance projection bổ sung tám route read-only:
+P04 customer instance projection bổ sung tám route read-only; mutation vertical slice
+đã có handler/service/repository nhưng chưa đăng ký route:
 
 ```text
 GET /api/v1/personal/managed-services/instances
@@ -184,8 +188,8 @@ trusted context và trả desired state, observed state, operation state thành 
 lập. Repository không select/serialize protected command, input hash hay create-intent
 hash. Personal và tenant dùng physical table, CTE và handler/service/repository riêng.
 Rename display name đã có internal vertical slice với optimistic `metadata_version`;
-nó không đổi code/generation/revision/outbox và vẫn dormant vì public mutation admission
-chỉ mở cùng release gate đã chốt.
+nó không đổi code/generation/revision/outbox. Create/resize/delete/retry cũng chỉ mở
+cùng release gate đã chốt; code remains the natural workspace-level dedupe identity.
 
 Zone admission của module bắt buộc capability `managed_service` trong
 `hierarchy.zone_service_type`. Mọi personal/tenant catalog và version-detail query
@@ -246,19 +250,24 @@ database transaction, CTE, constraint hoặc outbox durability.
 
 ### 1. Quy định về Database Migration (Baseline Clean Standard)
 
-* Khi module bắt đầu sở hữu durable tables, thư mục `migrations/` chỉ được duy
-  trì đúng **6 cặp file migration** (`000001` -> `000006`).
-* Không tạo migration thứ 7. Bảng, index, function, trigger và seed mới phải
-  được cập nhật vào đúng baseline file tương ứng.
+* Khi module đã có durable tables, migration set phải được embed và chạy theo thứ tự;
+  hiện tại có đúng **10 cặp file migration** (`000001` -> `000010`).
+* Không sửa migration đã chạy ở môi trường có dữ liệu. Schema evolution phải thêm
+  migration mới, có down script an toàn hoặc nêu rõ dữ liệu/enum khiến rollback chỉ
+  có thể dừng fail-close.
 * Migration phải idempotent, có advisory-lock khi chạy HA và không chứa secret,
   endpoint Kubernetes hoặc customer credential.
 * Global app migration runner là owner của transaction. Module migration không
   được tự mở transaction lồng nhau nếu caller đã mở transaction.
-* P01 đã sở hữu đúng sáu cặp baseline tại `migrations/000001` tới `000006` và
+* P01 baseline nằm tại `migrations/000001` tới `000006`; P04 bổ sung payload
+  protection ở `000007`, delivery epoch ở `000008`, resize enum ở `000009` và
+  xóa guarded legacy result inbox ở `000010`.
   `migration.go` đã được global app migration runner gọi trong cùng transaction/
   advisory lock. Baseline gồm system catalog, immutable blueprint revision, physical
-  personal/tenant aggregate và outbox; P04 chỉ đọc projection, chưa có mutation route
-  hoặc dispatcher đang hoạt động.
+  personal/tenant aggregate và outbox; P04 mutation route vẫn dormant nhưng durable
+  workflow slices đã được ship để P07 nối settlement sau.
+  Kafka ACK không tạo operation projection; JO chỉ được phép cập nhật outbox
+  `PROCESSING` qua connection write riêng khi route Managed Service được enable.
 
 S09 đã chốt physical ownership cho persistence:
 

@@ -66,7 +66,8 @@ Một instance là graph nhiều component, thường tách thành workload, ser
 network-policy manifest. Operator như Strimzi là platform dependency của Zone.
 
 Zone không đến từ create request; backend lấy trusted context do Envoy forward và
-kiểm tra revision có hỗ trợ Zone. Update tạo `InstanceRevision` immutable mới.
+kiểm tra revision có hỗ trợ Zone. Resize tạo `InstanceRevision` immutable mới; không
+có generic configuration/runtime-metadata patch.
 Mutation luôn theo `durable intent → Kubernetes side effect → durable finalization`.
 Delete chỉ hard-delete business record sau khi Dataplane xác nhận graph đã xóa;
 failure giữ trạng thái retryable và deletion fence chống stale replay.
@@ -133,7 +134,7 @@ Version trả `default_published_revision_id` trong catalog detail. Console dự
 từ revision đó và gửi chính revision ID khi create. Controlplane chỉ nhận create
 nếu revision vẫn là default và provisionable tại thời điểm submit. Nếu SRE publish
 default mới khi form đang mở, request cũ phải trả lỗi refresh catalog thay vì âm
-thầm áp schema/template khác. Instance update dùng revision đang pin, không bị
+thầm áp schema/template khác. Instance resize dùng revision đang pin, không bị
 default mới tự động upgrade.
 
 ### 6.1. Identity, metadata và lifecycle
@@ -176,11 +177,11 @@ Category/definition có `ACTIVE|RETIRED`. Service version có
 
 * `AVAILABLE` cho create mới với default revision;
 * `DEPRECATED` không nhận create mới, nhưng instance đang pin revision published
-  vẫn có thể đổi config trên chính revision đó;
+  vẫn có thể resize theo capability đã publish trên chính revision đó;
 * `RETIRED` chỉ còn cho operation đã tồn tại, retry, reconcile và delete.
 
 Blueprint revision có `DRAFT|PUBLISHED|RETIRED`. Draft chỉ SRE thấy và có thể sửa.
-Published revision immutable tuyệt đối. Retired revision không nhận create/update
+Published revision immutable tuyệt đối. Retired revision không nhận create/resize
 mới, nhưng vẫn phải render/reconcile/delete an toàn cho instance đã pin nó. Không
 hard-delete catalog identity hay revision từng được instance/operation tham chiếu.
 
@@ -431,7 +432,7 @@ Create bắt đầu ở catalog table, không phải card gallery. Customer ch�
 
 Configure dùng one feature-owned renderer với finite widget registry tương thích `Platform Form Contract v1`: text, numeric/unit-aware, select/radio, switch và bounded list/set editor. `ui_schema` là data presentation, không executable UI; unknown contract/widget fail closed và không mở submit. Client validation chỉ phục vụ UX, backend vẫn authoritative. Raw parameter chỉ sống trong form memory cho đến submit, không vào DOM persistence, localStorage hay sessionStorage.
 
-Form draft chỉ tồn tại React memory và bị xóa khi auth generation, active workspace, Zone hoặc catalog revision đổi. Controlplane không decrypt/read-back protected command, nên configuration detail không prefill customer value từ revision cũ; update phải có input document theo schema của revision đang pin. Instance `code` là business identity, còn `name` chỉ là display metadata; cả hai không phải blueprint parameter hay Kubernetes `metadata.name`.
+Form draft chỉ tồn tại React memory và bị xóa khi auth generation, active workspace, Zone hoặc catalog revision đổi. Controlplane không decrypt/read-back protected command, nên configuration detail không prefill customer value từ revision cũ; resize phải có input document theo capability của revision đang pin. Instance `code` là business identity, còn `name` chỉ là display metadata; cả hai không phải blueprint parameter hay Kubernetes `metadata.name`.
 
 Review layout là form desktop 8/4 với sticky summary: instance code/name, service/version, revision, workspace, Zone và validation summary; không echo raw customer parameter như một durable read-back surface. Mobile xếp summary sau form và có action footer. Confirm gửi `code` cùng canonical create intent; không có HTTP `Idempotency-Key` và không auto-retry mutation. Sau network failure, user có thể submit lại cùng code/cùng intent để lấy instance hoặc operation đã tồn tại. `ACCEPTED` chỉ là desired state durable, nên cache không optimistic thành `READY`/`ACTIVE`.
 
@@ -439,7 +440,7 @@ Detail tách desired revision/configuration, durable observed state và
 current/latest operation. Tabs V1: Overview, Configuration, safe Connection outputs
 và Operations/activity. Managed Service không có `runtime:<user_id>` channel:
 V1 không tạo Dataplane/JO NATS runtime protocol. Overview luôn rehydrate
-desired/terminal truth từ Controlplane; update/delete/retry chỉ hiện khi
+desired/terminal truth từ Controlplane; resize/delete/retry chỉ hiện khi
 API trả action được phép; delete failure giữ `DELETING` và chỉ có retry delete,
 không UI rollback hay browser activity record riêng theo attempt/status.
 
@@ -492,8 +493,8 @@ atomically áp predicate durable về revision default/provisionable, Zone capab
 unique `(workspace_id, code)`, desired-state transition và non-terminal operation.
 
 Create trùng code với cùng canonical create intent trả instance/current CREATE
-operation; cùng code nhưng intent khác trả conflict ổn định. Update có cùng target
-desired hash trả operation non-terminal hiện có; target khác khi operation đang
+operation; cùng code nhưng intent khác trả conflict ổn định. Resize dùng expected
+generation và capability pin; target khác khi operation đang
 chạy trả conflict. Delete lặp khi `DELETING` trả delete operation hiện có; sau hard
 delete thành công, code có thể được dùng lại bởi instance UUID mới.
 
@@ -506,7 +507,7 @@ Instance lưu revision và hash đã chọn. `accepted` chỉ nghĩa desired sta
 JO đọc logical WAL/CDC của module outbox; không có outbox relay khác và CP không
 publish Kafka trực tiếp. Outer `JobCommandV1` dùng `job_id=command_event_id`,
 `job_topic=managed_service.instance.execute`, `source_domain=MANAGED_SERVICE`,
-`resource_id=instance_id`, `attempt=0..4` và target Zone. Outer `payload` là
+`resource_id=instance_id`, `attempt=0..4`, `delivery_epoch>=0` và target Zone. Outer `payload` là
 serialized `ProtectedPayloadV1`. Inner `ManagedServiceCommandV1` chỉ xuất hiện sau DP
 HPKE-open và pin command/operation/instance IDs, owner/workspace, instance code,
 operation kind, generation, instance/blueprint revision, canonical template bundle +
@@ -515,8 +516,8 @@ và digest, schema version và trace context. Inner không có delivery attempt.
 
 Kafka key là `instance_id` để giữ ordering cục bộ. JO chỉ advance checkpoint sau
 Kafka ACK `acks=all`; crash giữa publish và checkpoint tạo duplicate an toàn. Retryable
-execution dùng generic Dataplane retry: giữ exact ciphertext/job ID/operation/generation,
-tăng outer attempt và backoff bounded `30s/2m/10m/30m` + jitter trước source settle.
+execution dùng generic Dataplane retry: giữ exact ciphertext/job ID/operation/generation/
+delivery epoch, tăng outer attempt và backoff bounded `30s/2m/10m/30m` + jitter trước source settle.
 CP/JO không tạo command mới từ hidden plaintext và không có due-retry scanner riêng.
 
 ### 7.5. Render và apply tại Dataplane
@@ -547,11 +548,14 @@ unique result event, source command event, all fences/hashes, safe observed snap
 outcome `SUCCEEDED|RETRYABLE_FAILURE|TERMINAL_FAILURE`. Không có customer runtime
 progress protocol/NATS trong V1.
 
-JO relay theo ordering của instance. CP result-inbox CTE dedupe result event, verify
-all fences trước observed update, promote đúng pending revision khi success, clear
-pending update khi terminal fail, giữ create `PROVISIONING` và delete `DELETING` khi
-terminal fail. Retry/delayed outbox/DLQ và timeline update chỉ xảy ra transactionally.
+JO relay theo ordering của instance. Một direct-settlement CTE khóa outbox, instance
+và operation; dedupe bằng source event/current-operation predicates, verify all fences
+trước observed update, rồi update outbox + object + operation cùng transaction. Nó
+promote đúng pending revision khi success, clear pending resize khi terminal fail,
+giữ create `PROVISIONING` và delete `DELETING` khi terminal fail. Không có result-inbox
+business table; retry/delayed outbox/DLQ và timeline update tuân theo commit boundary.
 
+Manual retry tăng `delivery_epoch` nhưng vẫn phát lại exact current operation/ciphertext;
 Reconciler phát lại exact current operation khi mất result, Zone restart hoặc observed
 version lệch. Nó bounded/jitter/lease-fenced, không tạo revision hoặc mutate desired
 state ngoài settling exact pending operation; stale result không ghi đè observed mới.
@@ -636,7 +640,7 @@ GET    /instances
 POST   /instances
 GET    /instances/:code
 PATCH  /instances/:code/name
-PATCH  /instances/:code/configuration
+POST   /instances/:code/resize
 DELETE /instances/:code
 GET    /instances/:code/connection
 GET    /instances/:code/operations
@@ -687,7 +691,7 @@ Response HTTP dựng inline bằng `gin.H`. Request JSON struct chỉ nằm tron
 ## 10. Không nằm trong bộ khung hiện tại
 
 * Chưa viết render engine, Kubernetes client hoặc provisioning workflow.
-* Customer create/update/delete/retry, Managed Service route, Kafka dispatch và executor
+* Customer create/resize/delete/retry, Managed Service route, Kafka dispatch và executor
   vẫn chưa enabled; platform-wide protected transport đã ship trước các workflow đó.
 * Chưa thiết kế billing, quota, pricing hay automatic user/workspace creation.
 * Chưa implement YAML AST renderer/dry-run/apply dù contract cho namespaced Kind/CRD

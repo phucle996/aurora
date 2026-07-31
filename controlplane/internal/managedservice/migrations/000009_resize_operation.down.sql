@@ -1,0 +1,2 @@
+-- PostgreSQL cannot safely remove an enum value while retained operation rows may exist.
+-- The value remains harmless and is kept for forward-compatible rollback.

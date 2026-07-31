@@ -73,8 +73,14 @@ func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T
 	for _, dormant := range []string{
 		"POST /api/v1/personal/managed-services/instances",
 		"PATCH /api/v1/personal/managed-services/instances/:code/name",
+		"POST /api/v1/personal/managed-services/instances/:code/resize",
+		"DELETE /api/v1/personal/managed-services/instances/:code",
+		"POST /api/v1/personal/managed-services/instances/:code/operations/:operation_id/retry",
 		"POST /api/v1/tenant/managed-services/instances",
 		"PATCH /api/v1/tenant/managed-services/instances/:code/name",
+		"POST /api/v1/tenant/managed-services/instances/:code/resize",
+		"DELETE /api/v1/tenant/managed-services/instances/:code",
+		"POST /api/v1/tenant/managed-services/instances/:code/operations/:operation_id/retry",
 	} {
 		if _, exists := routes[dormant]; exists {
 			t.Fatalf("P04 mutation admission must remain dormant before protected transport and P07: %s", dormant)

@@ -35,7 +35,7 @@ tenant. Customer mutation và transport worker vẫn chưa được enable.
 * Kafka command/result envelope, retry và DLQ;
 * result, observed status, reconcile, fencing và recovery;
 * threat model, audit, metric, trace và alert;
-* retry budget, Kafka envelope, result inbox/reconcile và error taxonomy;
+* retry budget, Kafka envelope, direct result settlement/reconcile và error taxonomy;
 * test matrix, staging environment, drills, pilot runbook, rollback, release gates
   và God View change list.
 ## 3. Stage map
@@ -102,7 +102,7 @@ Mục tiêu: đóng bài toán, người dùng và giới hạn của module.
   `network-policy.yaml`; Strimzi/operator là dependency có sẵn trong Zone.
 * Customer không gửi `zone_id`; Zone đến từ trusted Envoy context, CP kiểm tra
   revision hỗ trợ Zone.
-* Update tạo `InstanceRevision` immutable; correction tạo revision mới, transient
+* Resize tạo `InstanceRevision` immutable; correction tạo revision mới, transient
   failure retry operation hiện tại.
 * Delete hard-delete business record sau DP xác nhận graph đã xóa; intent/outbox
   phải tồn tại trước side effect.
@@ -135,14 +135,16 @@ JO là bridge bắt buộc cho mọi Managed Service Central↔Zone command/resu
 
 Result và user timeline đi theo hai nhánh sau JO:
 ```text
-Dataplane result → Kafka → JO fence/settle CP projection
+Dataplane result → Kafka → JO fence/settle outbox + object + operation transaction
   ├→ authoritative API projection
   └→ XADD stream:{job_notifications}
        → Notification Service Scylla timeline/inbox upsert
        → Centrifugo notifications:<user_id> → Console realtime upsert
 ```
-JO XADD `PROCESSING` sau command Kafka durable, rồi XADD `SUCCESS` hoặc `FAILED`
-sau result settle với cùng timeline identity. Một operation/resource action có đúng
+JO cập nhật `managed_service_outbox_records` sang `PROCESSING` sau command Kafka
+durable ACK bằng connection write riêng; không cập nhật operation để phản ánh dispatch.
+Sau result, JO atomically settle outbox + object + operation rồi XADD `SUCCESS` hoặc `FAILED`
+với cùng timeline identity. Một operation/resource action có đúng
 một Scylla timeline/inbox record; status/attempt chỉ update record đó. Terminal thiếu
 processing vẫn upsert cùng record.
 `timeline_id` là UUIDv5 ổn định theo `operation_id`, không theo status/attempt.
@@ -197,8 +199,8 @@ ManagedServiceInstance
   active_revision_id | pending_revision_id | observed_state | observed_generation
 
 ManagedServiceOperation
-  kind: CREATE | UPDATE | DELETE
-  status: ACCEPTED | DISPATCHING | RUNNING | RETRYING | SUCCEEDED | TERMINAL_FAILED
+  kind: CREATE | RESIZE | DELETE
+  status: ACCEPTED | RETRYING | SUCCEEDED | TERMINAL_FAILED
   target_revision_id | operation_id | generation | attempt | last_sanitized_error
 ```
 
@@ -208,16 +210,21 @@ ManagedServiceOperation
 Transition chung:
 
 ```text
-ACCEPTED → DISPATCHING → RUNNING → SUCCEEDED
-                         ↘ RETRYING → DISPATCHING
-                         ↘ TERMINAL_FAILED
+ACCEPTED → SUCCEEDED
+        ↘ RETRYING → SUCCEEDED
+        ↘ TERMINAL_FAILED
 ```
+
+`DISPATCHING` và `RUNNING` còn tồn tại trong PostgreSQL enum để đọc dữ liệu cũ,
+nhưng không được ghi bởi code mới. Kafka ACK chỉ chuyển outbox sang `PROCESSING`;
+transport progress không phải operation lifecycle state.
 
 Create tạo instance `PROVISIONING`, pending revision và CREATE operation; success
 promote active revision rồi `ACTIVE`. Create terminal fail giữ `PROVISIONING` để
-customer chỉ có retry hoặc delete, không được giả `ACTIVE`. Update giữ active
+customer chỉ có retry hoặc delete, không được giả `ACTIVE`. Resize giữ active
 revision cũ, tạo pending immutable revision; success promote, terminal fail clear
-pending nhưng operation vẫn giữ target revision để audit/manual retry. Delete set
+pending nhưng operation vẫn giữ target revision để audit/manual retry. Không có
+generic configuration/runtime-metadata patch. Delete set
 `DELETING` trước side effect; success hard-delete sau DP xác nhận graph đã xóa;
 failure giữ `DELETING` + DELETE operation `TERMINAL_FAILED`, không rollback `ACTIVE`
 và có deletion fence. Không tồn tại lifecycle/operation state `DELETE_FAILED`.
@@ -230,11 +237,11 @@ Mỗi operation có tối đa năm delivery attempt `0..4`. Lỗi retryable gi�
 `event_id`, `operation_id`, `generation`, target revision, desired hash và exact
 protected bytes; Dataplane generic runtime chỉ tăng outer `attempt`. Backoff lần
 retry 1–4 có base `30s`, `2m`, `10m`, `30m`, cộng jitter 0–20%; crash không được
-tính lại hoặc reset clock. Manual retry re-drive cùng operation/generation/event,
-không decrypt customer input. Khi attempt 4 vẫn retryable, operation thành
+tính lại hoặc reset clock. Manual retry re-drive cùng operation/generation/event/
+exact ciphertext, tăng `delivery_epoch` và không decrypt customer input. Khi attempt 4 vẫn retryable, operation thành
 `TERMINAL_FAILED` với `RETRY_BUDGET_EXHAUSTED` và last cause đã sanitize.
 
-Result phải khớp source command event, instance, operation, generation, attempt,
+Result phải khớp source command event, instance, operation, generation, delivery epoch, attempt,
 target revision, bundle/contract/desired hash và Zone; stale result bị ignore có
 metric/audit, không mutate desired/observed state. Timeline map
 `ACCEPTED..RETRYING → PROCESSING`, `SUCCEEDED → SUCCESS`,
@@ -443,7 +450,7 @@ GET    /instances
 POST   /instances
 GET    /instances/:code
 PATCH  /instances/:code/name
-PATCH  /instances/:code/configuration
+POST   /instances/:code/resize
 DELETE /instances/:code
 GET    /instances/:code/connection
 GET    /instances/:code/operations
@@ -472,7 +479,7 @@ HTTP ingress; DP/JO dùng cùng code taxonomy trong Protobuf/result:
 | `SRE_TEMPLATE_INPUT_MISMATCH`, `K8S_APPLY_REJECTED`, `K8S_OWNERSHIP_CONFLICT`, `JOB_PROTECTED_PAYLOAD_INVALID` | DP | terminal result/sanitized DLQ, không auto-retry |
 | `K8S_API_UNAVAILABLE`, `K8S_CAPACITY_PENDING`, `K8S_READINESS_DEADLINE_EXCEEDED`, `ZONE_EXECUTOR_UNAVAILABLE` | DP | retryable result; CP tạo attempt kế tiếp nếu còn budget |
 | `COMMAND_CONTRACT_INVALID`, `COMMAND_ZONE_MISMATCH`, `COMMAND_HASH_MISMATCH` | JO/DP ingress | quarantine/DLQ rồi settle operation terminal bằng sanitized code |
-| `RESULT_FENCE_MISMATCH`, `RESULT_STALE_ATTEMPT` | JO/CP result inbox | ignore + metric/audit, không đổi state và không DLQ lại |
+| `RESULT_FENCE_MISMATCH`, `RESULT_STALE_ATTEMPT` | JO direct-settlement fence | ignore + metric/audit, không đổi state và không DLQ lại |
 | `RETRY_BUDGET_EXHAUSTED` | CP result settlement | terminal result sau attempt 4, giữ last sanitized cause |
 
 Raw Kubernetes/provider/database detail không đi qua taxonomy message. Mọi message
@@ -525,13 +532,11 @@ Mọi aggregate customer tách physical table theo ownership:
 personal_managed_service_instances
 personal_managed_service_instance_revisions
 personal_managed_service_operations
-personal_managed_service_result_inbox
 personal_managed_service_deletion_fences
 
 tenant_managed_service_instances
 tenant_managed_service_instance_revisions
 tenant_managed_service_operations
-tenant_managed_service_result_inbox
 tenant_managed_service_deletion_fences
 ```
 
@@ -547,8 +552,8 @@ canonical parameter map không vào DB. Operation cũng tách bảng theo branch
 target revision/hash, generation, retry parent, status/status version, bounded
 sanitized error và actor snapshot. `instance_id` của operation/result là immutable
 snapshot UUID, không FK tới instance row: delete success có thể hard-delete instance
-và revision, còn evidence/dedupe được dọn theo retention riêng. Operation/result
-inbox/deletion fence chỉ được purge sau ít nhất
+và revision, còn evidence/dedupe được dọn theo retention riêng. Operation/outbox/
+deletion fence chỉ được purge sau ít nhất
 `max(command retention, result retention, DLQ replay retention) + safety margin`;
 fence giữ `instance_id + operation_id + generation` qua toàn bộ cửa sổ đó nhưng
 không cấm reuse `code`.
@@ -559,7 +564,7 @@ một `managed_service_outbox_records` theo shape Storage/Mail hiện có:
 ```text
 id, event_id, zone_id, job_topic, payload BYTEA, payload_key_id,
 owner_id, owner_type, actor_user_id,
-status, available_at, completed_at, job_version, resource_id,
+status, available_at, completed_at, job_version, resource_id, delivery_epoch,
 payload_schema_version, trace_id, idle,
 error_code, error_message, created_at, updated_at
 ```
@@ -576,15 +581,15 @@ workspace FOR KEY SHARE → instance FOR UPDATE → revision/operation
 ```
 
 Create serialize `(workspace_id, code)`, compare canonical create intent rồi insert
-instance + initial revision + operation + outbox cùng commit. Update config dùng
+instance + initial revision + operation + outbox cùng commit. Resize dùng
 expected active generation, tạo revision/generation/operation/outbox mới; rename chỉ
 đổi display name. Delete chuyển `DELETING` + delete operation/outbox, không rollback
-ACTIVE. Manual retry re-drive cùng operation/generation/event và exact protected
+ACTIVE. Không có generic configuration/runtime-metadata patch. Manual retry re-drive cùng operation/generation/event và exact protected
 command; nó không tạo revision config mới hoặc yêu cầu CP decrypt customer values.
-Result inbox unique `result_event_id` và unique source command `(operation_id,
-attempt, source_command_event_id)`; duplicate/stale result không mutate desired state.
-Result settlement là một CTE: insert inbox → lock instance/operation → verify all
-fences → update observed snapshot → finalise operation/lifecycle. DELETE success atomically ghi deletion fence rồi hard-delete
+Result settlement không có business inbox. CTE khóa outbox → instance → operation,
+verify source command `(operation_id, delivery_epoch, attempt, source_command_event_id)`
+và all fences, rồi update observed snapshot + outbox + operation/lifecycle. Duplicate/stale
+result không mutate desired state. DELETE success atomically ghi deletion fence rồi hard-delete
 instance/revision; fence giữ tới sau Kafka retry/DLQ/reconcile window và không cấm
 reuse code.
 
@@ -594,7 +599,7 @@ operation + generation + source event + revision/hash, error không raw
 provider detail. Không lưu DB: rendered manifest, Kubernetes object/live metric,
 worker lease, temporary render, raw result payload hay plaintext secret.
 
-Gate: migration/rollback/lock-order review; duplicate create/update/delete/retry,
+Gate: migration/rollback/lock-order review; duplicate create/resize/delete/retry,
 hard-delete/code reuse, stale result, crash trước/sau outbox commit và personal/tenant
 ownership isolation đều có PostgreSQL integration test.
 
@@ -603,9 +608,10 @@ ownership isolation đều có PostgreSQL integration test.
 **Status: CLOSED**
 
 Managed Service V1 có đúng một execution transport plane: PostgreSQL outbox/WAL →
-JO → Kafka → Dataplane → Kafka result → JO/Controlplane. CP không publish Kafka
-trực tiếp; JO không tạo business aggregate và không có Managed Service NATS consumer.
-JO XADD `PROCESSING` chỉ sau Kafka command ACK; `SUCCESS|FAILED` chỉ sau result đã
+JO → Kafka → Dataplane → Kafka result → JO. CP không publish Kafka trực tiếp; JO
+không tạo business aggregate và không có Managed Service NATS consumer.
+JO chỉ update outbox `PROCESSING` sau Kafka command ACK; result settlement update
+outbox + object + operation trong một transaction rồi mới XADD `SUCCESS|FAILED`.
 settle transactionally. `stream:{job_notifications}` giữ một timeline/inbox row,
 không phải runtime stream.
 
@@ -627,10 +633,10 @@ Command dùng outer platform envelope hiện có và inner contract mới:
 
 | Layer | Exact contract |
 | --- | --- |
-| `JobCommandV1` | `job_id = command_event_id`, `job_version=1`, `attempt=0..4`, `job_topic=managed_service.instance.execute`, `source_domain=MANAGED_SERVICE`, `resource_id=instance_id`, `target_zone_id`, payload schema/version, traceparent/tracestate, `payload_encoding=HPKE...`. Kafka key là UUID `instance_id`, không phải `job_id`; `payload` là serialized `ProtectedPayloadV1`. |
+| `JobCommandV1` | `job_id = command_event_id`, `job_version=1`, `attempt=0..4`, `delivery_epoch>=0`, `job_topic=managed_service.instance.execute`, `source_domain=MANAGED_SERVICE`, `resource_id=instance_id`, `target_zone_id`, payload schema/version, traceparent/tracestate, `payload_encoding=HPKE...`. Kafka key là UUID `instance_id`, không phải `job_id`; `payload` là serialized `ProtectedPayloadV1`. |
 | `ManagedServiceCommandV1` plaintext bên trong protection | `command_event_id` (bằng outer `job_id`), `operation_id`, `instance_id`, `owner_type`, `owner_id`, `workspace_id`, immutable `instance_code`, `operation_kind`, `generation`, `instance_revision_id`, `blueprint_revision_id`, canonical `template_yaml`/component contract, `bundle_hash`, `contract_hash`, `input_hash`, `desired_spec_hash`, canonical `parameter_values` + digest, schema version và timestamp. Inner không có delivery attempt. |
 | `JobExecutionResultProto` | outer `job_id = source_command_event_id`, same job topic/domain/attempt/Zone route and trace context; DP publishes result with `instance_id` copied from verified source command as Kafka key. |
-| `ManagedServiceResultV1` payload | unique `result_event_id`, `source_command_event_id`, `operation_id`, `instance_id`, generation, attempt, target revision, bundle/contract/desired hash, Zone, outcome `SUCCEEDED|RETRYABLE_FAILURE|TERMINAL_FAILURE`, taxonomy code, bounded sanitized message, safe observed snapshot/version và schema version. |
+| `ManagedServiceResultV1` payload | unique `result_event_id`, `source_command_event_id`, `operation_id`, `instance_id`, generation, delivery epoch, attempt, target revision, bundle/contract/desired hash, Zone, outcome `SUCCEEDED|RETRYABLE_FAILURE|TERMINAL_FAILURE`, taxonomy code, bounded sanitized message, safe observed snapshot/version và schema version. |
 
 Static `template_yaml` là internal SRE artifact, không public catalog response và không
 chứa literal Kubernetes Secret credential; nó phải hash-match revision trước render.
@@ -709,17 +715,17 @@ hiển thị desired và observed khi lệch nhau. Durable observed state chỉ 
 `UNKNOWN|PROGRESSING|READY|DEGRADED`; nó không thay instance lifecycle
 `PROVISIONING|ACTIVE|DELETING` và không là source để auth/billing/quota.
 
-Result inbox settlement chạy trong một CP transaction/CTE theo thứ tự: insert unique
-`result_event_id` → lock instance/operation → verify source event, Zone, operation,
-generation, attempt, target revision và all hashes → write bounded observed snapshot
-with monotonic observed version → chọn finalization hoặc retry outbox. `SUCCEEDED`
+Direct result settlement chạy trong một CP transaction/CTE theo thứ tự: lock outbox →
+instance/operation → verify source event, Zone, operation, generation, attempt,
+delivery epoch, target revision và all hashes → write bounded observed snapshot with
+monotonic observed version → update outbox/object/operation hoặc retry outbox. `SUCCEEDED`
 promote đúng pending revision; update terminal failure clear pending và giữ active
 revision cũ; create terminal failure giữ `PROVISIONING`; delete terminal failure giữ
 `DELETING`. Delete chỉ hard-delete instance/revision sau result xác nhận mọi component
 trong graph đã gone/finalizer complete. Không xóa workspace namespace vì namespace có
 thể chứa instance khác.
 
-Duplicate result event converge qua inbox unique key. Result của command cũ, attempt
+Duplicate result event converge qua outbox/current-operation fence. Result của command cũ, attempt
 cũ hoặc generation cũ không ghi đè observed/desired mới; chỉ metric/audit. Result
 malformed/cross-Zone/hash mismatch đi quarantine taxonomy, không được coi là stale
 success. Result retryable làm operation `RETRYING` và create exact retry outbox nếu
@@ -1050,7 +1056,7 @@ Design staging hoàn tất khi:
 * mọi field có owner và sensitivity;
 * state machine xử lý retry, duplicate, stale result và delete;
 * catalog/revision/render contract có compatibility rule;
-* retry budget, envelope, result inbox, Zone binding và error taxonomy đã viết rõ;
+* retry budget, envelope, direct result settlement, Zone binding và error taxonomy đã viết rõ;
 * security/observability design review và God View change list nhất quán;
 * phase/task tách được mà không cần đoán business rule.
 

@@ -7,6 +7,10 @@ import (
 )
 
 type PersonalInstanceService struct {
+	CreateCalls         int
+	CreateInput         *entity.CreatePersonalInstance
+	CreateResult        *entity.CreatePersonalInstanceResult
+	CreateErr           error
 	ListCalls           int
 	ListInput           *entity.ListPersonalInstances
 	ListResult          *entity.PersonalInstancePage
@@ -27,6 +31,24 @@ type PersonalInstanceService struct {
 	RenameInput         *entity.RenamePersonalInstance
 	RenameResult        *entity.RenamePersonalInstanceResult
 	RenameErr           error
+	ResizeCalls         int
+	ResizeInput         *entity.ResizePersonalInstance
+	ResizeResult        *entity.ResizePersonalInstanceResult
+	ResizeErr           error
+	DeleteCalls         int
+	DeleteInput         *entity.DeletePersonalInstance
+	DeleteResult        *entity.DeletePersonalInstanceResult
+	DeleteErr           error
+	RetryCalls          int
+	RetryInput          *entity.RetryPersonalInstance
+	RetryResult         *entity.RetryPersonalInstanceResult
+	RetryErr            error
+}
+
+func (s *PersonalInstanceService) CreatePersonalInstance(_ context.Context, in *entity.CreatePersonalInstance) (*entity.CreatePersonalInstanceResult, error) {
+	s.CreateCalls++
+	s.CreateInput = in
+	return s.CreateResult, s.CreateErr
 }
 
 func (s *PersonalInstanceService) ListPersonalInstances(_ context.Context, in *entity.ListPersonalInstances) (*entity.PersonalInstancePage, error) {
@@ -57,4 +79,20 @@ func (s *PersonalInstanceService) RenamePersonalInstance(_ context.Context, in *
 	s.RenameCalls++
 	s.RenameInput = in
 	return s.RenameResult, s.RenameErr
+}
+
+func (s *PersonalInstanceService) ResizePersonalInstance(_ context.Context, in *entity.ResizePersonalInstance) (*entity.ResizePersonalInstanceResult, error) {
+	s.ResizeCalls++
+	s.ResizeInput = in
+	return s.ResizeResult, s.ResizeErr
+}
+func (s *PersonalInstanceService) DeletePersonalInstance(_ context.Context, in *entity.DeletePersonalInstance) (*entity.DeletePersonalInstanceResult, error) {
+	s.DeleteCalls++
+	s.DeleteInput = in
+	return s.DeleteResult, s.DeleteErr
+}
+func (s *PersonalInstanceService) RetryPersonalInstance(_ context.Context, in *entity.RetryPersonalInstance) (*entity.RetryPersonalInstanceResult, error) {
+	s.RetryCalls++
+	s.RetryInput = in
+	return s.RetryResult, s.RetryErr
 }

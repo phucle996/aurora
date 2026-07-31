@@ -77,6 +77,7 @@ const (
 	ManagedServiceOperationKindV1_MANAGED_SERVICE_OPERATION_KIND_CREATE      ManagedServiceOperationKindV1 = 1
 	ManagedServiceOperationKindV1_MANAGED_SERVICE_OPERATION_KIND_UPDATE      ManagedServiceOperationKindV1 = 2
 	ManagedServiceOperationKindV1_MANAGED_SERVICE_OPERATION_KIND_DELETE      ManagedServiceOperationKindV1 = 3
+	ManagedServiceOperationKindV1_MANAGED_SERVICE_OPERATION_KIND_RESIZE      ManagedServiceOperationKindV1 = 4
 )
 
 // Enum value maps for ManagedServiceOperationKindV1.
@@ -86,12 +87,14 @@ var (
 		1: "MANAGED_SERVICE_OPERATION_KIND_CREATE",
 		2: "MANAGED_SERVICE_OPERATION_KIND_UPDATE",
 		3: "MANAGED_SERVICE_OPERATION_KIND_DELETE",
+		4: "MANAGED_SERVICE_OPERATION_KIND_RESIZE",
 	}
 	ManagedServiceOperationKindV1_value = map[string]int32{
 		"MANAGED_SERVICE_OPERATION_KIND_UNSPECIFIED": 0,
 		"MANAGED_SERVICE_OPERATION_KIND_CREATE":      1,
 		"MANAGED_SERVICE_OPERATION_KIND_UPDATE":      2,
 		"MANAGED_SERVICE_OPERATION_KIND_DELETE":      3,
+		"MANAGED_SERVICE_OPERATION_KIND_RESIZE":      4,
 	}
 )
 
@@ -691,6 +694,7 @@ type ManagedServiceResultV1 struct {
 	CompletedAtUnixMs     int64                                `protobuf:"varint,22,opt,name=completed_at_unix_ms,json=completedAtUnixMs,proto3" json:"completed_at_unix_ms,omitempty"`
 	Traceparent           string                               `protobuf:"bytes,23,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	Tracestate            string                               `protobuf:"bytes,24,opt,name=tracestate,proto3" json:"tracestate,omitempty"`
+	DeliveryEpoch         uint64                               `protobuf:"varint,25,opt,name=delivery_epoch,json=deliveryEpoch,proto3" json:"delivery_epoch,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -886,6 +890,13 @@ func (x *ManagedServiceResultV1) GetTracestate() string {
 	return ""
 }
 
+func (x *ManagedServiceResultV1) GetDeliveryEpoch() uint64 {
+	if x != nil {
+		return x.DeliveryEpoch
+	}
+	return 0
+}
+
 var File_managed_service_proto protoreflect.FileDescriptor
 
 const file_managed_service_proto_rawDesc = "" +
@@ -943,7 +954,7 @@ const file_managed_service_proto_rawDesc = "" +
 	"\vtraceparent\x18\x18 \x01(\tR\vtraceparent\x12\x1e\n" +
 	"\n" +
 	"tracestate\x18\x19 \x01(\tR\n" +
-	"tracestateJ\x04\b\v\x10\fJ\x04\b\x1a\x10 \"\xdc\b\n" +
+	"tracestateJ\x04\b\v\x10\fJ\x04\b\x1a\x10 \"\x83\t\n" +
 	"\x16ManagedServiceResultV1\x12&\n" +
 	"\x0fresult_event_id\x18\x01 \x01(\fR\rresultEventId\x125\n" +
 	"\x17source_command_event_id\x18\x02 \x01(\fR\x14sourceCommandEventId\x12!\n" +
@@ -976,16 +987,18 @@ const file_managed_service_proto_rawDesc = "" +
 	"\vtraceparent\x18\x17 \x01(\tR\vtraceparent\x12\x1e\n" +
 	"\n" +
 	"tracestate\x18\x18 \x01(\tR\n" +
-	"tracestateJ\x04\b\x0e\x10\x0fJ\x04\b\x19\x10 *\x97\x01\n" +
+	"tracestate\x12%\n" +
+	"\x0edelivery_epoch\x18\x19 \x01(\x04R\rdeliveryEpochJ\x04\b\x0e\x10\x0fJ\x04\b\x1a\x10 *\x97\x01\n" +
 	"\x19ManagedServiceOwnerTypeV1\x12*\n" +
 	"&MANAGED_SERVICE_OWNER_TYPE_UNSPECIFIED\x10\x00\x12'\n" +
 	"#MANAGED_SERVICE_OWNER_TYPE_PERSONAL\x10\x01\x12%\n" +
-	"!MANAGED_SERVICE_OWNER_TYPE_TENANT\x10\x02*\xd0\x01\n" +
+	"!MANAGED_SERVICE_OWNER_TYPE_TENANT\x10\x02*\xfb\x01\n" +
 	"\x1dManagedServiceOperationKindV1\x12.\n" +
 	"*MANAGED_SERVICE_OPERATION_KIND_UNSPECIFIED\x10\x00\x12)\n" +
 	"%MANAGED_SERVICE_OPERATION_KIND_CREATE\x10\x01\x12)\n" +
 	"%MANAGED_SERVICE_OPERATION_KIND_UPDATE\x10\x02\x12)\n" +
-	"%MANAGED_SERVICE_OPERATION_KIND_DELETE\x10\x03*\xc6\x01\n" +
+	"%MANAGED_SERVICE_OPERATION_KIND_DELETE\x10\x03\x12)\n" +
+	"%MANAGED_SERVICE_OPERATION_KIND_RESIZE\x10\x04*\xc6\x01\n" +
 	"\x17ManagedServiceOutcomeV1\x12'\n" +
 	"#MANAGED_SERVICE_OUTCOME_UNSPECIFIED\x10\x00\x12%\n" +
 	"!MANAGED_SERVICE_OUTCOME_SUCCEEDED\x10\x01\x12-\n" +

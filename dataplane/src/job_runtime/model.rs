@@ -25,6 +25,7 @@ pub struct ValidatedJob {
     pub job_id: String,
     pub job_version: u32,
     pub attempt: u32,
+    pub delivery_epoch: u64,
     pub job_topic: String,
     pub source_domain: String,
     pub resource_id: String,
@@ -139,6 +140,12 @@ impl ValidatedJob {
                     command.attempt,
                     max_attempts.max(1)
                 ),
+            ));
+        }
+        if command.delivery_epoch > i64::MAX as u64 {
+            return Err(JobValidationError::new(
+                "JOB_DELIVERY_EPOCH_INVALID",
+                "delivery_epoch exceeds the durable platform range",
             ));
         }
         validate_text(
@@ -271,6 +278,7 @@ impl ValidatedJob {
             job_id: job_uuid.to_string(),
             job_version: command.job_version,
             attempt: command.attempt,
+            delivery_epoch: command.delivery_epoch,
             job_topic: command.job_topic,
             source_domain: command.source_domain,
             resource_id: command.resource_id,
@@ -323,6 +331,7 @@ impl ValidatedJob {
             tracestate,
             payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm
                 as i32,
+            delivery_epoch: self.delivery_epoch,
         }
     }
 }
@@ -378,6 +387,7 @@ mod tests {
             tracestate: String::new(),
             payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm
                 as i32,
+            delivery_epoch: 0,
         };
         protect(&mut command, keyring);
         command
@@ -405,10 +415,12 @@ mod tests {
     #[test]
     fn retry_command_preserves_validated_envelope() {
         let keyring = PayloadKeyring::for_test();
-        let job = ValidatedJob::from_command(command(&keyring), ZONE_A, 5, &keyring)
-            .expect("valid command");
+        let mut source = command(&keyring);
+        source.delivery_epoch = 7;
+        let job = ValidatedJob::from_command(source, ZONE_A, 5, &keyring).expect("valid command");
         let retry = job.command_for_attempt(1, "parent".to_string(), "state".to_string());
         assert_eq!(retry.attempt, 1);
+        assert_eq!(retry.delivery_epoch, 7);
         assert_eq!(retry.job_id, uuid::Uuid::nil().as_bytes());
         assert_eq!(retry.target_zone_id, ZONE_A);
         assert_eq!(retry.traceparent, "parent");
@@ -451,5 +463,14 @@ mod tests {
         command.job_version = 0;
         let error = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).unwrap_err();
         assert_eq!(error.code, "JOB_VERSION_INVALID");
+    }
+
+    #[test]
+    fn validation_rejects_delivery_epoch_outside_postgres_range() {
+        let keyring = PayloadKeyring::for_test();
+        let mut command = command(&keyring);
+        command.delivery_epoch = u64::MAX;
+        let error = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).unwrap_err();
+        assert_eq!(error.code, "JOB_DELIVERY_EPOCH_INVALID");
     }
 }

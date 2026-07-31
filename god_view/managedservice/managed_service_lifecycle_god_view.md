@@ -13,7 +13,7 @@
 | Thuộc tính | Contract |
 | --- | --- |
 | Trạng thái | P00 frozen; P01 foundation, P02 SRE catalog/admin, P03 customer catalog/form và P04 instance/operation reads shipped; customer mutation/runtime admission remains disabled |
-| Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant desired state, immutable revision, operation, inbox/fence và outbox |
+| Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant desired state, immutable revision, operation, deletion fence và outbox |
 | Durable transport | PostgreSQL outbox/WAL → Job Orchestrator → Kafka → Dataplane Zone → Kafka result → JO/Controlplane settle |
 | Runtime executor | Dataplane đúng Zone gọi Kubernetes API; Controlplane không có Kubernetes credential/client |
 | Delivery | At-least-once; ordering chỉ theo `instance_id`; external fence là `instance_id + operation_id + generation` |
@@ -61,8 +61,8 @@ Boundary bắt buộc:
 | `BlueprintRevision` | System/SRE catalog | YAML, input/UI/output/component contract immutable sau publish |
 | `ManagedServiceInstance` | Personal hoặc tenant workspace | Desired lifecycle customer-facing; giữ active/pending revision head |
 | `InstanceRevision` | Cùng ownership với instance | Snapshot config ciphertext + pinned blueprint artifact; immutable |
-| `ManagedServiceOperation` | Cùng ownership với instance | Một execution CREATE/UPDATE/DELETE với fence/generation riêng |
-| Outbox/inbox/fence | Controlplane module transport/evidence | Không là aggregate owner; retention kéo dài hơn Kafka replay window |
+| `ManagedServiceOperation` | Cùng ownership với instance | Một execution CREATE/RESIZE/DELETE với fence/generation riêng |
+| Outbox/fence | Controlplane module transport/evidence | Không là aggregate owner; retention kéo dài hơn Kafka replay window |
 
 Catalog table là system table, không có prefix `sre_` và không có `owner_id`,
 `owner_type`, `workspace_id` hay `zone_id`. SRE actor chỉ là audit provenance như
@@ -97,7 +97,7 @@ thực thi thay đổi resource. Observed state là snapshot riêng, không thay
 | Aggregate | States | Invariant |
 | --- | --- | --- |
 | Instance lifecycle | `PROVISIONING`, `ACTIVE`, `DELETING` | Không có `DELETE_FAILED`; mỗi instance có tối đa một operation non-terminal |
-| Operation status | `ACCEPTED`, `DISPATCHING`, `RUNNING`, `RETRYING`, `SUCCEEDED`, `TERMINAL_FAILED` | `attempt` chỉ thuộc command delivery/correlation; không là external side-effect fence |
+| Operation status | `ACCEPTED`, `RETRYING`, `SUCCEEDED`, `TERMINAL_FAILED` | `DISPATCHING`/`RUNNING` chỉ còn để đọc dữ liệu cũ; Kafka ACK không phải operation transition |
 | Observed state | `UNKNOWN`, `PROGRESSING`, `READY`, `DEGRADED` | Không dùng cho authorization, billing hoặc terminal lifecycle decision độc lập |
 
 ```mermaid
@@ -105,7 +105,7 @@ stateDiagram-v2
     [*] --> PROVISIONING: CREATE desired state + outbox committed
     PROVISIONING --> ACTIVE: CREATE result SUCCEEDED / pending revision promoted
     PROVISIONING --> PROVISIONING: CREATE retry or terminal failure
-    ACTIVE --> ACTIVE: UPDATE desired state / old active revision remains
+    ACTIVE --> ACTIVE: RESIZE desired state / old active revision remains
     ACTIVE --> DELETING: DELETE desired state + outbox committed
     DELETING --> [*]: DELETE result confirms entire graph gone
     DELETING --> DELETING: retry or terminal failure
@@ -114,19 +114,19 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> ACCEPTED
-    ACCEPTED --> DISPATCHING: JO admits durable outbox command
-    DISPATCHING --> RUNNING: Kafka ACK persisted and dispatch status projected
-    RUNNING --> SUCCEEDED: current fenced result settles
-    RUNNING --> RETRYING: retryable result with attempt remaining
-    RETRYING --> DISPATCHING: due outbox command is durably published
-    RUNNING --> TERMINAL_FAILED: terminal result or retry budget exhausted
+    ACCEPTED --> SUCCEEDED: current fenced result settles
+    ACCEPTED --> RETRYING: retryable result with attempt remaining
+    RETRYING --> SUCCEEDED: current fenced result settles
+    ACCEPTED --> TERMINAL_FAILED: terminal result or retry budget exhausted
+    RETRYING --> TERMINAL_FAILED: terminal result or retry budget exhausted
 ```
 
-Create terminal failure giữ instance `PROVISIONING`. Update terminal failure clear
+Create terminal failure giữ instance `PROVISIONING`. Resize terminal failure clear
 pending revision, giữ active revision cũ và lưu target revision làm evidence. Delete
 terminal failure giữ instance `DELETING`; không rollback mù về `ACTIVE`. Manual retry
-tạo operation/generation mới, không sửa operation terminal cũ. Automatic retry giữ
-operation/generation/revision cũ, chỉ tạo command event mới và tăng attempt.
+reuse operation/generation/event/exact ciphertext và tăng `delivery_epoch`; không tạo
+operation/generation mới. Automatic delivery retry giữ operation/generation/revision
+cũ, chỉ tăng outer attempt.
 
 ## 4. Authoritative topology và durable completion path
 
@@ -160,7 +160,7 @@ redelivers an idempotent command.
 Managed Service V1 has no NATS subject, no Redis Pub/Sub runtime envelope and no
 `runtime:<user_id>` channel. Terminal customer lifecycle is not inferred from
 Kubernetes API ACK, pod RAM, OTel, Victoria, NATS or Centrifugo; it is settled only by
-the current durable result/inbox transaction.
+the current durable outbox/object/operation result transaction.
 
 ## 5. Admin catalog lifecycle
 
@@ -256,10 +256,13 @@ bounded safe observed output and sanitized operation errors, but never selects o
 serializes protected command bytes, canonical input, input hash, desired-spec hash or create
 intent hash. Responses are `private, no-store` and use bounded opaque keyset cursors.
 
-Rename display-name workflows exist as independent internal personal/tenant slices and
-use optimistic `metadata_version`; they never change code, generation, revision heads
-or outbox. Their public PATCH routes remain unregistered together with create/update/
-delete/retry until the protected command path and P07 settlement gate are complete.
+Resize, rename, delete and retry workflows exist as independent personal/tenant slices;
+there is no generic configuration or runtime-metadata patch. Rename uses optimistic
+`metadata_version` and never changes code, generation, revision heads or outbox. Customer
+cannot mutate protected labels/annotations. Instance detail returns the derived
+namespace, service names and stable pod selectors for customer-authored NetworkPolicy.
+All public mutation routes remain unregistered until the protected command path and P07
+settlement gate are complete.
 
 ## 6. Customer create path
 
@@ -283,7 +286,7 @@ sequenceDiagram
     DB-->>JO: logical WAL outbox record
     JO->>K: command key instance_id, acks=all
     K-->>JO: durable ACK
-    JO->>CP: scoped dispatch status projection
+    JO->>DB: fenced UPDATE outbox status PROCESSING
     K-->>DP: exact Zone command
     DP->>DP: validate public transport + HPKE-open full command + fence in RAM
     DP->>KS: deterministic graph render/apply/readiness
@@ -312,25 +315,27 @@ Failure semantics:
 * Crash before commit: nothing is accepted or dispatched.
 * Crash after commit before JO reads WAL: WAL replay dispatches the durable outbox.
 * Crash after Kafka ACK before LSN: duplicate exact command is safe at DP fence.
-* Kafka/JO unavailable: desired state remains `ACCEPTED`/`DISPATCHING`; no CP direct
+* Kafka/JO unavailable: desired state remains `ACCEPTED`; no CP direct
   producer fallback exists.
 * DP timeout/Zone outage: result/reconcile/retry process owns recovery; CP does not
   attempt Kubernetes execution.
 
 ## 7. Customer update and delete paths
 
-### 7.1 Update
+### 7.1 Resize
 
-Update requires expected active generation. It creates a new immutable
-`InstanceRevision`, target generation and UPDATE operation/outbox in one CTE. Existing
-active revision remains serving until the matching current result succeeds. A same
-target desired hash returns the non-terminal operation; a different target while one is
-running returns conflict. Rename changes only display `name`, creates no Kubernetes
-operation and never changes `code`.
+Resize requires expected active generation. It creates a new immutable
+`InstanceRevision`, target generation and RESIZE operation/outbox in one CTE. Existing
+active revision remains serving until the matching current result succeeds. Only fields
+declared by the published SRE resize capability are accepted; arbitrary configuration,
+template, component graph or Kubernetes spec patches are rejected. A same target desired
+hash returns the non-terminal operation; a different target while one is active returns
+conflict.
 
-Result success promotes exactly the pending revision. Terminal update failure clears
+Result success promotes exactly the pending revision. Terminal resize failure clears
 only the pending head. Automatic retry uses the same operation/generation/revision;
-manual retry starts a new operation/generation with an explicit current target.
+manual retry reuses operation/generation/event/exact ciphertext and increments the outer
+`delivery_epoch` so direct result fencing cannot collide with the previous attempt cycle.
 
 ### 7.2 Delete
 
@@ -399,7 +404,9 @@ DP validates outer public protection metadata and Zone/topic binding, HPKE-opens
 payload, then validates inner Protobuf, command/result route, schema version, command event,
 revision/bundle/component/input/desired hashes, parameter-value digest, size and fence
 `instance_id + operation_id + generation` before Kubernetes side effect. Outer `attempt`
-does not form a new external idempotency key and is not duplicated inside the protected command.
+and `delivery_epoch` do not form a new external idempotency key and are not duplicated
+inside the protected command. Automatic retry changes only attempt; manual retry increments
+only delivery epoch while preserving the exact ciphertext.
 
 The only supported YAML AST tags are exact typed `!aurora/param <name>` and
 `!aurora/component <id>`. There is no text interpolation, loop, include or function.
@@ -431,18 +438,18 @@ command event, all fences/hashes, outcome taxonomy, bounded sanitized message an
 SRE-declared-safe observed output. It must not include raw parameter, rendered YAML,
 Secret, token or provider payload.
 
-Controlplane result settlement is one CTE/transaction:
+JO result settlement is one Controlplane PostgreSQL CTE/transaction:
 
 ```text
-insert unique result inbox
-  → lock scoped instance/operation
-  → verify source event + Zone + operation + generation + attempt + revision + hashes
+lock scoped outbox + instance + operation
+  → verify source event + Zone + operation + generation + delivery epoch + attempt + revision + hashes
   → write bounded observed snapshot and monotonic version
-  → finalise current operation
+  → update outbox and object/operation lifecycle together
 ```
 
-Only current fence may change lifecycle. Duplicate result converges through inbox unique
-keys. A stale attempt/generation/source event is not a terminal failure and cannot
+Only current fence may change lifecycle. Duplicate result converges through the
+outbox status/current-operation predicates; no result inbox or second result SoT is
+created. A stale attempt/generation/source event is not a terminal failure and cannot
 mutate desired/observed state. Malformed result is quarantine/DLQ data, not stale data.
 
 Retry budget is exactly five deliveries, outer attempts `0..4`. Generic Dataplane job runtime
@@ -451,8 +458,9 @@ ciphertext with `attempt+1`, then settles the original Kafka record. CP/JO do no
 new outbox event or reconstruct a command from hidden plaintext. Attempt 4 retryable failure
 becomes terminal.
 
-After durable Kafka ACK, JO emits one `PROCESSING` timeline event. After CP transaction
-settles terminal state, JO emits `SUCCESS` or `FAILED`. All events use
+After durable Kafka ACK, JO updates the outbox and may emit one `PROCESSING` timeline
+event. After the same PostgreSQL transaction settles terminal state, JO emits
+`SUCCESS` or `FAILED`. All events use
 `notification_id = UUIDv5(operation_id)`, preserve original creation timestamp and
 update the same Scylla row with monotonic `status_version`; attempt/status never creates
 another customer timeline item. Notification/Redis stream failure is observable and
@@ -485,7 +493,7 @@ never carries raw ciphertext, plaintext command, template or parameter data.
 ## 12. Security, encryption and observability
 
 `zone_id` is trusted routing and protection-binding context. Hierarchy, not the Managed
-Service aggregate, owns the versioned Zone public-key lifecycle. The create/update CTE
+Service aggregate, owns the versioned Zone public-key lifecycle. The create/resize CTE
 must prove the workspace is in that Zone in the same transaction that writes desired
 state; the client cannot submit or override a Zone. CP and JO never receive Zone private
 material.

@@ -46,7 +46,8 @@ message JobCommandV1 {
   string traceparent = 14;
   string tracestate = 15;
   PayloadEncodingV1 payload_encoding = 16;
-  reserved 17 to 31;
+  uint64 delivery_epoch = 17;
+  reserved 18 to 31;
 }
 
 // Dataplane cold-start gửi query durable; JO trả full aggregate vào metadata

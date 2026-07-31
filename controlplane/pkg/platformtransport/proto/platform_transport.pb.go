@@ -186,6 +186,7 @@ type JobCommandV1 struct {
 	Traceparent     string            `protobuf:"bytes,14,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	Tracestate      string            `protobuf:"bytes,15,opt,name=tracestate,proto3" json:"tracestate,omitempty"`
 	PayloadEncoding PayloadEncodingV1 `protobuf:"varint,16,opt,name=payload_encoding,json=payloadEncoding,proto3,enum=aurora.transport.v1.PayloadEncodingV1" json:"payload_encoding,omitempty"`
+	DeliveryEpoch   uint64            `protobuf:"varint,17,opt,name=delivery_epoch,json=deliveryEpoch,proto3" json:"delivery_epoch,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -330,6 +331,13 @@ func (x *JobCommandV1) GetPayloadEncoding() PayloadEncodingV1 {
 		return x.PayloadEncoding
 	}
 	return PayloadEncodingV1_PAYLOAD_ENCODING_UNSPECIFIED
+}
+
+func (x *JobCommandV1) GetDeliveryEpoch() uint64 {
+	if x != nil {
+		return x.DeliveryEpoch
+	}
+	return 0
 }
 
 // Dataplane cold-start gửi query durable; JO trả full aggregate vào metadata
@@ -793,7 +801,7 @@ const file_platform_transport_proto_rawDesc = "" +
 	"\n" +
 	"ciphertext\x18\x06 \x01(\fR\n" +
 	"ciphertext\x12%\n" +
-	"\x0eplaintext_size\x18\a \x01(\rR\rplaintextSizeJ\x04\b\b\x10\x10\"\xb3\x05\n" +
+	"\x0eplaintext_size\x18\a \x01(\rR\rplaintextSizeJ\x04\b\b\x10\x10\"\xda\x05\n" +
 	"\fJobCommandV1\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\fR\x05jobId\x12\x1f\n" +
 	"\vjob_version\x18\x02 \x01(\rR\n" +
@@ -815,9 +823,10 @@ const file_platform_transport_proto_rawDesc = "" +
 	"\n" +
 	"tracestate\x18\x0f \x01(\tR\n" +
 	"tracestate\x12Q\n" +
-	"\x10payload_encoding\x18\x10 \x01(\x0e2&.aurora.transport.v1.PayloadEncodingV1R\x0fpayloadEncodingB\x0f\n" +
+	"\x10payload_encoding\x18\x10 \x01(\x0e2&.aurora.transport.v1.PayloadEncodingV1R\x0fpayloadEncoding\x12%\n" +
+	"\x0edelivery_epoch\x18\x11 \x01(\x04R\rdeliveryEpochB\x0f\n" +
 	"\r_idle_secondsB\x17\n" +
-	"\x15_reconcile_generationJ\x04\b\x11\x10 \"\xa5\x01\n" +
+	"\x15_reconcile_generationJ\x04\b\x12\x10 \"\xa5\x01\n" +
 	"\x13ZoneMetadataQueryV1\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\fR\trequestId\x12\x17\n" +

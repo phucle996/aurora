@@ -72,6 +72,25 @@ type PersonalInstanceDetail struct {
 	LatestOperationTry    *int16
 	LatestOperationAt     *time.Time
 	LatestOperationDoneAt *time.Time
+	NetworkContract       PersonalNetworkContract
+}
+
+type PersonalNetworkContract struct {
+	Namespace  string
+	Components []PersonalNetworkComponent
+}
+
+type PersonalNetworkComponent struct {
+	ComponentCode string
+	ServiceName   string
+	PodSelector   map[string]string
+	Ports         []PersonalNetworkPort
+}
+
+type PersonalNetworkPort struct {
+	Name     string
+	Port     int32
+	Protocol string
 }
 
 type ListPersonalInstanceOperations struct {
@@ -89,6 +108,7 @@ type PersonalInstanceOperationListItem struct {
 	State               string
 	Generation          int64
 	Attempt             int16
+	DeliveryEpoch       int64
 	TargetRevisionID    uuid.UUID
 	BlueprintRevisionID uuid.UUID
 	RetryOfOperationID  *uuid.UUID
@@ -120,6 +140,7 @@ type PersonalInstanceOperationDetail struct {
 	State               string
 	Generation          int64
 	Attempt             int16
+	DeliveryEpoch       int64
 	TargetRevisionID    uuid.UUID
 	BlueprintRevisionID uuid.UUID
 	RetryOfOperationID  *uuid.UUID
@@ -146,4 +167,114 @@ type RenamePersonalInstanceResult struct {
 	Name            string
 	MetadataVersion int64
 	UpdatedAt       time.Time
+}
+
+type CreatePersonalInstance struct {
+	UserID              uuid.UUID
+	WorkspaceID         uuid.UUID
+	ZoneID              uuid.UUID
+	Code                string
+	Name                string
+	BlueprintRevisionID uuid.UUID
+	InputSchemaSHA256   []byte
+	Parameters          []byte
+	InputSHA256         []byte
+	DesiredSpecSHA256   []byte
+	CreateIntentSHA256  []byte
+	TraceID             []byte
+	Traceparent         string
+	Tracestate          string
+	InstanceID          uuid.UUID
+	InstanceRevisionID  uuid.UUID
+	OperationID         uuid.UUID
+	CommandEventID      uuid.UUID
+	IssuedAt            time.Time
+}
+
+type CreatePersonalInstanceResult struct {
+	ID                uuid.UUID
+	Code              string
+	Name              string
+	DesiredState      string
+	Generation        int64
+	RevisionSequence  int64
+	PendingRevisionID *uuid.UUID
+	OperationID       uuid.UUID
+	OperationKind     string
+	OperationState    string
+	DeliveryEpoch     int64
+	Deduplicated      bool
+}
+
+type ResizePersonalInstance struct {
+	UserID             uuid.UUID
+	WorkspaceID        uuid.UUID
+	ZoneID             uuid.UUID
+	Code               string
+	ExpectedGeneration int64
+	Parameters         []byte
+	InputSHA256        []byte
+	DesiredSpecSHA256  []byte
+	TraceID            []byte
+	Traceparent        string
+	Tracestate         string
+	InstanceRevisionID uuid.UUID
+	OperationID        uuid.UUID
+	CommandEventID     uuid.UUID
+	IssuedAt           time.Time
+}
+
+type ResizePersonalInstanceResult struct {
+	ID                uuid.UUID
+	Code              string
+	Generation        int64
+	PendingRevisionID *uuid.UUID
+	OperationID       uuid.UUID
+	OperationKind     string
+	OperationState    string
+	DeliveryEpoch     int64
+}
+
+type DeletePersonalInstance struct {
+	UserID             uuid.UUID
+	WorkspaceID        uuid.UUID
+	ZoneID             uuid.UUID
+	Code               string
+	ExpectedGeneration int64
+	OperationID        uuid.UUID
+	CommandEventID     uuid.UUID
+	IssuedAt           time.Time
+	TraceID            []byte
+	Traceparent        string
+	Tracestate         string
+}
+
+type DeletePersonalInstanceResult struct {
+	ID              uuid.UUID
+	Code            string
+	Generation      int64
+	OperationID     uuid.UUID
+	OperationKind   string
+	OperationState  string
+	DeliveryEpoch   int64
+	AlreadyDeleting bool
+}
+
+type RetryPersonalInstance struct {
+	UserID      uuid.UUID
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
+	Code        string
+	OperationID uuid.UUID
+	IssuedAt    time.Time
+}
+
+type RetryPersonalInstanceResult struct {
+	ID            uuid.UUID
+	InstanceID    uuid.UUID
+	Kind          string
+	State         string
+	Generation    int64
+	Attempt       int16
+	DeliveryEpoch int64
 }

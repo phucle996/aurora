@@ -259,38 +259,7 @@ CREATE TABLE IF NOT EXISTS personal_managed_service_operations (
     CONSTRAINT ck_personal_managed_service_operations_retention CHECK (retained_until >= created_at)
 );
 
--- 10. Bảng Result Inbox dành cho Personal
-CREATE TABLE IF NOT EXISTS personal_managed_service_result_inbox (
-    result_event_id UUID PRIMARY KEY,
-    source_command_event_id UUID NOT NULL,
-    operation_id UUID NOT NULL,
-    instance_id UUID NOT NULL,
-    target_revision_id UUID NOT NULL,
-    blueprint_revision_id UUID NOT NULL,
-    zone_id UUID NOT NULL REFERENCES hierarchy.zones(id) ON DELETE RESTRICT,
-    generation BIGINT NOT NULL CHECK (generation > 0),
-    attempt SMALLINT NOT NULL CHECK (attempt BETWEEN 0 AND 4),
-    template_bundle_sha256 BYTEA NOT NULL CHECK (octet_length(template_bundle_sha256) = 32),
-    component_contract_sha256 BYTEA NOT NULL CHECK (octet_length(component_contract_sha256) = 32),
-    input_sha256 BYTEA NOT NULL CHECK (octet_length(input_sha256) = 32),
-    desired_spec_sha256 BYTEA NOT NULL CHECK (octet_length(desired_spec_sha256) = 32),
-    outcome managed_service_result_outcome NOT NULL,
-    error_code TEXT NULL CHECK (error_code IS NULL OR char_length(error_code) <= 128),
-    sanitized_message TEXT NULL CHECK (sanitized_message IS NULL OR char_length(sanitized_message) <= 1024),
-    observed_state managed_service_observed_state NOT NULL,
-    safe_observed_output JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (
-        jsonb_typeof(safe_observed_output) = 'object'
-        AND octet_length(safe_observed_output::text) <= 65536
-    ),
-    observed_state_version BIGINT NOT NULL CHECK (observed_state_version >= 0),
-    completed_at TIMESTAMPTZ NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    retained_until TIMESTAMPTZ NOT NULL,
-    CONSTRAINT ux_personal_managed_service_result_inbox_source UNIQUE (operation_id, attempt, source_command_event_id),
-    CONSTRAINT ck_personal_managed_service_result_inbox_retention CHECK (retained_until >= received_at)
-);
-
--- 11. Bảng Deletion Fences dành cho Personal
+-- 10. Bảng Deletion Fences dành cho Personal
 CREATE TABLE IF NOT EXISTS personal_managed_service_deletion_fences (
     instance_id UUID NOT NULL,
     operation_id UUID NOT NULL,
@@ -387,38 +356,7 @@ CREATE TABLE IF NOT EXISTS tenant_managed_service_operations (
     CONSTRAINT ck_tenant_managed_service_operations_retention CHECK (retained_until >= created_at)
 );
 
--- 15. Bảng Result Inbox dành cho Tenant
-CREATE TABLE IF NOT EXISTS tenant_managed_service_result_inbox (
-    result_event_id UUID PRIMARY KEY,
-    source_command_event_id UUID NOT NULL,
-    operation_id UUID NOT NULL,
-    instance_id UUID NOT NULL,
-    target_revision_id UUID NOT NULL,
-    blueprint_revision_id UUID NOT NULL,
-    zone_id UUID NOT NULL REFERENCES hierarchy.zones(id) ON DELETE RESTRICT,
-    generation BIGINT NOT NULL CHECK (generation > 0),
-    attempt SMALLINT NOT NULL CHECK (attempt BETWEEN 0 AND 4),
-    template_bundle_sha256 BYTEA NOT NULL CHECK (octet_length(template_bundle_sha256) = 32),
-    component_contract_sha256 BYTEA NOT NULL CHECK (octet_length(component_contract_sha256) = 32),
-    input_sha256 BYTEA NOT NULL CHECK (octet_length(input_sha256) = 32),
-    desired_spec_sha256 BYTEA NOT NULL CHECK (octet_length(desired_spec_sha256) = 32),
-    outcome managed_service_result_outcome NOT NULL,
-    error_code TEXT NULL CHECK (error_code IS NULL OR char_length(error_code) <= 128),
-    sanitized_message TEXT NULL CHECK (sanitized_message IS NULL OR char_length(sanitized_message) <= 1024),
-    observed_state managed_service_observed_state NOT NULL,
-    safe_observed_output JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (
-        jsonb_typeof(safe_observed_output) = 'object'
-        AND octet_length(safe_observed_output::text) <= 65536
-    ),
-    observed_state_version BIGINT NOT NULL CHECK (observed_state_version >= 0),
-    completed_at TIMESTAMPTZ NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    retained_until TIMESTAMPTZ NOT NULL,
-    CONSTRAINT ux_tenant_managed_service_result_inbox_source UNIQUE (operation_id, attempt, source_command_event_id),
-    CONSTRAINT ck_tenant_managed_service_result_inbox_retention CHECK (retained_until >= received_at)
-);
-
--- 16. Bảng Deletion Fences dành cho Tenant
+-- 14. Bảng Deletion Fences dành cho Tenant
 CREATE TABLE IF NOT EXISTS tenant_managed_service_deletion_fences (
     instance_id UUID NOT NULL,
     operation_id UUID NOT NULL,

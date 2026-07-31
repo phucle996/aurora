@@ -68,9 +68,3 @@ BEGIN
     );
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
-
-DO $$
-BEGIN
-    CREATE TYPE managed_service_result_outcome AS ENUM ('succeeded', 'retryable_failure', 'terminal_failure');
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;

@@ -74,6 +74,25 @@ type TenantInstanceDetail struct {
 	LatestOperationTry    *int16
 	LatestOperationAt     *time.Time
 	LatestOperationDoneAt *time.Time
+	NetworkContract       TenantNetworkContract
+}
+
+type TenantNetworkContract struct {
+	Namespace  string
+	Components []TenantNetworkComponent
+}
+
+type TenantNetworkComponent struct {
+	ComponentCode string
+	ServiceName   string
+	PodSelector   map[string]string
+	Ports         []TenantNetworkPort
+}
+
+type TenantNetworkPort struct {
+	Name     string
+	Port     int32
+	Protocol string
 }
 
 type ListTenantInstanceOperations struct {
@@ -92,6 +111,7 @@ type TenantInstanceOperationListItem struct {
 	State               string
 	Generation          int64
 	Attempt             int16
+	DeliveryEpoch       int64
 	TargetRevisionID    uuid.UUID
 	BlueprintRevisionID uuid.UUID
 	RetryOfOperationID  *uuid.UUID
@@ -124,6 +144,7 @@ type TenantInstanceOperationDetail struct {
 	State               string
 	Generation          int64
 	Attempt             int16
+	DeliveryEpoch       int64
 	TargetRevisionID    uuid.UUID
 	BlueprintRevisionID uuid.UUID
 	RetryOfOperationID  *uuid.UUID
@@ -151,4 +172,118 @@ type RenameTenantInstanceResult struct {
 	Name            string
 	MetadataVersion int64
 	UpdatedAt       time.Time
+}
+
+type CreateTenantInstance struct {
+	ActorUserID         uuid.UUID
+	TenantID            uuid.UUID
+	WorkspaceID         uuid.UUID
+	ZoneID              uuid.UUID
+	Code                string
+	Name                string
+	BlueprintRevisionID uuid.UUID
+	InputSchemaSHA256   []byte
+	Parameters          []byte
+	InputSHA256         []byte
+	DesiredSpecSHA256   []byte
+	CreateIntentSHA256  []byte
+	TraceID             []byte
+	Traceparent         string
+	Tracestate          string
+	InstanceID          uuid.UUID
+	InstanceRevisionID  uuid.UUID
+	OperationID         uuid.UUID
+	CommandEventID      uuid.UUID
+	IssuedAt            time.Time
+}
+
+type CreateTenantInstanceResult struct {
+	ID                uuid.UUID
+	Code              string
+	Name              string
+	DesiredState      string
+	Generation        int64
+	RevisionSequence  int64
+	PendingRevisionID *uuid.UUID
+	OperationID       uuid.UUID
+	OperationKind     string
+	OperationState    string
+	DeliveryEpoch     int64
+	Deduplicated      bool
+}
+
+type ResizeTenantInstance struct {
+	ActorUserID        uuid.UUID
+	TenantID           uuid.UUID
+	WorkspaceID        uuid.UUID
+	ZoneID             uuid.UUID
+	Code               string
+	ExpectedGeneration int64
+	Parameters         []byte
+	InputSHA256        []byte
+	DesiredSpecSHA256  []byte
+	TraceID            []byte
+	Traceparent        string
+	Tracestate         string
+	InstanceRevisionID uuid.UUID
+	OperationID        uuid.UUID
+	CommandEventID     uuid.UUID
+	IssuedAt           time.Time
+}
+
+type ResizeTenantInstanceResult struct {
+	ID                uuid.UUID
+	Code              string
+	Generation        int64
+	PendingRevisionID *uuid.UUID
+	OperationID       uuid.UUID
+	OperationKind     string
+	OperationState    string
+	DeliveryEpoch     int64
+}
+
+type DeleteTenantInstance struct {
+	ActorUserID        uuid.UUID
+	TenantID           uuid.UUID
+	WorkspaceID        uuid.UUID
+	ZoneID             uuid.UUID
+	Code               string
+	ExpectedGeneration int64
+	OperationID        uuid.UUID
+	CommandEventID     uuid.UUID
+	IssuedAt           time.Time
+	TraceID            []byte
+	Traceparent        string
+	Tracestate         string
+}
+
+type DeleteTenantInstanceResult struct {
+	ID              uuid.UUID
+	Code            string
+	Generation      int64
+	OperationID     uuid.UUID
+	OperationKind   string
+	OperationState  string
+	DeliveryEpoch   int64
+	AlreadyDeleting bool
+}
+
+type RetryTenantInstance struct {
+	ActorUserID uuid.UUID
+	TenantID    uuid.UUID
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
+	Code        string
+	OperationID uuid.UUID
+	IssuedAt    time.Time
+}
+
+type RetryTenantInstanceResult struct {
+	ID            uuid.UUID
+	InstanceID    uuid.UUID
+	Kind          string
+	State         string
+	Generation    int64
+	Attempt       int16
+	DeliveryEpoch int64
 }

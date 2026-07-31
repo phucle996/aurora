@@ -40,7 +40,7 @@ evidence. Nếu một task làm lộ quyết định business/topology chưa có
 | Workflow isolation | Mỗi workflow có một handler method → một service method → một repository method. Personal và tenant tách vertical slice; duplicate code được chấp nhận, helper/generic mutator không được dùng. |
 | Persistence | Catalog là system table; customer aggregate personal và tenant physical table riêng. Desired state và module outbox commit trong cùng PostgreSQL transaction/CTE. |
 | Idempotency | Create dedupe bằng `(workspace_id, code) + canonical create intent`; DP external side-effect fence là `instance_id + operation_id + generation`, không phải HTTP `Idempotency-Key` hay `attempt`. |
-| Revision | Published BlueprintRevision và InstanceRevision immutable. Update tạo revision/generation mới; delivery retry giữ operation/generation/revision/event ID và exact protected command, chỉ đổi outer attempt. |
+| Revision | Published BlueprintRevision và InstanceRevision immutable. Chỉ resize tạo revision/generation mới; delivery retry giữ operation/generation/revision/event ID và exact protected command, manual retry tăng `delivery_epoch` nhưng không đổi ciphertext. |
 | Secret | CP seal toàn bộ serialized command thành `ProtectedPayloadV1`; InstanceRevision/outbox chỉ giữ exact ciphertext + key ID/digest. DP mở trong RAM trước domain decode; không có nested parameter envelope hay plaintext trong log/DB/Redis/NATS/Zone KV/result. |
 | Kubernetes | Customer chỉ namespaced object/CRD. DP force namespace/protected metadata, dùng SSA field manager cố định, không adopt object foreign và không blind rollback partial apply. |
 | Completion | Kubernetes apply ACK không phải success. Success chỉ khi static component readiness đạt; delete chỉ khi graph đã gone/finalizer hoàn tất. |
@@ -132,8 +132,8 @@ contract review xác nhận không còn diverge với `STAGING.md`.
 * **Owner:** Controlplane architecture owner.
 * **Phạm vi:** tạo `god_view/managedservice/managed_service_lifecycle_god_view.md`.
 * **Nội dung bắt buộc:** admin catalog, personal/tenant desired state, CTE/outbox,
-  logical WAL/CDC, generic Kafka topics/inner protobuf, DP Kubernetes graph, result
-  inbox/reconcile, Notification timeline và Zone Victoria read path.
+  logical WAL/CDC, generic Kafka topics/inner protobuf, DP Kubernetes graph, direct
+  result settlement/reconcile, Notification timeline và Zone Victoria read path.
 * **Acceptance:** một request create được trace được từ trusted Envoy context tới
   terminal durable state; sequence nêu rõ crash windows, retry `0..4`, fence,
   deletion hard-delete và public observability không là completion path.
@@ -420,12 +420,13 @@ unsupported/stale scope không thể submit desired-state mutation.
 ## 9. P04 — Customer desired state, immutable revisions và transactional outbox
 
 **Status:** IN PROGRESS — MS-040/MS-041 read routes đã ship; MS-044/MS-045 đã có
-vertical slice personal/tenant độc lập nhưng rename route vẫn dormant. MS-042/043/046–
-053 chưa ship. Platform protected-payload codec, `payload_key_id`, every-replica loaded-key
-readiness và retirement fence đã ship; create/update vẫn không được mở admission trước
-khi P04 CTE lưu exact protected command vào revision + outbox trong cùng transaction.
+vertical slice personal/tenant độc lập nhưng mutation route vẫn dormant. P04 không có
+generic configuration update hoặc arbitrary runtime-metadata patch. Runtime mutation
+chỉ gồm create/resize/delete/retry; instance detail trả trực tiếp network contract
+(namespace, service name và pod selector). Platform protected-payload codec,
+`payload_key_id`, every-replica loaded-key readiness và retirement fence đã ship.
 
-**Mục tiêu:** accept create/update/delete/retry as durable desired state only. No task
+**Mục tiêu:** accept create/resize/delete/retry as durable desired state only. No task
 in this phase executes Kubernetes or assumes a Kafka result.
 
 **Dependency:** P01 trusted Zone-binding + migration baseline, P03 catalog/form
@@ -506,23 +507,22 @@ workflow-local entity after canonicalizing; service/repository do not validate i
 * **Acceptance:** tenant CTE is separate; code, workspace binding and instance identity
   remain immutable; no generic rename function shared with personal path.
 
-### MS-046 — Personal configuration update workflow
+### MS-046 — Personal resize desired-state workflow
 
-* **Route:** `PATCH /api/v1/personal/managed-services/instances/:code/configuration`.
-* **Handler:** validates pinned revision input contract, canonicalizes desired hash and
-  keeps the trusted Zone binding; it never pre-fills old raw input from CP.
-* **Repository CTE:** lock instance, reject non-terminal operation/invalid lifecycle,
-  no-op duplicate target hash, create pending immutable InstanceRevision + UPDATE
-  operation/generation/outbox atomically while retaining active revision.
-* **Acceptance:** update same target returns current operation; different target during
-  active operation conflicts; terminal failure later can clear pending but not alter
-  active revision.
+* **Route:** `POST /api/v1/personal/managed-services/instances/:code/resize`.
+* **Handler:** validates only SRE-published resize capability fields, scalar values,
+  expected generation and trusted Zone context. It never accepts template/spec patches.
+* **Repository CTE:** lock instance, reject deleting/stale generation/non-terminal
+  operation, create pending immutable resize revision + RESIZE operation/generation/
+  outbox atomically while retaining active revision.
+* **Acceptance:** arbitrary configuration fields are rejected; same-generation races
+  produce one winner; terminal failure never mutates the active revision.
 
-### MS-047 — Tenant configuration update workflow
+### MS-047 — Tenant resize desired-state workflow
 
-* **Route:** tenant mirror of MS-046.
+* **Route:** `POST /api/v1/tenant/managed-services/instances/:code/resize`.
 * **Acceptance:** separate tenant CTE/repo function, correct tenant snapshot and Zone
-  key selection; no cross-owner revision lookup.
+  key selection; no cross-owner revision lookup and no generic configuration patch.
 
 ### MS-048 — Personal delete desired-state workflow
 
@@ -546,6 +546,8 @@ workflow-local entity after canonicalizing; service/repository do not validate i
 * **Scope:** only allowed terminal operation/lifecycle predicate. It re-drives the same
   operation/generation/event ID and exact protected command retained by the historical
   target revision; it does not decrypt values, create a revision, or mint new ciphertext.
+  `delivery_epoch` increments so direct result fencing cannot collide with the earlier
+  outer attempt cycle.
 * **Acceptance:** retry target cannot be swapped by client; concurrent retry is atomic,
   outer delivery budget restarts explicitly, and delete retry remains `DELETING` without
   resurrecting the instance.
@@ -559,24 +561,36 @@ workflow-local entity after canonicalizing; service/repository do not validate i
 ### MS-052 — P04 transactional and negative integration suite
 
 * **Owner:** Controlplane test owner.
-* **Scope:** create/update/delete/retry sequences for both branches, rollback before/
+* **Scope:** create/resize/delete/retry sequences for both branches, rollback before/
   after transaction, code reuse only after hard delete, Zone-bound full command protection,
   version/default pin race, and no-JO/no-DP outage.
 * **Exit evidence:** `go test ./internal/managedservice/...` from Controlplane module
   plus PostgreSQL integration fixtures; no transaction leaves aggregate without outbox
   or outbox without aggregate.
 
-### MS-053 — Personal/tenant dispatch-status internal workflows
+### MS-053 — Retired dispatch-status projection
 
-* **Owner:** two separate `personal_instance` and `tenant_instance` internal application
-  slices, consumed only by JO after Kafka ACK.
-* **Scope:** each service/repository function applies an already validated dispatch
-  entity and advances exact current operation from `ACCEPTED`/`DISPATCHING` to
-  `RUNNING`, keyed by source event/operation/generation. No browser route and no
-  generic owner-type switch are introduced.
-* **Acceptance:** duplicate JO callback is no-op; stale source event cannot mark newer
-  operation running; this transport-progress write never promotes revision or settles
-  terminal lifecycle. P05 cannot enable MS-062 without both branch tests.
+The former personal/tenant dispatch-status service/repository slices were removed.
+After Kafka `acks=all`, JO writes only
+`managed_service_outbox_records.status='PROCESSING'` through a restricted database
+connection. No operation state is advanced for transport progress; the result
+settlement transaction remains the only writer that changes lifecycle state.
+
+### MS-054 — Instance detail network contract
+
+* **Owner:** personal/tenant read vertical slices.
+* **Scope:** extend both instance detail projections with the derived workspace
+  namespace, component service names, ports when declared by the SRE component
+  contract and stable protected pod selectors. The response contains no raw YAML,
+  customer parameters, ciphertext or arbitrary annotation map.
+* **Metadata boundary:** Dataplane owns protected `aurora.io/instance` and
+  `aurora.io/component` labels. Customer cannot mutate them through Managed Service
+  P04. NetworkPolicy is customer-authored in the already authorized namespace and
+  uses the selector returned by instance detail; `service_name` alone is not a pod
+  selector.
+* **Acceptance:** personal/tenant namespace formula is independent, deterministic and
+  collision-free; a guessed foreign instance never discloses its selector; detail
+  remains `private, no-store`; no `runtime-metadata` route is registered.
 
 ## 10. P05 — Job Orchestrator CDC, Kafka dispatch, retry timer và DLQ
 
@@ -614,16 +628,15 @@ and no Managed Service code uses NATS or a direct CP Kafka producer.
 * **Owner:** JO changefeed owner.
 * **Scope:** idempotent Kafka producer with `acks=all`, bounded retry and zstd; advance
   replication LSN/checkpoint only after durable broker ACK.
-* **Dispatch projection:** after ACK, invoke the scoped CP dispatch-status CTE to advance
-  the current operation `ACCEPTED/DISPATCHING → RUNNING` only when source event/fence
-  still matches. This is transport progress, not JO deciding a terminal business
-  outcome; duplicate projection is a no-op.
-* **Timeline dependency:** reserve operation correlation at dispatch. Actual
-  `PROCESSING` XADD is implemented/enabled together with P07 `MS-084`, so P05 does not
-  introduce a partial notification shape; when enabled it occurs only after durable
-  command ACK and XADD failure never undoes the command.
+* **Outbox processing fence:** after ACK, update only the scoped
+  `managed_service_outbox_records` row to `PROCESSING` through JO's restricted
+  outbox-writer connection. There is no operation dispatch-status projection and
+  no lifecycle mutation at this point; duplicate WAL delivery is a no-op.
+* **Timeline dependency:** reserve operation correlation at dispatch. The
+  `PROCESSING` XADD is implemented/enabled together with P07 `MS-084`; XADD failure
+  never undoes the command or the outbox status.
 * **Acceptance:** crash injection proves ACK-before-LSN yields safe duplicate and
-  broker failure does not advance LSN or falsely mark operation running/successful.
+  broker failure does not advance LSN or falsely mark an operation terminal.
 
 ### MS-063 — Exact-ciphertext delivery retry
 
@@ -672,7 +685,7 @@ apply/reconcile managed graph and emit a terminal result without leaking plainte
 **Dependency:** P05 enabled route/command dispatch, P01 Zone binding, P02 immutable
 blueprint/component contract.
 
-**Exit gate:** sandbox Zone can safely execute duplicate create/update/delete command,
+**Exit gate:** sandbox Zone can safely execute duplicate create/resize/delete command,
 reject foreign/cross-Zone input and return a terminal result. No browser runtime path
 is introduced.
 
@@ -776,15 +789,15 @@ is introduced.
   Kafka redelivery, Zone mismatch, slow API and graceful shutdown all
   preserve desired-state safety. Run Rust fmt/clippy/test before phase exit.
 
-## 12. P07 — Result inbox, lifecycle settlement, reconciliation và timeline
+## 12. P07 — Direct result settlement, reconciliation và timeline
 
 **Mục tiêu:** convert DP terminal evidence into durable CP lifecycle without allowing
 JO, Notification, telemetry or stale result to decide business state independently.
 
 **Dependency:** P05 result route/DLQ and P06 terminal result producer.
 
-**Exit gate:** create/update/delete can reach durable terminal state through result
-inbox; replay, stale result, missing result and reconciliation preserve ordering and
+**Exit gate:** create/resize/delete can reach durable terminal state through the
+direct outbox/object/operation transaction; replay, stale result, missing result and reconciliation preserve ordering and
 do not duplicate external side effect.
 
 ### MS-080 — JO Managed Service result validation and routing
@@ -799,14 +812,15 @@ do not duplicate external side effect.
 * **Acceptance:** duplicate result and out-of-order result test; source command event
   cannot settle a different instance/operation/revision.
 
-### MS-081 — Personal result-inbox settlement vertical slice
+### MS-081 — Personal direct-settlement vertical slice
 
 * **Owner:** Controlplane `personal_instance` result application slice.
 * **Entry:** internal JO-to-Controlplane application boundary, not a browser handler;
   it maps already validated transport entity to one service/repository function.
-* **Repository CTE:** insert unique result event; lock instance/operation; verify source
-  event, Zone, operation/generation/attempt/revision and all hashes; update bounded
-  observed version; then success/terminal/retry transition atomically.
+* **Repository CTE:** lock the scoped outbox, instance and operation; verify source
+  event, Zone, operation/generation/attempt/delivery epoch/revision and all hashes;
+  update bounded observed version and then outbox/object/operation success, terminal
+  or retry transition atomically. No result inbox is created.
 * **Lifecycle:** success promotes pending revision; update terminal failure clears
   pending while retaining active; create terminal failure remains `PROVISIONING`;
   delete terminal failure remains `DELETING`; retry creates delayed outbox only when
@@ -814,7 +828,7 @@ do not duplicate external side effect.
 * **Acceptance:** all result paths preserve `read_at`/timeline identity behavior and
   cannot write raw result payload/provider error to PostgreSQL.
 
-### MS-082 — Tenant result-inbox settlement vertical slice
+### MS-082 — Tenant direct-settlement vertical slice
 
 * **Owner:** Controlplane `tenant_instance` result application slice.
 * **Scope/acceptance:** independent tenant table/CTE/method, same all-fence logic as
@@ -824,7 +838,7 @@ do not duplicate external side effect.
 
 * **Owner:** Controlplane persistence owner.
 * **Scope:** on valid DELETE success CTE writes deletion fence then hard-deletes
-  instance/revision; operation/result inbox/fence evidence remains until at least
+  instance/revision; operation/outbox/fence evidence remains until at least
   `max(command retention, result retention, DLQ replay retention) + safety margin`.
 * **Acceptance:** old command/result cannot affect a newly reused code because UUID/
   generation/fence differ; retention job cannot remove replay evidence;
@@ -907,9 +921,9 @@ instance through Console without raw YAML/input/Secret or optimistic runtime fic
 
 * **Owner:** Console feature owner.
 * **Scope:** Overview, Configuration, safe Connection and Operations/activity tabs;
-  rename, config update, delete and retry actions only when API exposes permission/
+  rename, resize, delete and retry actions only when API exposes permission/
   lifecycle-compatible action.
-* **Acceptance:** configuration update asks for new input per pinned schema rather than
+* **Acceptance:** resize asks for new input per pinned SRE capability rather than
   prefill ciphertext; delete terminal failure shows `DELETING` + retry delete, never a
   fake rollback to active.
 
@@ -1023,7 +1037,7 @@ conditions before enabling a limited pilot. This phase is not a code-cleanup buc
 inside this phase and cannot change contract.
 
 **Exit gate:** S15–S17 evidence in `STAGING.md` is complete, selected pilot has passed
-create/update/delete/retry/reconcile and there is no unresolved P0/P1 security,
+create/resize/delete/retry/reconcile and there is no unresolved P0/P1 security,
 data-loss or duplicate-side-effect defect.
 
 ### MS-110 — Cross-service contract and compatibility suite
@@ -1040,7 +1054,7 @@ data-loss or duplicate-side-effect defect.
 
 * **Owner:** module E2E owner.
 * **Scope:** two ownership branches each execute catalog discovery → create → command
-  → render/apply → result → detail/timeline → config update → delete → hard-delete
+  → render/apply → result → detail/timeline → resize → delete → hard-delete
   code reuse.
 * **Acceptance:** desired/observed/operation separation is visible at each checkpoint;
   DP has no CP DB access; output connection excludes Secret and browser never sees raw
@@ -1092,7 +1106,7 @@ data-loss or duplicate-side-effect defect.
 ### MS-116 — Rollback and release procedure
 
 * **Owner:** release owner.
-* **Rollback principles:** stop new create/update first; keep JO/DP reconcile for
+* **Rollback principles:** stop new create/resize first; keep JO/DP reconcile for
   existing pinned instances; preserve command/result schema compatibility; do not delete
   pinned revision, instance revision or evidence just to roll back
   code.
@@ -1138,7 +1152,7 @@ data-loss or duplicate-side-effect defect.
 | P04 → P05 | personal/tenant CTE/outbox/dedupe/retry API integration tests pass with JO/DP down. |
 | P05 → P06 | WAL→Kafka command replay/key/ACL/delayed retry/DLQ tests pass; route is no-NATS. |
 | P06 → P07 | DP sandbox proves render/apply/delete result and duplicate/foreign/key failure semantics. |
-| P07 → P08/P09 | result inbox/reconcile/timeline durable truth works for both ownership branches. |
+| P07 → P08/P09 | direct result settlement/reconcile/timeline durable truth works for both ownership branches. |
 | P08/P09 → P10 | UI and diagnostic stream respect scope/privacy; no diagnostic path mutates lifecycle. |
 | P10 → pilot | all failure/security/capacity/rollback evidence reviewed; pilot service and Zone selected. |
 

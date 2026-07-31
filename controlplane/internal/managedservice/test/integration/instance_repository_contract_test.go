@@ -26,8 +26,9 @@ func TestInstanceRepositoriesKeepOwnerBranchesAndProtectedInputIsOpaque(t *testi
 				"personal_workspaces", "personal_managed_service_instances",
 				"personal_managed_service_operations", "workspace.owner_id=$2",
 				"workspace.zone_id=$3", "target.metadata_version=$6",
+				"'resize','accepted'", "delivery_epoch=$2", "protected_command_payload",
 			},
-			forbidden: []string{"tenant_managed_service_", "parameter_envelope", "input_sha256", "desired_spec_sha256", "create_intent_sha256"},
+			forbidden: []string{"tenant_managed_service_", "parameter_envelope", "runtime_metadata", "SET state='running'"},
 		},
 		{
 			file: "tenant_instance_repo.go",
@@ -35,8 +36,9 @@ func TestInstanceRepositoriesKeepOwnerBranchesAndProtectedInputIsOpaque(t *testi
 				"tenant_workspaces", "tenant_managed_service_instances",
 				"tenant_managed_service_operations", "workspace.tenant_id=$2",
 				"workspace.zone_id=$3", "target.metadata_version=$6",
+				"'resize','accepted'", "delivery_epoch=$2", "protected_command_payload",
 			},
-			forbidden: []string{"personal_managed_service_", "parameter_envelope", "input_sha256", "desired_spec_sha256", "create_intent_sha256"},
+			forbidden: []string{"personal_managed_service_", "parameter_envelope", "runtime_metadata", "SET state='running'"},
 		},
 	}
 

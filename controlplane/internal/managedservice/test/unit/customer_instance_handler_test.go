@@ -28,6 +28,7 @@ func TestPersonalInstanceDetailUsesTrustedScopeAndExcludesProtectedInput(t *test
 		Generation: 3, RevisionSequence: 2, ObservedState: "ready", ObservedStateVersion: 7,
 		ObservedOutput: json.RawMessage(`{"endpoint":"db.internal"}`), MetadataVersion: 4,
 		CreatedAt: time.Unix(10, 0).UTC(), UpdatedAt: time.Unix(20, 0).UTC(),
+		NetworkContract: entity.PersonalNetworkContract{Namespace: "aur-ms-p-scope", Components: []entity.PersonalNetworkComponent{{ComponentCode: "primary", ServiceName: "orders-db", PodSelector: map[string]string{"aurora.io/instance": "orders-db", "aurora.io/component": "primary"}, Ports: []entity.PersonalNetworkPort{{Name: "postgres", Port: 5432, Protocol: "TCP"}}}}},
 	}}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -53,6 +54,87 @@ func TestPersonalInstanceDetailUsesTrustedScopeAndExcludesProtectedInput(t *test
 	}
 	if response.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatal("owner-scoped instance response must not enter a shared HTTP cache")
+	}
+	for _, networkField := range []string{"aur-ms-p-scope", "orders-db", "aurora.io/instance", "postgres"} {
+		if !strings.Contains(response.Body.String(), networkField) {
+			t.Fatalf("instance detail omitted network contract field %q", networkField)
+		}
+	}
+}
+
+func TestPersonalCreateCanonicalizesAtHandlerAndBuildsDistinctDesiredHash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &mocks.PersonalInstanceService{CreateResult: &entity.CreatePersonalInstanceResult{
+		ID: customerInstanceID, Code: "orders-db", Name: "Orders database", DesiredState: "provisioning", Generation: 1,
+		OperationID: uuid.MustParse("10000000-0000-7000-8000-000000000042"), OperationKind: "create", OperationState: "accepted",
+	}}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(pkgcontext.CtxUserID, customerUserID)
+		c.Set(pkgcontext.CtxWorkspaceID, customerWorkspaceID)
+		c.Set(pkgcontext.CtxZoneID, customerZoneID)
+		c.Next()
+	})
+	router.POST("/instances", handler.NewPersonalInstanceHandler(service).CreatePersonalInstance)
+
+	response := httptest.NewRecorder()
+	body := bytes.NewBufferString(`{"code":"ORDERS-DB","name":"  Orders database  ","blueprint_revision_id":"10000000-0000-7000-8000-000000000043","input_schema_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"storage":"100Gi","replicas":3}}`)
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/instances", body))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", response.Code, response.Body.String())
+	}
+	if service.CreateCalls != 1 || service.CreateInput.Code != "orders-db" || service.CreateInput.Name != "Orders database" {
+		t.Fatal("create handler did not emit one normalized workflow entity")
+	}
+	if service.CreateInput.UserID != customerUserID || service.CreateInput.WorkspaceID != customerWorkspaceID || service.CreateInput.ZoneID != customerZoneID {
+		t.Fatal("create handler did not use trusted personal scope")
+	}
+	if len(service.CreateInput.InputSHA256) != 32 || len(service.CreateInput.DesiredSpecSHA256) != 32 || len(service.CreateInput.CreateIntentSHA256) != 32 {
+		t.Fatal("create handler did not freeze all canonical hashes")
+	}
+	if bytes.Equal(service.CreateInput.InputSHA256, service.CreateInput.DesiredSpecSHA256) {
+		t.Fatal("desired spec hash must bind routing/revision context, not alias the input hash")
+	}
+
+	rejected := httptest.NewRecorder()
+	badBody := bytes.NewBufferString(`{"code":"orders-db","name":"Orders database","blueprint_revision_id":"10000000-0000-7000-8000-000000000043","input_schema_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"nested":{"replicas":3}}}`)
+	router.ServeHTTP(rejected, httptest.NewRequest(http.MethodPost, "/instances", badBody))
+	if rejected.Code != http.StatusBadRequest || service.CreateCalls != 1 {
+		t.Fatal("nested transport input must stop before the create service")
+	}
+}
+
+func TestTenantResizeUsesTrustedScopeAndRejectsArbitraryRuntimeMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &mocks.TenantInstanceService{ResizeResult: &entity.ResizeTenantInstanceResult{
+		ID: customerInstanceID, Code: "shared-kafka", Generation: 4,
+		OperationID: uuid.MustParse("10000000-0000-7000-8000-000000000044"), OperationKind: "resize", OperationState: "accepted",
+	}}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(pkgcontext.CtxUserID, customerUserID)
+		c.Set(pkgcontext.CtxTenantID, customerTenantID)
+		c.Set(pkgcontext.CtxWorkspaceID, customerWorkspaceID)
+		c.Set(pkgcontext.CtxZoneID, customerZoneID)
+		c.Next()
+	})
+	router.POST("/instances/:code/resize", handler.NewTenantInstanceHandler(service).ResizeTenantInstance)
+
+	response := httptest.NewRecorder()
+	body := bytes.NewBufferString(`{"expected_generation":3,"resources":{"replicas":5,"storage":"500Gi"}}`)
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/instances/SHARED-KAFKA/resize", body))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", response.Code, response.Body.String())
+	}
+	if service.ResizeCalls != 1 || service.ResizeInput.ActorUserID != customerUserID || service.ResizeInput.TenantID != customerTenantID || service.ResizeInput.WorkspaceID != customerWorkspaceID || service.ResizeInput.ZoneID != customerZoneID || service.ResizeInput.Code != "shared-kafka" {
+		t.Fatal("resize handler did not forward one trusted tenant entity")
+	}
+
+	rejected := httptest.NewRecorder()
+	metadataBody := bytes.NewBufferString(`{"expected_generation":3,"resources":{"labels":{"public":"true"}}}`)
+	router.ServeHTTP(rejected, httptest.NewRequest(http.MethodPost, "/instances/shared-kafka/resize", metadataBody))
+	if rejected.Code != http.StatusBadRequest || service.ResizeCalls != 1 {
+		t.Fatal("arbitrary runtime metadata must stop at the transport boundary")
 	}
 }
 

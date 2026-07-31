@@ -59,6 +59,7 @@ references it.
 | Outer `JobCommandV1.job_id` | raw UUID `command_event_id` |
 | Outer `JobCommandV1.resource_id` | canonical UUID string `instance_id` |
 | Outer `JobCommandV1.attempt` | bounded delivery attempt; no inner copy because retry reuses exact protected bytes |
+| Outer `JobCommandV1.delivery_epoch` | manual replay cycle; automatic retries preserve it while changing only `attempt` |
 | Outer `JobExecutionResultProto.job_id` | raw UUID `source_command_event_id` |
 | Outer result status | `SUCCEEDED` for inner success; `FAILED` for inner retryable/terminal failure |
 | Outer/inner schema version | `1` for the initial contract |
@@ -91,6 +92,7 @@ enum ManagedServiceOperationKindV1 {
   MANAGED_SERVICE_OPERATION_KIND_CREATE = 1;
   MANAGED_SERVICE_OPERATION_KIND_UPDATE = 2;
   MANAGED_SERVICE_OPERATION_KIND_DELETE = 3;
+  MANAGED_SERVICE_OPERATION_KIND_RESIZE = 4;
 }
 
 enum ManagedServiceOutcomeV1 {
@@ -183,7 +185,8 @@ message ManagedServiceResultV1 {
   int64 completed_at_unix_ms = 22;
   string traceparent = 23;
   string tracestate = 24;
-  reserved 25 to 31;
+  uint64 delivery_epoch = 25;
+  reserved 26 to 31;
 }
 ```
 
@@ -200,9 +203,16 @@ message ManagedServiceResultV1 {
 | `traceparent`/`tracestate` | W3C context propagated from outer envelope; malformed context is rejected/sanitized by boundary policy, not reconstructed from user input |
 
 `schema_version` must be `1` in both inner messages for V1. Delivery `attempt` exists only
-in outer `JobCommandV1`; retries preserve the exact inner ciphertext and change outer delivery
-metadata only. It is not part of Kubernetes external-side-effect dedupe. `instance_id + operation_id + generation`
+in outer `JobCommandV1`; automatic retries preserve the exact inner ciphertext and
+`delivery_epoch` while changing only `attempt`. Manual retry reuses the same event,
+operation, generation and ciphertext but increments `delivery_epoch`; result echoes it so
+an earlier attempt cycle cannot collide in the inbox. Neither outer field is part of
+Kubernetes external-side-effect dedupe. `instance_id + operation_id + generation`
 is the execution fence retained through the command/result/DLQ replay window.
+
+Enum value `UPDATE=2` remains reserved for byte compatibility with the frozen V1 source;
+new Controlplane workflows emit only `CREATE`, `RESIZE` and `DELETE` and expose no generic
+configuration/runtime-metadata patch.
 
 `error_code` is a stable taxonomy identifier. `sanitized_message` is bounded diagnostic
 text only; it must not carry a Kubernetes object, provider response, parameter or

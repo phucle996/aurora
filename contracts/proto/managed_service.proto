@@ -15,6 +15,7 @@ enum ManagedServiceOperationKindV1 {
   MANAGED_SERVICE_OPERATION_KIND_CREATE = 1;
   MANAGED_SERVICE_OPERATION_KIND_UPDATE = 2;
   MANAGED_SERVICE_OPERATION_KIND_DELETE = 3;
+  MANAGED_SERVICE_OPERATION_KIND_RESIZE = 4;
 }
 
 enum ManagedServiceOutcomeV1 {
@@ -112,5 +113,6 @@ message ManagedServiceResultV1 {
   int64 completed_at_unix_ms = 22;
   string traceparent = 23;
   string tracestate = 24;
-  reserved 25 to 31;
+  uint64 delivery_epoch = 25;
+  reserved 26 to 31;
 }

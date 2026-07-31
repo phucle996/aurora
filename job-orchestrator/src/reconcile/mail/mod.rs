@@ -73,6 +73,7 @@ pub(super) async fn publish_mail_projection_command(
         traceparent: propagation.traceparent,
         tracestate: propagation.tracestate,
         payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32,
+        delivery_epoch: 0,
     };
     use opentelemetry::trace::FutureExt;
     let publish_result = kafka

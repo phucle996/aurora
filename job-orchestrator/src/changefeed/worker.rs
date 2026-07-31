@@ -35,6 +35,11 @@ pub struct ChangefeedWorker {
     config: Config,
     kafka: Arc<KafkaTransport>,
     metadata_client: Arc<tokio_postgres::Client>,
+    /// Managed Service dispatch is the only changefeed path that writes back to
+    /// Controlplane PostgreSQL. It uses a separate writable session from the
+    /// read-only metadata client; deployment SQL grants must restrict this path
+    /// to the outbox transition and the worker never uses it for result settlement.
+    managed_service_outbox_writer: Option<Arc<tokio_postgres::Client>>,
     /// [COMMENT]: Cache desired_state của từng (zone_id, service_type) — dùng để phát hiện thay đổi thực sự.
     /// Persist qua các lần reconnect (không reset khi replication stream ngắt/reconnect).
     /// Key: (zone_id, service_type), Value: desired_state hiện tại (true = enabled).
@@ -60,6 +65,26 @@ impl ChangefeedWorker {
         let snapshot =
             crate::zone_state::store::query_all_zone_services_enabled(&metadata_client).await?;
 
+        let managed_service_outbox_writer = if config
+            .workflows
+            .changefeed
+            .sources
+            .iter()
+            .any(|source| source == "managed_service.managed_service_outbox_records")
+        {
+            // This session owns only the post-ACK outbox transition. It must not
+            // be reused by the result worker, which owns terminal settlement.
+            Some(Arc::new(
+                crate::infra::postgres::connect(
+                    &config.postgres,
+                    "changefeed.managed_service_outbox_writer",
+                )
+                .await?,
+            ))
+        } else {
+            None
+        };
+
         // [COMMENT]: Flatten từ HashMap<zone_id, HashMap<svc_type, bool>>
         // sang HashMap<(zone_id, svc_type), bool> để lookup O(1).
         let mut cache: HashMap<(String, String), bool> = HashMap::new();
@@ -81,6 +106,7 @@ impl ChangefeedWorker {
             config,
             kafka,
             metadata_client,
+            managed_service_outbox_writer,
             desired_state_cache: std::sync::Mutex::new(cache),
         })
     }
@@ -239,8 +265,26 @@ impl ChangefeedWorker {
                                                 } else if tag == b'I' {
                                                     // Source schema is authoritative routing metadata;
                                                     // never infer the owner domain from job_topic.
-                                                    self.process_insert(&fields, &rel.schema_name)
-                                                        .await?;
+                                                    self.process_outbox_record(
+                                                        &fields,
+                                                        &rel.schema_name,
+                                                    )
+                                                    .await?;
+                                                } else if tag == b'U'
+                                                    && rel.schema_name == "managed_service"
+                                                    && rel.relation_name
+                                                        == "managed_service_outbox_records"
+                                                    && fields.text("status") == Some("PENDING")
+                                                {
+                                                    // A retry/manual replay changes only the
+                                                    // durable outbox delivery fields. The same
+                                                    // encoder is used so ciphertext/event identity
+                                                    // cannot drift between INSERT and UPDATE WAL.
+                                                    self.process_outbox_record(
+                                                        &fields,
+                                                        &rel.schema_name,
+                                                    )
+                                                    .await?;
                                                 }
                                             }
                                             Err(err) => {
@@ -290,8 +334,8 @@ impl ChangefeedWorker {
         Ok(())
     }
 
-    /// Xử lý sự kiện INSERT đã giải mã, định tuyến và publish Protobuf sang Kafka.
-    async fn process_insert(
+    /// Xử lý outbox INSERT hoặc retry UPDATE đã giải mã rồi publish Protobuf sang Kafka.
+    async fn process_outbox_record(
         &self,
         fields: &DecodedRow,
         source_domain: &str,
@@ -312,6 +356,9 @@ impl ChangefeedWorker {
             .text("payload_schema_version")
             .unwrap_or_default()
             .to_string();
+        // Outboxes predating Managed Service do not have this additive field;
+        // their initial delivery is epoch zero by definition.
+        let delivery_epoch_str = fields.text("delivery_epoch").unwrap_or("0").to_string();
         let trace_id_raw = fields.text("trace_id").unwrap_or_default().to_string();
         let trace_id_bytes = decode_pg_bytea(&trace_id_raw).map_err(|error| {
             Box::new(PermanentChangeError(format!(
@@ -372,6 +419,7 @@ impl ChangefeedWorker {
         let job_version_str_clone = job_version_str.clone();
         let resource_id_clone = resource_id.clone();
         let payload_schema_version_str_clone = payload_schema_version_str.clone();
+        let delivery_epoch_str_clone = delivery_epoch_str.clone();
         let idle_str_clone = idle_str.clone();
         let source_domain_clone = source_domain.clone();
         let producer_context = OtelTracer::start_span_with_parent(
@@ -416,6 +464,15 @@ impl ChangefeedWorker {
             if payload_schema_version == 0 {
                 return Err(PermanentChangeError(
                     "payload_schema_version must be positive".to_string(),
+                )
+                .into());
+            }
+            let delivery_epoch = delivery_epoch_str_clone
+                .parse::<u64>()
+                .map_err(|_| PermanentChangeError("invalid delivery_epoch".to_string()))?;
+            if delivery_epoch > i64::MAX as u64 {
+                return Err(PermanentChangeError(
+                    "delivery_epoch exceeds the durable platform range".to_string(),
                 )
                 .into());
             }
@@ -488,6 +545,7 @@ impl ChangefeedWorker {
                 tracestate: propagation.tracestate,
                 payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm
                     as i32,
+                delivery_epoch,
             };
 
             match self
@@ -534,6 +592,90 @@ impl ChangefeedWorker {
         );
         publish_result?;
 
+        if source_domain == "MANAGED_SERVICE" {
+            let writer = self.managed_service_outbox_writer.as_ref().ok_or_else(|| {
+                std::io::Error::other(
+                    "managed service outbox writer is not configured for an enabled source",
+                )
+            })?;
+            self.mark_managed_service_outbox_processing(
+                writer,
+                &event_id,
+                &zone_id,
+                &job_topic,
+                &job_version_str,
+                &delivery_epoch_str,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn mark_managed_service_outbox_processing(
+        &self,
+        writer: &tokio_postgres::Client,
+        event_id: &str,
+        zone_id: &str,
+        job_topic: &str,
+        job_version: &str,
+        delivery_epoch: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let event_id = uuid::Uuid::parse_str(event_id)
+            .map_err(|error| PermanentChangeError(format!("invalid event_id: {error}")))?;
+        let zone_id = uuid::Uuid::parse_str(zone_id)
+            .map_err(|error| PermanentChangeError(format!("invalid zone_id: {error}")))?;
+        let job_version = job_version
+            .parse::<i32>()
+            .map_err(|_| PermanentChangeError("invalid job_version".to_string()))?;
+        let delivery_epoch = delivery_epoch
+            .parse::<i64>()
+            .map_err(|_| PermanentChangeError("invalid delivery_epoch".to_string()))?;
+        let row = writer
+            .query_opt(
+                "UPDATE managed_service.managed_service_outbox_records
+                 SET status = CASE WHEN status = 'PENDING' THEN 'PROCESSING' ELSE status END,
+                     updated_at = CASE WHEN status = 'PENDING' THEN NOW() ELSE updated_at END
+                 WHERE event_id = $1
+                   AND zone_id = $2
+                   AND job_topic = $3
+                   AND job_version = $4
+                   AND delivery_epoch = $5
+                 RETURNING status",
+                &[
+                    &event_id,
+                    &zone_id,
+                    &job_topic,
+                    &job_version,
+                    &delivery_epoch,
+                ],
+            )
+            .await?;
+        let Some(row) = row else {
+            // No row means the WAL record was stale/deleted or its fence was
+            // tampered with. Classify it as permanent so the existing changefeed
+            // boundary durably quarantines the fingerprint before advancing LSN.
+            return Err(PermanentChangeError(
+                "managed service outbox processing fence did not match".to_string(),
+            )
+            .into());
+        };
+        let status: String = row.get(0);
+        Logger::job_log_with_fields(
+            &event_id.to_string(),
+            job_topic,
+            0,
+            "changefeed.outbox_processing",
+            "MANAGED_SERVICE_OUTBOX_PROCESSING",
+            "Managed Service outbox is marked PROCESSING after Kafka durable ACK",
+            LogFields {
+                event_id: Some(&event_id.to_string()),
+                source_domain: Some("MANAGED_SERVICE"),
+                job_version: Some(job_version as u64),
+                outcome: Some(status.as_str()),
+                ..LogFields::default()
+            },
+        );
         Ok(())
     }
 

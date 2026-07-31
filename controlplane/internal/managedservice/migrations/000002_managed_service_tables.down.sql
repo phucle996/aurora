@@ -3,12 +3,10 @@
 
 DROP TABLE IF EXISTS managed_service_outbox_records;
 DROP TABLE IF EXISTS tenant_managed_service_deletion_fences;
-DROP TABLE IF EXISTS tenant_managed_service_result_inbox;
 DROP TABLE IF EXISTS tenant_managed_service_operations;
 DROP TABLE IF EXISTS tenant_managed_service_instance_revisions;
 DROP TABLE IF EXISTS tenant_managed_service_instances;
 DROP TABLE IF EXISTS personal_managed_service_deletion_fences;
-DROP TABLE IF EXISTS personal_managed_service_result_inbox;
 DROP TABLE IF EXISTS personal_managed_service_operations;
 DROP TABLE IF EXISTS personal_managed_service_instance_revisions;
 DROP TABLE IF EXISTS personal_managed_service_instances;

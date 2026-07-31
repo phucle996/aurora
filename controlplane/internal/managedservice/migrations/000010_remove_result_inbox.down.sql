@@ -1,0 +1,3 @@
+-- The removed result-inbox schema was never an authoritative business store.
+-- It is intentionally not recreated on rollback; restoring it would re-open a
+-- competing result source of truth. Roll back the application contract first.

@@ -13,8 +13,6 @@ CREATE INDEX IF NOT EXISTS ix_personal_managed_service_instances_workspace_state
     ON personal_managed_service_instances(workspace_id, state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS ix_personal_managed_service_revisions_zone
     ON personal_managed_service_instance_revisions(zone_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS ix_personal_managed_service_result_inbox_retention
-    ON personal_managed_service_result_inbox(retained_until, received_at);
 CREATE INDEX IF NOT EXISTS ix_personal_managed_service_deletion_fences_retention
     ON personal_managed_service_deletion_fences(retained_until, deleted_at);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_personal_managed_service_operations_nonterminal
@@ -28,8 +26,6 @@ CREATE INDEX IF NOT EXISTS ix_tenant_managed_service_instances_workspace_state
     ON tenant_managed_service_instances(workspace_id, state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS ix_tenant_managed_service_revisions_zone
     ON tenant_managed_service_instance_revisions(zone_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS ix_tenant_managed_service_result_inbox_retention
-    ON tenant_managed_service_result_inbox(retained_until, received_at);
 CREATE INDEX IF NOT EXISTS ix_tenant_managed_service_deletion_fences_retention
     ON tenant_managed_service_deletion_fences(retained_until, deleted_at);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_managed_service_operations_nonterminal

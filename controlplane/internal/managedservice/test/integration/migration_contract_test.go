@@ -8,7 +8,7 @@ import (
 	managedservicemigrations "controlplane/internal/managedservice/migrations"
 )
 
-func TestManagedServiceBaselineHasExactlySevenMigrationPairs(t *testing.T) {
+func TestManagedServiceBaselineHasExactlyTenMigrationPairs(t *testing.T) {
 	entries, err := fs.ReadDir(managedservicemigrations.Files, ".")
 	if err != nil {
 		t.Fatalf("read embedded migrations: %v", err)
@@ -26,8 +26,8 @@ func TestManagedServiceBaselineHasExactlySevenMigrationPairs(t *testing.T) {
 			down++
 		}
 	}
-	if up != 7 || down != 7 {
-		t.Fatalf("managed service baseline must contain exactly seven migration pairs, got up=%d down=%d", up, down)
+	if up != 10 || down != 10 {
+		t.Fatalf("managed service baseline must contain exactly ten migration pairs, got up=%d down=%d", up, down)
 	}
 }
 
@@ -58,7 +58,6 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 			"'accepted',",
 			"'terminal_failed'",
 			"managed_service_observed_state",
-			"managed_service_result_outcome",
 		},
 		"000002_managed_service_tables.up.sql": {
 			"safe_observed_output_schema",
@@ -79,10 +78,8 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 			"protected_command_payload",
 			"protected_command_payload_sha256",
 			"payload_key_id UUID NOT NULL",
-			"personal_managed_service_result_inbox",
 			"personal_managed_service_deletion_fences",
 			"current_command_event_id",
-			"tenant_managed_service_result_inbox",
 			"tenant_managed_service_deletion_fences",
 			"CREATE TABLE IF NOT EXISTS managed_service_outbox_records",
 			"owner_type IN ('PERSONAL', 'TENANT')",
@@ -107,6 +104,18 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 		},
 		"000006_managed_service_seeds.up.sql": {
 			"Managed Service Catalog",
+		},
+		"000008_delivery_epoch.up.sql": {
+			"delivery_epoch BIGINT",
+			"enforce_managed_service_outbox_delivery_epoch()",
+		},
+		"000009_resize_operation.up.sql": {
+			"ADD VALUE IF NOT EXISTS 'resize'",
+		},
+		"000010_remove_result_inbox.up.sql": {
+			"reconcile before removal",
+			"DROP TABLE IF EXISTS personal_managed_service_result_inbox",
+			"DROP TABLE IF EXISTS tenant_managed_service_result_inbox",
 		},
 	}
 
@@ -133,6 +142,9 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 		}
 		if strings.Contains(string(body), "personal_managed_service_outbox") || strings.Contains(string(body), "tenant_managed_service_outbox") {
 			t.Fatalf("%s reintroduced owner-branch outbox tables", name)
+		}
+		if strings.Contains(string(body), "managed_service_result_inbox") {
+			t.Fatalf("%s reintroduced the removed result inbox SoT", name)
 		}
 	}
 }

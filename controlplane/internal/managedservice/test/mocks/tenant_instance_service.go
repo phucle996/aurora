@@ -7,6 +7,10 @@ import (
 )
 
 type TenantInstanceService struct {
+	CreateCalls         int
+	CreateInput         *entity.CreateTenantInstance
+	CreateResult        *entity.CreateTenantInstanceResult
+	CreateErr           error
 	ListCalls           int
 	ListInput           *entity.ListTenantInstances
 	ListResult          *entity.TenantInstancePage
@@ -27,6 +31,24 @@ type TenantInstanceService struct {
 	RenameInput         *entity.RenameTenantInstance
 	RenameResult        *entity.RenameTenantInstanceResult
 	RenameErr           error
+	ResizeCalls         int
+	ResizeInput         *entity.ResizeTenantInstance
+	ResizeResult        *entity.ResizeTenantInstanceResult
+	ResizeErr           error
+	DeleteCalls         int
+	DeleteInput         *entity.DeleteTenantInstance
+	DeleteResult        *entity.DeleteTenantInstanceResult
+	DeleteErr           error
+	RetryCalls          int
+	RetryInput          *entity.RetryTenantInstance
+	RetryResult         *entity.RetryTenantInstanceResult
+	RetryErr            error
+}
+
+func (s *TenantInstanceService) CreateTenantInstance(_ context.Context, in *entity.CreateTenantInstance) (*entity.CreateTenantInstanceResult, error) {
+	s.CreateCalls++
+	s.CreateInput = in
+	return s.CreateResult, s.CreateErr
 }
 
 func (s *TenantInstanceService) ListTenantInstances(_ context.Context, in *entity.ListTenantInstances) (*entity.TenantInstancePage, error) {
@@ -57,4 +79,20 @@ func (s *TenantInstanceService) RenameTenantInstance(_ context.Context, in *enti
 	s.RenameCalls++
 	s.RenameInput = in
 	return s.RenameResult, s.RenameErr
+}
+
+func (s *TenantInstanceService) ResizeTenantInstance(_ context.Context, in *entity.ResizeTenantInstance) (*entity.ResizeTenantInstanceResult, error) {
+	s.ResizeCalls++
+	s.ResizeInput = in
+	return s.ResizeResult, s.ResizeErr
+}
+func (s *TenantInstanceService) DeleteTenantInstance(_ context.Context, in *entity.DeleteTenantInstance) (*entity.DeleteTenantInstanceResult, error) {
+	s.DeleteCalls++
+	s.DeleteInput = in
+	return s.DeleteResult, s.DeleteErr
+}
+func (s *TenantInstanceService) RetryTenantInstance(_ context.Context, in *entity.RetryTenantInstance) (*entity.RetryTenantInstanceResult, error) {
+	s.RetryCalls++
+	s.RetryInput = in
+	return s.RetryResult, s.RetryErr
 }
