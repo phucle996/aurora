@@ -23,7 +23,14 @@ type zoneEncryptionKeyRepository struct {
 	retireQuery   string
 }
 
-func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRepoInterface.ZoneEncryptionKeyRepository {
+func NewZoneEncryptionKeyRepository(
+	db *pgxpool.Pool,
+	hierarchySchema string,
+	storageSchema string,
+	mailSchema string,
+	hypervisorSchema string,
+	managedServiceSchema string,
+) hierarchyRepoInterface.ZoneEncryptionKeyRepository {
 	return &zoneEncryptionKeyRepository{
 		db: db,
 		registerQuery: fmt.Sprintf(`
@@ -52,7 +59,7 @@ func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRe
 				COALESCE((SELECT registered_by FROM upserted), ''),
 				COALESCE((SELECT created_at FROM upserted), now()),
 				COALESCE((SELECT updated_at FROM upserted), now())
-		`, schema, schema),
+		`, hierarchySchema, hierarchySchema),
 		listQuery: fmt.Sprintf(`
 			WITH target_zone AS MATERIALIZED (
 				SELECT id FROM %s.zones WHERE id = $1
@@ -68,7 +75,7 @@ func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRe
 				AND (NOT $2 OR (key.created_at, key.id) < ($3, $4))
 			ORDER BY key.created_at DESC, key.id DESC
 			LIMIT $5
-		`, schema, schema),
+		`, hierarchySchema, hierarchySchema),
 		activateQuery: fmt.Sprintf(`
 			WITH zone_lock AS MATERIALIZED (
 				-- [COMMENT]: The Zone row is the per-Zone mutex. It serializes
@@ -127,7 +134,7 @@ func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRe
 				COALESCE((SELECT updated_at FROM selected), now()),
 				(SELECT activated_at FROM selected),
 				COALESCE((SELECT state_changed FROM selected), false)
-		`, schema, schema, schema, schema, schema),
+		`, hierarchySchema, hierarchySchema, hierarchySchema, hierarchySchema, hierarchySchema),
 		retireQuery: fmt.Sprintf(`
 			WITH zone_lock AS MATERIALIZED (
 				SELECT id FROM %s.zones WHERE id = $1 FOR UPDATE
@@ -136,13 +143,37 @@ func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRe
 				FROM %s.zone_encryption_keys key
 				JOIN zone_lock ON zone_lock.id = key.zone_id
 				WHERE key.id = $2
-				FOR UPDATE OF key
+					FOR UPDATE OF key
+			), retained_ciphertext AS MATERIALIZED (
+				-- [COMMENT]: Retirement is the permission boundary for removing the
+				-- Zone private counterpart. Check every retained command copy while the
+				-- Zone mutex is held so rotation and retirement cannot race.
+				SELECT EXISTS (
+					SELECT 1 FROM %s.storage_outbox_records WHERE payload_key_id = $2
+					UNION ALL
+					SELECT 1 FROM %s.mail_outbox_records WHERE payload_key_id = $2
+					UNION ALL
+					SELECT 1 FROM %s.mail_protected_projections WHERE payload_key_id = $2
+					UNION ALL
+					SELECT 1 FROM %s.hypervisor_outbox_records WHERE payload_key_id = $2
+					UNION ALL
+					SELECT 1 FROM %s.managed_service_outbox_records WHERE payload_key_id = $2
+					UNION ALL
+					SELECT 1 FROM %s.personal_managed_service_instance_revisions WHERE payload_key_id = $2
+					UNION ALL
+					SELECT 1 FROM %s.tenant_managed_service_instance_revisions WHERE payload_key_id = $2
+				) AS has_retained_ciphertext
 			), retired AS (
 				UPDATE %s.zone_encryption_keys key
 				SET status = 'retired', retired_by = $3, retired_proof_id = $4,
 					retired_at = now(), updated_at = now()
 				FROM target
-				WHERE key.id = target.id AND target.status IN ('staged', 'decrypt_only')
+				WHERE key.id = target.id
+					AND (
+						target.status = 'staged'
+						OR (target.status = 'decrypt_only' AND target.decrypt_only_at <= now() - interval '5 minutes')
+					)
+					AND NOT (SELECT has_retained_ciphertext FROM retained_ciphertext)
 				RETURNING key.*
 			), selected AS (
 				SELECT id, zone_id, public_key, fingerprint, algorithm, status::text,
@@ -170,8 +201,9 @@ func NewZoneEncryptionKeyRepository(db *pgxpool.Pool, schema string) hierarchyRe
 				COALESCE((SELECT created_at FROM selected), now()),
 				COALESCE((SELECT updated_at FROM selected), now()),
 				(SELECT retired_at FROM selected),
-				COALESCE((SELECT state_changed FROM selected), false)
-		`, schema, schema, schema),
+				COALESCE((SELECT state_changed FROM selected), false),
+				COALESCE((SELECT has_retained_ciphertext FROM retained_ciphertext), false)
+		`, hierarchySchema, hierarchySchema, storageSchema, mailSchema, mailSchema, hypervisorSchema, managedServiceSchema, managedServiceSchema, managedServiceSchema, hierarchySchema),
 	}
 }
 
@@ -295,13 +327,13 @@ func (r *zoneEncryptionKeyRepository) ActivateZoneEncryptionKey(ctx context.Cont
 
 func (r *zoneEncryptionKeyRepository) RetireZoneEncryptionKey(ctx context.Context, in *hierarchyEntity.RetireZoneEncryptionKey) (*hierarchyEntity.RetireZoneEncryptionKey, error) {
 	out := &hierarchyEntity.RetireZoneEncryptionKey{}
-	var zoneExists, keyExists, selected bool
+	var zoneExists, keyExists, selected, retainedCiphertext bool
 	var currentStatus string
 	err := r.db.QueryRow(ctx, r.retireQuery, in.ZoneID, in.KeyID, in.Actor, in.ProofID).Scan(
 		&zoneExists, &keyExists, &currentStatus, &selected,
 		&out.KeyID, &out.ZoneID, &out.PublicKey, &out.Fingerprint, &out.Algorithm,
 		&out.Status, &out.RetiredBy, &out.CreatedAt, &out.UpdatedAt,
-		&out.RetiredAt, &out.StateChanged,
+		&out.RetiredAt, &out.StateChanged, &retainedCiphertext,
 	)
 	if err != nil {
 		return nil, err
@@ -311,6 +343,12 @@ func (r *zoneEncryptionKeyRepository) RetireZoneEncryptionKey(ctx context.Contex
 	}
 	if !keyExists {
 		return nil, hierarchyTaxonomy.ErrNotFound
+	}
+	if retainedCiphertext && currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusRetired) {
+		return nil, hierarchyTaxonomy.ErrConflict
+	}
+	if !selected && currentStatus == string(hierarchyEntity.ZoneEncryptionKeyStatusDecryptOnly) {
+		return nil, hierarchyTaxonomy.ErrPreconditionFailed
 	}
 	if !selected || (currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusStaged) &&
 		currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusDecryptOnly) &&

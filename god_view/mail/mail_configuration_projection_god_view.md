@@ -66,8 +66,8 @@ sequenceDiagram
     participant K as Kafka transport
 
     PG-->>JO: committed mail_outbox_records WAL
-    JO->>JO: validate event/topic/Zone + encode JobCommandV1
-    JO->>K: key=job_id, acks=all, zstd
+    JO->>JO: validate public protected payload/event/topic/Zone + encode JobCommandV1
+    JO->>K: key=resource_id, acks=all, zstd
     K-->>JO: ISR durable ACK
     JO->>PG: advance logical replication LSN
 ```
@@ -82,10 +82,10 @@ sequenceDiagram
 Dataplane đúng Zone:
 
 1. Consume exact Zone topic với manual commit.
-2. Validate `JobCommandV1`: schema, UUID, source domain, resource, topic và `target_zone_id`.
+2. Validate `JobCommandV1`: schema, UUID, source domain, resource, topic, `target_zone_id` và public `ProtectedPayloadV1` metadata.
 3. Poison/cross-Zone command được publish `DeadLetterRecordV1` durable rồi settle source offset.
 4. Acquire `lease.job.<sha256(job_id)>` trong `AURORA_ZONE_COORDINATION`.
-5. Decode `MailConsumer*V1` hoặc `MailTemplate*V1`.
+5. HPKE-open full payload rồi decode `MailConsumer*V1` hoặc `MailTemplate*V1`.
 6. Apply immutable snapshot + head/tombstone CAS trong `AURORA_ZONE_CONFIG`.
 7. Publish `JobExecutionResultProto` durable.
 8. Commit only highest contiguous terminal Kafka offset của assignment epoch.

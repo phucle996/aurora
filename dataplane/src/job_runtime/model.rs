@@ -3,12 +3,13 @@ use std::time::Duration;
 
 use prost::Message;
 
-use crate::infra::kafka::transport_proto::JobCommandV1;
+use crate::infra::kafka::transport_proto::{JobCommandV1, PayloadEncodingV1};
 use crate::infra::kafka::KafkaDelivery;
 use crate::infra::zone_kv::ZoneLease;
+use crate::security::jobpayload::PayloadKeyring;
 
 pub const MAX_JOB_COMMAND_BYTES: usize = 1_048_576;
-pub const MAX_JOB_PAYLOAD_BYTES: usize = 1_000_000;
+pub const MAX_JOB_PAYLOAD_BYTES: usize = 1_000_256;
 const DEFAULT_EXECUTION_TIMEOUT_SECONDS: u64 = 600;
 const MAX_EXECUTION_TIMEOUT_SECONDS: u64 = 3_600;
 const MAX_JOB_TOPIC_BYTES: usize = 160;
@@ -29,6 +30,7 @@ pub struct ValidatedJob {
     pub resource_id: String,
     pub payload_schema_version: u32,
     pub payload: Arc<[u8]>,
+    protected_payload: Arc<[u8]>,
     pub trace_id: String,
     pub traceparent: String,
     pub tracestate: String,
@@ -55,6 +57,7 @@ pub struct LeasedJob {
 pub struct JobValidationError {
     pub code: &'static str,
     pub message: String,
+    pub retryable: bool,
 }
 
 impl JobValidationError {
@@ -62,6 +65,7 @@ impl JobValidationError {
         Self {
             code,
             message: message.into(),
+            retryable: false,
         }
     }
 }
@@ -71,6 +75,7 @@ impl ValidatedJob {
         raw: &[u8],
         expected_zone_id: &str,
         max_attempts: u32,
+        payload_keyring: &PayloadKeyring,
     ) -> Result<Arc<Self>, JobValidationError> {
         if raw.is_empty() || raw.len() > MAX_JOB_COMMAND_BYTES {
             return Err(JobValidationError::new(
@@ -85,13 +90,14 @@ impl ValidatedJob {
                 format!("JobCommandV1 decode failed: {error}"),
             )
         })?;
-        Self::from_command(command, expected_zone_id, max_attempts).map(Arc::new)
+        Self::from_command(command, expected_zone_id, max_attempts, payload_keyring).map(Arc::new)
     }
 
     fn from_command(
         command: JobCommandV1,
         expected_zone_id: &str,
         max_attempts: u32,
+        payload_keyring: &PayloadKeyring,
     ) -> Result<Self, JobValidationError> {
         if command.transport_schema_version != 1 {
             return Err(JobValidationError::new(
@@ -115,6 +121,14 @@ impl ValidatedJob {
             return Err(JobValidationError::new(
                 "JOB_PAYLOAD_SIZE_EXCEEDED",
                 format!("job payload exceeds {MAX_JOB_PAYLOAD_BYTES} bytes"),
+            ));
+        }
+        if command.payload_encoding
+            != PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32
+        {
+            return Err(JobValidationError::new(
+                "JOB_PAYLOAD_ENCODING_UNSUPPORTED",
+                "every Zone-bound V1 command must contain an HPKE protected payload",
             ));
         }
         if command.attempt >= max_attempts.max(1) {
@@ -195,6 +209,12 @@ impl ValidatedJob {
                 ),
             ));
         }
+        let expected_zone_uuid = uuid::Uuid::parse_str(expected_zone_id).map_err(|_| {
+            JobValidationError::new(
+                "JOB_CONSUMER_ZONE_INVALID",
+                "configured Dataplane Zone must be a UUID",
+            )
+        })?;
         if !matches!(command.trace_id.len(), 0 | 16) {
             return Err(JobValidationError::new(
                 "JOB_TRACE_ID_INVALID",
@@ -230,6 +250,22 @@ impl ValidatedJob {
         let mut job_id_bytes = [0_u8; 16];
         job_id_bytes.copy_from_slice(job_uuid.as_bytes());
         let trace_id = encode_hex(&command.trace_id);
+        let protected_payload: Arc<[u8]> = Arc::from(command.payload.clone());
+        let payload = payload_keyring
+            .open(
+                &command.payload,
+                expected_zone_uuid,
+                &command.source_domain,
+                &command.job_topic,
+                &command.resource_id,
+                command.job_version,
+                command.payload_schema_version,
+            )
+            .map_err(|error| JobValidationError {
+                code: error.code,
+                message: error.message,
+                retryable: error.retryable,
+            })?;
 
         Ok(Self {
             job_id: job_uuid.to_string(),
@@ -239,7 +275,8 @@ impl ValidatedJob {
             source_domain: command.source_domain,
             resource_id: command.resource_id,
             payload_schema_version: command.payload_schema_version,
-            payload: Arc::from(command.payload),
+            payload: Arc::from(payload),
+            protected_payload,
             trace_id,
             traceparent: command.traceparent,
             tracestate: command.tracestate,
@@ -273,7 +310,10 @@ impl ValidatedJob {
             source_domain: self.source_domain.clone(),
             resource_id: self.resource_id.clone(),
             payload_schema_version: self.payload_schema_version,
-            payload: self.payload.to_vec(),
+            // [COMMENT]: Retry changes only delivery metadata. Re-sealing here
+            // would require a public key and could change the security fence;
+            // preserve the exact ciphertext committed by Controlplane.
+            payload: self.protected_payload.to_vec(),
             trace_id: self.trace_id_bytes.clone(),
             idle_seconds: self.execution_timeout_seconds,
             reconcile_generation: self.reconcile_generation,
@@ -281,6 +321,8 @@ impl ValidatedJob {
             transport_schema_version: 1,
             traceparent,
             tracestate,
+            payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm
+                as i32,
         }
     }
 }
@@ -314,8 +356,11 @@ fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn command() -> JobCommandV1 {
-        JobCommandV1 {
+    const ZONE_A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const ZONE_B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    fn command(keyring: &PayloadKeyring) -> JobCommandV1 {
+        let mut command = JobCommandV1 {
             job_id: uuid::Uuid::nil().as_bytes().to_vec(),
             job_version: 1,
             attempt: 0,
@@ -323,64 +368,88 @@ mod tests {
             source_domain: "STORAGE".to_string(),
             resource_id: "bucket-1".to_string(),
             payload_schema_version: 1,
-            payload: vec![1, 2, 3],
+            payload: Vec::new(),
             trace_id: Vec::new(),
             idle_seconds: Some(60),
             reconcile_generation: None,
-            target_zone_id: "zone-a".to_string(),
+            target_zone_id: ZONE_A.to_string(),
             transport_schema_version: 1,
             traceparent: String::new(),
             tracestate: String::new(),
-        }
+            payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm
+                as i32,
+        };
+        protect(&mut command, keyring);
+        command
+    }
+
+    fn protect(command: &mut JobCommandV1, keyring: &PayloadKeyring) {
+        command.payload = keyring.protect_for_test(
+            uuid::Uuid::parse_str(&command.target_zone_id).expect("test Zone UUID"),
+            &command.source_domain,
+            &command.job_topic,
+            &command.resource_id,
+            command.job_version,
+            command.payload_schema_version,
+            &[1, 2, 3],
+        );
     }
 
     #[test]
     fn validation_rejects_cross_zone_commands() {
-        let error = ValidatedJob::from_command(command(), "zone-b", 5).unwrap_err();
+        let keyring = PayloadKeyring::for_test();
+        let error = ValidatedJob::from_command(command(&keyring), ZONE_B, 5, &keyring).unwrap_err();
         assert_eq!(error.code, "JOB_TARGET_ZONE_MISMATCH");
     }
 
     #[test]
     fn retry_command_preserves_validated_envelope() {
-        let job = ValidatedJob::from_command(command(), "zone-a", 5).expect("valid command");
+        let keyring = PayloadKeyring::for_test();
+        let job = ValidatedJob::from_command(command(&keyring), ZONE_A, 5, &keyring)
+            .expect("valid command");
         let retry = job.command_for_attempt(1, "parent".to_string(), "state".to_string());
         assert_eq!(retry.attempt, 1);
         assert_eq!(retry.job_id, uuid::Uuid::nil().as_bytes());
-        assert_eq!(retry.target_zone_id, "zone-a");
+        assert_eq!(retry.target_zone_id, ZONE_A);
         assert_eq!(retry.traceparent, "parent");
     }
 
     #[test]
     fn validation_rejects_cross_domain_routing() {
-        let mut command = command();
+        let keyring = PayloadKeyring::for_test();
+        let mut command = command(&keyring);
         command.source_domain = "MAIL".to_string();
-        let error = ValidatedJob::from_command(command, "zone-a", 5).unwrap_err();
+        let error = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).unwrap_err();
         assert_eq!(error.code, "JOB_SOURCE_DOMAIN_MISMATCH");
     }
 
     #[test]
     fn validation_accepts_hypervisor_commands_from_the_hypervisor_domain() {
-        let mut command = command();
+        let keyring = PayloadKeyring::for_test();
+        let mut command = command(&keyring);
         command.job_topic = "hypervisor.vm.create".to_string();
         command.source_domain = "HYPERVISOR".to_string();
-        let job = ValidatedJob::from_command(command, "zone-a", 5).expect("valid command");
+        protect(&mut command, &keyring);
+        let job = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).expect("valid command");
         assert_eq!(job.job_topic, "hypervisor.vm.create");
     }
 
     #[test]
     fn validation_keeps_managed_service_route_disabled() {
-        let mut command = command();
+        let keyring = PayloadKeyring::for_test();
+        let mut command = command(&keyring);
         command.job_topic = "managed_service.instance.execute".to_string();
         command.source_domain = "MANAGED_SERVICE".to_string();
-        let error = ValidatedJob::from_command(command, "zone-a", 5).unwrap_err();
+        let error = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).unwrap_err();
         assert_eq!(error.code, "JOB_WORKLOAD_DISABLED");
     }
 
     #[test]
     fn validation_requires_positive_job_version() {
-        let mut command = command();
+        let keyring = PayloadKeyring::for_test();
+        let mut command = command(&keyring);
         command.job_version = 0;
-        let error = ValidatedJob::from_command(command, "zone-a", 5).unwrap_err();
+        let error = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).unwrap_err();
         assert_eq!(error.code, "JOB_VERSION_INVALID");
     }
 }

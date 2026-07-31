@@ -337,6 +337,13 @@ Public encryption key là public capability metadata nhưng inventory và lifecy
 vẫn là admin-plane. Private counterpart tuyệt đối không được thêm vào entity,
 DTO, schema, response, event hoặc cache của Hierarchy.
 
+`ACTIVE` chỉ được dùng để seal khi `loaded_at` có fresh Zone report. Report là giao
+của keyring trên mọi Dataplane replica fresh, không phải báo cáo riêng của leader;
+JO fence report bằng timestamp cùng Zone-KV leader token.
+Retire `DECRYPT_ONLY` có drain window và CTE kiểm tra mọi retained ciphertext; còn
+reference thì trả conflict. Outbox INSERT ở từng module khóa Zone/key và từ chối key
+đã retired, đóng race giữa seal, rotation và durable commit.
+
 ## 12. Transport và event contract
 
 Controlplane không publish durable Zone command trực tiếp lên Kafka. Luồng chuẩn:

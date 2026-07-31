@@ -12,6 +12,7 @@ import (
 	hypervisorSvcImpl "controlplane/internal/hypervisor/service"
 	hypervisorHandler "controlplane/internal/hypervisor/transport/http/handler"
 	"controlplane/internal/observability"
+	jobpayload "controlplane/internal/security"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -53,6 +54,7 @@ func NewModule(
 	db *pgxpool.Pool,
 	cacheEngine *cacheengine.CacheRegistry,
 	otel *observability.OTel,
+	protector jobpayload.Protector,
 ) (*HypervisorModule, error) {
 	if cfg == nil {
 		return nil, errors.New("hypervisor module: config is required")
@@ -66,14 +68,17 @@ func NewModule(
 	if otel == nil {
 		return nil, errors.New("hypervisor module: observability is required")
 	}
+	if protector == nil {
+		return nil, errors.New("hypervisor module: job payload protector is required")
+	}
 
 	// Constructors below only wire dependencies; request validation remains at
 	// the HTTP handler and is not repeated in service or repository layers.
 	workflowMetrics := otel.WorkflowRecorder("hypervisor")
-	vmRepo := hypervisorRepoImpl.NewPersonalVMRepo(db, cfg)
+	vmRepo := hypervisorRepoImpl.NewPersonalVMRepo(db, cfg, protector)
 	vmSvc := hypervisorSvcImpl.NewPersonalVMService(vmRepo, workflowMetrics)
 	vmHandler := hypervisorHandler.NewPersonalVMHandler(vmSvc)
-	imageRepo := hypervisorRepoImpl.NewImageRepo(db, cfg)
+	imageRepo := hypervisorRepoImpl.NewImageRepo(db, cfg, protector)
 	imageSvc := hypervisorSvcImpl.NewImageService(imageRepo, workflowMetrics)
 	imageHandler := hypervisorHandler.NewImageHandler(imageSvc)
 

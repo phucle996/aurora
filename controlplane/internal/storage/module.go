@@ -6,6 +6,7 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/observability"
+	jobpayload "controlplane/internal/security"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageRepoImpl "controlplane/internal/storage/repository"
@@ -73,6 +74,7 @@ func NewModule(
 	authRds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
 	otel *observability.OTel,
+	protector jobpayload.Protector,
 ) (*StorageModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -96,24 +98,27 @@ func NewModule(
 	if otel == nil {
 		return nil, errors.New("storage module: observability is nil")
 	}
+	if protector == nil {
+		return nil, errors.New("storage module: job payload protector is nil")
+	}
 	// ------------------------------------------------------------------------
 	// 🧱 GIAI ĐOẠN ĐẤU NỐI (WIRING GRAPH SETUP WITH FAIL-FAST CHECKS)
 	// ------------------------------------------------------------------------
 
 	// 1. Khởi tạo repositories riêng biệt theo scope
-	tenantBucketRepo := storageRepoImpl.NewTenantBucketRepo(db, cfg)
+	tenantBucketRepo := storageRepoImpl.NewTenantBucketRepo(db, cfg, protector)
 	if tenantBucketRepo == nil {
 		return nil, errors.New("storage module: failed to construct tenant bucket repository")
 	}
-	personalBucketRepo := storageRepoImpl.NewPersonalBucketRepo(db, cfg)
+	personalBucketRepo := storageRepoImpl.NewPersonalBucketRepo(db, cfg, protector)
 	if personalBucketRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket repository")
 	}
-	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db, cfg)
+	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db, cfg, protector)
 	if tenantCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential repository")
 	}
-	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db, cfg)
+	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db, cfg, protector)
 	if personalCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal credential repository")
 	}

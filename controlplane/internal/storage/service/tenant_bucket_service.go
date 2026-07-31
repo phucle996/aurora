@@ -140,6 +140,7 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 60,
@@ -235,6 +236,7 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
+	rollbackQuotaBytes := bucket.CapacityQuotaBytes
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:   eventID,
 		ZoneID:    bucket.ZoneID,
@@ -246,6 +248,8 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		RollbackQuotaBytes:   &rollbackQuotaBytes,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,
@@ -320,6 +324,7 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),
+		ResourceName:         param.BucketName,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,

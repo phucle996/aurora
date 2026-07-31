@@ -9,6 +9,7 @@ import (
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
+	jobpayload "controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,16 +21,19 @@ type ImageRepoPostgres struct {
 	db         *pgxpool.Pool
 	hypervisor string
 	hierarchy  string
+	protector  jobpayload.Protector
 }
 
 func NewImageRepo(
 	db *pgxpool.Pool,
 	cfg *config.Config,
+	protector jobpayload.Protector,
 ) hypervisorRepoInterface.ImageRepository {
 	return &ImageRepoPostgres{
 		db:         db,
 		hypervisor: cfg.SchemaSQL.Hypervisor,
 		hierarchy:  cfg.SchemaSQL.Hierarchy,
+		protector:  protector,
 	}
 }
 
@@ -340,6 +344,11 @@ func (r *ImageRepoPostgres) BeginImport(
 	zoneID uuid.UUID,
 	outbox *hypervisorEntity.HypervisorOutboxRecord,
 ) (*hypervisorEntity.ImageArtifact, error) {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "HYPERVISOR", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: uint32(outbox.JobVersion), PayloadSchemaVersion: uint32(outbox.PayloadSchemaVersion)}, outbox.Payload)
+	if err != nil {
+		return nil, err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	query := fmt.Sprintf(`
 		WITH locked_image AS (
 			SELECT id
@@ -363,10 +372,10 @@ func (r *ImageRepoPostgres) BeginImport(
 			INSERT INTO %s.hypervisor_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id,
 				status, job_version, resource_id, payload_schema_version,
-				trace_id, idle
+				trace_id, idle, payload_key_id
 			)
 			SELECT $3, $4, $5, $6, $7,
-			       $8, $9, $10, $11, $12, $13
+			       $8, $9, $10, $11, $12, $13, $14
 			FROM updated_image
 			RETURNING event_id
 		)
@@ -379,7 +388,7 @@ func (r *ImageRepoPostgres) BeginImport(
 		JOIN inserted_outbox ON TRUE
 	`, r.hypervisor, r.hypervisor, r.hypervisor)
 	image := &hypervisorEntity.ImageArtifact{}
-	err := r.db.QueryRow(
+	err = r.db.QueryRow(
 		ctx,
 		query,
 		imageID,
@@ -395,6 +404,7 @@ func (r *ImageRepoPostgres) BeginImport(
 		outbox.PayloadSchemaVersion,
 		outbox.TraceID,
 		outbox.IdleSeconds,
+		outbox.PayloadKeyID,
 	).Scan(
 		&image.ID,
 		&image.ZoneID,
@@ -432,6 +442,11 @@ func (r *ImageRepoPostgres) BeginDelete(
 	zoneID uuid.UUID,
 	outbox *hypervisorEntity.HypervisorOutboxRecord,
 ) (*hypervisorEntity.ImageArtifact, error) {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "HYPERVISOR", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: uint32(outbox.JobVersion), PayloadSchemaVersion: uint32(outbox.PayloadSchemaVersion)}, outbox.Payload)
+	if err != nil {
+		return nil, err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	query := fmt.Sprintf(`
 		WITH locked_image AS (
 			SELECT id
@@ -455,10 +470,10 @@ func (r *ImageRepoPostgres) BeginDelete(
 			INSERT INTO %s.hypervisor_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id,
 				status, job_version, resource_id, payload_schema_version,
-				trace_id, idle
+				trace_id, idle, payload_key_id
 			)
 			SELECT $3, $4, $5, $6, $7,
-			       $8, $9, $10, $11, $12, $13
+			       $8, $9, $10, $11, $12, $13, $14
 			FROM updated_image
 			RETURNING event_id
 		)
@@ -471,7 +486,7 @@ func (r *ImageRepoPostgres) BeginDelete(
 		JOIN inserted_outbox ON TRUE
 	`, r.hypervisor, r.hypervisor, r.hypervisor)
 	image := &hypervisorEntity.ImageArtifact{}
-	err := r.db.QueryRow(
+	err = r.db.QueryRow(
 		ctx,
 		query,
 		imageID,
@@ -487,6 +502,7 @@ func (r *ImageRepoPostgres) BeginDelete(
 		outbox.PayloadSchemaVersion,
 		outbox.TraceID,
 		outbox.IdleSeconds,
+		outbox.PayloadKeyID,
 	).Scan(
 		&image.ID,
 		&image.ZoneID,

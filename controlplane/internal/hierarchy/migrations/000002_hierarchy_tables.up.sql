@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS zone_encryption_keys (
     activated_at TIMESTAMPTZ NULL,
     decrypt_only_at TIMESTAMPTZ NULL,
     retired_at TIMESTAMPTZ NULL,
+    loaded_at TIMESTAMPTZ NULL,
+    loaded_observed_at TIMESTAMPTZ NULL,
+    loaded_observed_fencing_token BIGINT NULL CHECK (loaded_observed_fencing_token > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_zone_encryption_keys_public_key_size CHECK (octet_length(public_key) = 32),
@@ -71,6 +74,9 @@ COMMENT ON COLUMN zone_encryption_keys.registered_proof_id IS 'ACR critical-proo
 COMMENT ON COLUMN zone_encryption_keys.activated_proof_id IS 'ACR critical-proof challenge bound to activation request.';
 COMMENT ON COLUMN zone_encryption_keys.decrypt_only_proof_id IS 'Proof that activated the replacement key and atomically demoted this key.';
 COMMENT ON COLUMN zone_encryption_keys.retired_proof_id IS 'ACR critical-proof challenge bound to retirement request.';
+COMMENT ON COLUMN zone_encryption_keys.loaded_at IS 'Latest trusted Zone report timestamp that proved the matching private key was loaded; NULL means not ready.';
+COMMENT ON COLUMN zone_encryption_keys.loaded_observed_at IS 'Monotonic report fence, including reports where this key was absent, so an older leader cannot resurrect readiness.';
+COMMENT ON COLUMN zone_encryption_keys.loaded_observed_fencing_token IS 'Zone leader fencing token paired with loaded_observed_at; lower-token reports cannot resurrect readiness after failover.';
 
 -- [COMMENT]: Bảng quản lý dịch vụ kích hoạt theo từng Zone (Zone Services)
 CREATE TABLE IF NOT EXISTS zone_services (

@@ -356,8 +356,10 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
+ "base64 0.22.1",
  "bytes",
  "chrono",
+ "curve25519-dalek",
  "dotenvy",
  "futures-util",
  "hostname",
@@ -375,6 +377,7 @@ dependencies = [
  "rand 0.8.6",
  "redis",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1342,6 +1345,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]

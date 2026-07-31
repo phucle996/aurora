@@ -312,8 +312,8 @@ queue flush. Telemetry không được trở thành command path hoặc business
 
 ### Contracts
 
-- `dataplane/proto/platform_transport.proto`
-- `job-orchestrator/proto/platform_transport.proto`
+- `contracts/proto/platform_transport.proto`
+- `contracts/proto/zone_report.proto`
 - `dataplane/proto/job_result.proto`
 - `job-orchestrator/proto/job_result.proto`
 

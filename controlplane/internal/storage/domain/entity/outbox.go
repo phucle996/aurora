@@ -30,17 +30,22 @@ type StorageOutboxRecord struct {
 	EventID uuid.UUID
 	// ZoneID is the immutable runtime destination. Outbox routing is
 	// zone-scoped; a generic scope string would allow ambiguous fan-out.
-	ZoneID      uuid.UUID
-	JobTopic    string
-	Payload     []byte
-	OwnerID     uuid.UUID
-	OwnerType   StorageOwnerType
-	ActorUserID *uuid.UUID
-	Status      StorageOutboxStatus
+	ZoneID       uuid.UUID
+	JobTopic     string
+	Payload      []byte
+	PayloadKeyID uuid.UUID
+	OwnerID      uuid.UUID
+	OwnerType    StorageOwnerType
+	ActorUserID  *uuid.UUID
+	Status       StorageOutboxStatus
 
-	CompletedAt          *time.Time
-	JobVersion           uint32
-	ResourceID           string
+	CompletedAt *time.Time
+	JobVersion  uint32
+	ResourceID  string
+	// ResourceName is non-secret settlement metadata used after a successful
+	// hard delete, when the business row no longer exists.
+	ResourceName         string
+	RollbackQuotaBytes   *int64
 	PayloadSchemaVersion uint32
 	TraceID              []byte
 	Idle                 uint32

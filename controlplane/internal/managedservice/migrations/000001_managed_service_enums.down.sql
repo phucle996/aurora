@@ -1,3 +1,6 @@
+-- [COMMENT]: Migration 000001_managed_service_enums.down.sql
+-- Rollback tất cả Enum Types của phân hệ Managed Service Platform.
+
 DROP TYPE IF EXISTS managed_service_result_outcome;
 DROP TYPE IF EXISTS managed_service_operation_state;
 DROP TYPE IF EXISTS managed_service_operation_kind;

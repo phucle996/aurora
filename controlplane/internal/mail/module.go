@@ -14,6 +14,7 @@ import (
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailHandler "controlplane/internal/mail/transport/http/handler"
 	"controlplane/internal/observability"
+	jobpayload "controlplane/internal/security"
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -69,16 +70,16 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the dependency graph for the Mail module.
 // CacheRegistry is shared with IAM so route authorization follows the same L1/L2 permission snapshot.
-func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Client, cacheEngine *cacheengine.CacheRegistry, otel *observability.OTel) (*Module, error) {
-	if cfg == nil || db == nil || runtimeRedis == nil || cacheEngine == nil || otel == nil {
+func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Client, cacheEngine *cacheengine.CacheRegistry, otel *observability.OTel, protector jobpayload.Protector) (*Module, error) {
+	if cfg == nil || db == nil || runtimeRedis == nil || cacheEngine == nil || otel == nil || protector == nil {
 		return nil, errors.New("mail module: config, postgres pool, runtime redis, cache registry, and observability are required")
 	}
 
 	// [COMMENT]: Repository được tách ngay tại DI boundary; không có generic repo tự chọn scope lúc runtime.
-	personalConsumerRepo := mailRepoImpl.NewPersonalConsumerRepository(db, cfg)
-	tenantConsumerRepo := mailRepoImpl.NewTenantConsumerRepository(db, cfg)
-	personalTemplateRepo := mailRepoImpl.NewPersonalTemplateRepository(db, cfg)
-	tenantTemplateRepo := mailRepoImpl.NewTenantTemplateRepository(db, cfg)
+	personalConsumerRepo := mailRepoImpl.NewPersonalConsumerRepository(db, cfg, protector)
+	tenantConsumerRepo := mailRepoImpl.NewTenantConsumerRepository(db, cfg, protector)
+	personalTemplateRepo := mailRepoImpl.NewPersonalTemplateRepository(db, cfg, protector)
+	tenantTemplateRepo := mailRepoImpl.NewTenantTemplateRepository(db, cfg, protector)
 	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil {
 		return nil, errors.New("mail module: failed to construct scoped repositories")
 	}

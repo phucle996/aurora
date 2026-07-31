@@ -13,6 +13,7 @@ import (
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	jobpayload "controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -39,13 +40,15 @@ type personalTemplateRepoPostgres struct {
 	db              *pgxpool.Pool
 	mailSchema      string
 	hierarchySchema string
+	protector       jobpayload.Protector
 }
 
-func NewPersonalTemplateRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterface.PersonalTemplateRepository {
+func NewPersonalTemplateRepository(db *pgxpool.Pool, cfg *config.Config, protector jobpayload.Protector) mailRepoInterface.PersonalTemplateRepository {
 	return &personalTemplateRepoPostgres{
 		db:              db,
 		mailSchema:      cfg.SchemaSQL.Mail,
 		hierarchySchema: cfg.SchemaSQL.Hierarchy,
+		protector:       protector,
 	}
 }
 
@@ -120,6 +123,11 @@ func minInt(a, b int) int {
 // templateID, compressedHTML, contentHash do service tính và truyền riêng — không embed vào req entity.
 // outbox.ActorUserID là uuid.UUID cụ thể (không pointer) — đảm bảo tại compile time.
 func (r *personalTemplateRepoPostgres) Create(ctx context.Context, req *mailEntity.CreatePersonalTemplateRequest, outbox *mailEntity.MailOutboxRecord, templateID string, compressedHTML []byte, contentHash []byte) (*mailEntity.CreatePersonalTemplateResponse, error) {
+	protected, protectionErr := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if protectionErr != nil {
+		return nil, protectionErr
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	now := time.Now().UTC()
 
 	var authorized, versionInserted bool
@@ -156,9 +164,9 @@ func (r *personalTemplateRepoPostgres) Create(ctx context.Context, req *mailEnti
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
-				job_version, resource_id, payload_schema_version, trace_id, idle
+				job_version, resource_id, payload_schema_version, trace_id, idle, payload_key_id
 			)
-			SELECT $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+			SELECT $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
 			FROM version_inserted
 			RETURNING id
 		)
@@ -172,7 +180,7 @@ func (r *personalTemplateRepoPostgres) Create(ctx context.Context, req *mailEnti
 		templateID, req.WorkspaceID, req.Code, req.Name, 1, 1,
 		req.ZoneID, req.ActorUserID, now, now,
 		templateID, 1, req.SubjectTemplate, compressedHTML, contentHash, now,
-		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
+		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, outbox.PayloadKeyID,
 	).Scan(
 		&authorized,
 		&insertedID,
@@ -384,8 +392,8 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, req *
 	// [COMMENT]: Finalize outbox eventID và build payload proto với nextRevision đúng — chỉ repo mới biết nextRevision.
 	eventID := uuid.NewSHA1(personalMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:publish:%s", req.TemplateID, nextRevision, req.ZoneID))
 	event := &mailproto.MailTemplateVersionPublishedV1{
-		Metadata:        &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"},
-		TemplateId:      req.TemplateID, TemplateRevision: nextRevision, TemplateVersion: nextVersion,
+		Metadata:   &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"},
+		TemplateId: req.TemplateID, TemplateRevision: nextRevision, TemplateVersion: nextVersion,
 		SubjectTemplate: req.SubjectTemplate, HtmlTemplate: compressedHTML, ContentSha256: contentHash,
 	}
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
@@ -399,6 +407,11 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, req *
 	// [COMMENT]: Finalize outbox fields sau lock; TraceID đã được service extract từ ctx và truyền vào outbox.
 	outbox.EventID = eventID
 	outbox.Payload = payload
+	protected, protectionErr := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if protectionErr != nil {
+		return nil, protectionErr
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 
 	var authorized, versionInserted bool
 	var outboxID sql.NullInt64
@@ -439,9 +452,9 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, req *
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
-				job_version, resource_id, payload_schema_version, trace_id, idle
+				job_version, resource_id, payload_schema_version, trace_id, idle, payload_key_id
 			)
-			SELECT $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+			SELECT $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
 			FROM counter_updated
 			RETURNING id
 		)
@@ -450,7 +463,7 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, req *
 			EXISTS (SELECT 1 FROM version_inserted),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		req.WorkspaceID, req.ZoneID, req.ActorUserID, req.TemplateID, req.TemplateID, nextVersion, req.SubjectTemplate, compressedHTML, contentHash, now, req.ExpectedRevision, nextRevision, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
+		req.WorkspaceID, req.ZoneID, req.ActorUserID, req.TemplateID, req.TemplateID, nextVersion, req.SubjectTemplate, compressedHTML, contentHash, now, req.ExpectedRevision, nextRevision, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, outbox.PayloadKeyID,
 	).Scan(
 		&authorized,
 		&versionInserted,
@@ -478,7 +491,7 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, req *
 		CurrentVersion: currentVersion, CurrentRevision: currentRevision,
 		PublishedVersion: nextVersion, PublishedRevision: nextRevision,
 		SubjectTemplate: req.SubjectTemplate, RawHTML: req.RawHTML, ContentSHA256: contentHash,
-		OperationID: eventID,
+		OperationID:   eventID,
 		HeadCreatedAt: now, CandidateCreatedAt: now,
 	}, nil
 }
@@ -538,8 +551,8 @@ func (r *personalTemplateRepoPostgres) Delete(ctx context.Context, req *mailEnti
 	now := time.Now().UTC()
 	// [COMMENT]: Finalize proto event delete với revision đúng — chỉ repo biết nextRevision sau lock.
 	event := &mailproto.MailTemplateDeletedV1{
-		Metadata:             &mailproto.MailEventMetadataV1{EventId: outbox.EventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"},
-		TemplateId:           req.TemplateID, TemplateRevision: nextRevision, LastPublishedVersion: currentVersion,
+		Metadata:   &mailproto.MailEventMetadataV1{EventId: outbox.EventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"},
+		TemplateId: req.TemplateID, TemplateRevision: nextRevision, LastPublishedVersion: currentVersion,
 	}
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
 		event.Metadata.Traceparent = "00-" + spanContext.TraceID().String() + "-" + spanContext.SpanID().String() + "-" + fmt.Sprintf("%02x", byte(spanContext.TraceFlags()))
@@ -549,9 +562,14 @@ func (r *personalTemplateRepoPostgres) Delete(ctx context.Context, req *mailEnti
 		return uuid.Nil, fmt.Errorf("mail personal template repo: marshal delete event: %w", err)
 	}
 	outbox.Payload = payload
+	protected, protectionErr := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if protectionErr != nil {
+		return uuid.Nil, protectionErr
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 
 	var deletedID sql.NullInt64
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&deletedID); err != nil {
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle,payload_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, outbox.PayloadKeyID).Scan(&deletedID); err != nil {
 		return uuid.Nil, fmt.Errorf("mail personal template repo: insert delete outbox: %w", err)
 	}
 

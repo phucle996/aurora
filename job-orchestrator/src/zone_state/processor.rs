@@ -140,6 +140,26 @@ pub async fn process_report(
         return Err(error.to_string());
     }
 
+    // [COMMENT]: Readiness is a fresh, timestamp-fenced Zone observation, not
+    // an inference from SRE activation. Fingerprint matching in SQL prevents a
+    // key_id typo or wrong Secret from authorizing undecryptable ciphertext.
+    if let Err(error) = super::store::update_loaded_payload_keys(
+        pg_client,
+        &zone_id,
+        &payload.loaded_payload_keys,
+        payload.timestamp,
+        payload.leader_fencing_token as i64,
+    )
+    .await
+    {
+        Logger::sys_error(
+            "zone_state.payload_keys",
+            "Failed to persist Zone protected-payload key readiness",
+            &error.to_string(),
+        );
+        return Err(error.to_string());
+    }
+
     // Physical node telemetry is exported through OTel/Grafana. Zone reports
     // may still carry the legacy field during rollout, but JO deliberately
     // does not persist it as business state.

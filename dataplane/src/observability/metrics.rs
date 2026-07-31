@@ -63,6 +63,13 @@ pub struct NodeRuntimeSample {
     pub updated_at: u64,
     pub sample_observed_at_unix_ms: u64,
     pub sample_valid: bool,
+    pub loaded_payload_keys: Vec<NodePayloadKeyReadiness>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NodePayloadKeyReadiness {
+    pub key_id: String,
+    pub public_key_fingerprint: Vec<u8>,
 }
 
 impl NodeRuntimeSample {
@@ -150,6 +157,7 @@ impl NodeRuntimeSampler {
         worker_pool: Arc<WorkerLifecycleManager>,
         kafka: Arc<KafkaTransport>,
         admitted_jobs: Arc<AtomicUsize>,
+        payload_keyring: Arc<crate::security::jobpayload::PayloadKeyring>,
         task_guard: TaskGuard,
     ) {
         tokio::spawn(async move {
@@ -196,6 +204,14 @@ impl NodeRuntimeSampler {
                         .checked_sub(job_queue_lag_observed_at)
                         .is_none_or(|age| age > NODE_RUNTIME_SAMPLE_MAX_AGE_MS);
                 sample.job_queue_lag_observed_at_unix_ms = job_queue_lag_observed_at;
+                sample.loaded_payload_keys = payload_keyring
+                    .loaded_keys()
+                    .iter()
+                    .map(|key| NodePayloadKeyReadiness {
+                        key_id: key.key_id.to_string(),
+                        public_key_fingerprint: key.public_key_fingerprint.to_vec(),
+                    })
+                    .collect();
                 latest_store().store(Arc::new(sample.clone()));
 
                 NodeRuntimeMetrics::record_sample(&zone_id, &sample);
@@ -662,6 +678,7 @@ impl RuntimeProbe {
             updated_at,
             sample_observed_at_unix_ms: observed_at,
             sample_valid,
+            loaded_payload_keys: Vec::new(),
         }
     }
 

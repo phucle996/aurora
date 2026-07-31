@@ -226,14 +226,13 @@ Mỗi instance chỉ có một operation non-terminal. HTTP create dedupe bằng
 unique trong workspace cùng canonical create intent; không có `Idempotency-Key`.
 Dataplane dedupe side effect bằng `instance_id + operation_id + generation`, không
 dựa vào code hoặc HTTP header.
-Mỗi operation có tối đa năm command attempt `0..4`. Lỗi retryable tạo command
-event mới nhưng giữ nguyên `operation_id`, `generation`, target revision và desired
-hash; chỉ `event_id` và `attempt` tăng. Backoff được persist cùng outbox
-`available_at`: lần retry 1–4 lần lượt có base `30s`, `2m`, `10m`, `30m`, cộng
-jitter 0–20%; crash không được tính lại hoặc reset clock. Manual retry tạo operation
-và generation mới, không tái dùng retry budget cũ. Khi attempt 4 vẫn retryable,
-operation thành `TERMINAL_FAILED` với `RETRY_BUDGET_EXHAUSTED` và last cause đã
-sanitize.
+Mỗi operation có tối đa năm delivery attempt `0..4`. Lỗi retryable giữ nguyên
+`event_id`, `operation_id`, `generation`, target revision, desired hash và exact
+protected bytes; Dataplane generic runtime chỉ tăng outer `attempt`. Backoff lần
+retry 1–4 có base `30s`, `2m`, `10m`, `30m`, cộng jitter 0–20%; crash không được
+tính lại hoặc reset clock. Manual retry re-drive cùng operation/generation/event,
+không decrypt customer input. Khi attempt 4 vẫn retryable, operation thành
+`TERMINAL_FAILED` với `RETRY_BUDGET_EXHAUSTED` và last cause đã sanitize.
 
 Result phải khớp source command event, instance, operation, generation, attempt,
 target revision, bundle/contract/desired hash và Zone; stale result bị ignore có
@@ -286,21 +285,21 @@ coi unused schema key là lỗi business. Literal hay operator tự generate là
 viết, không phải source branch của platform.
 Handler reject unknown/type/range/size, canonicalize và tạo entity/hash; service/repository không
 validate lại. List giữ order, set sort/dedupe; retry không đưa timestamp/random/attempt vào hash.
-Sau validation, full parameter map được seal thành Zone-bound opaque `parameter_envelope`; durable
-instance revision giữ envelope + digest, không giữ raw map. Outbox `payload BYTEA` là toàn bộ
-Managed Service command Protobuf; `parameter_envelope` chỉ là một field ciphertext bên trong
-payload đó, không phải runtime record riêng. DP chỉ mở plaintext trong RAM của một execution để
-render, rồi quên nó; không ghi DB, Redis, NATS, Zone KV hay disk. Kubernetes là nơi giữ runtime
+Sau validation, full parameter map nằm trong inner Managed Service command; Controlplane serialize
+rồi HPKE-seal **toàn bộ command bytes** thành `ProtectedPayloadV1`. Durable instance revision và
+outbox giữ exact protected command + key ID + digest, không giữ raw map và không có nested field
+ciphertext. DP mở full command trong RAM của một execution rồi mới decode/render và quên plaintext;
+không ghi DB, Redis, NATS, Zone KV hay disk. Kubernetes là nơi giữ runtime
 config đã materialize: non-secret vào CRD/spec/ConfigMap theo YAML của SRE, sensitive value vào
-`v1/Secret` hoặc Secret do operator tạo. Nếu `db_name` là customer parameter thì ciphertext vẫn
-thuộc immutable desired revision để retry/reconcile reproducible, còn runtime value nằm ở
+`v1/Secret` hoặc Secret do operator tạo. Nếu `db_name` là customer parameter thì protected command
+vẫn thuộc immutable desired revision để retry/reconcile reproducible, còn runtime value nằm ở
 Kubernetes; value hard-code/operator-generated không cần xuất hiện trong envelope.
 Output V1 chỉ là typed observed metadata declared-safe, ví dụ host/port/database/
 TLS server name. DP chỉ report value do executor biết an toàn; không có arbitrary
 JSONPath, Secret read, SecretKeyRef, raw input, password/token, connection URI có
 credential hay API đọc Kubernetes Secret. Limit: 64 field, 64 KiB canonical
 document, 4 KiB/string, 64 list item, 128 enum value. Gate: golden
-canonical/hash/envelope và negative cases cho unknown/null/type/overflow/CIDR/duplicate/create-
+canonical/hash/protected-command và negative cases cho unknown/null/type/overflow/CIDR/duplicate/create-
 only/size; retry cùng input/context ra cùng hash.
 
 ## 11. S06 — Render policy
@@ -352,7 +351,7 @@ negative cases.
 
 **Status: CLOSED** — `Managed Services` là table-first list/quick detail, create flow catalog → configure → review và full instance detail. Customer chỉ chọn category/application/version; workspace/Zone/revision là read-only backend context.
 Form renderer chỉ support finite S05 widget/type registry; draft ở memory, clear khi scope/revision đổi, không raw YAML/parameter/local persistence. Confirm gửi code cùng canonical create intent, không có `Idempotency-Key`; manual submit lại cùng intent chỉ lấy instance/operation đã tồn tại. `ACCEPTED` không optimistic thành Ready.
-Detail tách desired/observed/operation; CP không decrypt/read-back `parameter_envelope`, nên update yêu cầu input document theo pinned revision thay vì prefill raw value cũ. Delete/retry chỉ theo action API. Query key dùng Console scope; publication chỉ wake-up/refetch, không merge business state.
+Detail tách desired/observed/operation; CP không decrypt/read-back protected command, nên update yêu cầu input document theo pinned revision thay vì prefill raw value cũ. Delete/retry chỉ theo action API. Query key dùng Console scope; publication chỉ wake-up/refetch, không merge business state.
 Managed Service realtime dùng stable `notification_id` UUIDv5(operation_id) như timeline ID cùng `status_version`, `resource_id` và `operation_id`; dedupe/fence theo `(notification_id,status_version)`, không operation ID đơn lẻ. Gate: schema/stale/scope/operation/retry/reconnect tests.
 
 P03 implementation chỉ mở discovery/form foundation; review dựng create intent trong
@@ -470,14 +469,14 @@ HTTP ingress; DP/JO dùng cùng code taxonomy trong Protobuf/result:
 | Nhóm/code | Nơi tạo | Disposition |
 | --- | --- | --- |
 | `REQUEST_INVALID`, `CATALOG_STALE`, `INSTANCE_CODE_CONFLICT`, `OPERATION_CONFLICT` | handler/repository | HTTP 400/409, không tạo command |
-| `SRE_TEMPLATE_INPUT_MISMATCH`, `K8S_APPLY_REJECTED`, `K8S_OWNERSHIP_CONFLICT`, `ZONE_PARAMETER_ENVELOPE_INVALID` | DP | terminal result, không auto-retry |
+| `SRE_TEMPLATE_INPUT_MISMATCH`, `K8S_APPLY_REJECTED`, `K8S_OWNERSHIP_CONFLICT`, `JOB_PROTECTED_PAYLOAD_INVALID` | DP | terminal result/sanitized DLQ, không auto-retry |
 | `K8S_API_UNAVAILABLE`, `K8S_CAPACITY_PENDING`, `K8S_READINESS_DEADLINE_EXCEEDED`, `ZONE_EXECUTOR_UNAVAILABLE` | DP | retryable result; CP tạo attempt kế tiếp nếu còn budget |
 | `COMMAND_CONTRACT_INVALID`, `COMMAND_ZONE_MISMATCH`, `COMMAND_HASH_MISMATCH` | JO/DP ingress | quarantine/DLQ rồi settle operation terminal bằng sanitized code |
 | `RESULT_FENCE_MISMATCH`, `RESULT_STALE_ATTEMPT` | JO/CP result inbox | ignore + metric/audit, không đổi state và không DLQ lại |
 | `RETRY_BUDGET_EXHAUSTED` | CP result settlement | terminal result sau attempt 4, giữ last sanitized cause |
 
 Raw Kubernetes/provider/database detail không đi qua taxonomy message. Mọi message
-cho API/timeline/DLQ bị bound 1 KiB và redact secret/manifest/envelope.
+cho API/timeline/DLQ bị bound 1 KiB và redact secret/manifest/ciphertext.
 
 Gate: route/request/response/error/auth/duplicate/backpressure semantics có test
 contract; duplicate create không tạo hai instance, missing trusted admin actor/proof
@@ -542,8 +541,8 @@ workspace/Zone snapshot, immutable `code`, display `name`, lifecycle,
 active/pending revision head, generation/revision sequence, `create_intent_hash`,
 bounded observed state/output và metadata version. Mỗi branch có
 `UNIQUE(workspace_id, code)`. `code` là K8s workload-name base, `name` không đi vào
-render. Instance revision giữ immutable opaque `parameter_envelope`, input/desired
-hash, blueprint revision/bundle/contract pin; raw
+render. Instance revision giữ immutable exact `protected_command_payload`,
+`payload_key_id`, payload/input/desired hash và blueprint revision/bundle/contract pin; raw
 canonical parameter map không vào DB. Operation cũng tách bảng theo branch và giữ
 target revision/hash, generation, retry parent, status/status version, bounded
 sanitized error và actor snapshot. `instance_id` của operation/result là immutable
@@ -558,17 +557,17 @@ Outbox là transport record của module, không phải customer aggregate, nên
 một `managed_service_outbox_records` theo shape Storage/Mail hiện có:
 
 ```text
-id, event_id, zone_id, job_topic, payload BYTEA,
+id, event_id, zone_id, job_topic, payload BYTEA, payload_key_id,
 owner_id, owner_type, actor_user_id,
 status, available_at, completed_at, job_version, resource_id,
 payload_schema_version, trace_id, idle,
 error_code, error_message, created_at, updated_at
 ```
 
-`available_at` là durable retry clock; initial command có giá trị `created_at`, retry
-command mang `attempt` trong payload và thời điểm đã jitter/persist. Chỉ `payload` là
-Managed Service protobuf bytes; không thêm custom bridge/event-kind table. SRE
-catalog không ghi runtime outbox.
+`payload` là serialized `ProtectedPayloadV1`, không phải plaintext Managed Service
+protobuf. Delivery retry giữ cùng outbox/event/protected bytes và chỉ đổi outer attempt
+tại Dataplane generic runtime; JO không rebuild ciphertext. SRE catalog không ghi
+runtime outbox.
 
 Repository mutation là một CTE atomic. Lock order customer cố định:
 
@@ -580,18 +579,18 @@ Create serialize `(workspace_id, code)`, compare canonical create intent rồi i
 instance + initial revision + operation + outbox cùng commit. Update config dùng
 expected active generation, tạo revision/generation/operation/outbox mới; rename chỉ
 đổi display name. Delete chuyển `DELETING` + delete operation/outbox, không rollback
-ACTIVE. Manual retry tạo operation/generation mới và không tạo revision config mới.
+ACTIVE. Manual retry re-drive cùng operation/generation/event và exact protected
+command; nó không tạo revision config mới hoặc yêu cầu CP decrypt customer values.
 Result inbox unique `result_event_id` và unique source command `(operation_id,
 attempt, source_command_event_id)`; duplicate/stale result không mutate desired state.
 Result settlement là một CTE: insert inbox → lock instance/operation → verify all
-fences → update observed snapshot → finalise operation/lifecycle hoặc insert retry
-outbox có `available_at`. DELETE success atomically ghi deletion fence rồi hard-delete
+fences → update observed snapshot → finalise operation/lifecycle. DELETE success atomically ghi deletion fence rồi hard-delete
 instance/revision; fence giữ tới sau Kafka retry/DLQ/reconcile window và không cấm
 reuse code.
 
 Invariant: revision payload/hash immutable, active/pending head cùng instance và
 không trùng nhau, một operation non-terminal mỗi instance, result khớp instance +
-operation + generation + attempt + source event + revision/hash, error không raw
+operation + generation + source event + revision/hash, error không raw
 provider detail. Không lưu DB: rendered manifest, Kubernetes object/live metric,
 worker lease, temporary render, raw result payload hay plaintext secret.
 
@@ -618,28 +617,25 @@ dùng `acks=all`. JO chỉ advance LSN sau durable ACK. Crash sau ACK trước L
 duplicate command an toàn; command key là `instance_id` (`resource_id`), nên ordering
 chỉ được hứa theo instance, không phải globally.
 
-Retry delay vẫn là một phần của cùng dispatcher, không phải outbox relay thứ hai.
-Khi result retryable, CP result-settlement CTE insert outbox record mới với
-`available_at` đã persist. CDC là admission path; record chưa đến hạn không publish
-và LSN có thể advance. Một due-retry scan bounded, lease/fence và chỉ đọc đúng module
-outbox `PENDING + available_at <= now()` của JO dispatcher là recovery/timer path để
-không mất retry khi JO restart; nó không tạo aggregate, không thay desired state và
-không bypass CDC. Kafka publish/DLQ/CP terminal settlement luôn xong trước consumer
-offset/dispatcher checkpoint tương ứng.
+Delivery retry thuộc generic Dataplane job runtime: publish `attempt+1` với đúng
+`job_id` và exact protected bytes trước khi settle source offset. CP/JO không tạo outbox
+event mới, không reconstruct command từ business row và không cần due-retry scanner.
+Kafka publish/DLQ/CP terminal settlement luôn xong trước consumer offset/dispatcher
+checkpoint tương ứng.
 
 Command dùng outer platform envelope hiện có và inner contract mới:
 
 | Layer | Exact contract |
 | --- | --- |
-| `JobCommandV1` | `job_id = command_event_id`, `job_version=1`, `attempt=0..4`, `job_topic=managed_service.instance.execute`, `source_domain=MANAGED_SERVICE`, `resource_id=instance_id`, `target_zone_id`, payload schema/version, traceparent/tracestate. Kafka key là UUID `instance_id`, không phải `job_id`. |
-| `ManagedServiceCommandV1` payload | `command_event_id` (phải bằng outer `job_id`), `operation_id`, `instance_id`, `owner_type`, `owner_id`, `workspace_id`, immutable `instance_code`, `operation_kind`, `generation`, `attempt`, `instance_revision_id`, `blueprint_revision_id`, canonical `template_yaml`/component contract, `bundle_hash`, `contract_hash`, `input_hash`, `desired_spec_hash`, opaque Zone-bound `parameter_envelope` + digest, schema version và timestamp. |
+| `JobCommandV1` | `job_id = command_event_id`, `job_version=1`, `attempt=0..4`, `job_topic=managed_service.instance.execute`, `source_domain=MANAGED_SERVICE`, `resource_id=instance_id`, `target_zone_id`, payload schema/version, traceparent/tracestate, `payload_encoding=HPKE...`. Kafka key là UUID `instance_id`, không phải `job_id`; `payload` là serialized `ProtectedPayloadV1`. |
+| `ManagedServiceCommandV1` plaintext bên trong protection | `command_event_id` (bằng outer `job_id`), `operation_id`, `instance_id`, `owner_type`, `owner_id`, `workspace_id`, immutable `instance_code`, `operation_kind`, `generation`, `instance_revision_id`, `blueprint_revision_id`, canonical `template_yaml`/component contract, `bundle_hash`, `contract_hash`, `input_hash`, `desired_spec_hash`, canonical `parameter_values` + digest, schema version và timestamp. Inner không có delivery attempt. |
 | `JobExecutionResultProto` | outer `job_id = source_command_event_id`, same job topic/domain/attempt/Zone route and trace context; DP publishes result with `instance_id` copied from verified source command as Kafka key. |
 | `ManagedServiceResultV1` payload | unique `result_event_id`, `source_command_event_id`, `operation_id`, `instance_id`, generation, attempt, target revision, bundle/contract/desired hash, Zone, outcome `SUCCEEDED|RETRYABLE_FAILURE|TERMINAL_FAILURE`, taxonomy code, bounded sanitized message, safe observed snapshot/version và schema version. |
 
 Static `template_yaml` là internal SRE artifact, không public catalog response và không
 chứa literal Kubernetes Secret credential; nó phải hash-match revision trước render.
-`parameter_envelope` vẫn là ciphertext nested field duy nhất chứa customer input.
-JO/DP reject/quarantine malformed protobuf, unsupported version, source/domain route
+Không có nested ciphertext field. JO validate public protection envelope và relay exact
+bytes; DP mở full payload rồi mới validate inner protobuf. JO/DP reject/quarantine malformed protobuf, unsupported version, source/domain route
 mismatch, cross-Zone command, hash mismatch hoặc oversize record. Stale result fence
 mismatch chỉ ignore + metric/audit; malformed command/result đi `aurora.jobs.dlq.v1`
 rồi CP settle terminal khi source operation còn current, không retry vô hạn.
@@ -658,12 +654,12 @@ DLQ and Zone ACL tests; không có Managed Service runtime event đi tới Conso
 **Status: CLOSED**
 
 Dataplane validate outer/inner Kafka Protobuf, schema, route Zone, source event,
-revision/bundle/contract/desired hash, parameter-envelope digest và payload size trước render;
-execution fence là `instance_id + operation_id + generation`; `attempt` chỉ correlate
+revision/bundle/contract/desired hash, parameter-values digest và payload size trước render;
+execution fence là `instance_id + operation_id + generation`; outer `attempt` chỉ correlate
 source command/result và không được làm yếu dedupe side effect. Dataplane resolve
 exact command bundle, không fetch latest và không nhận owner/permission override. Nó
-chỉ materialize `parameter_envelope` in RAM của một execution under the Zone-local
-runtime secret contract, render
+chỉ HPKE-open full protected command trong RAM của một execution, decode parameter
+values rồi render
 YAML AST, gửi materialized config tới Kubernetes API rồi quên plaintext; không
 log/report/DB/Redis/NATS/Zone KV/disk raw map, rendered manifest, database name hay
 password.
@@ -788,9 +784,9 @@ riêng của cùng revision. CP dùng schema để validate payload ở HTTP bou
 parse YAML draft để kiểm tra cú pháp, static metadata/reserved policy, component
 contract và literal Secret ban. CP không enumerate `!aurora/param`, không biết template
 dùng input key nào và không suy luận một value là secret hay non-secret. Sau
-canonicalization, full map trở thành opaque envelope bound
-với trusted `zone_id + instance_id + operation_id + generation + revision + bundle_hash`.
-Chỉ envelope/digest đi vào instance revision, outbox, JO và Kafka.
+canonicalization, full map đi vào inner command; complete command bytes được HPKE-seal
+với trusted `zone_id + source_domain + job_topic + resource_id + job_version + payload_schema_version`.
+Chỉ protected payload/key ID/digest đi vào instance revision, outbox, JO và Kafka.
 
 `zone_id` là routing/binding context từ Envoy, không là public-key record và không có
 keyset, attestation, rotation hay CP→Zone metadata projection riêng cho Managed
@@ -900,8 +896,7 @@ Kafka down: checkpoint không advance, retry bounded, alert lag.
 Dataplane down: command giữ Kafka, không success giả.
 Kubernetes down: không success giả; result retryable hoặc reconcile/redelivery sau
 backoff bền vững.
-Zone-bound parameter envelope invalid: fail-close `ZONE_PARAMETER_ENVELOPE_INVALID`,
-không plaintext fallback.
+Protected payload/AAD/auth invalid: terminal sanitized DLQ, không plaintext fallback.
 Victoria/Public Edge down: chỉ stream retryable/stale, không đổi operation/timeline.
 
 Duplicate HTTP key trả operation gốc.
@@ -911,8 +906,8 @@ Stale worker bị fencing reject.
 Retired revision vẫn phục vụ instance đã pin theo policy.
 
 Drill: kill CP sau DB commit; kill JO sau Kafka publish; redeliver command; restart
-JO trước `available_at`; delay Zone; sai hash/Zone; unknown parameter; partial apply;
-malformed Zone-bound envelope; đầy retry queue/DLQ; delete finalizer treo;
+JO trước Kafka ACK; delay Zone; sai hash/Zone; unknown parameter; partial apply;
+malformed protected payload; đầy retry queue/DLQ; delete finalizer treo;
 Victoria/edge outage và forged scope ticket.
 
 Gate: mỗi drill có expected state, evidence, rollback, owner và không cần sửa DB thủ công để phục hồi normal flow.
@@ -970,7 +965,7 @@ S00–S14 đã trả lời và không còn quyết định thiết kế mở:
 * Outbox commit, Kafka ordering, JO checkpoint ra sao?
 * Kafka key, retry, DLQ, Zone ACL là gì?
 * Duplicate command và stale result xử lý thế nào?
-* Zone-local envelope materialization sẽ lấy runtime secret ở đâu khi implementation bắt đầu?
+* Zone-local protected command materialization dùng read-only keyring file, nhưng CSI/operator source và rotation rollout vẫn cần staging evidence.
 * Cluster-scoped SRE platform artifact sẽ có lifecycle riêng thế nào?
 * Observed status nào evidence, status nào business state?
 * Reconcile có fencing/bounded budget chưa?

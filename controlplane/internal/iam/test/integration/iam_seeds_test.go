@@ -19,10 +19,11 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		t.Fatalf("read IAM bootstrap seed: %v", err)
 	}
 
-	// [COMMENT]: Năm bootstrap RoleEntry có hex literal không rỗng; workspace seed dùng binary rỗng riêng.
-	matches := regexp.MustCompile(`decode\('([0-9a-f]+)', 'hex'\)`).FindAllStringSubmatch(string(sql), -1)
-	if len(matches) != 5 {
-		t.Fatalf("expected 5 precompiled bootstrap RoleEntry values, got %d", len(matches))
+	// [COMMENT]: Một RoleEntry có thể nối thêm field protobuf khi catalog quyền
+	// tăng trưởng. Test gom toàn bộ fragment của đúng user trước khi unmarshal.
+	blocks := regexp.MustCompile(`(?s)((?:decode\('[0-9a-f]+', 'hex'\)(?:\s*\|\|\s*)?)+)\s*FROM users u\s*CROSS JOIN roles r\s*WHERE u\.username = '([^']+)'`).FindAllStringSubmatch(string(sql), -1)
+	if len(blocks) != 5 {
+		t.Fatalf("expected 5 precompiled bootstrap RoleEntry expressions, got %d", len(blocks))
 	}
 
 	allPermissions := []string{
@@ -61,6 +62,7 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		"billing:subscription:write",
 		"billing:credit:adjust",
 		"managed-service:catalog:read",
+		"managed-service:instance:read",
 	}
 	readOnlyPermissions := []string{
 		"iam:users:read",
@@ -78,6 +80,7 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		"billing:wallet:read",
 		"billing:ledger:read",
 		"managed-service:catalog:read",
+		"managed-service:instance:read",
 	}
 	billingPermissions := []string{
 		"billing:plan:read",
@@ -102,7 +105,15 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(tt.username, func(t *testing.T) {
-			binaryEntry, err := hex.DecodeString(matches[i][1])
+			if blocks[i][2] != tt.username {
+				t.Fatalf("bootstrap RoleEntry order mismatch: got %q", blocks[i][2])
+			}
+			hexFragments := regexp.MustCompile(`decode\('([0-9a-f]+)', 'hex'\)`).FindAllStringSubmatch(blocks[i][1], -1)
+			var encoded strings.Builder
+			for _, fragment := range hexFragments {
+				encoded.WriteString(fragment[1])
+			}
+			binaryEntry, err := hex.DecodeString(encoded.String())
 			if err != nil {
 				t.Fatalf("decode seeded RoleEntry hex: %v", err)
 			}

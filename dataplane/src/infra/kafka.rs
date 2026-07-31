@@ -481,8 +481,8 @@ mod tests {
             zone_id: vec![6; 16],
             instance_code: "orders-kafka".to_string(),
             generation: 1,
-            parameter_envelope: b"fixture-envelope-v1".to_vec(),
-            parameter_envelope_sha256: vec![7; 32],
+            parameter_values: b"fixture-values-v1".to_vec(),
+            parameter_values_sha256: vec![7; 32],
             schema_version: 1,
             ..Default::default()
         };
@@ -490,6 +490,6 @@ mod tests {
         let decoded = managed_service_proto::ManagedServiceCommandV1::decode(bytes.as_slice())
             .expect("decode canonical Managed Service command");
         assert_eq!(decoded.zone_id, vec![6; 16]);
-        assert_eq!(decoded.parameter_envelope, b"fixture-envelope-v1");
+        assert_eq!(decoded.parameter_values, b"fixture-values-v1");
     }
 }

@@ -1,8 +1,8 @@
-# Aurora Proto Contracts — Managed Service Registry
+# Aurora Proto Contracts — Platform Transport Registry
 
-> **Status:** P01 foundation. `managed_service.proto` is the canonical root source and
-> JO/Dataplane build scripts generate its bindings. Route registration, producer/consumer
-> activation and compatibility CI remain later-phase work.
+> **Status:** `platform_transport.proto`, `managed_service.proto` and `zone_report.proto` are canonical root
+> sources. Controlplane, JO and Dataplane must generate bindings from this directory;
+> service-local copies are forbidden.
 >
 > This document is the canonical registry for the future inner Managed Service protobuf.
 > It prevents JO/Dataplane copies from independently choosing package, field number or
@@ -12,22 +12,39 @@
 
 | Concern | Decision |
 | --- | --- |
-| Canonical source path | `contracts/proto/managed_service.proto` |
-| Proto package | `aurora.managedservice.v1` |
+| Canonical source path | `contracts/proto/platform_transport.proto`, `contracts/proto/managed_service.proto`, `contracts/proto/zone_report.proto` |
+| Proto packages | `aurora.transport.v1`, `aurora.managedservice.v1`, `zone` |
 | Canonical owners | Job Orchestrator + Dataplane transport owners; Controlplane owns business field semantics |
 | Consumers | JO and Dataplane generate from the exact root source; Controlplane serializes/deserializes through the same generated contract binding |
 | Local copies | Forbidden in `job-orchestrator/proto/`, `dataplane/proto/` or any service-local `proto/` directory |
 | Change control | Append-only field evolution; changes require CP + JO + DP review and descriptor compatibility evidence |
 
-The existing outer envelopes are **not** moved by Managed Service P00:
+The platform outer command is now canonical too:
 
-| Outer contract | Current source | Managed Service use |
+| Contract | Canonical source | Use |
 | --- | --- | --- |
-| `aurora.transport.v1.JobCommandV1` | byte-identical `job-orchestrator/proto/platform_transport.proto` and `dataplane/proto/platform_transport.proto` | JO → DP outer command envelope |
+| `aurora.transport.v1.JobCommandV1` | `contracts/proto/platform_transport.proto` | JO → DP outer command envelope |
+| `aurora.transport.v1.ProtectedPayloadV1` | `contracts/proto/platform_transport.proto` | Opaque CP outbox payload and byte-identical JO relay |
+| `zone.ZoneReport` | `contracts/proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
 | `job_lifecycle.JobExecutionResultProto` | `job-orchestrator/proto/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |
 
-Their existing platform ownership/migration is outside this module. Managed Service only
-pins how it fills them; it does not copy or modify them in P00.
+Every Zone-bound `JobCommandV1.payload` is serialized `ProtectedPayloadV1`. Controlplane
+serializes one complete domain command then seals that complete byte slice. JO validates only
+public envelope metadata and never decrypts; Dataplane opens it before decoding the domain
+command. Field-level or nested payload encryption is forbidden.
+
+`ProtectedPayloadV1` pins HPKE Base mode with X25519/HKDF-SHA256/AES-256-GCM. Its AAD is
+versioned and contains `key_id`, recipient `zone_id`, `source_domain`, `job_topic`,
+`resource_id`, `job_version` and `payload_schema_version`. Delivery attempt, trace context,
+Kafka offset and reconcile generation are excluded so an at-least-once retry can reuse the exact
+ciphertext without weakening route authentication. The canonical Go-seal/Rust-open vector lives
+at `contracts/testdata/protected_payload_v1.json`.
+
+Private keys remain Zone-local in a read-only Dataplane mount. Controlplane stores only public
+X25519 keys in Hierarchy. A key becomes producer-ready only after the Zone report proves every
+fresh Dataplane replica loaded the same `key_id + public-key fingerprint`; stale readiness makes
+new mutations fail closed. Retiring a key is rejected while any retained outbox/projection still
+references it.
 
 ## 2. Route, topic and outer envelope registry
 
@@ -41,11 +58,12 @@ pins how it fills them; it does not copy or modify them in P00.
 | Command/result Kafka key | raw UUID `instance_id` |
 | Outer `JobCommandV1.job_id` | raw UUID `command_event_id` |
 | Outer `JobCommandV1.resource_id` | canonical UUID string `instance_id` |
-| Outer `JobCommandV1.attempt` | `0..4`; must equal inner attempt |
+| Outer `JobCommandV1.attempt` | bounded delivery attempt; no inner copy because retry reuses exact protected bytes |
 | Outer `JobExecutionResultProto.job_id` | raw UUID `source_command_event_id` |
 | Outer result status | `SUCCEEDED` for inner success; `FAILED` for inner retryable/terminal failure |
 | Outer/inner schema version | `1` for the initial contract |
-| Maximum outer record/payload | 1,000,000 bytes, enforced producer + broker + consumer |
+| Maximum plaintext payload | 1,000,000 bytes, enforced producer + consumer |
+| Protected payload bound | 1,000,256 bytes, enforced JO + Dataplane before decode |
 
 Managed Service never emits outer `PROCESSING`; JO creates the durable timeline
 `PROCESSING` only after a command Kafka ACK. A result must be terminal and carry the
@@ -122,7 +140,7 @@ message ManagedServiceCommandV1 {
   string instance_code = 8;
   ManagedServiceOperationKindV1 operation_kind = 9;
   uint64 generation = 10;
-  uint32 attempt = 11;
+  reserved 11;
   bytes instance_revision_id = 12;
   bytes blueprint_revision_id = 13;
   string template_yaml = 14;
@@ -131,8 +149,8 @@ message ManagedServiceCommandV1 {
   bytes component_contract_hash = 17;
   bytes input_hash = 18;
   bytes desired_spec_hash = 19;
-  bytes parameter_envelope = 20;
-  bytes parameter_envelope_sha256 = 21;
+  bytes parameter_values = 20;
+  bytes parameter_values_sha256 = 21;
   uint32 schema_version = 22;
   int64 issued_at_unix_ms = 23;
   string traceparent = 24;
@@ -177,13 +195,13 @@ message ManagedServiceResultV1 {
 | `owner_*`, `workspace_id`, `zone_id` | Snapshot from trusted Controlplane state; DP compares it against authenticated Zone/command route but never derives authorization from it |
 | `generation`, revision IDs and hashes | Exact execution fence. Result must echo source command values; any mismatch is stale/quarantine, never a lifecycle mutation |
 | `template_yaml` + `components` | Pinned immutable SRE artifact/contract only. It is not an HTTP catalog response and must hash-match `bundle_hash` + `component_contract_hash` |
-| `parameter_envelope` | Opaque payload bound to the trusted `zone_id`; no per-Zone public-key/key-rotation record is carried by this contract. Neither JO, result, DLQ nor observability decrypts/logs it |
+| `parameter_values` | Canonical values are plaintext only inside the inner command; the complete serialized command is protected by outer `ProtectedPayloadV1` and opened only in Dataplane memory |
 | `safe_observed_output` | Only output declared safe in the published revision. It cannot contain raw parameter, rendered YAML, Secret, credential-bearing URI or arbitrary provider payload |
 | `traceparent`/`tracestate` | W3C context propagated from outer envelope; malformed context is rejected/sanitized by boundary policy, not reconstructed from user input |
 
-`schema_version` must be `1` in both inner messages for V1. `attempt` must be
-`0..4`, equal outer attempt and be correlated with `source_command_event_id`; it is not
-part of Kubernetes external-side-effect dedupe. `instance_id + operation_id + generation`
+`schema_version` must be `1` in both inner messages for V1. Delivery `attempt` exists only
+in outer `JobCommandV1`; retries preserve the exact inner ciphertext and change outer delivery
+metadata only. It is not part of Kubernetes external-side-effect dedupe. `instance_id + operation_id + generation`
 is the execution fence retained through the command/result/DLQ replay window.
 
 `error_code` is a stable taxonomy identifier. `sanitized_message` is bounded diagnostic
@@ -195,12 +213,13 @@ budget remains; at attempt 4 Controlplane settles terminal failure.
 
 This P01 change-set implements the following local gates:
 
-1. Add only `contracts/proto/managed_service.proto`; do not add service-local copies.
-2. Make JO and Dataplane `build.rs` compile that root source with root include path.
+1. Keep `managed_service.proto`, `platform_transport.proto` and `zone_report.proto` only under `contracts/proto/`;
+   do not add service-local copies.
+2. Make JO and Dataplane `build.rs` compile those root sources with the root include path.
 3. Add Controlplane binding from the same canonical contract rather than a
    handwritten protobuf byte layout.
-4. Keep a Controlplane reflection/round-trip test that pins field numbers 20/21 and the
-   reserved result field 14; incompatible descriptor evolution fails that test.
+4. Keep a Controlplane reflection/round-trip test that pins parameter field numbers 20/21,
+   reserved command field 11 and reserved result field 14; incompatible evolution fails.
 5. Add JO and DP generated-binding round-trip tests using the same fixed Zone-bound
    command fixture while route admission remains disabled.
 

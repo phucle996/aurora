@@ -3,8 +3,8 @@ package storageRepoInterface
 import (
 	"context"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: TenantBucketRepo định nghĩa các phương thức giao tiếp CSDL cho Bucket Doanh nghiệp (Enterprise).

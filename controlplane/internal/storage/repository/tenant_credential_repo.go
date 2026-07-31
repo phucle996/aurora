@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"controlplane/internal/config"
+	jobpayload "controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
@@ -19,18 +20,25 @@ type TenantCredentialRepoImpl struct {
 	db        *pgxpool.Pool
 	storage   string // schema storage
 	hierarchy string // schema hierarchy
+	protector jobpayload.Protector
 }
 
 // [COMMENT]: NewTenantCredentialRepo khởi tạo repository quản lý credentials cho bucket doanh nghiệp.
-func NewTenantCredentialRepo(db *pgxpool.Pool, cfg *config.Config) storageRepoInterface.TenantCredentialRepo {
+func NewTenantCredentialRepo(db *pgxpool.Pool, cfg *config.Config, protector jobpayload.Protector) storageRepoInterface.TenantCredentialRepo {
 	return &TenantCredentialRepoImpl{
 		db:        db,
 		storage:   cfg.SchemaSQL.Storage,
 		hierarchy: cfg.SchemaSQL.Hierarchy,
+		protector: protector,
 	}
 }
 
 func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEntity.TenantCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	m := storageModel.TenantCredentialEntityToModel(cred)
 	mo := storageModel.OutboxEntityToModel(outbox)
 
@@ -44,11 +52,11 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
-		) VALUES ($7, $8, $9, $10, $11, $21, $12, $13, $14, $15, $16, $17, $18, $19, $20, $22)
+			error_code, error_message, actor_user_id, payload_key_id
+		) VALUES ($7, $8, $9, $10, $11, $21, $12, $13, $14, $15, $16, $17, $18, $19, $20, $22, $23)
 	`, r.storage, r.storage)
 
-	_, err := r.db.Exec(ctx, query,
+	_, err = r.db.Exec(ctx, query,
 		m.ID,
 		m.BucketID,
 		m.AccessKey,
@@ -71,6 +79,7 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 		mo.ErrorMessage,
 		mo.OwnerType,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
 	)
 
 	if err != nil {
@@ -116,6 +125,11 @@ func (r *TenantCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uu
 }
 
 func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEntity.DeleteTenantCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	// [COMMENT]: CTE 3 bước nguyên tử:
@@ -137,9 +151,9 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
+			error_code, error_message, actor_user_id, payload_key_id
 		)
-		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20
+		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20, $21
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
@@ -165,6 +179,7 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 		mo.ErrorMessage,         // $18
 		mo.OwnerType,            // $19
 		mo.ActorUserID,          // $20
+		mo.PayloadKeyID,         // $21
 	)
 
 	if err != nil {

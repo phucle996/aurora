@@ -61,6 +61,22 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 			middleware.Authorize("managed-service:catalog:read", module.L1Registry, "*"),
 			module.PersonalCatalogVersionHandler.GetPersonalCatalogVersion,
 		)
+		personal.GET("/instances",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.ListPersonalInstances,
+		)
+		personal.GET("/instances/:code",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.GetPersonalInstance,
+		)
+		personal.GET("/instances/:code/operations",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.ListPersonalInstanceOperations,
+		)
+		personal.GET("/instances/:code/operations/:operation_id",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.GetPersonalInstanceOperation,
+		)
 	}
 
 	tenant := router.Group("/api/v1/tenant/managed-services")
@@ -72,6 +88,22 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		tenant.GET("/catalog/versions/:version_id",
 			middleware.Authorize("managed-service:catalog:read", module.L1Registry, "*"),
 			module.TenantCatalogVersionHandler.GetTenantCatalogVersion,
+		)
+		tenant.GET("/instances",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.TenantInstanceHandler.ListTenantInstances,
+		)
+		tenant.GET("/instances/:code",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.TenantInstanceHandler.GetTenantInstance,
+		)
+		tenant.GET("/instances/:code/operations",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.TenantInstanceHandler.ListTenantInstanceOperations,
+		)
+		tenant.GET("/instances/:code/operations/:operation_id",
+			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
+			module.TenantInstanceHandler.GetTenantInstanceOperation,
 		)
 	}
 }

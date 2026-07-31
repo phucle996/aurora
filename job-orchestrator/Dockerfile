@@ -3,6 +3,8 @@
 # ============================================================================
 # 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST AURORA-JOB-ORCHESTRATOR
 # ============================================================================
+# [COMMENT]: Build context phải là monorepo root để build.rs đọc canonical
+# contracts/proto mà không cần service-local proto copy.
 # [COMMENT]: Môi trường biên dịch Rust chính thức dựa trên Debian Bookworm
 FROM rust:bookworm AS builder
 WORKDIR /workspace
@@ -15,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/workspace/target/ \
     --mount=type=bind,source=.,target=/src \
     export CARGO_TARGET_DIR=/workspace/target && \
-    cargo build --manifest-path /src/Cargo.toml --release --bin aurora-job-orchestrator && \
+    cargo build --manifest-path /src/job-orchestrator/Cargo.toml --release --bin aurora-job-orchestrator && \
     cp /workspace/target/release/aurora-job-orchestrator /usr/local/bin/aurora-job-orchestrator
 
 # ============================================================================

@@ -8,6 +8,7 @@ mod infra;
 mod job_runtime;
 mod leader;
 mod observability;
+mod security;
 mod workerpool;
 
 use crate::observability::logger::Logger;

@@ -35,6 +35,9 @@ CREATE INDEX IF NOT EXISTS idx_mail_outbox_terminal_cleanup
 ON mail_outbox_records (completed_at, id)
 WHERE status IN ('SUCCEEDED', 'FAILED') AND completed_at IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS ix_mail_protected_projections_resource_head
+ON mail_protected_projections (resource_kind, resource_id, source_outbox_id DESC);
+
 CREATE INDEX IF NOT EXISTS ix_personal_mail_template_projection_tombstones_workspace
 ON personal_mail_template_projection_tombstones (workspace_id, template_id);
 

@@ -178,8 +178,24 @@ mod tests {
         command.payload_schema_version = 1;
         command.target_zone_id = uuid::Uuid::new_v4().to_string();
         command.transport_schema_version = 1;
-        let job =
-            ValidatedJob::decode(&command.encode_to_vec(), &command.target_zone_id, 3).unwrap();
+        command.payload_encoding = crate::infra::kafka::transport_proto::PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32;
+        let keyring = crate::security::jobpayload::PayloadKeyring::for_test();
+        command.payload = keyring.protect_for_test(
+            uuid::Uuid::parse_str(&command.target_zone_id).unwrap(),
+            &command.source_domain,
+            &command.job_topic,
+            &command.resource_id,
+            command.job_version,
+            command.payload_schema_version,
+            &[1],
+        );
+        let job = ValidatedJob::decode(
+            &command.encode_to_vec(),
+            &command.target_zone_id,
+            3,
+            &keyring,
+        )
+        .unwrap();
         assert!(validate(&request, &job).is_err());
     }
 }

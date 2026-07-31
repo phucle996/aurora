@@ -13,12 +13,16 @@ import (
 	serviceimpl "controlplane/internal/managedservice/service"
 	"controlplane/internal/managedservice/transport/http/handler"
 	"controlplane/internal/observability"
+	jobpayload "controlplane/internal/security"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Module struct {
 	L1Registry *cacheengine.CacheRegistry
+	// PayloadProtector is module infrastructure for P04 mutations. It stays at
+	// the construction boundary; services do not probe dependencies per flow.
+	PayloadProtector jobpayload.Protector
 
 	CategoryRepository               managedrepo.CategoryRepository
 	DefinitionRepository             managedrepo.DefinitionRepository
@@ -28,8 +32,10 @@ type Module struct {
 	AuditRepository                  managedrepo.AuditRepository
 	PersonalCatalogRepository        managedrepo.PersonalCatalogRepository
 	PersonalCatalogVersionRepository managedrepo.PersonalCatalogVersionRepository
+	PersonalInstanceRepository       managedrepo.PersonalInstanceRepository
 	TenantCatalogRepository          managedrepo.TenantCatalogRepository
 	TenantCatalogVersionRepository   managedrepo.TenantCatalogVersionRepository
+	TenantInstanceRepository         managedrepo.TenantInstanceRepository
 
 	CategoryService               managedservice.CategoryService
 	DefinitionService             managedservice.DefinitionService
@@ -39,8 +45,10 @@ type Module struct {
 	AuditService                  managedservice.AuditService
 	PersonalCatalogService        managedservice.PersonalCatalogService
 	PersonalCatalogVersionService managedservice.PersonalCatalogVersionService
+	PersonalInstanceService       managedservice.PersonalInstanceService
 	TenantCatalogService          managedservice.TenantCatalogService
 	TenantCatalogVersionService   managedservice.TenantCatalogVersionService
+	TenantInstanceService         managedservice.TenantInstanceService
 
 	CategoryHandler               *handler.CategoryHandler
 	DefinitionHandler             *handler.DefinitionHandler
@@ -50,11 +58,13 @@ type Module struct {
 	AuditHandler                  *handler.AuditHandler
 	PersonalCatalogHandler        *handler.PersonalCatalogHandler
 	PersonalCatalogVersionHandler *handler.PersonalCatalogVersionHandler
+	PersonalInstanceHandler       *handler.PersonalInstanceHandler
 	TenantCatalogHandler          *handler.TenantCatalogHandler
 	TenantCatalogVersionHandler   *handler.TenantCatalogVersionHandler
+	TenantInstanceHandler         *handler.TenantInstanceHandler
 }
 
-func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.CacheRegistry, otel *observability.OTel) (*Module, error) {
+func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.CacheRegistry, otel *observability.OTel, payloadProtector jobpayload.Protector) (*Module, error) {
 	// [COMMENT]: Dependency health is an app-construction invariant. Workflow
 	// services therefore never branch on nil infrastructure at request time.
 	if cfg == nil {
@@ -68,6 +78,9 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.Ca
 	}
 	if otel == nil {
 		return nil, errors.New("managed service module: observability is nil")
+	}
+	if payloadProtector == nil {
+		return nil, errors.New("managed service module: payload protector is nil")
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.ManagedService)
 	if !regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`).MatchString(schema) {
@@ -86,8 +99,10 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.Ca
 	auditRepository := repositoryimpl.NewAuditRepository(db, schema)
 	personalCatalogRepository := repositoryimpl.NewPersonalCatalogRepository(db, schema, hierarchySchema)
 	personalCatalogVersionRepository := repositoryimpl.NewPersonalCatalogVersionRepository(db, schema, hierarchySchema)
+	personalInstanceRepository := repositoryimpl.NewPersonalInstanceRepository(db, schema, hierarchySchema, payloadProtector)
 	tenantCatalogRepository := repositoryimpl.NewTenantCatalogRepository(db, schema, hierarchySchema)
 	tenantCatalogVersionRepository := repositoryimpl.NewTenantCatalogVersionRepository(db, schema, hierarchySchema)
+	tenantInstanceRepository := repositoryimpl.NewTenantInstanceRepository(db, schema, hierarchySchema, payloadProtector)
 
 	workflowMetrics := otel.WorkflowRecorder("managedservice")
 	categoryService := serviceimpl.NewCategoryService(categoryRepository, workflowMetrics)
@@ -98,25 +113,32 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.Ca
 	auditService := serviceimpl.NewAuditService(auditRepository, workflowMetrics)
 	personalCatalogService := serviceimpl.NewPersonalCatalogService(personalCatalogRepository, workflowMetrics)
 	personalCatalogVersionService := serviceimpl.NewPersonalCatalogVersionService(personalCatalogVersionRepository, workflowMetrics)
+	personalInstanceService := serviceimpl.NewPersonalInstanceService(personalInstanceRepository, workflowMetrics)
 	tenantCatalogService := serviceimpl.NewTenantCatalogService(tenantCatalogRepository, workflowMetrics)
 	tenantCatalogVersionService := serviceimpl.NewTenantCatalogVersionService(tenantCatalogVersionRepository, workflowMetrics)
+	tenantInstanceService := serviceimpl.NewTenantInstanceService(tenantInstanceRepository, workflowMetrics)
 
 	return &Module{
 		L1Registry:         cacheEngine,
+		PayloadProtector:   payloadProtector,
 		CategoryRepository: categoryRepository, DefinitionRepository: definitionRepository,
 		VersionRepository: versionRepository, BlueprintRepository: blueprintRepository,
 		RevisionRepository: revisionRepository, AuditRepository: auditRepository,
 		PersonalCatalogRepository:        personalCatalogRepository,
 		PersonalCatalogVersionRepository: personalCatalogVersionRepository,
+		PersonalInstanceRepository:       personalInstanceRepository,
 		TenantCatalogRepository:          tenantCatalogRepository,
 		TenantCatalogVersionRepository:   tenantCatalogVersionRepository,
+		TenantInstanceRepository:         tenantInstanceRepository,
 		CategoryService:                  categoryService, DefinitionService: definitionService,
 		VersionService: versionService, BlueprintService: blueprintService,
 		RevisionService: revisionService, AuditService: auditService,
 		PersonalCatalogService:        personalCatalogService,
 		PersonalCatalogVersionService: personalCatalogVersionService,
+		PersonalInstanceService:       personalInstanceService,
 		TenantCatalogService:          tenantCatalogService,
 		TenantCatalogVersionService:   tenantCatalogVersionService,
+		TenantInstanceService:         tenantInstanceService,
 		CategoryHandler:               handler.NewCategoryHandler(categoryService),
 		DefinitionHandler:             handler.NewDefinitionHandler(definitionService),
 		VersionHandler:                handler.NewVersionHandler(versionService),
@@ -125,7 +147,9 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.Ca
 		AuditHandler:                  handler.NewAuditHandler(auditService),
 		PersonalCatalogHandler:        handler.NewPersonalCatalogHandler(personalCatalogService),
 		PersonalCatalogVersionHandler: handler.NewPersonalCatalogVersionHandler(personalCatalogVersionService),
+		PersonalInstanceHandler:       handler.NewPersonalInstanceHandler(personalInstanceService),
 		TenantCatalogHandler:          handler.NewTenantCatalogHandler(tenantCatalogService),
 		TenantCatalogVersionHandler:   handler.NewTenantCatalogVersionHandler(tenantCatalogVersionService),
+		TenantInstanceHandler:         handler.NewTenantInstanceHandler(tenantInstanceService),
 	}, nil
 }

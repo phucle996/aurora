@@ -39,7 +39,12 @@ message HypervisorNode {
 message Workloads {
     MailWorkload mail = 1;
     repeated HypervisorNode hypervisors = 2;
-    StorageWorkload storage = 3; // [NEW]: Thêm thông tin giám sát lưu trữ (MinIO Cluster)
+    StorageWorkload storage = 3;
+}
+
+message LoadedPayloadKey {
+    bytes key_id = 1;
+    bytes public_key_fingerprint = 2;
 }
 
 message ZoneReport {
@@ -47,4 +52,11 @@ message ZoneReport {
     int64 timestamp = 2;
     DataplaneCluster dataplane_cluster = 3;
     Workloads workloads = 4;
+    // The Zone leader reports only keys/fingerprints shared by every fresh
+    // node snapshot. JO matches this public readiness observation against the
+    // Hierarchy key registry before Controlplane may select an ACTIVE key.
+    repeated LoadedPayloadKey loaded_payload_keys = 5;
+    // Monotonic Zone-KV lease fencing token rejects a report from a leader
+    // that lost ownership before its Kafka publish reached JO.
+    uint64 leader_fencing_token = 6;
 }

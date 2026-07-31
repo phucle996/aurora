@@ -56,7 +56,7 @@ Prefix mặc định là `aurora`.
 
 | Topic | Key | Producer | Consumer | Policy |
 |---|---|---|---|---|
-| `aurora.jobs.commands.zone.<zone_uuid>.v1` | `job_id` | JO | DP trong Zone | 6+ partitions, delete retention |
+| `aurora.jobs.commands.zone.<zone_uuid>.v1` | stable `resource_id` bytes | JO | DP trong Zone | 6+ partitions, delete retention |
 | `aurora.jobs.results.v1` | `job_id` for existing workloads; Managed Service V1 will use `instance_id` | DP | JO | 12+ partitions, delete retention |
 | `aurora.jobs.dlq.v1` | DLQ `event_id` | DP/JO | SRE tooling | delete retention dài |
 | `aurora.zone.metadata.queries.v1` | `zone_id` | DP | JO | delete retention |
@@ -70,15 +70,19 @@ Per-Zone metadata topic dùng một partition vì record là full aggregate snap
 
 ## 3. Wire contracts
 
-`platform_transport.proto` phải byte-identical giữa Dataplane và JO:
+`contracts/proto/platform_transport.proto` và `contracts/proto/zone_report.proto` là canonical
+source chung; service-local copy bị cấm:
 
+- `ProtectedPayloadV1`
 - `JobCommandV1`
 - `ZoneMetadataQueryV1`
 - `ZoneMetadataSnapshotV1`
 - `StorageBucketSizesSnapshotV1`
 - `DeadLetterRecordV1`
+- `ZoneReport`
+- `LoadedPayloadKey`
 
-`job_result.proto`, `zone_report.proto` và `mail_runtime.proto` phải giữ wire compatibility giữa producer/consumer.
+`job_result.proto` và `mail_runtime.proto` phải giữ wire compatibility giữa producer/consumer.
 Internal verification mail dùng `MailDispatchEnvelopeV1`; logical parameter vẫn là flat map cho `{{placeholder}}`,
 nhưng Kafka payload là Protobuf binary.
 
@@ -94,65 +98,49 @@ Validation trước side effect:
 - JO result consumer đối chiếu `event_id + source_domain + job_topic + job_version` với authoritative
   Controlplane outbox trước mutation; mismatch được sanitized-quarantine, không retry vô hạn.
 
-### 3.1. Approved target — Managed Service opaque parameter envelope
+### 3.1. AS-IS — protected payload cho mọi Zone-bound job
 
-> Contract này đã được chốt cho Managed Service nhưng chưa có protobuf/producer/
-> consumer implementation. Nó không thay đổi wire contract của workload hiện hữu.
+Controlplane serialize toàn bộ domain command thành một byte slice rồi seal nguyên byte slice đó
+bằng HPKE Base mode `X25519/HKDF-SHA256/AES-256-GCM`. Outbox `payload` chỉ được chứa serialized
+`ProtectedPayloadV1`; không module nào mã hóa từng field rồi mới bọc command, và không có nested
+field encryption. STORAGE, MAIL, HYPERVISOR cùng Managed Service khi route được enable đều dùng
+chung security boundary này.
 
-`BlueprintRevision` của Managed Service giữ hai immutable SRE artifact độc lập:
-flat `template_yaml` và `input_schema`. Controlplane dùng `input_schema` để validate
-HTTP payload ở ingress, nhưng không parse YAML, không enumerate `!aurora/param` và
-không tạo binding giữa schema key với template tag. SRE là owner của sự tương ứng đó.
+AAD V1 pin `key_id + recipient_zone_id + source_domain + job_topic + resource_id + job_version +
+payload_schema_version`. `attempt`, trace context, Kafka partition/offset và reconcile generation
+không nằm trong AAD: retry at-least-once tăng outer attempt nhưng bắt buộc reuse đúng ciphertext đã
+commit. Inner domain command không được copy delivery attempt. Stable Kafka key là `resource_id` để
+preserve aggregate ordering; không có global ordering.
 
-Sau canonicalization, Controlplane seal toàn bộ parameter map bằng HPKE
-`X25519/HKDF-SHA256/AES-256-GCM` public key active của target Zone. Managed Service
-command tương lai chỉ mang opaque `parameter_envelope`, `parameter_key_id`,
-`input_hash`, `desired_spec_hash`, instance/operation/generation, Zone, blueprint
-revision và bundle hash. AAD phải pin đủ
-`zone_id + instance_id + operation_id + generation + revision + bundle_hash` để
-envelope replay sang instance/Zone/revision khác bị reject.
+JO không có private key và không decrypt. Changefeed chỉ decode public `ProtectedPayloadV1` để kiểm
+tra suite/schema/size, Zone và `payload_key_id`, sau đó đặt exact bytes vào `JobCommandV1.payload` với
+`payload_encoding=HPKE...`. Reconciler cũng phải lấy retained ciphertext/projection; cấm rebuild
+plaintext command từ business row. Result settlement dựa trên authoritative business fence/outbox
+metadata, không đọc ngược command plaintext.
 
-V1 dùng generic topics đã provision: command là
-`aurora.jobs.commands.zone.<zone_uuid>.v1`, result là `aurora.jobs.results.v1`, DLQ là
-`aurora.jobs.dlq.v1`. Outer `JobCommandV1` có
-`job_id=command_event_id`, `job_topic=managed_service.instance.execute`,
-`source_domain=MANAGED_SERVICE`, `resource_id=instance_id`, `attempt=0..4`; command
-record key là `instance_id`. Inner `ManagedServiceCommandV1` giữ owner/workspace,
-instance code, operation kind/fence, revision IDs, canonical `template_yaml` cùng
-component contract, all hashes và envelope. Result inner contract có unique result
-event, source command event, all fences/hashes, safe observed snapshot và outcome
-`SUCCEEDED|RETRYABLE_FAILURE|TERMINAL_FAILURE`; Managed Service result key cũng là
-`instance_id` để preserve aggregate order.
+Dataplane load keyring từ read-only Zone-local filesystem trước khi mở Kafka. Mỗi fresh replica ghi
+`key_id + SHA-256(public_key)` vào Zone health; leader chỉ report giao của toàn bộ replica fresh kèm
+Zone-KV monotonic leader fencing token. JO timestamp/token-fence report nên leader cũ không thể
+resurrect readiness sau failover. Controlplane chỉ seal bằng ACTIVE key có readiness report fresh,
+vì vậy rolling update không thể đưa ciphertext cho pod cũ chưa có key. Thiếu local key là deployment failure retryable: không settle
+offset và process fail-safe để supervisor restart. Sai suite/AAD/auth/route là poison terminal:
+publish sanitized DLQ durable rồi mới settle, không copy raw command/ciphertext vào DLQ.
 
-Chỉ Dataplane đúng Zone giữ private key và mở envelope trong RAM khi render YAML AST.
-Nó thay `!aurora/param <name>` theo exact key; template tag thiếu value, typed node
-không compatible hoặc YAML sau render invalid là terminal
-`SRE_TEMPLATE_INPUT_MISMATCH`, không retry command vô hạn. Result, DLQ, trace, log,
-runtime event và notification chỉ mang taxonomy/hash/bounded diagnostic, không mang
-raw parameter, rendered manifest hay Kubernetes Secret value.
+Hierarchy giữ public X25519 key và lifecycle `STAGED|ACTIVE|DECRYPT_ONLY|RETIRED`; Dataplane giữ
+private counterpart. Activate khóa row Zone để serialize rotation. Outbox INSERT khóa Zone/key và
+chỉ nhận `ACTIVE|DECRYPT_ONLY`; `DECRYPT_ONLY` có drain window 5 phút trước retire để request đã
+seal nhưng chưa commit kết thúc. Retire vẫn bị từ chối khi bất kỳ
+Storage/Mail/Hypervisor/Managed Service outbox, Managed Service instance revision hoặc retained Mail
+protected projection còn tham chiếu
+`payload_key_id`, nên timer không bao giờ là bằng chứng duy nhất. Chỉ sau retention cleanup mới được
+gỡ private key cũ khỏi Zone mount. Controlplane,
+JO, PostgreSQL, Redis, Kafka, Zone KV, logs và traces không được chứa private key.
 
-`parameter_key_id` tương lai trỏ tới Zone public keyset versioned
-(`STAGED|ACTIVE|DECRYPT_ONLY|RETIRED`). AS-IS, Hierarchy đã ship bảng/API quản lý
-public key lifecycle; Zone metadata protobuf/CDC projection và protected-payload
-producer/consumer vẫn chưa ship. Vì vậy không producer nào được coi trạng thái
-`ACTIVE` hiện tại là bằng chứng Dataplane đã load private counterpart. Change-set
-transport phải thêm loaded-key readiness fence trước khi mở producer đầu tiên.
-
-DP sau đó mới load private counterpart từ Zone-local read-only filesystem secret và
-fail-close nếu fingerprint với metadata không khớp. Key cũ không được destroy theo
-drain timer đơn thuần: trước release protected payload, retirement CTE phải được mở
-rộng để chứng minh không còn retained instance revision, operation/outbox hay DLQ
-evidence tham chiếu nó. Zone Vault tương lai có thể trở thành secret source of truth
-và materialize file/Secret qua CSI/operator, nhưng không cấp Vault credential cho
-Controlplane/JO và không làm raw value xuất hiện trong Kafka.
-V1 vẫn dùng Kubernetes Secret trong đúng namespace khi SRE template hoặc operator yêu
-cầu; literal `Secret.data`/`stringData` không được publish vào catalog revision.
-
-Retryable Managed Service result tạo new command event cùng operation/generation và
-attempt tăng; tối đa năm attempt `0..4`, base delay `30s/2m/10m/30m` cộng jitter được
-persist ở outbox `available_at`. JO CDC là primary dispatch; due-retry scan bounded
-chỉ phục hồi timer/restart, không là relay thứ hai hoặc source business state. V1
-không có Managed Service NATS runtime subject hay browser relay.
+Managed Service inner command mang canonical `parameter_values` plaintext bên trong ciphertext toàn
+command. DP chỉ materialize sau HPKE open trong RAM rồi render YAML AST. Result, DLQ, log, trace,
+timeline và safe observed output không được mang parameter values, rendered manifest, Kubernetes
+Secret hay provider credential. Canonical Go-seal/Rust-open vector ở
+`contracts/testdata/protected_payload_v1.json` khóa wire/AAD compatibility.
 
 ## 4. Command path: PostgreSQL WAL → JO → Kafka
 
@@ -166,13 +154,15 @@ sequenceDiagram
     participant DP as Dataplane
     participant KV as Zone KV
 
-    API->>PG: aggregate mutation + outbox in one commit
+    API->>API: serialize domain command + HPKE seal full payload
+    API->>PG: aggregate mutation + protected outbox in one commit
     PG-->>JO: logical replication row
-    JO->>JO: validate outbox + encode JobCommandV1
+    JO->>JO: validate public protection metadata + encode JobCommandV1
     JO->>K: publish stable key, acks=all
     K-->>JO: durable ACK from ISR
     JO->>PG: advance replication LSN
     K-->>DP: poll đúng Zone command topic
+    DP->>DP: validate route + HPKE open + decode domain command
     DP->>DP: validate schema + Zone binding
     DP->>KV: acquire fenced job lease
     DP->>DP: execute idempotent workload
@@ -347,5 +337,5 @@ Production:
 | DP transport/settlement | `dataplane/src/infra/kafka.rs` |
 | DP command intake | `dataplane/src/job_runtime/intake.rs` |
 | DP result/retry | `dataplane/src/job_runtime/{execution,completion}.rs` |
-| Shared contracts | `dataplane/proto/platform_transport.proto`, `job-orchestrator/proto/platform_transport.proto` |
+| Shared contracts | `contracts/proto/platform_transport.proto`, `contracts/proto/zone_report.proto`, `contracts/proto/managed_service.proto` |
 | Dev topology | `controlplane/docker-compose.dev.yml` |

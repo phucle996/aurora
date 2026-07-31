@@ -7,8 +7,10 @@ trên Kubernetes đúng Zone trong các workflow sau này.
 P01 đã ship durable baseline và canonical inner protobuf binding. P02 đã ship SRE
 catalog/admin API, immutable revision workflow và Admin UI. P03 đã ship customer
 catalog/form read-only cho personal/tenant cùng Cloud Console dynamic-form foundation.
-Customer mutation, Kafka producer/consumer Managed Service, renderer và Kubernetes
-client vẫn chưa được mở; các workflow đó chỉ được thêm sau God View/phase tương ứng.
+P04 hiện đã ship instance/operation read projection và internal rename slice tách riêng
+cho personal/tenant; rename chưa đăng ký public route. Customer create/update/delete/
+retry, Kafka producer/consumer Managed Service, renderer và Kubernetes client vẫn chưa
+được mở; các workflow đó chỉ được thêm sau protected-transport và release gate tương ứng.
 
 Chi tiết product proposal nằm trong [IDEA.md](./IDEA.md). Trình tự staging từ
 contract tới release gate trước khi tách phase/task nằm trong
@@ -40,7 +42,7 @@ internal/managedservice/
 │   └── unit/              # Unit/contract tests độc lập
 ├── bootstrap.go            # Module lifecycle hook (hiện chưa có worker)
 ├── migration.go            # Embedded six-file durable baseline migration
-├── migrations/             # 000001..000006 only; no seventh baseline migration
+├── migrations/             # 000001..000006 layered schema (enums, tables, indexes, funcs, triggers, seeds)
 ├── module.go              # Fail-fast wiring của từng object slice
 ├── route.go               # Admin metadata/read và critical runtime routes
 ├── domain/                # DDD Core Layer
@@ -164,6 +166,27 @@ bằng auth generation + owner mode + Zone + workspace + revision. List dùng ke
 cursor và page tối đa 100; Console chỉ tải page tiếp theo theo action hữu hạn. P03
 không đăng ký `POST /instances`.
 
+P04 customer instance projection bổ sung tám route read-only:
+
+```text
+GET /api/v1/personal/managed-services/instances
+GET /api/v1/personal/managed-services/instances/:code
+GET /api/v1/personal/managed-services/instances/:code/operations
+GET /api/v1/personal/managed-services/instances/:code/operations/:operation_id
+GET /api/v1/tenant/managed-services/instances
+GET /api/v1/tenant/managed-services/instances/:code
+GET /api/v1/tenant/managed-services/instances/:code/operations
+GET /api/v1/tenant/managed-services/instances/:code/operations/:operation_id
+```
+
+Các route này dùng `managed-service:instance:read`, lấy owner/workspace/Zone từ typed
+trusted context và trả desired state, observed state, operation state thành ba phần độc
+lập. Repository không select/serialize protected command, input hash hay create-intent
+hash. Personal và tenant dùng physical table, CTE và handler/service/repository riêng.
+Rename display name đã có internal vertical slice với optimistic `metadata_version`;
+nó không đổi code/generation/revision/outbox và vẫn dormant vì public mutation admission
+chỉ mở cùng release gate đã chốt.
+
 Zone admission của module bắt buộc capability `managed_service` trong
 `hierarchy.zone_service_type`. Mọi personal/tenant catalog và version-detail query
 kiểm tra durable `zone_services.desired_state=true` trước requirement riêng của
@@ -234,7 +257,8 @@ database transaction, CTE, constraint hoặc outbox durability.
 * P01 đã sở hữu đúng sáu cặp baseline tại `migrations/000001` tới `000006` và
   `migration.go` đã được global app migration runner gọi trong cùng transaction/
   advisory lock. Baseline gồm system catalog, immutable blueprint revision, physical
-  personal/tenant aggregate và outbox; không có route hoặc dispatcher đang hoạt động.
+  personal/tenant aggregate và outbox; P04 chỉ đọc projection, chưa có mutation route
+  hoặc dispatcher đang hoạt động.
 
 S09 đã chốt physical ownership cho persistence:
 
@@ -399,4 +423,3 @@ Chỉ khi TẤT CẢ các bước trên khớp 100%, CTE mới ghi nhận đồn
 - `Outbox Event` (để Job Orchestrator nhặt và gửi sang Kafka)
 
 *Lưu ý:* Nếu bất kỳ điều kiện nào thất bại, PostgreSQL sẽ tự động Rollback toàn bộ Transaction. Không có bản ghi rác nào được tạo và KHÔNG có Outbox Event nào được bắn sang Kafka.
-

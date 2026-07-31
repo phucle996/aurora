@@ -10,6 +10,7 @@ import (
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
+	jobpayload "controlplane/internal/security"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -20,18 +21,25 @@ type tenantConsumerRepoPostgres struct {
 	db              *pgxpool.Pool
 	mailSchema      string
 	hierarchySchema string
+	protector       jobpayload.Protector
 }
 
 // NewTenantConsumerRepository khoi tao repository quan ly Tenant Mail Consumer
-func NewTenantConsumerRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterface.TenantConsumerRepository {
+func NewTenantConsumerRepository(db *pgxpool.Pool, cfg *config.Config, protector jobpayload.Protector) mailRepoInterface.TenantConsumerRepository {
 	return &tenantConsumerRepoPostgres{
 		db:              db,
 		mailSchema:      cfg.SchemaSQL.Mail,
 		hierarchySchema: cfg.SchemaSQL.Hierarchy,
+		protector:       protector,
 	}
 }
 
 func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.CreateTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	protected, protectionErr := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if protectionErr != nil {
+		return protectionErr
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Outbox route phải chính là Zone đã được tenant/workspace guard kiểm tra; mismatch fail closed.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -86,7 +94,7 @@ func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailE
 	}
 
 	// [COMMENT]: Outbox đi cùng aggregate trong transaction, không cần data-modifying CTE dài.
-	err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID)
+	err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle,payload_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, outbox.PayloadKeyID).Scan(&outbox.ID)
 	if err != nil {
 		return fmt.Errorf("mail tenant consumer repo: insert outbox: %w", err)
 	}
@@ -220,6 +228,11 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 }
 
 func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailEntity.UpdateTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	protected, protectionErr := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if protectionErr != nil {
+		return protectionErr
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Không cho service bug chuyển projection sang Zone khác aggregate đã authorize.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -320,9 +333,9 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
-				job_version, resource_id, payload_schema_version, trace_id, idle
+				job_version, resource_id, payload_schema_version, trace_id, idle, payload_key_id
 			)
-			SELECT $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
+			SELECT $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $33
 			FROM counter_updated
 			RETURNING id
 		)
@@ -344,6 +357,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion,
 		outbox.TraceID, outbox.Idle, consumer.TenantID,
+		outbox.PayloadKeyID,
 	).Scan(
 		&authorized,
 		&templateAvailable,
@@ -390,6 +404,11 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 }
 
 func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailEntity.DeleteTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	protected, protectionErr := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if protectionErr != nil {
+		return protectionErr
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Tombstone phải đi đúng Zone của guarded tenant workspace mutation.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -441,9 +460,9 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
-				job_version, resource_id, payload_schema_version, trace_id, idle
+				job_version, resource_id, payload_schema_version, trace_id, idle, payload_key_id
 			)
-			SELECT $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+			SELECT $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18
 			FROM target
 			WHERE config_version=$5 AND NOT EXISTS (SELECT 1 FROM live_operation)
 			RETURNING id
@@ -459,6 +478,7 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion,
 		outbox.TraceID, outbox.Idle, consumer.TenantID,
+		outbox.PayloadKeyID,
 	).Scan(
 		&authorized,
 		&currentVersion,

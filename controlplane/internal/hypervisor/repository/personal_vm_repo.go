@@ -9,6 +9,7 @@ import (
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
+	jobpayload "controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,16 +20,19 @@ type PersonalVMRepoPostgres struct {
 	db         *pgxpool.Pool
 	hypervisor string
 	hierarchy  string
+	protector  jobpayload.Protector
 }
 
 func NewPersonalVMRepo(
 	db *pgxpool.Pool,
 	cfg *config.Config,
+	protector jobpayload.Protector,
 ) hypervisorRepoInterface.PersonalVMRepository {
 	return &PersonalVMRepoPostgres{
 		db:         db,
 		hypervisor: cfg.SchemaSQL.Hypervisor,
 		hierarchy:  cfg.SchemaSQL.Hierarchy,
+		protector:  protector,
 	}
 }
 
@@ -85,6 +89,11 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 	vm *hypervisorEntity.PersonalVM,
 	outbox *hypervisorEntity.HypervisorOutboxRecord,
 ) (*hypervisorEntity.PersonalVMCreateResult, error) {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "HYPERVISOR", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: uint32(outbox.JobVersion), PayloadSchemaVersion: uint32(outbox.PayloadSchemaVersion)}, outbox.Payload)
+	if err != nil {
+		return nil, err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	query := fmt.Sprintf(`
 		WITH authorized_scope AS (
 			SELECT 1
@@ -129,10 +138,10 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 			INSERT INTO %s.hypervisor_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id,
 				status, job_version, resource_id, payload_schema_version,
-				trace_id, idle
+				trace_id, idle, payload_key_id
 			)
 			SELECT $20, $21, $22, $23, $24,
-			       $25, $26, $27, $28, $29, $30
+			       $25, $26, $27, $28, $29, $30, $31
 			FROM inserted_vm
 			RETURNING event_id
 		)
@@ -179,6 +188,7 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		outbox.PayloadSchemaVersion,
 		outbox.TraceID,
 		outbox.IdleSeconds,
+		outbox.PayloadKeyID,
 	)
 
 	var current hypervisorEntity.PersonalVM

@@ -3,6 +3,12 @@ package taxonomy
 import "errors"
 
 var (
+	// Runtime aggregate errors describe behavior, not the physical personal or
+	// tenant table. The workflow operation in logs/traces supplies object context.
+	ErrNotFound    = errors.New("managed service: record not found")
+	ErrConflict    = errors.New("managed service: concurrent modification")
+	ErrUnavailable = errors.New("managed service: dependency unavailable")
+
 	ErrCatalogNotFound            = errors.New("managed service: catalog record not found")
 	ErrCatalogCodeConflict        = errors.New("managed service: catalog code conflict")
 	ErrCatalogParentRetired       = errors.New("managed service: catalog parent retired")

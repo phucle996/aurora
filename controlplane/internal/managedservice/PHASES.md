@@ -40,8 +40,8 @@ evidence. Nếu một task làm lộ quyết định business/topology chưa có
 | Workflow isolation | Mỗi workflow có một handler method → một service method → một repository method. Personal và tenant tách vertical slice; duplicate code được chấp nhận, helper/generic mutator không được dùng. |
 | Persistence | Catalog là system table; customer aggregate personal và tenant physical table riêng. Desired state và module outbox commit trong cùng PostgreSQL transaction/CTE. |
 | Idempotency | Create dedupe bằng `(workspace_id, code) + canonical create intent`; DP external side-effect fence là `instance_id + operation_id + generation`, không phải HTTP `Idempotency-Key` hay `attempt`. |
-| Revision | Published BlueprintRevision và InstanceRevision immutable. Update tạo revision/generation mới; retry tự động giữ operation/generation/revision cũ và chỉ đổi command `event_id`/attempt. |
-| Secret | CP chỉ giữ opaque `parameter_envelope` + digest bound với trusted Zone. DP chỉ materialize trong RAM của một execution; không ghi plaintext vào log, DB, Redis, NATS, Zone KV hoặc result. |
+| Revision | Published BlueprintRevision và InstanceRevision immutable. Update tạo revision/generation mới; delivery retry giữ operation/generation/revision/event ID và exact protected command, chỉ đổi outer attempt. |
+| Secret | CP seal toàn bộ serialized command thành `ProtectedPayloadV1`; InstanceRevision/outbox chỉ giữ exact ciphertext + key ID/digest. DP mở trong RAM trước domain decode; không có nested parameter envelope hay plaintext trong log/DB/Redis/NATS/Zone KV/result. |
 | Kubernetes | Customer chỉ namespaced object/CRD. DP force namespace/protected metadata, dùng SSA field manager cố định, không adopt object foreign và không blind rollback partial apply. |
 | Completion | Kubernetes apply ACK không phải success. Success chỉ khi static component readiness đạt; delete chỉ khi graph đã gone/finalizer hoàn tất. |
 | Runtime telemetry | Victoria read path là diagnostic/eventual. Nó không quyết định lifecycle, billing, authorization hay timeline terminal. |
@@ -193,7 +193,7 @@ contract; no customer API/mutation is enabled yet.
 * **Scope:** tạo lifecycle enums; system catalog hierarchy/audit; immutable blueprint
   revisions; personal aggregate; tenant aggregate; outbox/index/constraint/trigger.
   `blueprint_revisions` giữ canonical bounded YAML bundle + component contract;
-  instance revision giữ Zone-bound envelope/digest, không raw parameter map.
+  instance revision giữ exact protected command/key ID/digest, không raw parameter map.
 * **Concurrency/data requirements:** physical personal/tenant tables riêng; unique
   `(workspace_id, code)`; one non-terminal operation/instance; CTE lock order
   `workspace FOR KEY SHARE → instance FOR UPDATE → revision/operation`; evidence rows
@@ -222,8 +222,8 @@ contract; no customer API/mutation is enabled yet.
 * **Scope:** every future personal/tenant mutation receives `zone_id` only from the
   trusted Envoy context. The workflow-local repository CTE locks the scoped workspace
   and verifies its persisted `zone_id` in the same statement before it inserts an
-  instance/revision/operation/outbox. There is no Zone key table, keyset, attestation,
-  Kafka metadata projection or key-management API.
+  instance/revision/operation/outbox. Hierarchy owns public Zone key lifecycle; this
+  workflow only consumes the shared security protector and never sees a private key.
 * **Acceptance:** a client-supplied/mismatched Zone is rejected before durable intent;
   service/repository never parse a header or perform a second unscoped lookup.
 * **Rollback:** no Zone runtime state exists; disable the dormant customer route.
@@ -231,10 +231,11 @@ contract; no customer API/mutation is enabled yet.
 ### MS-013 — Shared protobuf and generated-code baseline
 
 * **Owner:** JO/DP transport owners.
-* **Scope:** add inner Managed Service command/result messages using additive,
-  byte-compatible fields; regenerate both Rust codebases from byte-identical source.
+* **Scope:** add inner Managed Service command/result plus outer protected transport
+  messages using additive, byte-compatible fields; regenerate all bindings from the
+  canonical `contracts/proto` sources, never byte-identical local copies.
 * **Required fields:** all IDs/fences, owner/workspace/instance code, operation kind,
-  revisions, canonical template bundle/component contract, hashes, Zone-bound envelope/digest,
+  revisions, canonical template bundle/component contract, hashes, canonical parameter values/digest,
   safe observed output, taxonomy disposition and schema versions.
 * **Acceptance:** protobuf breaking check, fixture encode/decode across JO↔DP, oversize
   and unknown-version negative tests. No raw parameter/manifest/Secret can appear in
@@ -418,6 +419,12 @@ unsupported/stale scope không thể submit desired-state mutation.
 
 ## 9. P04 — Customer desired state, immutable revisions và transactional outbox
 
+**Status:** IN PROGRESS — MS-040/MS-041 read routes đã ship; MS-044/MS-045 đã có
+vertical slice personal/tenant độc lập nhưng rename route vẫn dormant. MS-042/043/046–
+053 chưa ship. Platform protected-payload codec, `payload_key_id`, every-replica loaded-key
+readiness và retirement fence đã ship; create/update vẫn không được mở admission trước
+khi P04 CTE lưu exact protected command vào revision + outbox trong cùng transaction.
+
 **Mục tiêu:** accept create/update/delete/retry as durable desired state only. No task
 in this phase executes Kubernetes or assumes a Kafka result.
 
@@ -536,11 +543,12 @@ workflow-local entity after canonicalizing; service/repository do not validate i
 ### MS-050 — Personal manual retry workflow
 
 * **Route:** `POST /api/v1/personal/managed-services/instances/:code/operations/:operation_id/retry`.
-* **Scope:** only allowed terminal operation/lifecycle predicate. It creates a **new**
-  operation and generation, pins the historical target revision; it does not create a
-  configuration revision or reset old automatic retry budget.
-* **Acceptance:** retry target cannot be swapped by client; stale/active operation
-  conflict is stable taxonomy; delete retry remains `DELETING` and cannot resurrect.
+* **Scope:** only allowed terminal operation/lifecycle predicate. It re-drives the same
+  operation/generation/event ID and exact protected command retained by the historical
+  target revision; it does not decrypt values, create a revision, or mint new ciphertext.
+* **Acceptance:** retry target cannot be swapped by client; concurrent retry is atomic,
+  outer delivery budget restarts explicitly, and delete retry remains `DELETING` without
+  resurrecting the instance.
 
 ### MS-051 — Tenant manual retry workflow
 
@@ -552,7 +560,7 @@ workflow-local entity after canonicalizing; service/repository do not validate i
 
 * **Owner:** Controlplane test owner.
 * **Scope:** create/update/delete/retry sequences for both branches, rollback before/
-  after transaction, code reuse only after hard delete, Zone-bound input envelope,
+  after transaction, code reuse only after hard delete, Zone-bound full command protection,
   version/default pin race, and no-JO/no-DP outage.
 * **Exit evidence:** `go test ./internal/managedservice/...` from Controlplane module
   plus PostgreSQL integration fixtures; no transaction leaves aggregate without outbox
@@ -577,7 +585,7 @@ ordering and never treating broker ACK as CP state.
 
 **Dependency:** P04 outbox contract and P01 shared proto/topic/ACL preparation.
 
-**Exit gate:** JO can dispatch/replay a test outbox record safely, respects `available_at`,
+**Exit gate:** JO can dispatch/replay a protected test outbox record byte-for-byte,
 and no Managed Service code uses NATS or a direct CP Kafka producer.
 
 ### MS-060 — Enable MANAGED_SERVICE route registry
@@ -593,10 +601,10 @@ and no Managed Service code uses NATS or a direct CP Kafka producer.
 
 * **Owner:** JO changefeed owner.
 * **Scope:** decode only `managed_service_outbox_records`, validate Zone UUID,
-  payload/schema/hash bounds, and construct outer `JobCommandV1` with inner opaque
-  Managed Service command exactly as committed by CP.
+  protection/schema/size bounds, and construct outer `JobCommandV1` carrying exact
+  serialized `ProtectedPayloadV1` committed by CP. JO never opens the inner command.
 * **Ordering:** key command by `resource_id=instance_id`; `job_id` is command event ID;
-  JO does not regenerate envelope, revision/hash or owner fields.
+  JO does not regenerate ciphertext, revision/hash or owner fields.
 * **Acceptance:** WAL duplicate after broker ACK emits byte-compatible duplicate command;
   malformed row is quarantined/DLQ and terminally settled through P07, never silently
   skipped or retried forever.
@@ -617,17 +625,17 @@ and no Managed Service code uses NATS or a direct CP Kafka producer.
 * **Acceptance:** crash injection proves ACK-before-LSN yields safe duplicate and
   broker failure does not advance LSN or falsely mark operation running/successful.
 
-### MS-063 — Durable delayed automatic retry scheduler
+### MS-063 — Exact-ciphertext delivery retry
 
-* **Owner:** JO dispatch owner + CP result-settlement contract owner.
-* **Scope:** treat CDC as primary admission. For retry outbox with future
-  `available_at`, acknowledge CDC intake without early Kafka publish; a bounded,
-  lease/fenced due scan over this module's pending records recovers timer/restart.
-* **Invariants:** scan does not create aggregate, mutate desired state or bypass CTE;
-  actual jittered timestamp was persisted by CP. It dispatches attempts 1–4 only;
-  attempt 4 retryable becomes terminal via P07.
-* **Acceptance:** restart before due time, duplicate scanner/rebalance and clock-skew
-  tests produce at most idempotent duplicate dispatch and no early side effect.
+* **Owner:** Dataplane generic job runtime + Managed Service executor.
+* **Scope:** generic retry increments only outer `JobCommandV1.attempt`, keeps the same
+  job/event/operation/generation and republishes exact protected bytes before settling
+  the original offset. CP/JO do not mint a new command from hidden plaintext.
+* **Invariants:** retry budget/backoff is bounded by the platform runtime; stable
+  `resource_id` preserves instance ordering and the execution fence remains
+  `instance_id + operation_id + generation`.
+* **Acceptance:** retry/rebalance/restart proves identical ciphertext, no early source
+  commit, no second Kubernetes resource and terminal result after budget exhaustion.
 
 ### MS-064 — DP/JO contract rejection and DLQ path
 
@@ -635,7 +643,7 @@ and no Managed Service code uses NATS or a direct CP Kafka producer.
 * **Scope:** classify malformed/oversize/version/route/Zone/hash mismatch as
   `COMMAND_CONTRACT_INVALID`, `COMMAND_ZONE_MISMATCH` or `COMMAND_HASH_MISMATCH`.
   Publish bounded `DeadLetterRecordV1` before source commit/checkpoint.
-* **Acceptance:** DLQ excludes ciphertext plaintext/manifest/Secret, retains source
+* **Acceptance:** DLQ excludes raw ciphertext/plaintext/manifest/Secret, retains source
   event/correlation/taxonomy only; terminal current operation settlement is delegated
   to P07 and stale source is only audited.
 
@@ -671,24 +679,25 @@ is introduced.
 ### MS-070 — Exact-Zone command admission
 
 * **Owner:** Dataplane job-runtime owner.
-* **Scope:** consume only Zone command topic with Zone-specific ACL; decode outer/inner
-  Protobuf and validate size/schema/source domain/job topic/target Zone/source event,
-  all revision/hash fields and parameter-envelope digest before any Kubernetes call.
+* **Scope:** consume only Zone command topic with Zone-specific ACL; validate outer
+  route/protection metadata, HPKE-open the full payload, then decode/validate inner
+  Protobuf, source event and all revision/hash/parameter-value digests before Kubernetes.
 * **Fence:** `instance_id + operation_id + generation` is execution identity. Attempt
   identifies source command/result only and must not make a retry duplicate create a
   second external side effect.
 * **Acceptance:** malformed, unsupported version, cross-Zone and hash mismatch reject
   before local lease/Kubernetes API; no CP DB/Shared Redis/Vault dependency appears.
 
-### MS-071 — Zone-local envelope materialization
+### MS-071 — Zone-local protected command materialization
 
 * **Owner:** Dataplane security/executor owner.
-* **Scope:** materialize the opaque Zone-bound envelope only in short-lived execution
-  RAM under the future Zone-local runtime secret contract. That contract has no
-  Controlplane keyset, attestation or rotation API.
-* **Failure semantics:** malformed or non-Zone-bound envelope is terminal contract
-  taxonomy; there is no plaintext fallback or log.
-* **Acceptance:** envelope fixture remains opaque; memory/logging test proves raw
+* **Scope:** load the bounded read-only private-key file at bootstrap, report the key
+  intersection across every fresh replica, and HPKE-open one protected command only
+  in short-lived execution RAM. Controlplane/JO never receive private material.
+* **Failure semantics:** missing local key leaves Kafka offset uncommitted and exits
+  fail-safe for rollout recovery; malformed/AAD/auth/cross-Zone protection is terminal
+  sanitized DLQ. There is no plaintext fallback or log.
+* **Acceptance:** canonical Go-seal/Rust-open fixture passes; memory/logging test proves raw
   parameter/db name/password cannot leave execution scope.
 
 ### MS-072 — YAML AST renderer and static component-contract validator
@@ -853,7 +862,7 @@ do not duplicate external side effect.
   no Secret, token, password, raw URI with credentials, raw input or Kubernetes API
   fetch. Missing output is normal observed state, not a reason to query Kubernetes.
 * **Acceptance:** output visibility/scope tests and proof that CP never decrypts
-  envelope/read Kubernetes Secret.
+  protected command/read Kubernetes Secret.
 
 ### MS-087 — Result/reconcile integration and fault suite
 
@@ -1022,7 +1031,7 @@ data-loss or duplicate-side-effect defect.
 * **Owner:** CP/JO/DP release owner.
 * **Scope:** run protobuf compatibility/byte identity, migration fresh/rollback,
   route registry, Kafka ACL/topic, HTTP contract, catalog revision hash and Zone-bound
-  envelope fixtures in CI.
+  protected-payload fixtures in CI.
 * **Acceptance:** an older non-Managed-Service workload still uses existing wire
   behavior; additive managed-service fields do not break existing consumers; no
   checked-in contract copies drift.
@@ -1041,8 +1050,8 @@ data-loss or duplicate-side-effect defect.
 
 * **Owner:** SRE/CP/JO/DP owners.
 * **Drills:** kill CP after DB commit; kill JO after Kafka ACK/before LSN; duplicate
-  CDC/Kafka/result; restart before retry `available_at`; Zone delay/down; K8s outage;
-  partial apply; foreign object; stuck delete finalizer; malformed Zone-bound envelope;
+  CDC/Kafka/result; restart during exact-ciphertext retry; Zone delay/down; K8s outage;
+  partial apply; foreign object; stuck delete finalizer; malformed protected payload;
   full retry/DLQ; Notification/Redis stream issue; Victoria/Public Edge outage.
 * **Acceptance:** each drill names expected durable state, retries/DLQ, alert/trace,
   owner and recovery path. No normal-flow drill needs direct DB modification or an
@@ -1052,7 +1061,7 @@ data-loss or duplicate-side-effect defect.
 
 * **Owner:** security/ACR/Zone runtime owners.
 * **Scope:** threat-model review for forged Envoy context, cross-owner/workspace/Zone
-  access, stale proof/ticket, critical catalog proof, envelope replay/Zone binding,
+  access, stale proof/ticket, critical catalog proof, ciphertext replay/Zone binding,
   template injection, foreign K8s object, Secret exfiltration, log/audit leakage and
   telemetry query escape.
 * **Acceptance:** negative tests prove fail-close boundary behavior; required RBAC,
@@ -1111,7 +1120,7 @@ data-loss or duplicate-side-effect defect.
 | Controlplane unit | Managed Service module | handler-only validation, taxonomy → HTTP/gin.H, entity isolation, no duplicate validation in service/repo |
 | PostgreSQL integration | Managed Service module | CTE lock/order, constraints, outbox atomicity, personal/tenant separation, hard delete/fence/retention |
 | JO transport | JO | WAL replay, command key/order, checkpoint after ACK, delayed retry, route/DLQ/Zone ACL |
-| Dataplane unit/golden | DP | Zone-bound envelope validation, YAML AST/tag rejection, names/metadata, component order/readiness/taxonomy |
+| Dataplane unit/golden | DP | protected payload/AAD validation, YAML AST/tag rejection, names/metadata, component order/readiness/taxonomy |
 | Kubernetes sandbox | DP/SRE | RBAC/capability profile, SSA ownership, duplicate/partial/delete/finalizer/reconcile |
 | Notification | JO/Notification | one stable timeline/inbox identity and monotonic status version across retry/replay |
 | Console | Cloud Console/Admin UI | scoped cache, stale revision, privacy storage, action UX, reconnect rehydrate, responsive access |

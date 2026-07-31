@@ -64,7 +64,9 @@ message ManagedServiceCommandV1 {
   string instance_code = 8;
   ManagedServiceOperationKindV1 operation_kind = 9;
   uint64 generation = 10;
-  uint32 attempt = 11;
+  // Delivery attempt belongs only to outer JobCommandV1. The protected inner
+  // bytes are immutable and must be reused verbatim by at-least-once retry.
+  reserved 11;
   bytes instance_revision_id = 12;
   bytes blueprint_revision_id = 13;
   string template_yaml = 14;
@@ -73,10 +75,11 @@ message ManagedServiceCommandV1 {
   bytes component_contract_hash = 17;
   bytes input_hash = 18;
   bytes desired_spec_hash = 19;
-  // The opaque payload is inseparable from the trusted Zone field above. It
-  // deliberately carries no Controlplane-managed key identifier or rotation state.
-  bytes parameter_envelope = 20;
-  bytes parameter_envelope_sha256 = 21;
+  // Canonical customer values are plaintext only inside this inner command.
+  // JobCommandV1.payload protects the entire serialized command, so nested
+  // field-level encryption and a second key lifecycle are forbidden.
+  bytes parameter_values = 20;
+  bytes parameter_values_sha256 = 21;
   uint32 schema_version = 22;
   int64 issued_at_unix_ms = 23;
   string traceparent = 24;

@@ -1,5 +1,3 @@
-use crate::contracts::mail::{MailTemplateDeletedV1, MailTemplateVersionPublishedV1};
-use prost::Message;
 use uuid::Uuid;
 
 /// [COMMENT]: Template result là ranh giới infrastructure-first: publish promote candidate sau
@@ -16,7 +14,7 @@ pub async fn apply_result(
     let transaction = pg_client.transaction().await?;
     let locked = transaction
         .query_opt(
-            "SELECT status,result_attempt,resource_id,payload \
+            "SELECT status,result_attempt,resource_id \
              FROM mail.mail_outbox_records WHERE event_id=$1 AND job_topic=$2 FOR UPDATE",
             &[&event_id, &job_topic],
         )
@@ -60,21 +58,7 @@ pub async fn apply_result(
     }
 
     let resource_id = locked.get::<_, Option<String>>(2).unwrap_or_default();
-    let payload: Vec<u8> = locked.get(3);
-
     if job_topic == "mail.template.version_published" && status != "PROCESSING" {
-        let command = MailTemplateVersionPublishedV1::decode(payload.as_slice())?;
-        if command.template_id != resource_id
-            || command.template_version == 0
-            || command.template_revision == 0
-        {
-            return Err("Mail template publish outbox identity/version mismatch".into());
-        }
-        let version = i64::try_from(command.template_version)
-            .map_err(|_| "Mail template version exceeds BIGINT")?;
-        let revision = i64::try_from(command.template_revision)
-            .map_err(|_| "Mail template revision exceeds BIGINT")?;
-
         // [COMMENT]: UUID identity là globally unique; khóa đúng aggregate trước khi chọn scope.
         let personal = transaction
             .query_opt(
@@ -95,6 +79,31 @@ pub async fn apply_result(
             None
         };
 
+        // JO settles against the immutable version row keyed by the source
+        // event. It never decrypts or interprets the durable command payload.
+        let version_row = if personal.is_some() {
+            transaction
+                .query_opt(
+                    "SELECT version,template_revision FROM mail.personal_mail_template_versions \
+                     WHERE template_id=$1 AND event_id=$2",
+                    &[&resource_id, &event_id],
+                )
+                .await?
+        } else if tenant.is_some() {
+            transaction
+                .query_opt(
+                    "SELECT version,template_revision FROM mail.tenant_mail_template_versions \
+                     WHERE template_id=$1 AND event_id=$2",
+                    &[&resource_id, &event_id],
+                )
+                .await?
+        } else {
+            None
+        }
+        .ok_or("Mail template result has no immutable version fence")?;
+        let version: i64 = version_row.get(0);
+        let revision: i64 = version_row.get(1);
+
         if status == "FAILED" {
             // [COMMENT]: Create V1 thất bại xóa toàn aggregate; publish thất bại chỉ xóa exact candidate.
             transaction
@@ -103,7 +112,7 @@ pub async fn apply_result(
                     &[],
                 )
                 .await?;
-            let cleaned = if command.template_version == 1 {
+            let cleaned = if version == 1 {
                 if personal.is_some() {
                     transaction
                         .execute(
@@ -147,7 +156,7 @@ pub async fn apply_result(
             if cleaned != 1 {
                 return Err("Mail template FAILED result has no exact generation to clean".into());
             }
-        } else if command.template_version > 1 {
+        } else if version > 1 {
             // [COMMENT]: Chỉ candidate đã ACK mới trở thành current head; immutable version row được giữ làm history.
             let promoted = if personal.is_some() {
                 transaction
@@ -185,21 +194,9 @@ pub async fn apply_result(
             return Err("Mail template create ACK has no V1 aggregate".into());
         }
     } else if job_topic == "mail.template.deleted" && status == "SUCCEEDED" {
-        let command = MailTemplateDeletedV1::decode(payload.as_slice())?;
-        if command.template_id != resource_id
-            || command.template_revision == 0
-            || command.last_published_version == 0
-        {
-            return Err("Mail template delete outbox identity/version mismatch".into());
-        }
-        let revision = i64::try_from(command.template_revision)
-            .map_err(|_| "Mail template delete revision exceeds BIGINT")?;
-        let last_version = i64::try_from(command.last_published_version)
-            .map_err(|_| "Mail template delete version exceeds BIGINT")?;
-
         let personal = transaction
             .query_opt(
-                "SELECT workspace_id,current_version,template_revision \
+                "SELECT workspace_id,current_version,template_revision,next_template_revision \
                  FROM mail.personal_mail_templates WHERE id=$1 FOR UPDATE",
                 &[&resource_id],
             )
@@ -207,7 +204,7 @@ pub async fn apply_result(
         let tenant = if personal.is_none() {
             transaction
                 .query_opt(
-                    "SELECT workspace_id,current_version,template_revision \
+                    "SELECT workspace_id,current_version,template_revision,next_template_revision \
                      FROM mail.tenant_mail_templates WHERE id=$1 FOR UPDATE",
                     &[&resource_id],
                 )
@@ -229,6 +226,8 @@ pub async fn apply_result(
             let workspace_id: Uuid = target.get(0);
             let current_version: i64 = target.get(1);
             let current_revision: i64 = target.get(2);
+            let revision: i64 = target.get(3);
+            let last_version = current_version;
             if current_version != last_version || revision <= current_revision {
                 return Err("Mail personal template delete fence/head mismatch".into());
             }
@@ -262,6 +261,8 @@ pub async fn apply_result(
             let workspace_id: Uuid = target.get(0);
             let current_version: i64 = target.get(1);
             let current_revision: i64 = target.get(2);
+            let revision: i64 = target.get(3);
+            let last_version = current_version;
             if current_version != last_version || revision <= current_revision {
                 return Err("Mail tenant template delete fence/head mismatch".into());
             }

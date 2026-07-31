@@ -3,15 +3,17 @@
 # ============================================================================
 # 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST AURORA-DATAPLANE
 # ============================================================================
+# [COMMENT]: Build context phải là monorepo root để build.rs đọc canonical
+# contracts/proto mà không cần service-local proto copy.
 # [COMMENT]: Sử dụng rust:bookworm chính thức làm môi trường builder có đầy đủ công cụ biên dịch C/C++ và Protobuf
 FROM rust:bookworm AS builder
 
 # [COMMENT]: Cài đặt protobuf-compiler phục vụ biên dịch gRPC/Protobuf schemas trong Dataplane
 RUN apt-get update && apt-get install -y protobuf-compiler curl && rm -rf /var/lib/apt/lists/*
-WORKDIR /src
+WORKDIR /src/dataplane
 
 # [COMMENT]: Pre-warm dependency cache bằng dummy main.rs để tối ưu layer caching của Docker
-COPY Cargo.toml Cargo.lock* ./
+COPY dataplane/Cargo.toml dataplane/Cargo.lock ./
 RUN mkdir -p src \
     && echo "fn main() {}" > src/main.rs \
     && cargo build --release --bin aurora-dataplane \
@@ -25,7 +27,8 @@ RUN mkdir -p src \
 COPY --from=minio/mc:latest /usr/bin/mc /usr/local/bin/mc
 
 # [COMMENT]: Copy toàn bộ source code thực tế và tiến hành biên dịch bản release
-COPY . .
+COPY contracts /src/contracts
+COPY dataplane /src/dataplane
 
 # [COMMENT]: Force-touch các file .rs để ép Cargo rebuild crate chính với code mới
 RUN find src -name "*.rs" -exec touch {} + \
@@ -41,7 +44,7 @@ RUN find src -name "*.rs" -exec touch {} + \
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 # [COMMENT]: Copy Rust release binary vào thư mục thực thi tiêu chuẩn
-COPY --from=builder /src/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
+COPY --from=builder /src/dataplane/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
 
 # [COMMENT]: Copy MinIO Client (mc) binary sang runtime distroless
 COPY --from=builder /usr/local/bin/mc /usr/local/bin/mc

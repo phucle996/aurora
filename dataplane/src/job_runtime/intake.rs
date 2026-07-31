@@ -11,6 +11,7 @@ use crate::job_runtime::admission::{release_admitted_job, ExecutionCapacity, Int
 use crate::job_runtime::completion::quarantine_invalid_command;
 use crate::job_runtime::model::{QueuedJob, ValidatedJob};
 use crate::observability::logger::Logger;
+use crate::security::jobpayload::PayloadKeyring;
 
 const ZONE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ZONE_STATUS_READ_TIMEOUT: Duration = Duration::from_secs(3);
@@ -29,6 +30,7 @@ pub async fn run_zone_job_intake(
     cancel_token: CancellationToken,
     admitted_jobs: Arc<AtomicUsize>,
     execution_capacity: Arc<dyn ExecutionCapacity>,
+    payload_keyring: Arc<PayloadKeyring>,
 ) {
     let topic = kafka.zone_command_topic(&config.zone_id);
     let group_name = format!("aurora-dataplane-zone-{}-v1", config.zone_id);
@@ -248,9 +250,18 @@ pub async fn run_zone_job_intake(
                 raw_payload.as_ref(),
                 &config.zone_id,
                 config.kafka_max_job_attempts,
+                payload_keyring.as_ref(),
             ) {
                 Ok(job) => job,
                 Err(error) => {
+                    if error.retryable {
+                        Logger::sys_error(
+                            "job.intake",
+                            "Dataplane cannot open a protected command with its loaded keyring; leaving the offset uncommitted and restarting fail-closed",
+                            error.code,
+                        );
+                        return;
+                    }
                     quarantine_invalid_command(
                         kafka.as_ref(),
                         &delivery,

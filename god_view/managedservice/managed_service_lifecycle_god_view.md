@@ -12,7 +12,7 @@
 
 | Thuộc tính | Contract |
 | --- | --- |
-| Trạng thái | P00 frozen; P01 foundation, P02 SRE catalog/admin và P03 customer catalog/form shipped; customer mutation/runtime admission remains disabled |
+| Trạng thái | P00 frozen; P01 foundation, P02 SRE catalog/admin, P03 customer catalog/form và P04 instance/operation reads shipped; customer mutation/runtime admission remains disabled |
 | Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant desired state, immutable revision, operation, inbox/fence và outbox |
 | Durable transport | PostgreSQL outbox/WAL → Job Orchestrator → Kafka → Dataplane Zone → Kafka result → JO/Controlplane settle |
 | Runtime executor | Dataplane đúng Zone gọi Kubernetes API; Controlplane không có Kubernetes credential/client |
@@ -242,6 +242,25 @@ explicitly instead of issuing one unbounded request. P03 has no customer mutatio
 outbox, Kafka/NATS/Redis route or Kubernetes side effect. P04 must recheck catalog,
 default revision and Zone predicates atomically before accepting desired state.
 
+### 5.2 Customer instance and operation reads
+
+P04 exposes personal/tenant list/detail for instances and their operations under
+`/api/v1/{personal|tenant}/managed-services/instances/*`. Every route requires
+`managed-service:instance:read` and derives owner, workspace and current Zone only from
+the verified typed context. Personal SQL can touch only physical personal tables;
+tenant SQL can touch only physical tenant tables and must predicate tenant, workspace
+and Zone identity in the same statement.
+
+The projection keeps desired, observed and operation states separate. It may return
+bounded safe observed output and sanitized operation errors, but never selects or
+serializes protected command bytes, canonical input, input hash, desired-spec hash or create
+intent hash. Responses are `private, no-store` and use bounded opaque keyset cursors.
+
+Rename display-name workflows exist as independent internal personal/tenant slices and
+use optimistic `metadata_version`; they never change code, generation, revision heads
+or outbox. Their public PATCH routes remain unregistered together with create/update/
+delete/retry until the protected command path and P07 settlement gate are complete.
+
 ## 6. Customer create path
 
 ```mermaid
@@ -266,7 +285,7 @@ sequenceDiagram
     K-->>JO: durable ACK
     JO->>CP: scoped dispatch status projection
     K-->>DP: exact Zone command
-    DP->>DP: validate transport + fence; materialize opaque envelope only in RAM
+    DP->>DP: validate public transport + HPKE-open full command + fence in RAM
     DP->>KS: deterministic graph render/apply/readiness
     DP->>K: terminal result key instance_id
 ```
@@ -283,8 +302,9 @@ workspace FOR KEY SHARE → instance FOR UPDATE → revision/operation
 ```
 
 It atomically checks the trusted workspace/Zone binding and current catalog revision,
-serializes code intent, persists only the Zone-bound opaque parameter envelope, then
-inserts instance + immutable instance revision + CREATE operation + outbox.
+serializes code intent, serializes the full inner command, HPKE-seals the complete byte
+payload, then persists the same protected bytes/key ID in immutable instance revision +
+CREATE operation + outbox.
 `ACCEPTED` means desired state is durable; it never means Kubernetes is ready.
 
 Failure semantics:
@@ -347,7 +367,8 @@ source_domain             = MANAGED_SERVICE
 resource_id               = instance_id
 target_zone_id            = trusted outbox Zone
 payload_schema_version    = 1
-payload                   = ManagedServiceCommandV1 bytes
+payload                   = serialized ProtectedPayloadV1 containing ManagedServiceCommandV1 bytes
+payload_encoding          = HPKE_X25519_HKDF_SHA256_AES_256_GCM
 ```
 
 Outer result is existing `job_lifecycle.JobExecutionResultProto`:
@@ -374,10 +395,11 @@ with sanitized metric/audit and never overwrites a newer desired/observed state.
 
 ## 9. Dataplane execution contract
 
-DP validates outer and inner Protobuf, Zone/topic binding, command/result route, schema
-version, command event, revision/bundle/component/input/desired hashes, envelope digest, size and
-fence `instance_id + operation_id + generation` before Kubernetes side effect. `attempt`
-must equal the outer command but cannot form a new external idempotency key.
+DP validates outer public protection metadata and Zone/topic binding, HPKE-opens the complete
+payload, then validates inner Protobuf, command/result route, schema version, command event,
+revision/bundle/component/input/desired hashes, parameter-value digest, size and fence
+`instance_id + operation_id + generation` before Kubernetes side effect. Outer `attempt`
+does not form a new external idempotency key and is not duplicated inside the protected command.
 
 The only supported YAML AST tags are exact typed `!aurora/param <name>` and
 `!aurora/component <id>`. There is no text interpolation, loop, include or function.
@@ -385,8 +407,8 @@ The only supported YAML AST tags are exact typed `!aurora/param <name>` and
 cannot be parameters. Missing typed value, incompatible YAML node or invalid rendered
 YAML returns terminal `SRE_TEMPLATE_INPUT_MISMATCH`; no empty fallback or endless retry.
 
-DP materializes the Zone-bound opaque envelope for one execution in memory. It sends the
-materialized value to Kubernetes according to SRE static YAML and then forgets it. It
+DP materializes the Zone-bound full protected command for one execution in memory. It sends the
+decoded values to Kubernetes according to SRE static YAML and then forgets them. It
 does not write plaintext parameter, rendered manifest, database name/password or Secret
 value to CP DB, Redis, NATS, Zone KV, Kafka result, disk, log or notification. Kubernetes
 is the durable runtime materialization boundary.
@@ -416,18 +438,18 @@ insert unique result inbox
   → lock scoped instance/operation
   → verify source event + Zone + operation + generation + attempt + revision + hashes
   → write bounded observed snapshot and monotonic version
-  → finalise current operation OR create durable delayed retry outbox
+  → finalise current operation
 ```
 
 Only current fence may change lifecycle. Duplicate result converges through inbox unique
 keys. A stale attempt/generation/source event is not a terminal failure and cannot
 mutate desired/observed state. Malformed result is quarantine/DLQ data, not stale data.
 
-Retry budget is exactly five commands, attempts `0..4`. Bases are `30s`, `2m`, `10m`,
-`30m` plus 0–20% jitter; CP persists the final `available_at` in new outbox record.
-JO CDC is the primary dispatcher. Its bounded per-module due-retry scan, lease/fence and
-work budget recover delayed timer/CDC interruption only; it does not create aggregate
-state or become a second relay. Attempt 4 retryable failure becomes terminal.
+Retry budget is exactly five deliveries, outer attempts `0..4`. Generic Dataplane job runtime
+backs off with `30s`, `2m`, `10m`, `30m` plus jitter, republishes the exact committed
+ciphertext with `attempt+1`, then settles the original Kafka record. CP/JO do not create a
+new outbox event or reconstruct a command from hidden plaintext. Attempt 4 retryable failure
+becomes terminal.
 
 After durable Kafka ACK, JO emits one `PROCESSING` timeline event. After CP transaction
 settles terminal state, JO emits `SUCCESS` or `FAILED`. All events use
@@ -448,7 +470,8 @@ resurrect hard-deleted aggregate or poll every resource continuously.
 | `SRE_TEMPLATE_INPUT_MISMATCH` | Terminal; SRE must publish corrected revision/config |
 | `K8S_APPLY_REJECTED` | Terminal when static manifest/RBAC/schema invalid |
 | `K8S_OWNERSHIP_CONFLICT` | Terminal; never adopt foreign object |
-| `ZONE_PARAMETER_ENVELOPE_INVALID` | Terminal for the current operation; a corrected immutable revision is required |
+| `JOB_PROTECTED_PAYLOAD_INVALID` / `JOB_PROTECTED_PAYLOAD_AUTH_FAILED` | Terminal sanitized DLQ; no Kubernetes side effect |
+| `JOB_PROTECTED_PAYLOAD_KEY_UNAVAILABLE` | Retryable deployment/readiness fault; offset remains uncommitted and Dataplane exits fail-safe |
 | `K8S_API_UNAVAILABLE` | Retryable within budget |
 | `K8S_CAPACITY_PENDING` | Retryable while static readiness/Zone policy permits |
 | `K8S_READINESS_DEADLINE_EXCEEDED` | Revision policy determines terminal or retryable outcome |
@@ -457,17 +480,24 @@ resurrect hard-deleted aggregate or poll every resource continuously.
 
 DLQ publish must be durable before source Kafka offset/checkpoint advances. DLQ diagnostic
 holds error code, source topic/partition/offset, payload length and SHA-256 only; it
-never carries raw envelope, template or parameter data.
+never carries raw ciphertext, plaintext command, template or parameter data.
 
 ## 12. Security, encryption and observability
 
-`zone_id` is trusted routing and envelope-binding context, not a Controlplane-managed
-public-key lifecycle. The create/update CTE proves the workspace is in that Zone in the
-same transaction that writes desired state; the client cannot submit or override a Zone.
-The encrypted-envelope implementation is deliberately deferred until the Zone-local
-runtime secret contract is introduced. CP/JO never receive Zone private material, and
-no keyset, rotation record, attestation or Zone-metadata projection is part of Managed
-Service V1.
+`zone_id` is trusted routing and protection-binding context. Hierarchy, not the Managed
+Service aggregate, owns the versioned Zone public-key lifecycle. The create/update CTE
+must prove the workspace is in that Zone in the same transaction that writes desired
+state; the client cannot submit or override a Zone. CP and JO never receive Zone private
+material.
+
+Platform transport now carries `ProtectedPayloadV1` for every Zone-bound outbox command.
+Hierarchy holds only public X25519 metadata; each fresh Dataplane replica reports its loaded
+`key_id + public-key fingerprint`, and Controlplane admits a key only after the report's
+all-replica intersection is fresh. Instance revision/outbox pin exact ciphertext, key ID and
+digest; retirement rejects retained Storage/Mail/Hypervisor/Managed Service references after
+the decrypt-only drain window. Managed Service customer mutation remains feature-disabled until
+its P04 CTE writes those exact fields atomically, but no future path may reintroduce nested
+parameter encryption or plaintext persistence.
 
 SRE decides through YAML whether a parameter becomes CRD/spec/ConfigMap/Kubernetes
 Secret or an operator-generated value. Platform does not classify input as `secret`,
@@ -503,7 +533,7 @@ registry against the cited platform God Views:
 | --- | --- |
 | Controlplane architecture | desired state, ownership split, CTE/outbox and hard-delete semantics |
 | JO transport | WAL checkpoint, route/key/order, retry timer, DLQ and result relay |
-| Dataplane | fence, Zone-bound envelope materialization/render, Kubernetes graph, idempotency and graceful shutdown |
+| Dataplane | protected-command open/render, Kubernetes graph, idempotency and graceful shutdown |
 | Notification | stable timeline identity and non-rollback delivery semantics |
 | Security/Zone | trusted identity, critical route, Zone binding, ACL/RBAC and observability scope |
 

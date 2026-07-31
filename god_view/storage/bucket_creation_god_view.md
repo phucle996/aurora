@@ -80,13 +80,14 @@ sequenceDiagram
     Edge->>CP: verified identity + zone_id
     CP->>DB: BEGIN
     CP->>DB: authorize workspace + reserve bucket identity
-    CP->>DB: INSERT storage_outbox_records
+    CP->>CP: serialize bucket command + HPKE-seal full payload
+    CP->>DB: INSERT protected storage_outbox_records
     CP->>DB: COMMIT
     DB-->>JO: logical WAL
-    JO->>K: JobCommandV1, key=job_id, acks=all
+    JO->>K: JobCommandV1, key=resource_id, acks=all
     JO->>DB: advance LSN after Kafka ACK
     K-->>DP: manual poll exact Zone topic
-    DP->>DP: validate schema/Zone + acquire fenced lease
+    DP->>DP: validate public protection/Zone + HPKE-open + acquire fenced lease
     DP->>S3: idempotent create
 ```
 
@@ -108,13 +109,14 @@ Invariant:
 - exact `job_topic`;
 - `source_domain=STORAGE`;
 - stable `resource_id`;
-- versioned Protobuf business payload;
+- serialized `ProtectedPayloadV1` with `payload_encoding=HPKE_X25519_HKDF_SHA256_AES_256_GCM`;
 - trace ID;
 - `target_zone_id`;
 - `transport_schema_version=1`.
 
-JO chọn topic từ trusted outbox Zone. Dataplane vẫn so sánh topic Zone với `target_zone_id` và `ZONE_ID`.
-Cross-wire/poison command đi DLQ rồi mới settle.
+JO chọn topic từ trusted outbox Zone và chỉ validate public protection metadata; exact ciphertext
+được forward byte-for-byte. Dataplane so sánh topic Zone với `target_zone_id`/`ZONE_ID`, HPKE-open
+trước khi decode bucket payload. Cross-wire/auth/poison command đi sanitized DLQ rồi mới settle.
 
 ## 3. Execution, retry và result
 

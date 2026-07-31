@@ -165,6 +165,51 @@ pub async fn update_reported_service_health(
     Ok(rows_affected)
 }
 
+pub async fn update_loaded_payload_keys(
+    pg_client: &tokio_postgres::Client,
+    zone_id: &str,
+    loaded_keys: &[super::proto::LoadedPayloadKey],
+    observed_at_unix_seconds: i64,
+    leader_fencing_token: i64,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let key_ids: Vec<String> = loaded_keys
+        .iter()
+        .filter_map(|key| uuid::Uuid::from_slice(&key.key_id).ok())
+        .map(|key_id| key_id.to_string())
+        .collect();
+    let fingerprints: Vec<Vec<u8>> = loaded_keys
+        .iter()
+        .map(|key| key.public_key_fingerprint.clone())
+        .collect();
+    let rows_affected = pg_client
+        .execute(
+            "UPDATE hierarchy.zone_encryption_keys AS zone_key \
+             SET loaded_at = CASE WHEN EXISTS ( \
+                     SELECT 1 FROM unnest($2::text[], $3::bytea[]) AS loaded(key_id, fingerprint) \
+                     WHERE loaded.key_id::uuid = zone_key.id \
+                       AND loaded.fingerprint = zone_key.fingerprint \
+                 ) THEN to_timestamp($4::bigint) ELSE NULL END, \
+                 loaded_observed_at = to_timestamp($4::bigint), \
+                 loaded_observed_fencing_token = $5::bigint, \
+                 updated_at = NOW() \
+             WHERE zone_key.zone_id = $1::text::uuid \
+               AND (zone_key.loaded_observed_fencing_token IS NULL \
+                    OR zone_key.loaded_observed_fencing_token < $5::bigint \
+                    OR (zone_key.loaded_observed_fencing_token = $5::bigint \
+                        AND (zone_key.loaded_observed_at IS NULL \
+                             OR zone_key.loaded_observed_at <= to_timestamp($4::bigint))))",
+            &[
+                &zone_id,
+                &key_ids,
+                &fingerprints,
+                &observed_at_unix_seconds,
+                &leader_fencing_token,
+            ],
+        )
+        .await?;
+    Ok(rows_affected)
+}
+
 /// [COMMENT]: Bootstrap Snapshot — Lấy toàn bộ desired_state của tất cả zone_services từ DB.
 /// Được gọi một lần khi JO khởi động để khởi tạo EnabledServicesMap in-memory trước khi
 /// subscribe CDC. Đảm bảo không có khoảng trống về trạng thái enabled/disabled sau JO restart.

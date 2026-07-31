@@ -103,7 +103,8 @@ sequenceDiagram
     UI->>Edge: POST /api/v1/hypervisor/vms
     Edge->>CP: POST /api/v1/personal/hypervisor/vms + verified context
     CP->>CP: Handler validates and normalizes request
-    CP->>DB: Atomic INSERT personal_vms + hypervisor_outbox_records
+    CP->>CP: Serialize VM command + HPKE-seal full payload
+    CP->>DB: Atomic INSERT personal_vms + protected hypervisor_outbox_records
     DB-->>CP: VM PROVISIONING, operation_id
     CP-->>UI: 202 Accepted
 
@@ -113,7 +114,7 @@ sequenceDiagram
     Note over JO,Kafka: key=resource_id; acks=all before WAL LSN ACK
 
     Kafka-->>DP: Manual-consume JobCommandV1
-    DP->>DP: Validate schema, target zone, resource, config hash and retry budget
+    DP->>DP: Validate protection/target zone, HPKE-open, resource, config hash and retry budget
     DP->>KV: Acquire resource lease "hypervisor:<vm_id>"
     DP->>KV: CAS provider binding and reverse VMID reservation
     DP->>PVE: Inventory, select node, full clone template
@@ -145,7 +146,8 @@ Command:
 
 - source domain: `HYPERVISOR`;
 - job topic: `hypervisor.vm.create`;
-- payload schema: `hypervisor.VmCreateV1`, version 1;
+- plaintext payload schema after HPKE open: `hypervisor.VmCreateV1`, version 1;
+- outer payload: serialized `ProtectedPayloadV1` with HPKE payload encoding;
 - resource ID: VM UUID;
 - Kafka key: resource ID để preserve per-VM ordering;
 - immutable destination: typed `zone_id` UUID; không còn `routing_scope` string.

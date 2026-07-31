@@ -1,6 +1,4 @@
-use crate::contracts::storage as storage_proto;
 use crate::observability::logger::Logger;
-use prost::Message;
 
 // [COMMENT]: Resolve bucket creation trong một transaction.
 // SUCCEEDED: UPDATE outbox thành SUCCEEDED. Ownership delivery được reconstruct từ
@@ -136,54 +134,39 @@ pub async fn resolve_bucket_resize(
             )
             .await?
     } else {
-        // [COMMENT]: Khi job thất bại (FAILED/error):
-        // 1. SELECT lấy payload của outbox record hiện tại để lấy quota cũ (current_quota_bytes)
-        let outbox_row = pg_client
-            .query_opt(
-                "SELECT payload FROM storage.storage_outbox_records \
-                 WHERE event_id = $1::uuid AND job_topic = $2",
-                &[&job_uuid, &job_topic],
-            )
-            .await?;
-
-        if let Some(r) = outbox_row {
-            let payload_bytes: Vec<u8> = r.get(0);
-            if let Ok(sync_data) = storage_proto::BucketResizeSync::decode(payload_bytes.as_slice())
-            {
-                // 2. Rollback quota cũ về DB dựa vào physical name prefix
-                if sync_data.name.starts_with("ws-") {
-                    let _ = pg_client
-                        .execute(
-                            "UPDATE storage.personal_buckets \
-                             SET capacity_quota_bytes = $1, updated_at = NOW() \
-                             WHERE name = $2",
-                            &[&sync_data.current_quota_bytes, &sync_data.name],
-                        )
-                        .await;
-                } else if sync_data.name.starts_with("tn-") {
-                    let _ = pg_client
-                        .execute(
-                            "UPDATE storage.tenant_buckets \
-                             SET capacity_quota_bytes = $1, updated_at = NOW() \
-                             WHERE name = $2",
-                            &[&sync_data.current_quota_bytes, &sync_data.name],
-                        )
-                        .await;
-                }
-            }
-        }
-
-        // 3. Cập nhật outbox record sang status FAILED kèm mã lỗi
+        // JO has no private key. Rollback authority is the minimal safe fence
+        // committed beside the ciphertext, and rollback + terminal transition
+        // remain one PostgreSQL statement under the same row lock.
         pg_client
             .query_opt(
-                "UPDATE storage.storage_outbox_records \
-                 SET status = $1, \
-                     completed_at = NOW(), \
-                     updated_at = NOW(), \
-                     error_code = $2, \
-                     error_message = $3 \
-                 WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
+                "WITH locked_outbox AS MATERIALIZED ( \
+                     SELECT resource_id::uuid AS resource_id, owner_type, rollback_quota_bytes \
+                     FROM storage.storage_outbox_records \
+                     WHERE event_id = $4::uuid AND job_topic = $5 \
+                       AND status IN ('PENDING', 'PROCESSING') \
+                       AND rollback_quota_bytes IS NOT NULL \
+                     FOR UPDATE \
+                 ), rolled_personal AS ( \
+                     UPDATE storage.personal_buckets bucket \
+                     SET capacity_quota_bytes = locked.rollback_quota_bytes, updated_at = NOW() \
+                     FROM locked_outbox locked \
+                     WHERE locked.owner_type = 'PERSONAL' AND bucket.id = locked.resource_id \
+                     RETURNING bucket.id \
+                 ), rolled_tenant AS ( \
+                     UPDATE storage.tenant_buckets bucket \
+                     SET capacity_quota_bytes = locked.rollback_quota_bytes, updated_at = NOW() \
+                     FROM locked_outbox locked \
+                     WHERE locked.owner_type = 'TENANT' AND bucket.id = locked.resource_id \
+                     RETURNING bucket.id \
+                 ) \
+                 UPDATE storage.storage_outbox_records outbox \
+                 SET status = $1, completed_at = NOW(), updated_at = NOW(), \
+                     error_code = $2, error_message = $3 \
+                 FROM locked_outbox locked \
+                 WHERE outbox.event_id = $4::uuid AND outbox.job_topic = $5 \
+                   AND (EXISTS (SELECT 1 FROM rolled_personal) \
+                        OR EXISTS (SELECT 1 FROM rolled_tenant)) \
+                 RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
                 &[&status, &error_code, &error_message, &job_uuid, &job_topic],
             )
             .await?
@@ -223,7 +206,7 @@ pub async fn resolve_bucket_deletion_tx(
         // có thể consume outbox nhưng không xóa được resource, làm mất lifecycle event.
         let outbox = tx
             .query_opt(
-                "SELECT resource_id, owner_type, payload, zone_id \
+                "SELECT resource_id, owner_type, resource_name, zone_id \
                  FROM storage.storage_outbox_records \
                  WHERE event_id = $1::uuid AND job_topic = $2 \
                    AND status IN ('PENDING', 'PROCESSING') \
@@ -237,11 +220,10 @@ pub async fn resolve_bucket_deletion_tx(
         };
         let resource_id = uuid::Uuid::parse_str(outbox.get::<_, String>(0).as_str())?;
         let owner_type: String = outbox.get(1);
-        let payload: Vec<u8> = outbox.get(2);
+        let resource_name: String = outbox.get(2);
         let zone_id: uuid::Uuid = outbox.get(3);
-        let sync_data = storage_proto::BucketDeleteSync::decode(payload.as_slice())?;
-        if sync_data.name.trim().is_empty() {
-            return Err("bucket delete outbox payload has an empty name".into());
+        if resource_name.trim().is_empty() {
+            return Err("bucket delete outbox has an empty resource_name fence".into());
         }
         if zone_id.is_nil() {
             return Err("bucket delete outbox has a nil zone_id".into());

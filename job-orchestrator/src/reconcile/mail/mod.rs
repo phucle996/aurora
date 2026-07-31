@@ -10,11 +10,10 @@ pub use scheduler::run_periodic_mail_reconciliation;
 #[cfg(test)]
 mod tests;
 
-use crate::infra::kafka::transport_proto::JobCommandV1;
+use crate::infra::kafka::transport_proto::{JobCommandV1, PayloadEncodingV1};
 use crate::infra::kafka::KafkaTransport;
 use uuid::Uuid;
 
-pub(super) const CONSUMER_EVENT_NAMESPACE: &str = "43de31a4-0c86-54e9-8384-47b33f541c28";
 pub(super) const RECONCILE_COMPLETION_NAMESPACE: &str = "e295a8c6-c04f-56f3-9577-f53521006bb9";
 
 // [COMMENT]: Đây là transport primitive duy nhất được dùng chung; business query/encode vẫn tách theo từng flow.
@@ -73,6 +72,7 @@ pub(super) async fn publish_mail_projection_command(
         transport_schema_version: 1,
         traceparent: propagation.traceparent,
         tracestate: propagation.tracestate,
+        payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32,
     };
     use opentelemetry::trace::FutureExt;
     let publish_result = kafka

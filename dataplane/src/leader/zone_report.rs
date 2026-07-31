@@ -20,6 +20,14 @@ struct NodeSnapshot {
     job_queue_lag: u64,
     #[serde(default = "default_zone_node_lag_stale")]
     job_queue_lag_stale: bool,
+    #[serde(default)]
+    loaded_payload_keys: Vec<NodePayloadKeyReadiness>,
+}
+
+#[derive(Deserialize)]
+struct NodePayloadKeyReadiness {
+    key_id: String,
+    public_key_fingerprint: Vec<u8>,
 }
 
 fn default_zone_node_lag_stale() -> bool {
@@ -68,6 +76,7 @@ pub(crate) async fn run_zone_report_publisher(
         let mut total_job_queue_lag = 0_u64;
         let mut job_queue_lag_stale = false;
         let mut alive_nodes = 0_usize;
+        let mut common_payload_keys: Option<HashMap<uuid::Uuid, [u8; 32]>> = None;
         let health_keys = match zone_kv.health_keys().await {
             Ok(keys) => keys,
             Err(error) => {
@@ -120,6 +129,26 @@ pub(crate) async fn run_zone_report_publisher(
                 total_job_queue_lag = total_job_queue_lag.saturating_add(node.job_queue_lag);
                 job_queue_lag_stale |= node.job_queue_lag_stale;
                 alive_nodes += 1;
+                let mut node_keys = HashMap::new();
+                for key in node.loaded_payload_keys {
+                    let Ok(key_id) = uuid::Uuid::parse_str(&key.key_id) else {
+                        node_keys.clear();
+                        break;
+                    };
+                    let Ok(fingerprint) = <[u8; 32]>::try_from(key.public_key_fingerprint) else {
+                        node_keys.clear();
+                        break;
+                    };
+                    if node_keys.insert(key_id, fingerprint).is_some() {
+                        node_keys.clear();
+                        break;
+                    }
+                }
+                match &mut common_payload_keys {
+                    None => common_payload_keys = Some(node_keys),
+                    Some(common) => common
+                        .retain(|key_id, fingerprint| node_keys.get(key_id) == Some(fingerprint)),
+                }
             }
         }
         if alive_nodes == 0 {
@@ -154,6 +183,18 @@ pub(crate) async fn run_zone_report_publisher(
             })
             .unwrap_or_default();
 
+        let mut loaded_payload_keys = common_payload_keys
+            .unwrap_or_default()
+            .into_iter()
+            .map(
+                |(key_id, fingerprint)| zone_report_proto::LoadedPayloadKey {
+                    key_id: key_id.as_bytes().to_vec(),
+                    public_key_fingerprint: fingerprint.to_vec(),
+                },
+            )
+            .collect::<Vec<_>>();
+        loaded_payload_keys.sort_unstable_by(|left, right| left.key_id.cmp(&right.key_id));
+
         let report = zone_report_proto::ZoneReport {
             zone_id: config.zone_id.clone(),
             timestamp: now as i64,
@@ -185,6 +226,11 @@ pub(crate) async fn run_zone_report_publisher(
                     capacity: storage.capacity as i32,
                 }),
             }),
+            // A key is producer-ready only when every fresh Dataplane replica
+            // reports the same key/fingerprint. This closes the rolling-update
+            // race where Kafka could assign ciphertext to an old pod.
+            loaded_payload_keys,
+            leader_fencing_token: session.fencing_token(),
         };
 
         if session.permits_external_side_effect().await {

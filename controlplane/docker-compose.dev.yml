@@ -512,8 +512,8 @@ services:
   dataplane-vn-n1:
     cpuset: "0-5"
     build:
-      context: ../dataplane
-      dockerfile: Dockerfile.prod
+      context: ..
+      dockerfile: dataplane/Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
@@ -524,6 +524,10 @@ services:
     # infrastructure identity contract.
     env_file:
       - ../dataplane/.env
+    volumes:
+      # Private Zone key material never enters .env or the image. The ignored
+      # host directory is mounted read-only for every replica in this Zone.
+      - ../dataplane/.secrets:/run/secrets/aurora:ro
     depends_on:
       controlplane1:
         condition: service_started
@@ -548,8 +552,8 @@ services:
   dataplane-vn-n2:
     cpuset: "0-5"
     build:
-      context: ../dataplane
-      dockerfile: Dockerfile.prod
+      context: ..
+      dockerfile: dataplane/Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
@@ -558,6 +562,8 @@ services:
     init: true
     env_file:
       - ../dataplane/.env
+    volumes:
+      - ../dataplane/.secrets:/run/secrets/aurora:ro
     depends_on:
       controlplane2:
         condition: service_started
@@ -574,8 +580,8 @@ services:
   dataplane-vn-n3:
     cpuset: "0-5"
     build:
-      context: ../dataplane
-      dockerfile: Dockerfile.prod
+      context: ..
+      dockerfile: dataplane/Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
@@ -584,6 +590,8 @@ services:
     init: true
     env_file:
       - ../dataplane/.env
+    volumes:
+      - ../dataplane/.secrets:/run/secrets/aurora:ro
     depends_on:
       controlplane3:
         condition: service_started
@@ -733,8 +741,8 @@ services:
   job-orchestrator:
     cpuset: "0-5"
     build:
-      context: ../job-orchestrator
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: job-orchestrator/Dockerfile
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000

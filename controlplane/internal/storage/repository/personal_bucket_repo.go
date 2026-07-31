@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	jobpayload "controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
@@ -25,21 +26,29 @@ type PersonalBucketRepoImpl struct {
 	db        *pgxpool.Pool
 	storage   string // schema storage
 	hierarchy string // schema hierarchy
+	protector jobpayload.Protector
 }
 
 // [COMMENT]: NewPersonalBucketRepo khởi tạo repository quản lý bucket cá nhân.
 func NewPersonalBucketRepo(
 	db *pgxpool.Pool,
 	cfg *config.Config,
+	protector jobpayload.Protector,
 ) storageRepoInterface.PersonalBucketRepo {
 	return &PersonalBucketRepoImpl{
 		db:        db,
 		storage:   cfg.SchemaSQL.Storage,
 		hierarchy: cfg.SchemaSQL.Hierarchy,
+		protector: protector,
 	}
 }
 
 func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.PersonalBucket, workspaceID uuid.UUID, zoneID uuid.UUID, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Convert Entity sang Model chứa các tag db cho credential và outbox
 	mc := storageModel.PersonalCredentialEntityToModel(credential)
 	mo := storageModel.OutboxEntityToModel(outbox)
@@ -70,9 +79,10 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
+			error_code, error_message, actor_user_id, payload_key_id,
+			resource_name, rollback_quota_bytes
 		)
-		SELECT $13, $14, $15, $16, $17, $34, $18, $19, $20, $21, $22, $23, $24, $25, $26, $35
+		SELECT $13, $14, $15, $16, $17, $34, $18, $19, $20, $21, $22, $23, $24, $25, $26, $35, $36, $37, $38
 		FROM ins_bucket
 	`, r.hierarchy, r.storage, r.storage, r.storage)
 
@@ -121,6 +131,9 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		// [COMMENT]: $34 — owner_type ("PERSONAL")
 		mo.OwnerType,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
+		mo.ResourceName,
+		mo.RollbackQuotaBytes,
 	)
 
 	if err != nil {
@@ -235,6 +248,11 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 }
 
 func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, userID uuid.UUID, quotaBytes int64, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Khởi tạo transaction để đảm bảo atomic cho cả kiểm tra quota, update quota và ghi outbox
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -244,15 +262,16 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 
 	// [COMMENT]: 1. SELECT FOR UPDATE để validate ownership và lock row tránh race condition
 	selectQuery := fmt.Sprintf(`
-		SELECT b.capacity_quota_bytes, b.used_bytes
+		SELECT b.name, b.capacity_quota_bytes, b.used_bytes
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
 		FOR UPDATE
 	`, r.storage, r.hierarchy)
 
+	var bucketName string
 	var currentQuota, usedBytes int64
-	err = tx.QueryRow(ctx, selectQuery, id, userID).Scan(&currentQuota, &usedBytes)
+	err = tx.QueryRow(ctx, selectQuery, id, userID).Scan(&bucketName, &currentQuota, &usedBytes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return storageTaxonomy.ErrNotFound
@@ -278,13 +297,18 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 	}
 
 	// [COMMENT]: 4. Chèn outbox record để đồng bộ lệnh resize xuống dataplane
+	// Settlement metadata comes from the locked row, not the earlier service
+	// snapshot, so a concurrent request cannot corrupt the rollback fence.
+	outbox.ResourceName = bucketName
+	outbox.RollbackQuotaBytes = &currentQuota
 	mo := storageModel.OutboxEntityToModel(outbox)
 	insertOutboxQuery := fmt.Sprintf(`
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			error_code, error_message, actor_user_id, payload_key_id,
+			resource_name, rollback_quota_bytes
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`, r.storage)
 
 	_, err = tx.Exec(ctx, insertOutboxQuery,
@@ -305,6 +329,9 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 		mo.ErrorCode,
 		mo.ErrorMessage,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
+		mo.ResourceName,
+		mo.RollbackQuotaBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("storage repo: insert resize outbox failed: %w", err)
@@ -319,13 +346,18 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 }
 
 func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Map outbox record sang model DB
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	// [COMMENT]: Sử dụng single atomic CTE để kiểm tra ownership (SELECT FOR UPDATE) và chèn outbox record đồng thời
 	query := fmt.Sprintf(`
 		WITH locked_bucket AS (
-			SELECT b.id
+			SELECT b.id, b.name
 			FROM %s.personal_buckets b
 			JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 			WHERE b.id = $1 AND w.owner_id = $2
@@ -334,9 +366,10 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
+			error_code, error_message, actor_user_id, payload_key_id,
+			resource_name, rollback_quota_bytes
 		)
-		SELECT $3, $4, $5, $6, $7, $17, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18
+		SELECT $3, $4, $5, $6, $7, $17, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, locked_bucket.name, NULL
 		FROM locked_bucket
 	`, r.storage, r.hierarchy, r.storage)
 
@@ -359,6 +392,7 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 		mo.ErrorMessage,
 		mo.OwnerType,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
 	)
 
 	if err != nil {
@@ -432,6 +466,11 @@ func (r *PersonalBucketRepoImpl) ListAccessKeys(ctx context.Context, bucketID uu
 // statement that inserts the durable preparation command. The Redis access
 // record is written only after this PostgreSQL durability boundary succeeds.
 func (r *PersonalBucketRepoImpl) CreateAccessPrepare(ctx context.Context, session *storageEntity.StorageAccessSession, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	query := fmt.Sprintf(`
@@ -443,9 +482,9 @@ func (r *PersonalBucketRepoImpl) CreateAccessPrepare(ctx context.Context, sessio
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
-			job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message, actor_user_id
+			job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message, actor_user_id, payload_key_id
 		)
-		SELECT $4, $5, $6, $7, $8, $18, $9, $10, $11, $12, $13, $14, $15, $16, $17, $19
+		SELECT $4, $5, $6, $7, $8, $18, $9, $10, $11, $12, $13, $14, $15, $16, $17, $19, $21
 		FROM check_bucket
 	`, r.storage, r.hierarchy, r.storage)
 
@@ -470,6 +509,7 @@ func (r *PersonalBucketRepoImpl) CreateAccessPrepare(ctx context.Context, sessio
 		mo.OwnerType,
 		mo.ActorUserID,
 		session.ZoneID,
+		mo.PayloadKeyID,
 	)
 
 	if err != nil {

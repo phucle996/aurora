@@ -1,0 +1,15 @@
+package service
+
+import (
+	"context"
+
+	"controlplane/internal/managedservice/domain/entity"
+)
+
+type TenantInstanceService interface {
+	ListTenantInstances(context.Context, *entity.ListTenantInstances) (*entity.TenantInstancePage, error)
+	GetTenantInstance(context.Context, *entity.GetTenantInstance) (*entity.TenantInstanceDetail, error)
+	ListTenantInstanceOperations(context.Context, *entity.ListTenantInstanceOperations) (*entity.TenantInstanceOperationPage, error)
+	GetTenantInstanceOperation(context.Context, *entity.GetTenantInstanceOperation) (*entity.TenantInstanceOperationDetail, error)
+	RenameTenantInstance(context.Context, *entity.RenameTenantInstance) (*entity.RenameTenantInstanceResult, error)
+}

@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
     zone_id UUID NOT NULL,
     job_topic VARCHAR(100) NOT NULL,
     payload BYTEA NOT NULL,
+    payload_key_id UUID NOT NULL,
     actor_user_id UUID,
     status VARCHAR(50) NOT NULL DEFAULT 'PENDING'
         CHECK (status IN ('PENDING', 'PROCESSING', 'SUCCEEDED', 'FAILED')),
@@ -193,6 +194,45 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- [COMMENT]: JO reconciliation reads only the latest opaque projection. It no
+-- longer reconstructs plaintext commands from Mail business columns.
+CREATE TABLE IF NOT EXISTS mail_protected_projections (
+    event_id UUID PRIMARY KEY,
+    resource_kind VARCHAR(32) NOT NULL CHECK (resource_kind IN ('consumer', 'template')),
+    resource_id VARCHAR(128) NOT NULL,
+    zone_id UUID NOT NULL,
+    job_topic VARCHAR(100) NOT NULL,
+    payload BYTEA NOT NULL,
+    payload_key_id UUID NOT NULL,
+    source_outbox_id BIGINT NOT NULL UNIQUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION project_mail_protected_payload()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    kind VARCHAR(32);
+BEGIN
+    kind := split_part(NEW.job_topic, '.', 2);
+    IF kind NOT IN ('consumer', 'template') THEN
+        RAISE EXCEPTION 'unsupported mail protected projection topic: %', NEW.job_topic;
+    END IF;
+    INSERT INTO mail_protected_projections (
+        event_id, resource_kind, resource_id, zone_id, job_topic, payload,
+        payload_key_id, source_outbox_id, updated_at
+    ) VALUES (
+        NEW.event_id, kind, NEW.resource_id, NEW.zone_id, NEW.job_topic, NEW.payload,
+        NEW.payload_key_id, NEW.id, now()
+    )
+    ON CONFLICT (event_id) DO NOTHING;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_mail_protected_projection
+AFTER INSERT ON mail_outbox_records
+FOR EACH ROW EXECUTE FUNCTION project_mail_protected_payload();
 
 CREATE TABLE IF NOT EXISTS personal_mail_template_projection_tombstones (
     template_id VARCHAR(128) PRIMARY KEY,

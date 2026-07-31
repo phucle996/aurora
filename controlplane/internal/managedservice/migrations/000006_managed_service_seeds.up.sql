@@ -1,0 +1,3 @@
+-- [COMMENT]: Migration 000006_managed_service_seeds.up.sql
+-- File dành riêng cho dữ liệu Seed mặc định / Baseline verification của phân hệ Managed Service Catalog.
+-- Hiện tại baseline schema không yêu cầu dữ liệu seed tĩnh bắt buộc trước P04.

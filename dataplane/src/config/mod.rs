@@ -1,5 +1,6 @@
 use std::env;
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 // [COMMENT]: Config chứa JMAP credential; không derive Debug để tránh vô tình ghi secret vào log/panic.
@@ -17,6 +18,10 @@ pub struct Config {
     pub kafka_ca_cert: Option<String>,
     pub kafka_topic_prefix: String,
     pub kafka_max_job_attempts: u32,
+    /// Read-only Kubernetes Secret mount containing versioned Zone X25519
+    /// private keys. Raw material is loaded once into memory and never written
+    /// to Zone KV, Kafka, logs or runtime snapshots.
+    pub job_payload_private_keys_file: PathBuf,
 
     /// [COMMENT]: NATS Core là soft-state Central↔Zone transport cho watch/runtime realtime.
     /// Đây là endpoint độc lập với Zone-local JetStream KV.
@@ -190,6 +195,9 @@ impl Config {
             kafka_ca_cert: env::var("KAFKA_CA_CERT").ok(),
             kafka_topic_prefix: required_env("KAFKA_TOPIC_PREFIX")?,
             kafka_max_job_attempts: parse_env("KAFKA_MAX_JOB_ATTEMPTS", 5_u32),
+            job_payload_private_keys_file: PathBuf::from(required_env(
+                "JOB_PAYLOAD_PRIVATE_KEYS_FILE",
+            )?),
             nats_core_url: required_env("NATS_URL")?,
             nats_core_ca_cert: env::var("NATS_CA_CERT").ok(),
             nats_core_client_cert: env::var("NATS_CLIENT_CERT").ok(),

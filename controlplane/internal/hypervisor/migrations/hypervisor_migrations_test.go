@@ -30,6 +30,7 @@ func TestHypervisorMigrationLayers(t *testing.T) {
 		"000003_hypervisor_indexes.up.sql",
 		"000004_hypervisor_functions.up.sql",
 		"000005_hypervisor_triggers.up.sql",
+		"000006_outbox_payload_protection.up.sql",
 	}
 	expectedDown := []string{
 		"000001_hypervisor_enums.down.sql",
@@ -37,6 +38,7 @@ func TestHypervisorMigrationLayers(t *testing.T) {
 		"000003_hypervisor_indexes.down.sql",
 		"000004_hypervisor_functions.down.sql",
 		"000005_hypervisor_triggers.down.sql",
+		"000006_outbox_payload_protection.down.sql",
 	}
 	if !slices.Equal(upMigrations, expectedUp) {
 		t.Fatalf("unexpected hypervisor up-migration layers: %v", upMigrations)

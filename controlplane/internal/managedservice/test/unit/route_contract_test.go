@@ -20,8 +20,10 @@ func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T
 		AuditHandler:                  handler.NewAuditHandler(nil),
 		PersonalCatalogHandler:        handler.NewPersonalCatalogHandler(nil),
 		PersonalCatalogVersionHandler: handler.NewPersonalCatalogVersionHandler(nil),
+		PersonalInstanceHandler:       handler.NewPersonalInstanceHandler(nil),
 		TenantCatalogHandler:          handler.NewTenantCatalogHandler(nil),
 		TenantCatalogVersionHandler:   handler.NewTenantCatalogVersionHandler(nil),
+		TenantInstanceHandler:         handler.NewTenantInstanceHandler(nil),
 	}
 	router := gin.New()
 	managedservice.RegisterRoutes(router, module)
@@ -48,6 +50,14 @@ func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T
 		"GET /api/v1/personal/managed-services/catalog/versions/:version_id",
 		"GET /api/v1/tenant/managed-services/catalog",
 		"GET /api/v1/tenant/managed-services/catalog/versions/:version_id",
+		"GET /api/v1/personal/managed-services/instances",
+		"GET /api/v1/personal/managed-services/instances/:code",
+		"GET /api/v1/personal/managed-services/instances/:code/operations",
+		"GET /api/v1/personal/managed-services/instances/:code/operations/:operation_id",
+		"GET /api/v1/tenant/managed-services/instances",
+		"GET /api/v1/tenant/managed-services/instances/:code",
+		"GET /api/v1/tenant/managed-services/instances/:code/operations",
+		"GET /api/v1/tenant/managed-services/instances/:code/operations/:operation_id",
 	} {
 		if _, exists := routes[route]; !exists {
 			t.Fatalf("missing customer catalog route %q", route)
@@ -58,6 +68,16 @@ func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T
 			route == "POST /admin/managed-services/catalog/drafts" ||
 			route == "POST /admin/managed-services/catalog/publish" {
 			t.Fatalf("runtime-affecting mutation escaped critical path: %s", route)
+		}
+	}
+	for _, dormant := range []string{
+		"POST /api/v1/personal/managed-services/instances",
+		"PATCH /api/v1/personal/managed-services/instances/:code/name",
+		"POST /api/v1/tenant/managed-services/instances",
+		"PATCH /api/v1/tenant/managed-services/instances/:code/name",
+	} {
+		if _, exists := routes[dormant]; exists {
+			t.Fatalf("P04 mutation admission must remain dormant before protected transport and P07: %s", dormant)
 		}
 	}
 }

@@ -276,26 +276,23 @@ và Zone. Timestamp, retry attempt, random value, request header và raw auth co
 không được tham gia render input hoặc hash. Retry cùng revision/input/context phải
 sinh cùng desired spec.
 
-Sau canonicalization, handler tạo `parameter_envelope` opaque bound với trusted target
-Zone, instance, operation, generation, blueprint revision và bundle hash. Instance
-revision/outbox chỉ giữ envelope và digest; raw map bị bỏ khỏi Controlplane sau request
-boundary. Đây là cơ chế chung cho mọi field, không phụ thuộc một field có được SRE dùng
-làm credential hay không.
-`managed_service_outbox_records.payload` là whole command Protobuf; envelope là một
-field ciphertext nested trong payload, không phải một runtime record độc lập.
+Sau canonicalization, handler đặt map vào inner command rồi Controlplane HPKE-seal
+**toàn bộ serialized command** theo trusted target Zone, instance, operation, generation,
+blueprint revision và bundle hash. Instance revision/outbox chỉ giữ exact protected
+payload, `payload_key_id` và digest; raw map bị bỏ khỏi Controlplane sau request boundary.
+Không có field ciphertext nested hay cơ chế riêng theo loại parameter.
 
-`zone_id` chỉ là trusted routing/envelope-binding context; không có public-key record,
-keyset, attestation hay key rotation trong Controlplane. Khi Zone-local encryption
-runtime được chốt, private material vẫn chỉ ở Kubernetes Secret của đúng Zone; P01
-không triển khai encryption/key-management flow đó.
+`zone_id` là trusted routing/protection-binding context. Hierarchy giữ public X25519
+key lifecycle; private material chỉ nằm trong read-only keyring của đúng Dataplane Zone.
+Controlplane dùng key ACTIVE chỉ khi all-replica loaded-key readiness còn fresh.
 
-Dataplane không persist map đã decrypt. Nó mở envelope trong RAM để render rồi gửi
+Dataplane không persist map đã decrypt. Nó HPKE-open full command trong RAM để render rồi gửi
 runtime materialization tới Kubernetes: non-secret đi vào CRD/spec/ConfigMap theo
 YAML SRE, sensitive value đi vào `v1/Secret` hoặc Secret do operator tạo. Vì CP không
 query Kubernetes và reconciliation phải reproduce đúng immutable desired revision,
 customer-supplied value vẫn tồn tại dưới dạng ciphertext trong `InstanceRevision`;
 Kubernetes mới là nơi giữ runtime value. Literal/operator-generated value không đi
-qua envelope.
+qua customer parameter map.
 
 Output contract chỉ khai báo safe `key`, type và `CUSTOMER|INTERNAL` visibility.
 Actual endpoint/port/identifier là observed instance data sau provision, không thuộc
@@ -434,7 +431,7 @@ Create bắt đầu ở catalog table, không phải card gallery. Customer ch�
 
 Configure dùng one feature-owned renderer với finite widget registry tương thích `Platform Form Contract v1`: text, numeric/unit-aware, select/radio, switch và bounded list/set editor. `ui_schema` là data presentation, không executable UI; unknown contract/widget fail closed và không mở submit. Client validation chỉ phục vụ UX, backend vẫn authoritative. Raw parameter chỉ sống trong form memory cho đến submit, không vào DOM persistence, localStorage hay sessionStorage.
 
-Form draft chỉ tồn tại React memory và bị xóa khi auth generation, active workspace, Zone hoặc catalog revision đổi. Controlplane không decrypt/read-back `parameter_envelope`, nên configuration detail không prefill customer value từ revision cũ; update phải có input document theo schema của revision đang pin. Instance `code` là business identity, còn `name` chỉ là display metadata; cả hai không phải blueprint parameter hay Kubernetes `metadata.name`.
+Form draft chỉ tồn tại React memory và bị xóa khi auth generation, active workspace, Zone hoặc catalog revision đổi. Controlplane không decrypt/read-back protected command, nên configuration detail không prefill customer value từ revision cũ; update phải có input document theo schema của revision đang pin. Instance `code` là business identity, còn `name` chỉ là display metadata; cả hai không phải blueprint parameter hay Kubernetes `metadata.name`.
 
 Review layout là form desktop 8/4 với sticky summary: instance code/name, service/version, revision, workspace, Zone và validation summary; không echo raw customer parameter như một durable read-back surface. Mobile xếp summary sau form và có action footer. Confirm gửi `code` cùng canonical create intent; không có HTTP `Idempotency-Key` và không auto-retry mutation. Sau network failure, user có thể submit lại cùng code/cùng intent để lấy instance hoặc operation đã tồn tại. `ACCEPTED` chỉ là desired state durable, nên cache không optimistic thành `READY`/`ACTIVE`.
 
@@ -509,30 +506,30 @@ Instance lưu revision và hash đã chọn. `accepted` chỉ nghĩa desired sta
 JO đọc logical WAL/CDC của module outbox; không có outbox relay khác và CP không
 publish Kafka trực tiếp. Outer `JobCommandV1` dùng `job_id=command_event_id`,
 `job_topic=managed_service.instance.execute`, `source_domain=MANAGED_SERVICE`,
-`resource_id=instance_id`, `attempt=0..4` và target Zone. Inner
-`ManagedServiceCommandV1` pin command/operation/instance IDs, owner/workspace,
-instance code, operation kind, generation/attempt, instance/blueprint revision,
-canonical template bundle + component contract, bundle/contract/input/desired hashes,
-opaque `parameter_envelope` + digest, schema version và trace context.
-Toàn bộ command là outbox `payload`; envelope chỉ là nested ciphertext field.
+`resource_id=instance_id`, `attempt=0..4` và target Zone. Outer `payload` là
+serialized `ProtectedPayloadV1`. Inner `ManagedServiceCommandV1` chỉ xuất hiện sau DP
+HPKE-open và pin command/operation/instance IDs, owner/workspace, instance code,
+operation kind, generation, instance/blueprint revision, canonical template bundle +
+component contract, bundle/contract/input/desired hashes, canonical `parameter_values`
+và digest, schema version và trace context. Inner không có delivery attempt.
 
 Kafka key là `instance_id` để giữ ordering cục bộ. JO chỉ advance checkpoint sau
-Kafka ACK `acks=all`; crash giữa publish và checkpoint tạo duplicate an toàn. Một
-retryable result tạo command event mới với cùng operation/generation/revision và
-attempt tăng; tối đa năm attempt `0..4`, base backoff `30s/2m/10m/30m` cộng jitter
-được persist ở outbox `available_at`. Due retry scan bounded của chính JO dispatcher
-chỉ phục hồi timer/CDC miss, không là relay thứ hai và không mutate aggregate.
+Kafka ACK `acks=all`; crash giữa publish và checkpoint tạo duplicate an toàn. Retryable
+execution dùng generic Dataplane retry: giữ exact ciphertext/job ID/operation/generation,
+tăng outer attempt và backoff bounded `30s/2m/10m/30m` + jitter trước source settle.
+CP/JO không tạo command mới từ hidden plaintext và không có due-retry scanner riêng.
 
 ### 7.5. Render và apply tại Dataplane
 
 Dataplane Zone chỉ consume command dành cho Zone đó. Trước side effect, Dataplane
-validate outer/inner protobuf, schema version, Zone binding, source event, revision,
-all hashes, parameter-envelope digest, payload size và execution fence
+validate outer protection metadata, HPKE-open full payload, rồi validate inner protobuf,
+schema version, Zone binding, source event, revision, all hashes, parameter-values digest,
+payload size và execution fence
 `instance_id + operation_id + generation`; `attempt` chỉ correlate source command/
 result và không làm yếu dedupe side effect. Đây là idempotency boundary của
 at-least-once transport, không phải HTTP `Idempotency-Key`.
 
-Render engine lấy đúng revision, chỉ Zone Dataplane mới mở `parameter_envelope` trong memory, rồi thay `!aurora/param` theo exact key và tạo manifest deterministic. Rendered YAML chỉ ở memory hoặc vùng tạm được bảo vệ trong lúc apply; không ghi plaintext manifest hay raw customer value về Central. Sau Kubernetes API apply, Dataplane không giữ db name/password hay decrypted map: Kubernetes giữ runtime config/Secret, còn CP chỉ giữ ciphertext desired input để replay/reconcile.
+Render engine lấy đúng revision, chỉ Zone Dataplane mới HPKE-open protected command trong memory, rồi thay `!aurora/param` theo exact key và tạo manifest deterministic. Rendered YAML chỉ ở memory hoặc vùng tạm được bảo vệ trong lúc apply; không ghi plaintext manifest hay raw customer value về Central. Sau Kubernetes API apply, Dataplane không giữ db name/password hay decrypted map: Kubernetes giữ runtime config/Secret, còn CP chỉ giữ ciphertext desired input để replay/reconcile.
 
 Dataplane apply namespaced object/CRD đã qua discovery và dry-run bằng Kubernetes API
 của Zone. Nó dùng Zone-local lease/fence chỉ để giảm concurrent execution, server-side
@@ -690,8 +687,8 @@ Response HTTP dựng inline bằng `gin.H`. Request JSON struct chỉ nằm tron
 ## 10. Không nằm trong bộ khung hiện tại
 
 * Chưa viết render engine, Kubernetes client hoặc provisioning workflow.
-* Chưa tạo migration, bảng, Kafka topic, protobuf hay implementation cho
-  `parameter_envelope`.
+* Customer create/update/delete/retry, Managed Service route, Kafka dispatch và executor
+  vẫn chưa enabled; platform-wide protected transport đã ship trước các workflow đó.
 * Chưa thiết kế billing, quota, pricing hay automatic user/workspace creation.
 * Chưa implement YAML AST renderer/dry-run/apply dù contract cho namespaced Kind/CRD
   do SRE định nghĩa đã được chốt; chưa dùng live status để xác nhận durable business

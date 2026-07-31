@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS hypervisor_outbox_records (
     zone_id UUID NOT NULL,
     job_topic VARCHAR(128) NOT NULL,
     payload BYTEA NOT NULL,
+    payload_key_id UUID NOT NULL,
     actor_user_id UUID,
     status hypervisor_outbox_status NOT NULL DEFAULT 'PENDING',
     completed_at TIMESTAMPTZ,

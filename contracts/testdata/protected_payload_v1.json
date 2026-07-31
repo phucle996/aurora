@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "key_id": "00000000-0000-0000-0000-000000000001",
+  "recipient_zone_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "source_domain": "STORAGE",
+  "job_topic": "storage.bucket.create",
+  "resource_id": "bucket-1",
+  "job_version": 1,
+  "payload_schema_version": 1,
+  "plaintext_base64": "YXVyb3JhLXByb3RlY3RlZC1wYXlsb2FkLXYx",
+  "protected_payload_base64": "CAESEKqqqqqqqkqqiqqqqqqqqqoaEAAAAAAAAAAAAAAAAAAAAAEgASogBLzS4NAPLM5f6PHGwvvsXAf6VuOqXIilaJl12Is/zgUyK7GMLw1w6CR7+HyXe9bjappULQjr7EbVyGKtb96k8BxWGbpkq3l6nSneaQ04Gw=="
+}

@@ -167,6 +167,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 60,
@@ -277,6 +278,7 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
+	rollbackQuotaBytes := bucket.CapacityQuotaBytes
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:     eventID,
 		ZoneID:      bucket.ZoneID,
@@ -289,6 +291,8 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		RollbackQuotaBytes:   &rollbackQuotaBytes,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,
@@ -354,6 +358,7 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),
+		ResourceName:         param.BucketName,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,

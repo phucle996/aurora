@@ -56,6 +56,7 @@ type HypervisorOutboxRecord struct {
 	ZoneID               uuid.UUID
 	JobTopic             string
 	Payload              []byte
+	PayloadKeyID         uuid.UUID
 	ActorUserID          *uuid.UUID
 	Status               string
 	JobVersion           int32

@@ -16,6 +16,7 @@ import (
 	"controlplane/internal/mail"
 	"controlplane/internal/managedservice"
 	"controlplane/internal/observability"
+	jobpayload "controlplane/internal/security"
 	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
@@ -101,6 +102,10 @@ func NewGlobalModules(cfg *config.Config,
 	if hierarchyModule == nil {
 		return nil, errors.New("app: init critical hierarchy module: hierarchy module is nil")
 	}
+	payloadProtector, err := jobpayload.NewProtector(db, cfg.SchemaSQL.Hierarchy)
+	if err != nil {
+		return nil, fmt.Errorf("app: init protected job payload boundary: %w", err)
+	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
 	iamModule, err := iam.NewModule(cfg, db, rds, authRds, vaultClient, kafkaProducer, cacheEngine, otel)
@@ -116,7 +121,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	// Managed Service catalog is a Controlplane durable business module. A bad
 	// PostgreSQL/schema dependency must fail before readiness and route exposure.
-	managedServiceModule, err := managedservice.NewModule(cfg, db, cacheEngine, otel)
+	managedServiceModule, err := managedservice.NewModule(cfg, db, cacheEngine, otel, payloadProtector)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical managed service module: %w", err)
 	}
@@ -126,7 +131,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ ảo hóa Hypervisor
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	hypervisorModule, err := hypervisor.NewModule(cfg, db, cacheEngine, otel)
+	hypervisorModule, err := hypervisor.NewModule(cfg, db, cacheEngine, otel, payloadProtector)
 	if err != nil {
 		// Log lỗi nghiêm trọng mức hệ thống phục vụ Alerting/Observability
 		logger.SysError("graceful.degradation.hypervisor", fmt.Sprintf("Failed to initialize hypervisor module: %v. Running in degraded mode.", err))
@@ -137,14 +142,14 @@ func NewGlobalModules(cfg *config.Config,
 
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ gửi mail Mail
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	mailModule, err := mail.NewModule(cfg, db, rds, cacheEngine, otel)
+	mailModule, err := mail.NewModule(cfg, db, rds, cacheEngine, otel, payloadProtector)
 	if err != nil {
 		logger.SysError("graceful.degradation.mail", fmt.Sprintf("Failed to initialize mail module: %v. Running in degraded mode.", err))
 		mailModule = mail.NewDegradedModule(err)
 	}
 
 	// [COMMENT]: Khởi tạo phân hệ Storage (Tier 2). Hỗ trợ chạy ở chế độ suy giảm (Degraded Mode).
-	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine, otel)
+	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine, otel, payloadProtector)
 	if err != nil {
 		logger.SysError("graceful.degradation.storage", fmt.Sprintf("Failed to initialize storage module: %v. Running in degraded mode.", err))
 		storageModule = storage.NewDegradedModule(err)

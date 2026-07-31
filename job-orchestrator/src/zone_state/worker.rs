@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::infra::kafka::transport_proto::DeadLetterRecordV1;
 use crate::infra::kafka::KafkaTransport;
 use prost::Message;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,8 @@ pub async fn run_backpressure_listener(
                     && report.timestamp > 0
                     && report.timestamp <= now.saturating_add(300)
                     && report.timestamp >= now.saturating_sub(86_400)
+                    && report.leader_fencing_token > 0
+                    && report.leader_fencing_token <= i64::MAX as u64
                     && cluster.is_some_and(|cluster| {
                         cluster.avg_cpu_usage.is_finite()
                             && (0.0..=1.0).contains(&cluster.avg_cpu_usage)
@@ -77,6 +80,19 @@ pub async fn run_backpressure_listener(
                                     && node.storage_gb_used <= node.storage_gb_total
                             })
                     })
+                    && report.loaded_payload_keys.len() <= 64
+                    && report.loaded_payload_keys.iter().all(|key| {
+                        key.key_id.len() == 16
+                            && uuid::Uuid::from_slice(&key.key_id).is_ok()
+                            && key.public_key_fingerprint.len() == 32
+                    })
+                    && report
+                        .loaded_payload_keys
+                        .iter()
+                        .filter_map(|key| uuid::Uuid::from_slice(&key.key_id).ok())
+                        .collect::<HashSet<_>>()
+                        .len()
+                        == report.loaded_payload_keys.len()
             });
             if !valid_report {
                 // [COMMENT]: Scope/timestamp/protobuf sai là poison data, không phải transient DB error.

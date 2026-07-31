@@ -1,11 +1,13 @@
 use crate::config::Config;
 use crate::infra::kafka::transport_proto::{
-    DeadLetterRecordV1, JobCommandV1, ZoneMetadataSnapshotV1, ZoneServiceDesiredStateV1,
+    DeadLetterRecordV1, JobCommandV1, PayloadEncodingV1, ProtectedPayloadV1,
+    ZoneMetadataSnapshotV1, ZoneServiceDesiredStateV1,
 };
 use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::{LogFields, Logger};
 use crate::observability::otel::OtelTracer;
 use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent};
+use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -300,6 +302,10 @@ impl ChangefeedWorker {
         let zone_id = fields.text("zone_id").unwrap_or_default().to_string();
         let job_topic = fields.text("job_topic").unwrap_or_default().to_string();
         let payload_hex = fields.text("payload").unwrap_or_default().to_string();
+        let payload_key_id = fields
+            .text("payload_key_id")
+            .unwrap_or_default()
+            .to_string();
         let job_version_str = fields.text("job_version").unwrap_or_default().to_string();
         let resource_id = fields.text("resource_id").unwrap_or_default().to_string();
         let payload_schema_version_str = fields
@@ -329,6 +335,7 @@ impl ChangefeedWorker {
             || job_topic.is_empty()
             || source_domain.is_empty()
             || resource_id.is_empty()
+            || payload_key_id.is_empty()
         {
             return Err(Box::new(PermanentChangeError(
                 "monitored outbox row is missing event_id/zone route/job_topic".to_string(),
@@ -388,8 +395,11 @@ impl ChangefeedWorker {
             let payload_bytes = decode_pg_bytea(&payload_hex_clone).map_err(|error| {
                 PermanentChangeError(format!("invalid outbox bytea payload: {error}"))
             })?;
-            if payload_bytes.is_empty() {
-                return Err(PermanentChangeError("outbox payload is empty".to_string()).into());
+            if payload_bytes.is_empty() || payload_bytes.len() > 1_000_256 {
+                return Err(PermanentChangeError(
+                    "outbox protected payload size is outside the platform limit".to_string(),
+                )
+                .into());
             }
 
             let job_version = job_version_str_clone
@@ -424,6 +434,31 @@ impl ChangefeedWorker {
             // bất kỳ có thể nhận side effect vốn thuộc Zone khác.
             let target_zone_id =
                 canonical_zone_route(&zone_id_clone).map_err(PermanentChangeError)?;
+            let target_zone_uuid = uuid::Uuid::parse_str(&target_zone_id).map_err(|error| {
+                PermanentChangeError(format!("invalid target Zone UUID: {error}"))
+            })?;
+            let expected_key_id = uuid::Uuid::parse_str(&payload_key_id).map_err(|error| {
+                PermanentChangeError(format!("invalid outbox payload_key_id: {error}"))
+            })?;
+            let protected = ProtectedPayloadV1::decode(payload_bytes.as_slice()).map_err(|_| {
+                PermanentChangeError("outbox payload is not ProtectedPayloadV1".to_string())
+            })?;
+            if protected.schema_version != 1
+                || protected.encoding
+                    != PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32
+                || protected.recipient_zone_id.as_slice() != target_zone_uuid.as_bytes()
+                || protected.key_id.as_slice() != expected_key_id.as_bytes()
+                || protected.encapsulated_key.len() != 32
+                || protected.plaintext_size == 0
+                || protected.plaintext_size > 1_000_000
+                || protected.ciphertext.len() != protected.plaintext_size as usize + 16
+            {
+                return Err(PermanentChangeError(
+                    "outbox protected payload metadata does not match its durable route"
+                        .to_string(),
+                )
+                .into());
+            }
             let topic = self.kafka.zone_command_topic(&target_zone_id);
             {
                 use opentelemetry::trace::TraceContextExt;
@@ -451,6 +486,8 @@ impl ChangefeedWorker {
                 transport_schema_version: 1,
                 traceparent: propagation.traceparent,
                 tracestate: propagation.tracestate,
+                payload_encoding: PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm
+                    as i32,
             };
 
             match self

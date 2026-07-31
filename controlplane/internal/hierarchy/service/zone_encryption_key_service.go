@@ -76,6 +76,10 @@ func (s *zoneEncryptionKeyService) ActivateZoneEncryptionKey(ctx context.Context
 	if err != nil {
 		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, hierarchyTaxonomy.ErrConflict) {
+			result, reason = observability.ResultRejected, observability.ReasonConflict
+		} else if errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		} else if errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition) {
 			result, reason = observability.ResultRejected, observability.ReasonInvalidTransition
 		}
@@ -93,6 +97,10 @@ func (s *zoneEncryptionKeyService) RetireZoneEncryptionKey(ctx context.Context, 
 	if err != nil {
 		if errors.Is(err, hierarchyTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, hierarchyTaxonomy.ErrConflict) {
+			result, reason = observability.ResultRejected, observability.ReasonConflict
+		} else if errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		} else if errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition) {
 			result, reason = observability.ResultRejected, observability.ReasonInvalidTransition
 		}

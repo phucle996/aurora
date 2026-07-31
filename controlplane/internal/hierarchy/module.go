@@ -81,8 +81,21 @@ func NewModule(
 	}
 	metrics := otel.WorkflowRecorder("hierarchy")
 	hierarchySchema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
-	if !regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`).MatchString(hierarchySchema) {
-		return nil, fmt.Errorf("hierarchy module: database schema is invalid")
+	storageSchema := strings.TrimSpace(cfg.SchemaSQL.Storage)
+	mailSchema := strings.TrimSpace(cfg.SchemaSQL.Mail)
+	hypervisorSchema := strings.TrimSpace(cfg.SchemaSQL.Hypervisor)
+	managedServiceSchema := strings.TrimSpace(cfg.SchemaSQL.ManagedService)
+	schemaPattern := regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+	for _, schema := range []string{
+		hierarchySchema,
+		storageSchema,
+		mailSchema,
+		hypervisorSchema,
+		managedServiceSchema,
+	} {
+		if !schemaPattern.MatchString(schema) {
+			return nil, fmt.Errorf("hierarchy module: database schema is invalid")
+		}
 	}
 
 	// 1) SoT data access for secret lifecycle.
@@ -108,7 +121,14 @@ func NewModule(
 
 	// [COMMENT]: Hierarchy owns only the public half of each Zone key pair.
 	// Dataplane private-key loading remains a separate filesystem boundary.
-	zoneEncryptionKeyRepo := hierarchyRepoImpl.NewZoneEncryptionKeyRepository(db, hierarchySchema)
+	zoneEncryptionKeyRepo := hierarchyRepoImpl.NewZoneEncryptionKeyRepository(
+		db,
+		hierarchySchema,
+		storageSchema,
+		mailSchema,
+		hypervisorSchema,
+		managedServiceSchema,
+	)
 	if zoneEncryptionKeyRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key repository is nil")
 	}

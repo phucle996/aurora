@@ -32,6 +32,27 @@ dùng file storage và replica `3/5`.
 Dataplane chỉ subscribe `aurora.jobs.commands.zone.<zone_uuid>.v1`; không có fallback hoặc shared
 platform command topic. Envelope thiếu `target_zone_id` hoặc mang Zone khác phải fail-closed vào DLQ.
 
+Mọi `JobCommandV1.payload` từ Controlplane là `ProtectedPayloadV1`, không phải domain Protobuf
+plaintext. Dataplane mở toàn bộ byte payload tại `src/security/jobpayload.rs`, sau đó executor mới
+decode Storage/Mail/Hypervisor/Managed Service contract. JO chỉ kiểm tra public metadata rồi relay
+đúng ciphertext đã commit; JO không có private key.
+
+`JOB_PAYLOAD_PRIVATE_KEYS_FILE` là path bắt buộc tới read-only Zone-local JSON:
+
+```json
+{"keys":[{"key_id":"00000000-0000-0000-0000-000000000001","private_key":"<standard-padded-base64-of-32-raw-bytes>"}]}
+```
+
+File giới hạn 64 KiB và 64 key để rotation có thể giữ cả `active` lẫn `decrypt_only`. Bootstrap
+fail-fast nếu file thiếu/sai. Producer chỉ dùng key active sau khi Zone report chứng minh mọi replica
+fresh đều đã nạp cùng `key_id + SHA-256(public_key)`; nhờ vậy rolling update không giao ciphertext
+cho pod cũ. Raw private key không được đưa vào env, log, Kafka, PostgreSQL hoặc Zone KV.
+
+Compose development mount `dataplane/.secrets/` read-only tại `/run/secrets/aurora`; directory này bị
+Git ignore. Operator phải provision `job-payload-keys.json`, đăng ký public X25519 counterpart qua
+critical Hierarchy API, chờ tất cả replica report fresh rồi mới activate key. Không commit key mẫu hay
+fallback private material để làm local stack tự chạy.
+
 ## 2. Job runtime
 
 ```mermaid
@@ -49,7 +70,7 @@ sequenceDiagram
         I->>I: fail-closed pause
     else active
         I->>K: manual poll
-        I->>I: size/schema/trace/Zone validation
+        I->>I: size/schema/trace/Zone validation + open protected payload
         I->>Q: enqueue ValidatedJob + KafkaDelivery
         Q->>E: worker owns one execution slot
         E->>KV: acquire lease.job.sha256(job_id)
@@ -67,7 +88,8 @@ sequenceDiagram
   topic thành secret store.
 - `job_version > 0` và route `mail→MAIL`/`storage→STORAGE` được validate trước side effect.
   `vps` fail-closed vào DLQ cho tới khi JO có durable IAM/VPS result owner.
-- Retry publish command `attempt+1` trước settle original.
+- Retry publish command `attempt+1` trước settle original nhưng tái sử dụng đúng ciphertext; attempt,
+  trace context và Kafka offset không nằm trong AAD.
 - Assignment epoch tăng khi rebalance; completion cũ không commit owner mới.
 - Settlement serialize theo partition, hỗ trợ sparse offset và giới hạn cửa sổ fetched-but-not-terminal
   ở `4 × Ready workers`; record cao không làm commit vượt record thấp.
@@ -113,6 +135,8 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 | Kafka poll/publish outage | Không settle source; replay sau recovery |
 | Kafka poison data | Durable DLQ rồi settle |
 | Zone KV unavailable | Ingestion fail-closed |
+| Local payload key chưa được mount | Không settle offset; fail-safe shutdown để supervisor restart sau rollout fix |
+| Protected payload sai auth/AAD/schema | Durable sanitized DLQ rồi settle; không lộ raw ciphertext |
 | Pod chết in-flight | Kafka replay sau offset + lease expiry |
 | Rebalance | Epoch fence chặn stale completion |
 | Result chưa durable | Không commit command |
@@ -126,6 +150,7 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 - `src/infra/zone_kv.rs`: buckets, CAS metadata và fenced lease.
 - `src/job_runtime/model.rs`: validated command và phase types `QueuedJob`/`LeasedJob`.
 - `src/job_runtime/intake.rs`: Zone gate, Kafka validation, admission và bounded enqueue.
+- `src/security/jobpayload.rs`: bounded keyring, HPKE open và AAD route fence.
 - `src/job_runtime/execution.rs`: execution routing và watchdog cancellation boundary.
 - `src/job_runtime/completion.rs`: result/retry/DLQ durability rồi mới settle Kafka source.
 - `src/job_runtime/coordination/`: fenced lease acquisition/renewal và execution watchdog.

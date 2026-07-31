@@ -215,17 +215,19 @@ Các invariant đã được implementation enforce:
 8. Taxonomy chi tiết chỉ tồn tại nội bộ để metrics, log và handler chọn HTTP
    status. Response dùng envelope generic của `pkg/apires` (`not found`,
    `conflict`, `internal_error`), không trả workflow error code cho client.
-
-Giới hạn release hiện tại: API/table lifecycle đã ship nhưng
-`ZoneMetadataSnapshotV1`, Dataplane loaded-key readiness report và protected
-job-payload producer **chưa** sử dụng key này. Vì vậy `ACTIVE` hiện chỉ là
-Controlplane catalog selection, không phải bằng chứng private key đã load tại
-Dataplane. Trước khi producer đầu tiên seal command, change-set transport phải
-thêm readiness fence và retirement CTE phải chứng minh không còn retained
-ciphertext/outbox/DLQ tham chiếu key. Không được suy diễn API lifecycle hiện tại
-thành end-to-end payload encryption đã hoàn thiện. Cùng release gate đó phải mở
-rộng Zone hard-delete precondition để không cascade key metadata khi retained
-ciphertext của Zone vẫn còn.
+9. Mỗi Dataplane replica fresh ghi loaded `key_id + public-key fingerprint` vào
+   Zone health. Leader publish **giao** của mọi replica qua Zone report kèm Zone-KV
+   fencing token; JO ghi `loaded_at/loaded_observed_at` bằng timestamp+token fence.
+   Producer chỉ chọn ACTIVE
+   key có observation không quá 30 giây. Đây là readiness, không phải business SoT.
+10. Outbox INSERT khóa Zone/key và chỉ nhận key `ACTIVE|DECRYPT_ONLY` của đúng Zone.
+    `DECRYPT_ONLY` có drain window 5 phút; retire đồng thời chứng minh không còn
+    retained Storage/Mail/Hypervisor/Managed Service ciphertext, Mail protected
+    projection hoặc Managed Service instance revision tham chiếu key. Drain timer
+    không bao giờ đủ nếu reference vẫn còn.
+11. Sau retire và retention cleanup, rollout mới được gỡ private counterpart khỏi
+    read-only Dataplane keyring. Zone hard-delete vẫn phải fail closed khi retained
+    ciphertext của Zone tồn tại; không cascade public metadata để che mất evidence.
 
 ---
 
@@ -468,12 +470,11 @@ sequenceDiagram
    * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`ChangefeedWorker`](../../job-orchestrator/src/changefeed/worker.rs).
    * JO đọc full aggregate và publish `ZoneMetadataSnapshotV1` vào Kafka compacted topic riêng Zone.
    * DP leader [`zone_metadata::run_zone_metadata_kafka_listener()`](../../dataplane/src/leader/zone_metadata.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
-   * **Protected payload extension status:** Hierarchy đã có durable public key
-     lifecycle/API (`key_id`, public key, fingerprint,
-     `STAGED|ACTIVE|DECRYPT_ONLY|RETIRED`). Việc đưa public keyset vào full
-     `ZoneMetadataSnapshotV1` và đối chiếu private counterpart mount ở Dataplane
-     vẫn chưa có protobuf/producer/consumer implementation. Private key không
-     được đi vào PostgreSQL, Kafka payload, Central service hay Zone KV.
+   * **Protected payload readiness:** public key không được đưa xuống Zone metadata.
+     Dataplane tự derive fingerprint từ private counterpart đã mount và mỗi node ghi
+     readiness vào health snapshot; leader chỉ report key chung của toàn bộ node
+     fresh. JO timestamp-fence observation vào public-key record để CP admission dùng.
+     Private key không đi vào PostgreSQL, Kafka payload, Central service hay Zone KV.
 2. **Telemetry Pack & Report**:
    * Dataplane [`zone_report`](../../dataplane/src/leader/zone_report.rs) chạy dưới stable `lease.zone.leader`, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
    * Gateway đóng gói `ZoneReport` Protobuf, dùng Zone ID làm record key và `acks=all`.

@@ -8,7 +8,7 @@ import (
 	managedservicemigrations "controlplane/internal/managedservice/migrations"
 )
 
-func TestManagedServiceBaselineHasExactlySixMigrationPairs(t *testing.T) {
+func TestManagedServiceBaselineHasExactlySevenMigrationPairs(t *testing.T) {
 	entries, err := fs.ReadDir(managedservicemigrations.Files, ".")
 	if err != nil {
 		t.Fatalf("read embedded migrations: %v", err)
@@ -26,8 +26,8 @@ func TestManagedServiceBaselineHasExactlySixMigrationPairs(t *testing.T) {
 			down++
 		}
 	}
-	if up != 6 || down != 6 {
-		t.Fatalf("managed service baseline must contain exactly six migration pairs, got up=%d down=%d", up, down)
+	if up != 7 || down != 7 {
+		t.Fatalf("managed service baseline must contain exactly seven migration pairs, got up=%d down=%d", up, down)
 	}
 }
 
@@ -51,6 +51,7 @@ func TestManagedServiceBaselineDoesNotCreateZoneKeyLifecycle(t *testing.T) {
 }
 
 func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
+	// [COMMENT]: Map tên file migration phân lớp mới tới các đoạn SQL fragment quan trọng cần kiểm tra.
 	expected := map[string][]string{
 		"000001_managed_service_enums.up.sql": {
 			"'provisioning', 'active', 'deleting'",
@@ -59,7 +60,7 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 			"managed_service_observed_state",
 			"managed_service_result_outcome",
 		},
-		"000003_blueprint_revisions.up.sql": {
+		"000002_managed_service_tables.up.sql": {
 			"safe_observed_output_schema",
 			"zone_selector",
 			"capability_requirement",
@@ -68,37 +69,44 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 			"validated_bundle_sha256",
 			"validated_contract_sha256",
 			"DEFERRABLE INITIALLY DEFERRED",
-			"OLD.state = 'published'",
-			"NEW.state = 'retired'",
-		},
-		"000002_system_catalog.up.sql": {
 			"actor_subject TEXT",
 			"critical_proof_id UUID",
 			"row_version BIGINT",
 			"name_i18n JSONB",
-		},
-		"000004_personal_aggregate.up.sql": {
 			"active_revision_id",
 			"pending_revision_id",
 			"create_intent_sha256",
+			"protected_command_payload",
+			"protected_command_payload_sha256",
+			"payload_key_id UUID NOT NULL",
 			"personal_managed_service_result_inbox",
 			"personal_managed_service_deletion_fences",
 			"current_command_event_id",
-		},
-		"000005_tenant_aggregate.up.sql": {
-			"active_revision_id",
-			"pending_revision_id",
-			"create_intent_sha256",
 			"tenant_managed_service_result_inbox",
 			"tenant_managed_service_deletion_fences",
-			"current_command_event_id",
-		},
-		"000006_outbox_indexes_triggers.up.sql": {
 			"CREATE TABLE IF NOT EXISTS managed_service_outbox_records",
 			"owner_type IN ('PERSONAL', 'TENANT')",
 			"managed_service.instance.execute",
+		},
+		"000003_managed_service_indexes.up.sql": {
 			"ux_personal_managed_service_operations_nonterminal",
 			"ux_tenant_managed_service_operations_nonterminal",
+			"ix_personal_managed_service_operations_instance_id",
+			"ix_tenant_managed_service_operations_instance_id",
+			"ix_managed_service_outbox_pending",
+		},
+		"000004_managed_service_funcs.up.sql": {
+			"reject_blueprint_revision_rewrite()",
+			"reject_managed_service_outbox_payload_rewrite()",
+			"OLD.state = 'published'",
+			"NEW.state = 'retired'",
+		},
+		"000005_managed_service_triggers.up.sql": {
+			"trg_blueprint_revisions_immutable",
+			"trg_managed_service_outbox_immutable",
+		},
+		"000006_managed_service_seeds.up.sql": {
+			"Managed Service Catalog",
 		},
 	}
 
@@ -114,10 +122,10 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 		}
 	}
 
+	// [COMMENT]: Đảm bảo không vi phạm nguyên tắc outbox tập trung (không tạo outbox riêng theo owner).
 	for _, name := range []string{
-		"000004_personal_aggregate.up.sql",
-		"000005_tenant_aggregate.up.sql",
-		"000006_outbox_indexes_triggers.up.sql",
+		"000002_managed_service_tables.up.sql",
+		"000003_managed_service_indexes.up.sql",
 	} {
 		body, err := fs.ReadFile(managedservicemigrations.Files, name)
 		if err != nil {

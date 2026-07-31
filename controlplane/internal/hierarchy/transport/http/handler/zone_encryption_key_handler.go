@@ -273,6 +273,10 @@ func (h *ZoneEncryptionKeyHandler) RetireZoneEncryptionKey(c *gin.Context) {
 			apires.RespondNotFound(c, "resource not found")
 		case errors.Is(err, hierarchyTaxonomy.ErrInvalidTransition):
 			apires.RespondConflict(c, "active zone encryption key cannot be retired")
+		case errors.Is(err, hierarchyTaxonomy.ErrConflict):
+			apires.RespondConflict(c, "zone encryption key is still referenced by retained jobs")
+		case errors.Is(err, hierarchyTaxonomy.ErrPreconditionFailed):
+			apires.RespondConflict(c, "zone encryption key retirement drain window has not elapsed")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")

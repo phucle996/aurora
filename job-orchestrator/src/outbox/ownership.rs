@@ -1,6 +1,5 @@
 use super::redis::SharedStreamPublisher;
 use crate::config::Config;
-use crate::contracts::storage as storage_proto;
 use crate::observability::logger::{LogFields, Logger};
 use chrono::{DateTime, Utc};
 use prost::Message;
@@ -115,7 +114,7 @@ pub async fn publish_for_job(
     let row = client
         .query_opt(
             "SELECT event_id, job_topic, resource_id, owner_id, owner_type, \
-                    payload, zone_id, completed_at \
+                    resource_name, zone_id, completed_at \
              FROM storage.storage_outbox_records \
              WHERE event_id = $1 AND job_topic = $2 AND status = 'SUCCEEDED' \
                AND ownership_published_at IS NULL",
@@ -228,7 +227,7 @@ fn build_intent(row: &Row) -> Result<OwnershipIntent, Box<dyn std::error::Error 
     if !matches!(owner_type.as_str(), "PERSONAL" | "TENANT") {
         return Err(format!("unsupported owner_type {owner_type}").into());
     }
-    let source_payload: Vec<u8> = row.get(5);
+    let resource_name: String = row.get(5);
     let zone_id: Uuid = row.get(6);
     if zone_id.is_nil() {
         return Err("ownership source has a nil zone_id".into());
@@ -237,15 +236,9 @@ fn build_intent(row: &Row) -> Result<OwnershipIntent, Box<dyn std::error::Error 
         .get::<_, Option<DateTime<Utc>>>(7)
         .ok_or("terminal ownership source has no completed_at")?;
 
-    let (event_type, source_version, resource_name) = match job_topic.as_str() {
-        "storage.bucket.create" => {
-            let message = storage_proto::BucketCreateSync::decode(source_payload.as_slice())?;
-            ("RESOURCE_CREATED", 1_i64, message.name)
-        }
-        "storage.bucket.delete" => {
-            let message = storage_proto::BucketDeleteSync::decode(source_payload.as_slice())?;
-            ("RESOURCE_DELETED", 2_i64, message.name)
-        }
+    let (event_type, source_version) = match job_topic.as_str() {
+        "storage.bucket.create" => ("RESOURCE_CREATED", 1_i64),
+        "storage.bucket.delete" => ("RESOURCE_DELETED", 2_i64),
         _ => return Err(format!("unsupported ownership job topic {job_topic}").into()),
     };
     if resource_name.trim().is_empty() {

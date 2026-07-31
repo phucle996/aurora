@@ -1,0 +1,2 @@
+-- [COMMENT]: Migration 000006_managed_service_seeds.down.sql
+-- Rollback dữ liệu seed của phân hệ Managed Service Catalog.

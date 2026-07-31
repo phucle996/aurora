@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	jobpayload "controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
@@ -22,18 +23,25 @@ type PersonalCredentialRepoImpl struct {
 	db        *pgxpool.Pool
 	storage   string // schema storage
 	hierarchy string // schema hierarchy
+	protector jobpayload.Protector
 }
 
 // [COMMENT]: NewPersonalCredentialRepo khởi tạo repository quản lý credentials cho bucket cá nhân.
-func NewPersonalCredentialRepo(db *pgxpool.Pool, cfg *config.Config) storageRepoInterface.PersonalCredentialRepo {
+func NewPersonalCredentialRepo(db *pgxpool.Pool, cfg *config.Config, protector jobpayload.Protector) storageRepoInterface.PersonalCredentialRepo {
 	return &PersonalCredentialRepoImpl{
 		db:        db,
 		storage:   cfg.SchemaSQL.Storage,
 		hierarchy: cfg.SchemaSQL.Hierarchy,
+		protector: protector,
 	}
 }
 
 func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageEntity.CreatePersonalCredential, outbox *storageEntity.StorageOutboxRecord) (uuid.UUID, error) {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	// [COMMENT]: Dùng CTE để ghi nhận đồng thời thông tin Credentials và sự kiện Outbox nguyên tử
@@ -56,16 +64,16 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
+			error_code, error_message, actor_user_id, payload_key_id
 		)
-		SELECT $9, $10, $11, $12, $13, $23, $14, $15, $16, $17, $18, $19, $20, $21, $22, $24
+		SELECT $9, $10, $11, $12, $13, $23, $14, $15, $16, $17, $18, $19, $20, $21, $22, $24, $25
 		FROM ins_cred
 		RETURNING (SELECT id FROM verified_bucket)
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
 	now := time.Now()
 	var bucketID uuid.UUID
-	err := r.db.QueryRow(ctx, query,
+	err = r.db.QueryRow(ctx, query,
 		param.ID,                // $1
 		param.BucketName,        // $2
 		param.UserID,            // $3
@@ -90,6 +98,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		mo.ErrorMessage,         // $22
 		mo.OwnerType,            // $23
 		mo.ActorUserID,          // $24
+		mo.PayloadKeyID,         // $25
 	).Scan(&bucketID)
 
 	if err != nil {
@@ -138,6 +147,11 @@ func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID 
 }
 
 func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageEntity.DeletePersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	// [COMMENT]: CTE 3 bước nguyên tử:
@@ -159,9 +173,9 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
+			error_code, error_message, actor_user_id, payload_key_id
 		)
-		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20
+		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20, $21
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
@@ -187,6 +201,7 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 		mo.ErrorMessage,         // $18
 		mo.OwnerType,            // $19
 		mo.ActorUserID,          // $20
+		mo.PayloadKeyID,         // $21
 	)
 
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	jobpayload "controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
@@ -20,22 +21,30 @@ import (
 
 // [COMMENT]: TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
 type TenantBucketRepoImpl struct {
-	db      *pgxpool.Pool
-	storage string // schema storage
+	db        *pgxpool.Pool
+	storage   string // schema storage
+	protector jobpayload.Protector
 }
 
 // [COMMENT]: NewTenantBucketRepo khởi tạo repository quản lý bucket doanh nghiệp.
 func NewTenantBucketRepo(
 	db *pgxpool.Pool,
 	cfg *config.Config,
+	protector jobpayload.Protector,
 ) storageRepoInterface.TenantBucketRepo {
 	return &TenantBucketRepoImpl{
-		db:      db,
-		storage: cfg.SchemaSQL.Storage,
+		db:        db,
+		storage:   cfg.SchemaSQL.Storage,
+		protector: protector,
 	}
 }
 
 func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket, credential *storageEntity.TenantCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Convert Entity sang Model chứa các tag db
 	mc := storageModel.TenantCredentialEntityToModel(credential)
 	mo := storageModel.OutboxEntityToModel(outbox)
@@ -59,11 +68,12 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
-		) VALUES ($14, $15, $16, $17, $18, $28, $19, $20, $21, $22, $23, $24, $25, $26, $27, $29)
+			error_code, error_message, actor_user_id, payload_key_id,
+			resource_name, rollback_quota_bytes
+		) VALUES ($14, $15, $16, $17, $18, $28, $19, $20, $21, $22, $23, $24, $25, $26, $27, $29, $30, $31, $32)
 	`, r.storage, r.storage, r.storage)
 
-	_, err := r.db.Exec(ctx, query,
+	_, err = r.db.Exec(ctx, query,
 		// [COMMENT]: $1-$8 — tenant_buckets fields (no status)
 		bucket.ID,
 		bucket.Name,
@@ -97,6 +107,9 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		// [COMMENT]: $28 — owner_type
 		mo.OwnerType,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
+		mo.ResourceName,
+		mo.RollbackQuotaBytes,
 	)
 
 	if err != nil {
@@ -211,6 +224,11 @@ func (r *TenantBucketRepoImpl) ListByTenantAndZone(ctx context.Context, tenantID
 }
 
 func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Khởi tạo transaction để đảm bảo atomic cho cả kiểm tra quota, update quota và ghi outbox
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -220,14 +238,15 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 
 	// [COMMENT]: 1. SELECT FOR UPDATE để validate sự tồn tại và lock row tránh race condition
 	selectQuery := fmt.Sprintf(`
-		SELECT capacity_quota_bytes, used_bytes
+		SELECT name, capacity_quota_bytes, used_bytes
 		FROM %s.tenant_buckets
 		WHERE id = $1
 		FOR UPDATE
 	`, r.storage)
 
+	var bucketName string
 	var currentQuota, usedBytes int64
-	err = tx.QueryRow(ctx, selectQuery, id).Scan(&currentQuota, &usedBytes)
+	err = tx.QueryRow(ctx, selectQuery, id).Scan(&bucketName, &currentQuota, &usedBytes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return storageTaxonomy.ErrNotFound
@@ -253,13 +272,18 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 	}
 
 	// [COMMENT]: 4. Chèn outbox record để đồng bộ lệnh resize xuống dataplane
+	// Use the locked aggregate as rollback authority; the service snapshot may
+	// be stale under concurrent resize attempts.
+	outbox.ResourceName = bucketName
+	outbox.RollbackQuotaBytes = &currentQuota
 	mo := storageModel.OutboxEntityToModel(outbox)
 	insertOutboxQuery := fmt.Sprintf(`
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
-		) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, $10, $11, $12, $13, $14, $16)
+			error_code, error_message, actor_user_id, payload_key_id,
+			resource_name, rollback_quota_bytes
+		) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18, $19)
 	`, r.storage)
 
 	_, err = tx.Exec(ctx, insertOutboxQuery,
@@ -279,6 +303,9 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 		mo.ErrorMessage,
 		mo.OwnerType,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
+		mo.ResourceName,
+		mo.RollbackQuotaBytes,
 	)
 
 	if err != nil {
@@ -294,13 +321,18 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 }
 
 func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	// [COMMENT]: Map outbox record sang model DB
 	mo := storageModel.OutboxEntityToModel(outbox)
 
 	// [COMMENT]: Sử dụng single atomic CTE để kiểm tra tồn tại (SELECT FOR UPDATE) và chèn outbox record đồng thời
 	query := fmt.Sprintf(`
 		WITH locked_bucket AS (
-			SELECT id
+			SELECT id, name
 			FROM %s.tenant_buckets
 			WHERE id = $1
 			FOR UPDATE
@@ -308,9 +340,10 @@ func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox 
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id
+			error_code, error_message, actor_user_id, payload_key_id,
+			resource_name, rollback_quota_bytes
 		)
-		SELECT $2, $3, $4, $5, $6, $16, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17
+		SELECT $2, $3, $4, $5, $6, $16, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17, $18, locked_bucket.name, NULL
 		FROM locked_bucket
 	`, r.storage, r.storage)
 
@@ -332,6 +365,7 @@ func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox 
 		mo.ErrorMessage,
 		mo.OwnerType,
 		mo.ActorUserID,
+		mo.PayloadKeyID,
 	)
 
 	if err != nil {

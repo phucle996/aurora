@@ -28,6 +28,7 @@ pub struct BootstrapResult {
     pub nats_core: Arc<crate::infra::nats_core::NatsCoreTransport>,
     pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
+    pub payload_keyring: Arc<crate::security::jobpayload::PayloadKeyring>,
     // Đã loại bỏ trường policy_engine trong BootstrapResult
     pub worker_pool: Arc<WorkerLifecycleManager>,
 }
@@ -41,6 +42,12 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
 
     // 3. Load config from Environment
     let cfg = Config::load().map_err(|error| format!("load Dataplane config: {error}"))?;
+    // [COMMENT]: Missing/malformed private material is a security readiness
+    // failure. Abort before Kafka intake so no ciphertext can be DLQ'd merely
+    // because a rollout forgot its Secret mount.
+    let payload_keyring =
+        crate::security::jobpayload::PayloadKeyring::load(&cfg.job_payload_private_keys_file)
+            .map_err(|error| format!("initialize job payload keyring failed: {error}"))?;
     Config::set_global(cfg.clone());
     Logger::sys_info(
         "system.bootstrap",
@@ -89,6 +96,7 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         nats_core,
         kafka,
         zone_kv,
+        payload_keyring: Arc::new(payload_keyring),
         worker_pool,
     })
 }

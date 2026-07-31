@@ -37,6 +37,9 @@ type MailOutboxRecord struct {
 	JobTopic string
 	// Payload: Nội dung nhị phân (Protobuf) chứa tham số cấu hình hoặc dữ liệu chi tiết của công việc
 	Payload []byte
+	// PayloadKeyID remains queryable outside ciphertext so key drain/retirement
+	// never has to parse or decrypt historical outbox bytes.
+	PayloadKeyID uuid.UUID
 	// ActorUserID: Caller tạo configuration intent; là audit actor và không phải billing owner.
 	// [COMMENT]: Bắt buộc — không pointer vì không có khả năng nil trong bất kỳ luồng nào.
 	ActorUserID uuid.UUID

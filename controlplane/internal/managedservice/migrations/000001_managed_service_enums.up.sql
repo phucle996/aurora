@@ -1,3 +1,6 @@
+-- [COMMENT]: Migration 000001_managed_service_enums.up.sql
+-- Khởi tạo tất cả Enum Types được sử dụng trong phân hệ Managed Service Platform.
+
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'managed_service_catalog_state') THEN
@@ -7,9 +10,7 @@ BEGIN
         JOIN pg_enum enum ON enum.enumtypid = type.oid
         WHERE type.typname = 'managed_service_catalog_state' AND enum.enumlabel = 'active'
     ) THEN
-        -- [COMMENT]: PostgreSQL cannot use an enum value added in the same
-        -- transaction. Replace the P01 development enum atomically instead of
-        -- relying on ALTER TYPE ADD VALUE followed by unsafe same-xact writes.
+        -- [COMMENT]: Thay thế enum cũ bằng enum mới một cách nguyên tử trong transaction.
         CREATE TYPE managed_service_catalog_state_next AS ENUM ('active', 'retired');
         ALTER TABLE IF EXISTS service_categories ALTER COLUMN state DROP DEFAULT;
         ALTER TABLE IF EXISTS service_definitions ALTER COLUMN state DROP DEFAULT;

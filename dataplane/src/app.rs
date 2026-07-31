@@ -32,6 +32,7 @@ pub struct AppContainer {
     pub nats_core: Arc<crate::infra::nats_core::NatsCoreTransport>,
     pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
+    pub payload_keyring: Arc<crate::security::jobpayload::PayloadKeyring>,
     // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub job_execution_lease_registry:
@@ -47,6 +48,7 @@ impl AppContainer {
             nats_core: boot.nats_core,
             kafka: boot.kafka,
             zone_kv: boot.zone_kv,
+            payload_keyring: boot.payload_keyring,
             worker_pool: boot.worker_pool,
             job_execution_lease_registry: Arc::new(
                 crate::job_runtime::coordination::watchdog::JobExecutionLeaseRegistry::new(),
@@ -148,6 +150,7 @@ impl AppContainer {
             self.worker_pool.clone(),
             self.kafka.clone(),
             admitted_jobs.clone(),
+            self.payload_keyring.clone(),
             self.worker_pool.track_task(),
         );
 
@@ -242,6 +245,7 @@ impl AppContainer {
         let tx_ingest_zone = tx;
         let admitted_jobs_ingest_zone = admitted_jobs.clone();
         let execution_capacity = self.worker_pool.clone();
+        let payload_keyring_ingest_zone = self.payload_keyring.clone();
         let cancel_token_zone = self.worker_pool.cancel_token();
         let zone_ingestion_guard = self.worker_pool.track_task();
 
@@ -254,6 +258,7 @@ impl AppContainer {
                 cancel_token_zone,
                 admitted_jobs_ingest_zone,
                 execution_capacity,
+                payload_keyring_ingest_zone,
             )
             .await;
         });
