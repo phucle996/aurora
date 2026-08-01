@@ -2,14 +2,15 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Boxes } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getManagedServiceVersionContract, listManagedServiceCatalog, localizedText } from "@/features/managed-services/api";
+import { createManagedServiceInstance, getManagedServiceVersionContract, listManagedServiceCatalog, localizedText } from "@/features/managed-services/api";
 import { ManagedServiceContractField } from "@/features/managed-services/form";
 import type { FormDraftValue } from "@/features/managed-services/model";
 import { useConsoleQueryScope } from "@/shared/query/scope";
@@ -18,6 +19,8 @@ import { useWorkspace } from "@/context/WorkspaceContext";
 import { isAPIError } from "@/shared/api/http";
 
 export function CreateManagedServiceScreen() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
   const scope = useConsoleQueryScope();
   const scopeFence = scope.join(":");
   const { renderContext, profile } = useUserSession();
@@ -65,6 +68,29 @@ export function CreateManagedServiceScreen() {
     () => [...(formContract?.ui_schema.groups ?? [])].sort((left, right) => left.order - right.order),
     [formContract],
   );
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      if (!formContract) throw new Error("The form contract is no longer available.");
+      const parameters: Record<string, FormDraftValue> = {};
+      for (const [key, value] of Object.entries(draft.values)) {
+        if (value !== "") parameters[key] = value;
+      }
+      return createManagedServiceInstance(personal, {
+        code: draft.code,
+        name: draft.name.trim(),
+        blueprint_revision_id: formContract.revision.id,
+        input_schema_sha256: formContract.input_schema_sha256,
+        parameters,
+      });
+    },
+    onSuccess: ({ instance, operation }) => {
+      void queryClient.invalidateQueries({ queryKey: [...scope, "managed-services", "instances"] });
+      toast.success(`Provisioning accepted (${operation.id.slice(0, 8)}…)`);
+      router.push(`/managed-services/${encodeURIComponent(instance.code)}`);
+    },
+    onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Managed Service creation failed."),
+  });
 
   if (!activeWorkspaceID) {
     return <div className="rounded-[6px] border border-dashed p-8 text-center text-sm text-muted-foreground">Select a workspace before configuring a service.</div>;
@@ -180,7 +206,12 @@ export function CreateManagedServiceScreen() {
                 setStoredDraft({ ...draft, step: "review" });
               }}>Review</Button>
             ) : (
-              <><Button variant="outline" className="w-full" onClick={() => setStoredDraft({ ...draft, step: "configure" })}>Back to configuration</Button><Button className="w-full" disabled>Provisioning opens in Phase 4</Button></>
+              <>
+                <Button variant="outline" className="w-full" onClick={() => setStoredDraft({ ...draft, step: "configure" })} disabled={createMutation.isPending}>Back to configuration</Button>
+                <Button className="w-full" disabled={createMutation.isPending} onClick={() => createMutation.mutate()}>
+                  {createMutation.isPending ? "Submitting…" : "Create managed service"}
+                </Button>
+              </>
             )}
           </div>
         </aside>

@@ -75,6 +75,11 @@ type TenantInstanceDetail struct {
 	LatestOperationAt     *time.Time
 	LatestOperationDoneAt *time.Time
 	NetworkContract       TenantNetworkContract
+	ResizeContractVersion string
+	ResizeInputSchema     json.RawMessage
+	ResizeInputSchemaHash []byte
+	ResizeUISchema        json.RawMessage
+	ResizeUISchemaHash    []byte
 }
 
 type TenantNetworkContract struct {

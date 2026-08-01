@@ -10,6 +10,7 @@ import type {
   FormWidget,
   LocalizedText,
   ManagedServiceCatalogItem,
+  ManagedServiceFormContract,
   ManagedServiceVersionContract,
 } from "./model";
 
@@ -212,8 +213,11 @@ function uiField(value: unknown): FormUIField {
   };
 }
 
-export function decodeManagedServiceVersionContract(value: unknown): ManagedServiceVersionContract {
+export function decodeManagedServiceFormContract(value: unknown): ManagedServiceFormContract {
   const source = record(value);
+  if (source.contract_version !== undefined && source.contract_version !== "platform-form/v1") {
+    throw new Error("This Managed Service form contract is not supported.");
+  }
   const inputSchema = record(source.input_schema);
   const uiSchema = record(source.ui_schema);
   if (
@@ -227,7 +231,6 @@ export function decodeManagedServiceVersionContract(value: unknown): ManagedServ
   ) {
     throw new Error("This Managed Service form contract is not supported.");
   }
-  const item = decodeManagedServiceCatalogItem(source);
   const inputFields = inputSchema.fields.map(inputField);
   const uiGroups = uiSchema.groups.map(uiGroup);
   const uiFields = uiSchema.fields.map(uiField);
@@ -273,12 +276,19 @@ export function decodeManagedServiceVersionContract(value: unknown): ManagedServ
     throw new Error("Managed Service form integrity metadata is missing.");
   }
   return {
-    ...item,
+    contract_version: "platform-form/v1",
     input_schema: { fields: inputFields },
     input_schema_sha256: source.input_schema_sha256,
     ui_schema: { groups: uiGroups, fields: uiFields },
     ui_schema_sha256: source.ui_schema_sha256,
   };
+}
+
+export function decodeManagedServiceVersionContract(value: unknown): ManagedServiceVersionContract {
+  const source = record(value);
+  const form = decodeManagedServiceFormContract(source);
+  const item = decodeManagedServiceCatalogItem(source);
+  return { ...item, ...form };
 }
 
 export function localizedText(value: LocalizedText, locale: string | undefined): string {

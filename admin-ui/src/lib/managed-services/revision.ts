@@ -125,3 +125,40 @@ export async function publishDraft(draftID: string, expectedVersion: number, bun
   if (!response.ok || !body.data) throw new Error(body.message || body.error || 'Cannot publish draft')
   return body.data
 }
+
+export async function retireRevision(revisionID: string, expectedVersion: number, otpCode: string): Promise<Pick<BlueprintRevision, 'id' | 'state' | 'row_version'>> {
+  const path = `/admin/critical/managed-services/catalog/revisions/${encodeURIComponent(revisionID)}/retire`
+  const bodyString = JSON.stringify({ expected_version: expectedVersion })
+  const bodyHash = await sha256Hex(bodyString)
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const nonce = generateNonce()
+  const keys = await getOrCreateDeviceKeys()
+  const signature = await signPayload(`POST\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`, keys.privateKey)
+  const response = await Fetch(path, {
+    method: 'POST', headers: {
+      'Content-Type': 'application/json', 'X-Admin-Signature': signature, 'X-Admin-Timestamp': timestamp,
+      'X-Admin-Nonce': nonce, 'X-Admin-StepUp-Code': otpCode,
+    }, body: bodyString,
+  })
+  const body = await response.json().catch(() => ({})) as ResponseBody<Pick<BlueprintRevision, 'id' | 'state' | 'row_version'>>
+  if (!response.ok || !body.data) throw new Error(body.message || body.error || 'Cannot retire revision')
+  return body.data
+}
+
+export async function deleteDraft(draftID: string, expectedVersion: number, otpCode: string): Promise<void> {
+  const path = `/admin/critical/managed-services/catalog/drafts/${encodeURIComponent(draftID)}`
+  const bodyString = JSON.stringify({ expected_version: expectedVersion })
+  const bodyHash = await sha256Hex(bodyString)
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const nonce = generateNonce()
+  const keys = await getOrCreateDeviceKeys()
+  const signature = await signPayload(`DELETE\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`, keys.privateKey)
+  const response = await Fetch(path, {
+    method: 'DELETE', headers: {
+      'Content-Type': 'application/json', 'X-Admin-Signature': signature, 'X-Admin-Timestamp': timestamp,
+      'X-Admin-Nonce': nonce, 'X-Admin-StepUp-Code': otpCode,
+    }, body: bodyString,
+  })
+  const body = await response.json().catch(() => ({})) as ResponseBody<unknown>
+  if (!response.ok) throw new Error(body.message || body.error || 'Cannot delete draft')
+}

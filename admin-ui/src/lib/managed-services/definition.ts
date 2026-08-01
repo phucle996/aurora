@@ -1,4 +1,5 @@
 import { Fetch } from '@/lib/fetch'
+import { generateNonce, getOrCreateDeviceKeys, sha256Hex, signPayload } from '@/lib/crypto'
 
 export type ServiceDefinition = {
   id: string
@@ -33,5 +34,24 @@ export async function createDefinition(input: {
   })
   const body = await response.json().catch(() => ({})) as ResponseBody<ServiceDefinition>
   if (!response.ok || !body.data) throw new Error(body.message || body.error || 'Cannot create definition')
+  return body.data
+}
+
+export async function retireDefinition(definitionID: string, expectedVersion: number, otpCode: string): Promise<Pick<ServiceDefinition, 'id' | 'state' | 'row_version'>> {
+  const path = `/admin/critical/managed-services/catalog/definitions/${encodeURIComponent(definitionID)}/retire`
+  const bodyString = JSON.stringify({ expected_version: expectedVersion })
+  const bodyHash = await sha256Hex(bodyString)
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const nonce = generateNonce()
+  const keys = await getOrCreateDeviceKeys()
+  const signature = await signPayload(`POST\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`, keys.privateKey)
+  const response = await Fetch(path, {
+    method: 'POST', headers: {
+      'Content-Type': 'application/json', 'X-Admin-Signature': signature,
+      'X-Admin-Timestamp': timestamp, 'X-Admin-Nonce': nonce, 'X-Admin-StepUp-Code': otpCode,
+    }, body: bodyString,
+  })
+  const body = await response.json().catch(() => ({})) as ResponseBody<Pick<ServiceDefinition, 'id' | 'state' | 'row_version'>>
+  if (!response.ok || !body.data) throw new Error(body.message || body.error || 'Cannot retire definition')
   return body.data
 }

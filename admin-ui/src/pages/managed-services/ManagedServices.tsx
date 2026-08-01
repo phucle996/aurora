@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Boxes, FileCode2, History, Plus, RefreshCcw, Send, ShieldCheck } from 'lucide-react'
+import { Archive, Boxes, FileCode2, History, Plus, RefreshCcw, Send, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
@@ -11,20 +11,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { usePageMeta } from '@/lib/page-meta'
 import { listAuditEvents, type CatalogAuditEvent } from '@/lib/managed-services/audit'
-import { createBlueprint, getBlueprintByVersion, type ServiceBlueprint } from '@/lib/managed-services/blueprint'
-import { createCategory, listCategories, type ServiceCategory } from '@/lib/managed-services/category'
-import { createDefinition, listDefinitions, type ServiceDefinition } from '@/lib/managed-services/definition'
+import { createBlueprint, deleteBlueprint, getBlueprintByVersion, type ServiceBlueprint } from '@/lib/managed-services/blueprint'
+import { createCategory, listCategories, retireCategory, type ServiceCategory } from '@/lib/managed-services/category'
+import { createDefinition, listDefinitions, retireDefinition, type ServiceDefinition } from '@/lib/managed-services/definition'
 import {
   createDraft,
+  deleteDraft,
   getDraft,
   listRevisions,
   patchDraft,
   publishDraft,
+  retireRevision,
   validateDraft,
   type BlueprintRevision,
   type DraftArtifact,
 } from '@/lib/managed-services/revision'
-import { createVersion, listVersions, type ServiceVersion } from '@/lib/managed-services/version'
+import { createVersion, deprecateVersion, listVersions, retireVersion, type ServiceVersion } from '@/lib/managed-services/version'
 
 const initialTemplate = `apiVersion: apps/v1
 kind: Deployment
@@ -101,6 +103,9 @@ export default function ManagedServices() {
     () => versions.filter((item) => !selectedDefinition || item.definition_id === selectedDefinition),
     [versions, selectedDefinition],
   )
+  const selectedCategoryItem = categories.find((item) => item.id === selectedCategory)
+  const selectedDefinitionItem = definitions.find((item) => item.id === selectedDefinition)
+  const selectedVersionItem = versions.find((item) => item.id === selectedVersion)
 
   useEffect(() => {
     if (!selectedVersion) return
@@ -248,6 +253,91 @@ export default function ManagedServices() {
     finally { setWorking(false) }
   }
 
+  const retireCategoryAction = async () => {
+    if (!selectedCategoryItem || otpCode.length !== 6 || !window.confirm(`Retire category ${selectedCategoryItem.code}?`)) return
+    setWorking(true)
+    try {
+      const retired = await retireCategory(selectedCategoryItem.id, selectedCategoryItem.row_version, otpCode)
+      setCategories((current) => current.map((item) => item.id === retired.id ? { ...item, ...retired } : item))
+      setOtpCode('')
+      setAudit(await listAuditEvents())
+      toast.success('Category retired through the critical boundary')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Cannot retire category') }
+    finally { setWorking(false) }
+  }
+
+  const retireDefinitionAction = async () => {
+    if (!selectedDefinitionItem || otpCode.length !== 6 || !window.confirm(`Retire definition ${selectedDefinitionItem.code}?`)) return
+    setWorking(true)
+    try {
+      const retired = await retireDefinition(selectedDefinitionItem.id, selectedDefinitionItem.row_version, otpCode)
+      setDefinitions((current) => current.map((item) => item.id === retired.id ? { ...item, ...retired } : item))
+      setOtpCode('')
+      setAudit(await listAuditEvents())
+      toast.success('Definition retired through the critical boundary')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Cannot retire definition') }
+    finally { setWorking(false) }
+  }
+
+  const changeVersionStateAction = async (target: 'deprecated' | 'retired') => {
+    if (!selectedVersionItem || otpCode.length !== 6 || !window.confirm(`${target === 'deprecated' ? 'Deprecate' : 'Retire'} version ${selectedVersionItem.display_version}?`)) return
+    setWorking(true)
+    try {
+      const changed = target === 'deprecated'
+        ? await deprecateVersion(selectedVersionItem.id, selectedVersionItem.row_version, otpCode)
+        : await retireVersion(selectedVersionItem.id, selectedVersionItem.row_version, otpCode)
+      setVersions((current) => current.map((item) => item.id === changed.id ? { ...item, ...changed } : item))
+      setOtpCode('')
+      setAudit(await listAuditEvents())
+      toast.success(`Version ${target} through the critical boundary`)
+    } catch (error) { toast.error(error instanceof Error ? error.message : `Cannot mark version ${target}`) }
+    finally { setWorking(false) }
+  }
+
+  const deleteBlueprintAction = async () => {
+    if (!blueprint || otpCode.length !== 6 || !window.confirm(`Delete blueprint ${blueprint.code}? Only an unused blueprint can be deleted.`)) return
+    setWorking(true)
+    try {
+      await deleteBlueprint(blueprint.id, blueprint.row_version, otpCode)
+      setBlueprint(null)
+      setDraft(null)
+      setRevisions([])
+      setOtpCode('')
+      setAudit(await listAuditEvents())
+      toast.success('Unused blueprint deleted through the critical boundary')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Cannot delete blueprint') }
+    finally { setWorking(false) }
+  }
+
+  const retireRevisionAction = async (revision: BlueprintRevision) => {
+    if (!blueprint || otpCode.length !== 6 || !window.confirm(`Retire immutable revision ${revision.revision}?`)) return
+    setWorking(true)
+    try {
+      await retireRevision(revision.id, revision.row_version, otpCode)
+      setDraft(null)
+      setRevisions(await listRevisions(blueprint.id))
+      if (selectedVersion) setBlueprint(await getBlueprintByVersion(selectedVersion))
+      setOtpCode('')
+      setAudit(await listAuditEvents())
+      toast.success('Revision retired through the critical boundary')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Cannot retire revision') }
+    finally { setWorking(false) }
+  }
+
+  const deleteDraftAction = async (revision: BlueprintRevision) => {
+    if (!blueprint || otpCode.length !== 6 || !window.confirm(`Delete draft revision ${revision.revision}?`)) return
+    setWorking(true)
+    try {
+      await deleteDraft(revision.id, revision.row_version, otpCode)
+      if (draft?.id === revision.id) setDraft(null)
+      setRevisions(await listRevisions(blueprint.id))
+      setOtpCode('')
+      setAudit(await listAuditEvents())
+      toast.success('Draft deleted through the critical boundary')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Cannot delete draft') }
+    finally { setWorking(false) }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -309,6 +399,22 @@ export default function ManagedServices() {
             </Card>
           </div>
 
+          {(selectedCategoryItem || selectedDefinitionItem || selectedVersionItem || blueprint) && (
+            <Card>
+              <CardHeader><CardTitle>Critical catalog lifecycle</CardTitle><CardDescription>Retire, deprecate and delete operations acquire a fresh ACR-bound proof. In-use records are rejected by the backend CTE.</CardDescription></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="max-w-56"><Label htmlFor="catalog-critical-otp">SRE TOTP</Label><Input id="catalog-critical-otp" className="mt-2" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, '').slice(0, 6))} /></div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedCategoryItem?.state !== 'retired' && <Button variant="outline" disabled={working || otpCode.length !== 6} onClick={() => void retireCategoryAction()}><Archive /> Retire category</Button>}
+                  {selectedDefinitionItem?.state !== 'retired' && <Button variant="outline" disabled={working || otpCode.length !== 6} onClick={() => void retireDefinitionAction()}><Archive /> Retire definition</Button>}
+                  {selectedVersionItem?.state === 'available' && <Button variant="outline" disabled={working || otpCode.length !== 6} onClick={() => void changeVersionStateAction('deprecated')}><Archive /> Deprecate version</Button>}
+                  {selectedVersionItem && selectedVersionItem.state !== 'retired' && <Button variant="outline" disabled={working || otpCode.length !== 6} onClick={() => void changeVersionStateAction('retired')}><Archive /> Retire version</Button>}
+                  {blueprint && <Button variant="destructive" disabled={working || otpCode.length !== 6} onClick={() => void deleteBlueprintAction()}><Trash2 /> Delete unused blueprint</Button>}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {selectedVersion && !blueprint && (
             <Card>
               <CardHeader><CardTitle>Create runtime blueprint</CardTitle><CardDescription>This operation enters the ACR critical path.</CardDescription></CardHeader>
@@ -341,10 +447,14 @@ export default function ManagedServices() {
                 <CardContent className="space-y-2">
                   {revisions.length === 0 && <p className="text-muted-foreground">No revision yet.</p>}
                   {revisions.map((item) => (
-                    <button key={item.id} type="button" className="flex w-full items-center justify-between rounded-lg border p-3 text-left hover:bg-muted/40" onClick={() => void openDraft(item)}>
-                      <span>Revision {item.revision} · row {item.row_version}</span>
-                      <span className="flex items-center gap-2"><Badge variant="outline">{item.state}</Badge>{item.validated_row_version === item.row_version && <Badge>validated</Badge>}</span>
-                    </button>
+                    <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-lg border p-2">
+                      <button type="button" className="flex min-w-0 flex-1 items-center justify-between rounded-md p-2 text-left hover:bg-muted/40" onClick={() => void openDraft(item)}>
+                        <span>Revision {item.revision} · row {item.row_version}</span>
+                        <span className="flex items-center gap-2"><Badge variant="outline">{item.state}</Badge>{item.validated_row_version === item.row_version && <Badge>validated</Badge>}</span>
+                      </button>
+                      {item.state === 'published' && <Button size="sm" variant="outline" disabled={working || otpCode.length !== 6} onClick={() => void retireRevisionAction(item)}><Archive /> Retire</Button>}
+                      {item.state === 'draft' && <Button size="sm" variant="destructive" disabled={working || otpCode.length !== 6} onClick={() => void deleteDraftAction(item)}><Trash2 /> Delete draft</Button>}
+                    </div>
                   ))}
                 </CardContent>
               </Card>

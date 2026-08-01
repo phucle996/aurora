@@ -40,3 +40,15 @@ test("job notifications require a stable resource or operation identifier", () =
   assert.deepEqual(decodeEvent("job.notification", payload), payload);
   assert.equal(dedupeKey("job.notification", payload), "job.notification:operation-1");
 });
+
+test("job notification dedupe preserves monotonic status updates", () => {
+  const processing = {
+    notification_id: "notification-1",
+    operation_id: "operation-1",
+    status: "PROCESSING",
+    status_version: 2,
+  };
+  const terminal = { ...processing, status: "SUCCESS", status_version: 3 };
+  assert.equal(dedupeKey("job.notification", processing), "job.notification:notification-1:2");
+  assert.equal(dedupeKey("job.notification", terminal), "job.notification:notification-1:3");
+});

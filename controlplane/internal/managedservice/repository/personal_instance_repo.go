@@ -463,7 +463,10 @@ func (r *personalInstanceRepository) GetPersonalInstance(ctx context.Context, in
 		instance.observed_state::text,instance.observed_state_version,instance.observed_output,
 		instance.observed_at,instance.metadata_version,instance.created_at,instance.updated_at,
 		latest.id,latest.kind,latest.state,latest.generation,latest.attempt,latest.created_at,latest.completed_at,
-		COALESCE(blueprint_revision.component_contract,'[]'::jsonb)
+		COALESCE(blueprint_revision.component_contract,'[]'::jsonb),
+		COALESCE(blueprint_revision.contract_version,''),COALESCE(blueprint_revision.input_schema,'{}'::jsonb),
+		COALESCE(blueprint_revision.input_schema_sha256,decode('','hex')),COALESCE(blueprint_revision.ui_schema,'{}'::jsonb),
+		COALESCE(blueprint_revision.ui_schema_sha256,decode('','hex'))
 	FROM scope
 	JOIN %s.personal_managed_service_instances instance
 		ON instance.workspace_id=scope.id AND instance.user_id=$2 AND instance.zone_id=$3 AND instance.code=$4
@@ -489,7 +492,8 @@ func (r *personalInstanceRepository) GetPersonalInstance(ctx context.Context, in
 		&result.ObservedAt, &result.MetadataVersion, &result.CreatedAt, &result.UpdatedAt,
 		&result.LatestOperationID, &result.LatestOperationKind, &result.LatestOperationState,
 		&result.LatestOperationGen, &result.LatestOperationTry, &result.LatestOperationAt,
-		&result.LatestOperationDoneAt, &componentContract,
+		&result.LatestOperationDoneAt, &componentContract, &result.ResizeContractVersion,
+		&result.ResizeInputSchema, &result.ResizeInputSchemaHash, &result.ResizeUISchema, &result.ResizeUISchemaHash,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {

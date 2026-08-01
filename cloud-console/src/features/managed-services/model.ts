@@ -95,3 +95,98 @@ export type ManagedServiceVersionContract = ManagedServiceCatalogItem & {
 
 export type FormDraftScalar = string | number | boolean;
 export type FormDraftValue = FormDraftScalar | FormDraftScalar[];
+
+export type ManagedServiceLifecycleState =
+  | "provisioning"
+  | "active"
+  | "deleting"
+  | "deleted"
+  | "failed"
+  | string;
+
+export type ManagedServiceOperationState =
+  | "accepted"
+  | "processing"
+  | "succeeded"
+  | "terminal_failed"
+  | string;
+
+export type ManagedServiceOperation = {
+  id: string;
+  instance_id?: string;
+  kind: string;
+  state: ManagedServiceOperationState;
+  generation: number;
+  attempt: number;
+  delivery_epoch?: number;
+  target_revision_id?: string;
+  blueprint_revision_id?: string;
+  retry_of_operation_id?: string | null;
+  status_version?: number;
+  last_error_code?: string | null;
+  last_sanitized_error?: string | null;
+  completed_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ManagedServiceInstanceSummary = {
+  id: string;
+  code: string;
+  name: string;
+  desired: {
+    state: ManagedServiceLifecycleState;
+    generation: number;
+    active_revision_id?: string | null;
+    pending_revision_id?: string | null;
+  };
+  observed: {
+    state: string;
+    version: number;
+    observed_at?: string | null;
+  };
+  metadata_version: number;
+  latest_operation?: ManagedServiceOperation | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ManagedServiceNetworkPort = {
+  name: string;
+  port: number;
+  protocol: string;
+};
+
+export type ManagedServiceNetworkComponent = {
+  component_code: string;
+  service_name: string;
+  pod_selector?: Record<string, string> | string | null;
+  ports: ManagedServiceNetworkPort[];
+};
+
+export type ManagedServiceInstance = ManagedServiceInstanceSummary & {
+  desired: ManagedServiceInstanceSummary["desired"] & {
+    revision_sequence: number;
+  };
+  observed: ManagedServiceInstanceSummary["observed"] & {
+    output?: Record<string, unknown> | null;
+  };
+  network_contract?: {
+    namespace: string;
+    components: ManagedServiceNetworkComponent[];
+  } | null;
+  resize_contract?: ManagedServiceFormContract | null;
+};
+
+export type ManagedServiceOperationPage = {
+  items: ManagedServiceOperation[];
+  next_cursor: string;
+};
+
+export type ManagedServiceFormContract = {
+  contract_version: "platform-form/v1";
+  input_schema: { fields: FormInputField[] };
+  input_schema_sha256: string;
+  ui_schema: { groups: FormUIGroup[]; fields: FormUIField[] };
+  ui_schema_sha256: string;
+};

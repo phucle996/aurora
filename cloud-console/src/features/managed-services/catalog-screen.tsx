@@ -13,7 +13,7 @@ import { isAPIError } from "@/shared/api/http";
 
 export function ManagedServicesCatalogScreen() {
   const scope = useConsoleQueryScope();
-  const { renderContext, profile } = useUserSession();
+  const { checkPermission, renderContext, profile } = useUserSession();
   const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
   const personal = renderContext?.is_personal ?? true;
   const catalog = useInfiniteQuery({
@@ -41,10 +41,11 @@ export function ManagedServicesCatalogScreen() {
           </div>
         </div>
         <div className="flex gap-2">
+          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/managed-services">Instances</Link>
           <Button variant="outline" size="sm" onClick={() => void catalog.refetch()} disabled={catalog.isFetching}>
             <RefreshCw className={`mr-2 h-3.5 w-3.5 ${catalog.isFetching ? "animate-spin" : ""}`} />Refresh
           </Button>
-          {activeWorkspaceID && items.length > 0 ? <Link className={buttonVariants({ size: "sm" })} href="/managed-services/new"><Plus className="mr-2 h-3.5 w-3.5" />Configure service</Link> : null}
+          {activeWorkspaceID && items.length > 0 && checkPermission("managed-service:instance", "write") ? <Link className={buttonVariants({ size: "sm" })} href="/managed-services/new"><Plus className="mr-2 h-3.5 w-3.5" />Configure service</Link> : null}
         </div>
       </header>
 

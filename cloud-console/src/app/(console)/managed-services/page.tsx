@@ -1,6 +1,6 @@
 import RouteGuard from "@/components/route-guard";
-import { ManagedServicesCatalogScreen } from "@/features/managed-services/catalog-screen";
+import { ManagedServiceInstancesScreen } from "@/features/managed-services/instances-screen";
 
 export default function ManagedServicesPage() {
-  return <RouteGuard requiredKey="managed-service:catalog" requiredAction="read"><ManagedServicesCatalogScreen /></RouteGuard>;
+  return <RouteGuard requiredKey="managed-service:instance" requiredAction="read"><ManagedServiceInstancesScreen /></RouteGuard>;
 }

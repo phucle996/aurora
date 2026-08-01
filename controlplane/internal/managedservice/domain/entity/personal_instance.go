@@ -73,6 +73,11 @@ type PersonalInstanceDetail struct {
 	LatestOperationAt     *time.Time
 	LatestOperationDoneAt *time.Time
 	NetworkContract       PersonalNetworkContract
+	ResizeContractVersion string
+	ResizeInputSchema     json.RawMessage
+	ResizeInputSchemaHash []byte
+	ResizeUISchema        json.RawMessage
+	ResizeUISchemaHash    []byte
 }
 
 type PersonalNetworkContract struct {

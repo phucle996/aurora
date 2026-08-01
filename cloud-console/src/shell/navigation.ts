@@ -107,7 +107,7 @@ export function consoleNavigation(
       path: "/managed-services",
       icon: Boxes,
       breadcrumb: ["Console", "Managed Services"],
-      permission: { key: "managed-service:catalog", action: "read" },
+      permission: { key: "managed-service:instance", action: "read" },
     },
     {
       id: "billing",

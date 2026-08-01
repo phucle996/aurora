@@ -78,7 +78,7 @@ func TestPersonalCreateCanonicalizesAtHandlerAndBuildsDistinctDesiredHash(t *tes
 	router.POST("/instances", handler.NewPersonalInstanceHandler(service).CreatePersonalInstance)
 
 	response := httptest.NewRecorder()
-	body := bytes.NewBufferString(`{"code":"ORDERS-DB","name":"  Orders database  ","blueprint_revision_id":"10000000-0000-7000-8000-000000000043","input_schema_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"storage":"100Gi","replicas":3}}`)
+	body := bytes.NewBufferString(`{"code":"ORDERS-DB","name":"  Orders database  ","blueprint_revision_id":"10000000-0000-7000-8000-000000000043","input_schema_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parameters":{"storage":"100Gi","replicas":3,"exposure":["private","public"]}}`)
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/instances", body))
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", response.Code, response.Body.String())

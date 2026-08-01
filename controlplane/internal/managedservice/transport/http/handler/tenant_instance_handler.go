@@ -188,6 +188,12 @@ func (h *TenantInstanceHandler) GetTenantInstance(c *gin.Context) {
 		}
 		networkComponents = append(networkComponents, gin.H{"component_code": component.ComponentCode, "service_name": component.ServiceName, "pod_selector": component.PodSelector, "ports": ports})
 	}
+	var resizeContract any
+	if result.ResizeContractVersion == "platform-form/v1" && len(result.ResizeInputSchemaHash) == sha256.Size && len(result.ResizeUISchemaHash) == sha256.Size && json.Valid(result.ResizeInputSchema) && json.Valid(result.ResizeUISchema) {
+		// [COMMENT]: Only SRE-owned schema metadata crosses this read boundary;
+		// prior protected parameter values never return to the browser.
+		resizeContract = gin.H{"contract_version": result.ResizeContractVersion, "input_schema": result.ResizeInputSchema, "input_schema_sha256": hex.EncodeToString(result.ResizeInputSchemaHash), "ui_schema": result.ResizeUISchema, "ui_schema_sha256": hex.EncodeToString(result.ResizeUISchemaHash)}
+	}
 	apires.RespondSuccess(c, gin.H{
 		"context": gin.H{"scope": "tenant", "tenant_id": tenantID, "workspace_id": workspaceID, "zone_id": zoneID},
 		"instance": gin.H{
@@ -196,6 +202,7 @@ func (h *TenantInstanceHandler) GetTenantInstance(c *gin.Context) {
 			"observed":         gin.H{"state": result.ObservedState, "version": result.ObservedStateVersion, "output": result.ObservedOutput, "observed_at": result.ObservedAt},
 			"metadata_version": result.MetadataVersion,
 			"network_contract": gin.H{"namespace": result.NetworkContract.Namespace, "components": networkComponents},
+			"resize_contract":  resizeContract,
 			"latest_operation": gin.H{"id": result.LatestOperationID, "kind": result.LatestOperationKind, "state": result.LatestOperationState, "generation": result.LatestOperationGen, "attempt": result.LatestOperationTry, "created_at": result.LatestOperationAt, "completed_at": result.LatestOperationDoneAt},
 			"created_at":       result.CreatedAt, "updated_at": result.UpdatedAt,
 		},
@@ -518,9 +525,23 @@ func (h *TenantInstanceHandler) CreateTenantInstance(c *gin.Context) {
 			return
 		}
 		trimmed := strings.TrimSpace(string(raw))
-		if trimmed == "null" || strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-			apires.RespondBadRequest(c, "parameters must be flat scalar values")
+		if trimmed == "null" || strings.HasPrefix(trimmed, "{") {
+			apires.RespondBadRequest(c, "parameters must be flat scalar or scalar-array values")
 			return
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			var values []json.RawMessage
+			if err := json.Unmarshal(raw, &values); err != nil || len(values) > 64 {
+				apires.RespondBadRequest(c, "parameters must be flat scalar or scalar-array values")
+				return
+			}
+			for _, value := range values {
+				scalar := strings.TrimSpace(string(value))
+				if scalar == "null" || strings.HasPrefix(scalar, "{") || strings.HasPrefix(scalar, "[") {
+					apires.RespondBadRequest(c, "parameters must be flat scalar or scalar-array values")
+					return
+				}
+			}
 		}
 	}
 	parameters, err := json.Marshal(request.Parameters)
@@ -601,9 +622,23 @@ func (h *TenantInstanceHandler) ResizeTenantInstance(c *gin.Context) {
 			return
 		}
 		trimmed := strings.TrimSpace(string(raw))
-		if trimmed == "null" || strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-			apires.RespondBadRequest(c, "resize resources must be scalar values")
+		if trimmed == "null" || strings.HasPrefix(trimmed, "{") {
+			apires.RespondBadRequest(c, "resize resources must be scalar or scalar-array values")
 			return
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			var values []json.RawMessage
+			if err := json.Unmarshal(raw, &values); err != nil || len(values) > 64 {
+				apires.RespondBadRequest(c, "resize resources must be scalar or scalar-array values")
+				return
+			}
+			for _, value := range values {
+				scalar := strings.TrimSpace(string(value))
+				if scalar == "null" || strings.HasPrefix(scalar, "{") || strings.HasPrefix(scalar, "[") {
+					apires.RespondBadRequest(c, "resize resources must be scalar or scalar-array values")
+					return
+				}
+			}
 		}
 	}
 	parameters, err := json.Marshal(request.Resources)

@@ -11,6 +11,7 @@ export type JobNotificationPayload = Record<string, unknown> & {
   operation_id?: string;
   event_id?: string;
   resource_id?: string;
+  status_version?: number;
   created_at?: string;
 };
 
@@ -78,6 +79,12 @@ export function decodeEvent<T extends EventType>(eventType: T, value: unknown): 
 
 export function dedupeKey(eventType: EventType, payload: EventMap[EventType]): string | null {
   const value = payload as Record<string, unknown>;
+  if (eventType === "job.notification" && typeof value.notification_id === "string" && value.notification_id) {
+    const version = typeof value.status_version === "number" && Number.isSafeInteger(value.status_version)
+      ? `:${value.status_version}`
+      : "";
+    return `${eventType}:${value.notification_id}${version}`;
+  }
   const stable = value.event_id ?? value.operation_id ?? value.notification_id ?? value.transaction_id;
   if (typeof stable === "string" && stable) return `${eventType}:${stable}`;
   if (eventType === "mail.consumer.runtime.changed" && typeof value.consumer_id === "string" && typeof value.runtime_revision === "number") {

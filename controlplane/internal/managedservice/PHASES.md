@@ -924,6 +924,13 @@ Kubernetes fault evidence remains MS-087.
 
 ## 13. P08 — Cloud Console customer experience và SRE Admin completion
 
+**Implementation status:** SHIPPED — MS-090 đến MS-093 đã được nối với các API
+durable hiện có. SRE Admin có critical lifecycle actions; Cloud Console có
+instance list/catalog/create/detail, rename/resize/delete/retry, safe connection
+projection và rehydrate qua `job.notification`. MS-094 còn là quality evidence
+follow-up (responsive/accessibility/privacy automation), không chặn vertical slice
+runtime-safe đã ship.
+
 **Mục tiêu:** expose only durable desired/observed truth and approved actions; Console
 does not become an authorization, runtime or secret-bearing client.
 
