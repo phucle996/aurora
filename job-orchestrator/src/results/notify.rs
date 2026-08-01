@@ -22,6 +22,11 @@ pub struct NotificationIntent<'a> {
     pub message: &'a str,
     pub traceparent: &'a str,
     pub tracestate: &'a str,
+    /// Managed Service uses the immutable command-event identity so attempts/replays update one
+    /// timeline item. Legacy workflows keep their historical identity shape.
+    pub timeline_id: Option<uuid::Uuid>,
+    pub created_at: Option<i64>,
+    pub status_version: u64,
 }
 
 pub struct JobNotifier;
@@ -36,12 +41,14 @@ impl JobNotifier {
             "PROCESSING" => "PROCESSING",
             _ => "FAILED",
         };
-        let notification_id = notification_id(
-            intent.job_id,
-            intent.job_version,
-            intent.attempt,
-            notification_status,
-        );
+        let notification_id = intent.timeline_id.unwrap_or_else(|| {
+            notification_id(
+                intent.job_id,
+                intent.job_version,
+                intent.attempt,
+                notification_status,
+            )
+        });
         let event = notification_proto::JobNotificationEvent {
             job_id: intent.job_id.to_string(),
             user_id: intent.user_id.to_string(),
@@ -49,13 +56,16 @@ impl JobNotifier {
             event_type: intent.job_topic.to_string(),
             title: notification_title(intent.job_topic, intent.status).to_string(),
             message: bounded_utf8(intent.message, 4_096),
-            created_at: chrono::Utc::now().timestamp(),
+            created_at: intent
+                .created_at
+                .unwrap_or_else(|| chrono::Utc::now().timestamp()),
             trace_parent: intent.traceparent.to_string(),
             trace_state: intent.tracestate.to_string(),
             resource_id: intent.resource_id.to_string(),
             job_version: intent.job_version,
             attempt: intent.attempt,
             notification_id: notification_id.to_string(),
+            status_version: intent.status_version,
         };
         let mut payload = Vec::with_capacity(event.encoded_len());
         event.encode(&mut payload)?;
@@ -129,6 +139,9 @@ fn notification_id(job_id: uuid::Uuid, job_version: u32, attempt: u32, status: &
 
 fn notification_title(job_topic: &str, status: &str) -> &'static str {
     match (job_topic, status) {
+        ("managed_service.instance.execute", "SUCCEEDED") => "Managed Service Ready",
+        ("managed_service.instance.execute", "FAILED") => "Managed Service Failed",
+        ("managed_service.instance.execute", _) => "Managed Service Processing",
         ("mail.consumer.upsert", "SUCCEEDED") => "Mail Consumer Applied",
         ("mail.consumer.upsert", "FAILED") => "Mail Consumer Apply Failed",
         ("mail.consumer.upsert", _) => "Applying Mail Consumer",

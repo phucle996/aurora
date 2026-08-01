@@ -227,6 +227,7 @@ impl AppContainer {
                     zone_id: self.config.zone_id.clone(),
                     mail_runtime: self.worker_pool.mail_runtime.clone(),
                     hypervisor_runtime: self.worker_pool.hypervisor_runtime.clone(),
+                    managed_service_runtime: self.worker_pool.managed_service_runtime.clone(),
                     cleanup_spawner: self.worker_pool.task_tracker(),
                     shutdown: self.worker_pool.cancel_token(),
                 },

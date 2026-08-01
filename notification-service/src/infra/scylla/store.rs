@@ -18,18 +18,18 @@ const INSERT_ACTIVITY: &str = "INSERT INTO activity_by_user_month (
     user_id, month_bucket, occurred_at, event_id, category, action, actor_type,
     actor_id, outcome, source_service, resource_type, resource_id, operation_id,
     title, summary, metadata_json, schema_version
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?";
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ? AND TTL ?";
 
 const INSERT_ACTIVITY_CATEGORY: &str = "INSERT INTO activity_by_user_category_month (
     user_id, category, month_bucket, occurred_at, event_id, action, actor_type,
     actor_id, outcome, source_service, resource_type, resource_id, operation_id,
     title, summary, metadata_json, schema_version
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?";
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ? AND TTL ?";
 
 const INSERT_NOTIFICATION: &str = "INSERT INTO inbox_by_user_month (
     user_id, month_bucket, created_at, notification_id, activity_event_id,
     severity, title, message, operation, resource_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?";
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ? AND TTL ?";
 
 #[derive(scylla::SerializeRow)]
 #[scylla(flavor = "enforce_order", skip_name_checks)]
@@ -51,6 +51,7 @@ struct ActivityInsert<'a> {
     summary: &'a str,
     metadata_json: &'a str,
     schema_version: i32,
+    timestamp: i64,
     ttl: i32,
 }
 
@@ -74,6 +75,7 @@ struct CategoryInsert<'a> {
     summary: &'a str,
     metadata_json: &'a str,
     schema_version: i32,
+    timestamp: i64,
     ttl: i32,
 }
 
@@ -128,6 +130,10 @@ impl ScyllaTimelineStore {
                     summary: event.summary.as_str(),
                     metadata_json: event.metadata_json.as_str(),
                     schema_version: event.schema_version as i32,
+                    timestamp: event
+                        .occurred_at
+                        .timestamp_micros()
+                        .saturating_add(event.projection_version),
                     ttl: self.activity_ttl,
                 },
             )
@@ -155,6 +161,10 @@ impl ScyllaTimelineStore {
                     summary: event.summary.as_str(),
                     metadata_json: event.metadata_json.as_str(),
                     schema_version: event.schema_version as i32,
+                    timestamp: event
+                        .occurred_at
+                        .timestamp_micros()
+                        .saturating_add(event.projection_version),
                     ttl: self.activity_ttl,
                 },
             )
@@ -178,6 +188,9 @@ impl ScyllaTimelineStore {
                     item.message.as_str(),
                     item.operation.as_str(),
                     item.resource_id.as_deref(),
+                    item.created_at
+                        .timestamp_micros()
+                        .saturating_add(item.projection_version),
                     self.inbox_ttl,
                 ),
             )

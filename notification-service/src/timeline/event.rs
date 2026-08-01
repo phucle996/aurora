@@ -105,6 +105,9 @@ pub struct ActivityEvent {
     pub occurred_at: DateTime<Utc>,
     pub metadata_json: String,
     pub schema_version: u32,
+    /// Stable replay ordering for one event identity. A larger version must
+    /// win even when Redis pending-entry recovery delivers it out of order.
+    pub projection_version: i64,
 }
 
 impl ActivityEvent {
@@ -144,6 +147,7 @@ pub struct NotificationItem {
     pub operation: String,
     pub resource_id: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub projection_version: i64,
 }
 
 impl NotificationItem {

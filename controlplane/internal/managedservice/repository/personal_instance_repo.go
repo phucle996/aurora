@@ -101,13 +101,15 @@ func (r *personalInstanceRepository) CreatePersonalInstance(ctx context.Context,
 	}
 
 	var componentRows []struct {
-		ID                       string   `json:"id"`
-		ComponentID              string   `json:"component_id"`
-		DocumentIndexes          []uint32 `json:"document_indexes"`
-		ApplyOrder               uint32   `json:"apply_order"`
-		DeleteOrder              uint32   `json:"delete_order"`
-		ReadinessRule            string   `json:"readiness_rule"`
-		ReadinessDeadlineSeconds uint32   `json:"readiness_deadline_seconds"`
+		ID              string   `json:"id"`
+		ComponentID     string   `json:"component_id"`
+		DocumentIndexes []uint32 `json:"document_indexes"`
+		ApplyOrder      uint32   `json:"apply_order"`
+		DeleteOrder     uint32   `json:"delete_order"`
+		Readiness       struct {
+			Type            string `json:"type"`
+			DeadlineSeconds uint32 `json:"deadline_seconds"`
+		} `json:"readiness"`
 	}
 	if err := json.Unmarshal(componentContract, &componentRows); err != nil {
 		return nil, taxonomy.ErrPreconditionFailed
@@ -118,7 +120,7 @@ func (r *personalInstanceRepository) CreatePersonalInstance(ctx context.Context,
 		if componentID == "" {
 			componentID = strings.TrimSpace(row.ComponentID)
 		}
-		components = append(components, &managedserviceproto.ManagedServiceComponentV1{ComponentId: componentID, DocumentIndexes: row.DocumentIndexes, ApplyOrder: row.ApplyOrder, DeleteOrder: row.DeleteOrder, ReadinessRule: row.ReadinessRule, ReadinessDeadlineSeconds: row.ReadinessDeadlineSeconds})
+		components = append(components, &managedserviceproto.ManagedServiceComponentV1{ComponentId: componentID, DocumentIndexes: row.DocumentIndexes, ApplyOrder: row.ApplyOrder, DeleteOrder: row.DeleteOrder, ReadinessRule: row.Readiness.Type, ReadinessDeadlineSeconds: row.Readiness.DeadlineSeconds})
 	}
 	desiredHash := in.DesiredSpecSHA256
 	commandBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(&managedserviceproto.ManagedServiceCommandV1{
@@ -131,7 +133,7 @@ func (r *personalInstanceRepository) CreatePersonalInstance(ctx context.Context,
 	if err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: in.ZoneID, SourceDomain: "managedservice", JobTopic: "managed_service.instance.execute", ResourceID: in.InstanceID.String(), JobVersion: 1, PayloadSchemaVersion: 1}, commandBytes)
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: in.ZoneID, SourceDomain: "MANAGED_SERVICE", JobTopic: "managed_service.instance.execute", ResourceID: in.InstanceID.String(), JobVersion: 1, PayloadSchemaVersion: 1}, commandBytes)
 	if err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}
@@ -215,13 +217,15 @@ func (r *personalInstanceRepository) ResizePersonalInstance(ctx context.Context,
 		return nil, taxonomy.ErrUnavailable
 	}
 	var componentRows []struct {
-		ID                       string   `json:"id"`
-		ComponentID              string   `json:"component_id"`
-		DocumentIndexes          []uint32 `json:"document_indexes"`
-		ApplyOrder               uint32   `json:"apply_order"`
-		DeleteOrder              uint32   `json:"delete_order"`
-		ReadinessRule            string   `json:"readiness_rule"`
-		ReadinessDeadlineSeconds uint32   `json:"readiness_deadline_seconds"`
+		ID              string   `json:"id"`
+		ComponentID     string   `json:"component_id"`
+		DocumentIndexes []uint32 `json:"document_indexes"`
+		ApplyOrder      uint32   `json:"apply_order"`
+		DeleteOrder     uint32   `json:"delete_order"`
+		Readiness       struct {
+			Type            string `json:"type"`
+			DeadlineSeconds uint32 `json:"deadline_seconds"`
+		} `json:"readiness"`
 	}
 	if err := json.Unmarshal(componentContract, &componentRows); err != nil {
 		return nil, taxonomy.ErrPreconditionFailed
@@ -232,14 +236,14 @@ func (r *personalInstanceRepository) ResizePersonalInstance(ctx context.Context,
 		if componentID == "" {
 			componentID = strings.TrimSpace(row.ComponentID)
 		}
-		components = append(components, &managedserviceproto.ManagedServiceComponentV1{ComponentId: componentID, DocumentIndexes: row.DocumentIndexes, ApplyOrder: row.ApplyOrder, DeleteOrder: row.DeleteOrder, ReadinessRule: row.ReadinessRule, ReadinessDeadlineSeconds: row.ReadinessDeadlineSeconds})
+		components = append(components, &managedserviceproto.ManagedServiceComponentV1{ComponentId: componentID, DocumentIndexes: row.DocumentIndexes, ApplyOrder: row.ApplyOrder, DeleteOrder: row.DeleteOrder, ReadinessRule: row.Readiness.Type, ReadinessDeadlineSeconds: row.Readiness.DeadlineSeconds})
 	}
 	nextGeneration := currentGeneration + 1
 	commandBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(&managedserviceproto.ManagedServiceCommandV1{CommandEventId: in.CommandEventID[:], OperationId: in.OperationID[:], InstanceId: instanceID[:], OwnerType: managedserviceproto.ManagedServiceOwnerTypeV1_MANAGED_SERVICE_OWNER_TYPE_PERSONAL, OwnerId: in.UserID[:], WorkspaceId: in.WorkspaceID[:], ZoneId: in.ZoneID[:], InstanceCode: in.Code, OperationKind: managedserviceproto.ManagedServiceOperationKindV1_MANAGED_SERVICE_OPERATION_KIND_RESIZE, Generation: uint64(nextGeneration), InstanceRevisionId: in.InstanceRevisionID[:], BlueprintRevisionId: blueprintRevisionID[:], TemplateYaml: templateYAML, Components: components, BundleHash: bundleHash, ComponentContractHash: componentHash, InputHash: in.InputSHA256, DesiredSpecHash: in.DesiredSpecSHA256, ParameterValues: in.Parameters, ParameterValuesSha256: in.InputSHA256, SchemaVersion: 1, IssuedAtUnixMs: in.IssuedAt.UnixMilli(), Traceparent: in.Traceparent, Tracestate: in.Tracestate})
 	if err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: in.ZoneID, SourceDomain: "managedservice", JobTopic: "managed_service.instance.execute", ResourceID: instanceID.String(), JobVersion: 1, PayloadSchemaVersion: 1}, commandBytes)
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: in.ZoneID, SourceDomain: "MANAGED_SERVICE", JobTopic: "managed_service.instance.execute", ResourceID: instanceID.String(), JobVersion: 1, PayloadSchemaVersion: 1}, commandBytes)
 	if err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}
@@ -309,13 +313,15 @@ func (r *personalInstanceRepository) DeletePersonalInstance(ctx context.Context,
 		return nil, taxonomy.ErrUnavailable
 	}
 	var componentRows []struct {
-		ID                       string   `json:"id"`
-		ComponentID              string   `json:"component_id"`
-		DocumentIndexes          []uint32 `json:"document_indexes"`
-		ApplyOrder               uint32   `json:"apply_order"`
-		DeleteOrder              uint32   `json:"delete_order"`
-		ReadinessRule            string   `json:"readiness_rule"`
-		ReadinessDeadlineSeconds uint32   `json:"readiness_deadline_seconds"`
+		ID              string   `json:"id"`
+		ComponentID     string   `json:"component_id"`
+		DocumentIndexes []uint32 `json:"document_indexes"`
+		ApplyOrder      uint32   `json:"apply_order"`
+		DeleteOrder     uint32   `json:"delete_order"`
+		Readiness       struct {
+			Type            string `json:"type"`
+			DeadlineSeconds uint32 `json:"deadline_seconds"`
+		} `json:"readiness"`
 	}
 	if err := json.Unmarshal(componentContract, &componentRows); err != nil {
 		return nil, taxonomy.ErrPreconditionFailed
@@ -326,14 +332,14 @@ func (r *personalInstanceRepository) DeletePersonalInstance(ctx context.Context,
 		if componentID == "" {
 			componentID = strings.TrimSpace(row.ComponentID)
 		}
-		components = append(components, &managedserviceproto.ManagedServiceComponentV1{ComponentId: componentID, DocumentIndexes: row.DocumentIndexes, ApplyOrder: row.ApplyOrder, DeleteOrder: row.DeleteOrder, ReadinessRule: row.ReadinessRule, ReadinessDeadlineSeconds: row.ReadinessDeadlineSeconds})
+		components = append(components, &managedserviceproto.ManagedServiceComponentV1{ComponentId: componentID, DocumentIndexes: row.DocumentIndexes, ApplyOrder: row.ApplyOrder, DeleteOrder: row.DeleteOrder, ReadinessRule: row.Readiness.Type, ReadinessDeadlineSeconds: row.Readiness.DeadlineSeconds})
 	}
 	nextGeneration := generation + 1
 	commandBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(&managedserviceproto.ManagedServiceCommandV1{CommandEventId: in.CommandEventID[:], OperationId: in.OperationID[:], InstanceId: instanceID[:], OwnerType: managedserviceproto.ManagedServiceOwnerTypeV1_MANAGED_SERVICE_OWNER_TYPE_PERSONAL, OwnerId: in.UserID[:], WorkspaceId: in.WorkspaceID[:], ZoneId: in.ZoneID[:], InstanceCode: in.Code, OperationKind: managedserviceproto.ManagedServiceOperationKindV1_MANAGED_SERVICE_OPERATION_KIND_DELETE, Generation: uint64(nextGeneration), InstanceRevisionId: revisionID[:], BlueprintRevisionId: blueprintRevisionID[:], TemplateYaml: templateYAML, Components: components, BundleHash: bundleHash, ComponentContractHash: componentHash, InputHash: inputHash, DesiredSpecHash: desiredHash, ParameterValuesSha256: inputHash, SchemaVersion: 1, IssuedAtUnixMs: in.IssuedAt.UnixMilli(), Traceparent: in.Traceparent, Tracestate: in.Tracestate})
 	if err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: in.ZoneID, SourceDomain: "managedservice", JobTopic: "managed_service.instance.execute", ResourceID: instanceID.String(), JobVersion: 1, PayloadSchemaVersion: 1}, commandBytes)
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: in.ZoneID, SourceDomain: "MANAGED_SERVICE", JobTopic: "managed_service.instance.execute", ResourceID: instanceID.String(), JobVersion: 1, PayloadSchemaVersion: 1}, commandBytes)
 	if err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}

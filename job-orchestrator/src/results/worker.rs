@@ -32,8 +32,17 @@ impl ResultWorker {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut notification_redis =
             crate::infra::redis::manager(&self.shared_redis, &self.config.shared_redis).await?;
+        let mut result_postgres = self.config.postgres.clone();
+        result_postgres.database_url = self.config.postgres.result_database_url.clone();
         let mut client =
-            crate::infra::postgres::connect(&self.config.postgres, "results.postgres").await?;
+            crate::infra::postgres::connect(&result_postgres, "results.postgres").await?;
+        let transaction_read_only: String = client
+            .query_one("SHOW transaction_read_only", &[])
+            .await?
+            .get(0);
+        if transaction_read_only.eq_ignore_ascii_case("on") {
+            return Err("job result settlement PostgreSQL role is read-only".into());
+        }
 
         let topic = self.kafka.result_topic();
         let consumer = self

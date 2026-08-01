@@ -376,7 +376,7 @@ Hệ thống đi kèm bộ khung vai trò và quyền hạn được cài đặt
 | Hierarchy | `hierarchy:workspace:create`, `hierarchy:workspace:read`, `hierarchy:workspace:update`, `hierarchy:workspace:delete` |
 | Email Delivery / Consumer | `email:consumer:create`, `email:consumer:read`, `email:consumer:update`, `email:consumer:delete` |
 | Email Delivery / Template | `email:template:create`, `email:template:read`, `email:template:publish`, `email:template:delete` |
-| Managed Service discovery | `managed-service:catalog:read` |
+| Managed Service | `managed-service:catalog:read`, `managed-service:instance:read`, `managed-service:instance:write` |
 | Billing | `billing:plan:read`, `billing:tier:read`, `billing:tier:publish`, `billing:wallet:read`, `billing:ledger:read`, `billing:subscription:write`, `billing:credit:adjust` |
 
 `email` là tên capability nghiệp vụ được hiển thị cho người dùng và dùng trong RBAC. Các path tương thích
@@ -411,6 +411,13 @@ chúng không được dùng làm permission key.
 Personal/Tenant Mail routes dùng `middleware.Authorize` với permission tương ứng và bỏ qua level gate bằng
 `requiredLevel = "*"`; ownership/workspace vẫn được repository kiểm tra lại trong transaction. Operational
 infrastructure đi OTel/Grafana và không tạo permission trong customer/business RBAC catalog.
+
+Managed Service customer routes dùng `instance:read` cho projection và
+`instance:write` cho create/rename/resize/delete/retry. `platform_user` được write
+trong personal workspace của chính họ; `tenant_owner`, `tenant_admin` và
+`tenant_manager` được write trong workspace tenant đã cấp; `tenant_member`,
+`tenant_viewer` và support/audit chỉ read. Middleware admission không thay scoped CTE
+kiểm tra lại trusted owner/workspace/Zone.
 
 Năm tài khoản bootstrap `root`, `sys_admin`, `support_operator`, `audit_viewer`, `billing_admin` lưu `RoleEntry` protobuf
 precompiled trong `user_role.list_perm`. Seed migration phải rebuild các binary này khi permission catalog đổi;

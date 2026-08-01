@@ -29,6 +29,10 @@ pub struct WorkerLifecycleManager {
     /// [COMMENT]: Hypervisor runtime mirrors MailRuntime: all workers reuse one
     /// HTTP pool, mutation limiter and Zone-local provider binding owner.
     pub hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
+    /// Kubernetes client is constructed once at bootstrap and shared by all
+    /// workers; per-resource admission and ownership checks remain in the
+    /// managed-service workflow.
+    pub managed_service_runtime: Arc<crate::executor::managed_service::KubernetesRuntime>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +67,7 @@ impl WorkerLifecycleManager {
     pub fn new(
         mail_runtime: Arc<crate::executor::mail::MailRuntime>,
         hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
+        managed_service_runtime: Arc<crate::executor::managed_service::KubernetesRuntime>,
     ) -> Self {
         Self {
             cancel_token: CancellationToken::new(),
@@ -71,6 +76,7 @@ impl WorkerLifecycleManager {
             tracker: Arc::new(TaskTracker::new()),
             mail_runtime,
             hypervisor_runtime,
+            managed_service_runtime,
         }
     }
 

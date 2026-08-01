@@ -51,15 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let vault = infra::vault::VaultClient::new(&config.vault).await?;
     infra::postgres::resolve_from_vault(&vault, &mut config.postgres).await?;
-    if config
-        .workflows
-        .changefeed
-        .sources
-        .iter()
-        .any(|source| source == "managed_service.managed_service_outbox_records")
-    {
-        infra::postgres::resolve_dispatch_from_vault(&vault, &mut config.postgres).await?;
-    }
+    infra::postgres::resolve_dispatch_from_vault(&vault, &mut config.postgres).await?;
+    infra::postgres::resolve_result_from_vault(&vault, &mut config.postgres).await?;
     infra::redis::resolve_from_vault(&vault, &mut config.shared_redis).await?;
     infra::kafka::resolve_from_vault(&vault, &mut config.kafka).await?;
     infra::nats::resolve_from_vault(&vault, &mut config.nats_core).await?;
@@ -105,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     // ChangefeedWorker bootstraps its desired-state cache before WAL replay.
-    let changefeed_worker = ChangefeedWorker::new(config.clone(), kafka.clone())
+    let changefeed_worker = ChangefeedWorker::new(config.clone(), kafka.clone(), &cache_redis)
         .await
         .map_err(|e| -> Box<dyn std::error::Error> {
             format!("changefeed cache bootstrap failed: {e}").into()
@@ -166,6 +159,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ) => {
             MetricsManager::record_worker_termination("mail_reconciler");
             Err("mail reconciler stopped unexpectedly".into())
+        }
+        _ = reconcile::managed_service::run_periodic_managed_service_reconciliation(
+            config.clone()
+        ) => {
+            MetricsManager::record_worker_termination("managed_service_reconciler");
+            Err("managed service reconciler stopped unexpectedly".into())
         }
         _ = MetricsManager::run_pipeline_sampler() => {
             MetricsManager::record_worker_termination("observability_sampler");

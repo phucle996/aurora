@@ -99,6 +99,7 @@ pub struct JobExecutionRuntime {
     zone_id: String,
     mail_runtime: Arc<crate::executor::mail::MailRuntime>,
     hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
+    managed_service_runtime: Arc<crate::executor::managed_service::KubernetesRuntime>,
     cleanup_spawner: Arc<dyn CleanupTaskSpawner>,
     shutdown: CancellationToken,
 }
@@ -112,6 +113,7 @@ pub struct JobExecutionDependencies {
     pub zone_id: String,
     pub mail_runtime: Arc<crate::executor::mail::MailRuntime>,
     pub hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
+    pub managed_service_runtime: Arc<crate::executor::managed_service::KubernetesRuntime>,
     pub cleanup_spawner: Arc<dyn CleanupTaskSpawner>,
     pub shutdown: CancellationToken,
 }
@@ -127,6 +129,7 @@ impl JobExecutionRuntime {
             zone_id: dependencies.zone_id,
             mail_runtime: dependencies.mail_runtime,
             hypervisor_runtime: dependencies.hypervisor_runtime,
+            managed_service_runtime: dependencies.managed_service_runtime,
             cleanup_spawner: dependencies.cleanup_spawner,
             shutdown: dependencies.shutdown,
         }
@@ -287,7 +290,7 @@ impl JobExecutionRuntime {
                 ),
             );
 
-            if job.reconcile_generation.is_none() {
+            if job.reconcile_generation.is_none() && job.source_domain != "MANAGED_SERVICE" {
                 let processing = JobExecutionResult::processing(&job);
                 if let Err(error) = publish_result(&self.kafka, &processing).await {
                     Logger::sys_warn_with_fields(
@@ -339,6 +342,7 @@ impl JobExecutionRuntime {
                 job.clone(),
                 self.mail_runtime.clone(),
                 self.hypervisor_runtime.clone(),
+                self.managed_service_runtime.clone(),
                 &self.zone_id,
                 self.zone_kv.clone(),
             ))
@@ -533,6 +537,7 @@ async fn execute_workload(
     job: Arc<ValidatedJob>,
     mail_runtime: Arc<crate::executor::mail::MailRuntime>,
     hypervisor_runtime: Arc<crate::executor::hypervisor::HypervisorRuntime>,
+    managed_service_runtime: Arc<crate::executor::managed_service::KubernetesRuntime>,
     zone_id: &str,
     zone_kv: Arc<ZoneKvStore>,
 ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
@@ -552,6 +557,14 @@ async fn execute_workload(
                 .await
         }
         "storage" => crate::executor::storage::dispatch_storage_job(action, job, zone_kv).await,
+        "managed_service" => {
+            crate::executor::managed_service::dispatch_managed_service_job(
+                action,
+                job,
+                managed_service_runtime,
+            )
+            .await
+        }
         _ => Err(crate::executor::ExecutorError::ExecutionFailed(format!(
             "Unsupported workload type: {workload}"
         ))),

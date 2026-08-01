@@ -25,8 +25,8 @@ flowchart LR
 - `job_notifications` ghi activity và notification inbox trước khi publish
   realtime. `notification_id` là stable UUID bắt buộc, duplicate publish sau
   crash phải converge idempotent.
-- Managed Service result events dùng một `notification_id` UUIDv5 theo
-  `operation_id`: `PROCESSING` tạo record, `SUCCESS`/`FAILED` update cùng record;
+- Managed Service result events dùng immutable `command_event_id` làm
+  `notification_id`: `PROCESSING` tạo record, `SUCCESS`/`FAILED` update cùng record;
   status hay attempt không tạo record mới.
 - `runtime` là soft-state Pub/Sub, không ghi Scylla và có thể mất khi subscriber
   reconnect; UI rehydrate API authoritative khi có, hoặc hiển thị stale tới update
@@ -41,12 +41,15 @@ flowchart LR
 - Inbox partition: `((user_id, month_bucket), created_at DESC, notification_id DESC)`.
 - Với Managed Service timeline, `occurred_at`/`created_at` được pin tại event
   `PROCESSING` và dùng lại cho terminal update, nên primary key luôn là cùng row.
-- Managed Service `status_version` monotonic; `updated_at`, outcome/severity/
-  title/summary mutable. Terminal update không được ghi đè inbox `read_at`.
-- Managed Service Centrifugo payload dùng `notification_id` UUIDv5(operation_id) làm
+- Managed Service `status_version = delivery_epoch * 2 + rank`, với PROCESSING rank
+  1 và terminal rank 2. Scylla dùng explicit write timestamp
+  `created_at_micros + status_version`; vì vậy pending Redis entry hoặc delivery epoch
+  cũ đến muộn không thể hạ terminal/newer-retry row. Update không ghi đè inbox
+  `read_at`.
+- Managed Service Centrifugo payload dùng `notification_id=command_event_id` làm
   stable timeline identity, cùng `status_version`, `operation_id` và `resource_id`.
-  Console fence theo `(notification_id, status_version)` rồi rehydrate API; không
-  dedupe chỉ operation ID hoặc tạo browser timeline mới theo status/attempt.
+  Console fence theo `(notification_id, status_version)`, nhận event như wake-up rồi
+  rehydrate API authoritative; status/attempt không tạo browser timeline item mới.
 - TTL bị giới hạn bằng config; TWCS giới hạn tombstone/compaction cost.
 - API cursor chứa month, timestamp và id; predicate tuple giữ ordering khi nhiều
   event cùng millisecond và scan tháng cũ theo budget.
@@ -60,8 +63,8 @@ flowchart LR
 - Activity metadata bị giới hạn 16 KiB và không được chứa token, secret hoặc
   raw customer payload.
 - Redis consumer ACK chỉ sau Scylla durability; lỗi dependency giữ PEL để retry.
-  Managed Service terminal upsert từ chối status version cũ để `PROCESSING` hoặc
-  result stale không ghi đè terminal state. Poison contract của cả job/activity
+  Managed Service terminal upsert thắng write timestamp của PROCESSING để entry cũ
+  hoặc result stale không ghi đè terminal state. Poison contract của cả job/activity
   được quarantine
   metadata-only trước ACK, tại `stream:{job_notifications_quarantine}` và
   `stream:{user_activity_quarantine}`.

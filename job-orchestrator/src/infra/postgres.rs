@@ -14,6 +14,8 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 const CONNECTION_PATH: &str = "secret/data/connections/postgres/pg-central/role-cdc-read";
 const DISPATCH_CONNECTION_PATH: &str =
     "secret/data/connections/postgres/pg-central/role-job-dispatch-rw";
+const RESULT_CONNECTION_PATH: &str =
+    "secret/data/connections/postgres/pg-central/role-job-result-rw";
 
 #[derive(serde::Deserialize)]
 struct ConnectionRecord {
@@ -41,7 +43,7 @@ pub async fn resolve_from_vault(
 }
 
 /// Resolve the narrow writable capability used after a managed-service Kafka
-/// ACK. Keeping this as a separate Vault record makes the security boundary
+/// ACK and for bounded stale-marker redispatch. Keeping this separate makes the security boundary
 /// enforceable with PostgreSQL grants and lets operators rotate the read and
 /// write identities independently.
 pub async fn resolve_dispatch_from_vault(
@@ -60,6 +62,25 @@ pub async fn resolve_dispatch_from_vault(
         .parse::<tokio_postgres::Config>()
         .map_err(|error| format!("Vault dispatch database_url is invalid: {error}"))?;
     config.dispatch_database_url = record.database_url;
+    Ok(())
+}
+
+pub async fn resolve_result_from_vault(
+    vault: &VaultClient,
+    config: &mut PostgresConfig,
+) -> Result<(), String> {
+    let record: ConnectionRecord = vault.read(RESULT_CONNECTION_PATH).await?;
+    if record.schema_version != 1 {
+        return Err(format!(
+            "unsupported Vault PostgreSQL result schema_version {}",
+            record.schema_version
+        ));
+    }
+    record
+        .database_url
+        .parse::<tokio_postgres::Config>()
+        .map_err(|error| format!("Vault result database_url is invalid: {error}"))?;
+    config.result_database_url = record.database_url;
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use super::contract::ValidatedResult;
 use super::notify::{JobNotifier, NotificationIntent};
 use crate::observability::logger::{LogFields, Logger};
 use crate::outbox::{ownership, SharedStreamPublisher};
-use crate::results::{hypervisor, mail, storage};
+use crate::results::{hypervisor, mail, managed_service, storage};
 use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use tokio_postgres::{Client, Row};
@@ -11,6 +11,8 @@ pub struct ResolvedResult {
     actor_user_id: Option<String>,
     job_topic: String,
     resource_id: String,
+    timeline_id: Option<uuid::Uuid>,
+    created_at: Option<i64>,
 }
 
 pub enum ApplyOutcome {
@@ -41,6 +43,10 @@ pub async fn verify_authority(
         }
         "HYPERVISOR" => {
             "SELECT job_version FROM hypervisor.hypervisor_outbox_records \
+             WHERE event_id = $1 AND job_topic = $2"
+        }
+        "MANAGED_SERVICE" => {
+            "SELECT job_version FROM managed_service.managed_service_outbox_records \
              WHERE event_id = $1 AND job_topic = $2"
         }
         _ => return Ok(AuthorityCheck::Reject("JOB_RESULT_SOURCE_INVALID")),
@@ -136,6 +142,15 @@ pub async fn apply_result(
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
                 }
             }
+            "MANAGED_SERVICE" => {
+                let managed = result
+                    .managed_service
+                    .as_ref()
+                    .ok_or("validated managed service result is missing")?;
+                managed_service::apply_result(pg_client, managed)
+                    .await
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+            }
             _ => Err(format!("unsupported source_domain '{}'", wire.source_domain).into()),
         }
     }
@@ -151,8 +166,12 @@ pub async fn apply_result(
 
     let applied_row = db_result?;
     let applied = applied_row.is_some();
-    let resolved = if let Some(row) = applied_row {
-        Some(resolve_row(row))
+    let mut resolved = if let Some(row) = applied_row {
+        Some(if wire.source_domain == "MANAGED_SERVICE" {
+            resolve_managed_row(row)
+        } else {
+            resolve_row(row)
+        })
     } else if wire.source_domain == "STORAGE" {
         // A replay after DB commit must still reconstruct the same ownership
         // intent. Dataplane fields are never used as the ownership authority.
@@ -171,9 +190,24 @@ pub async fn apply_result(
             &wire.result_status,
         )
         .await?
+    } else if wire.source_domain == "MANAGED_SERVICE" {
+        load_existing_managed_service_result(
+            pg_client,
+            result.job_id,
+            &wire.job_topic,
+            &wire.result_status,
+        )
+        .await?
     } else {
         None
     };
+
+    if let Some(ref mut resolved) = resolved {
+        if wire.source_domain == "MANAGED_SERVICE" && resolved.created_at.is_none() {
+            resolved.created_at =
+                load_managed_operation_created_at(pg_client, result.job_id).await?;
+        }
+    }
 
     if wire.source_domain == "STORAGE"
         && wire.result_status == "SUCCEEDED"
@@ -228,9 +262,25 @@ pub async fn apply_result(
                 status: &wire.result_status,
                 job_topic: &resolved.job_topic,
                 resource_id: &resolved.resource_id,
-                message: &wire.message,
+                message: result
+                    .managed_service
+                    .as_ref()
+                    .filter(|managed| managed.status == "FAILED")
+                    .map(|managed| managed.sanitized_message.as_str())
+                    .unwrap_or(wire.message.as_str()),
                 traceparent: &propagation.traceparent,
                 tracestate: &propagation.tracestate,
+                timeline_id: resolved.timeline_id,
+                created_at: resolved.created_at,
+                status_version: result
+                    .managed_service
+                    .as_ref()
+                    .map(|managed| {
+                        (managed.delivery_epoch as u64)
+                            .saturating_mul(2)
+                            .saturating_add(2)
+                    })
+                    .unwrap_or_default(),
             };
             let notification_context = crate::observability::otel::OtelTracer::start_current_span(
                 "send stream:{job_notifications}",
@@ -257,6 +307,21 @@ pub async fn apply_result(
             );
             if let Err(error) = notification_result {
                 crate::observability::metrics::MetricsManager::record_notification_failed();
+                if wire.source_domain == "MANAGED_SERVICE" {
+                    Logger::sys_error_with_fields(
+                        "results.notify",
+                        "MANAGED_SERVICE_NOTIFICATION_RETRY_PENDING",
+                        "Business result is durable; Kafka offset remains unsettled until the stable timeline projection is enqueued",
+                        &error.to_string(),
+                        LogFields {
+                            operation_id: Some(&result.job_id.to_string()),
+                            retryable: Some(true),
+                            outcome: Some("pending"),
+                            ..LogFields::default()
+                        },
+                    );
+                    return Err(error);
+                }
                 Logger::sys_error_with_fields(
                     "results.notify",
                     "JOB_NOTIFICATION_BEST_EFFORT_DROPPED",
@@ -302,6 +367,18 @@ fn resolve_row(row: Row) -> ResolvedResult {
         actor_user_id: row.get(0),
         job_topic: row.get(1),
         resource_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
+        timeline_id: None,
+        created_at: None,
+    }
+}
+
+fn resolve_managed_row(row: Row) -> ResolvedResult {
+    ResolvedResult {
+        actor_user_id: row.get(0),
+        job_topic: row.get(1),
+        resource_id: row.get(2),
+        timeline_id: Some(row.get(3)),
+        created_at: (row.columns().len() > 4).then(|| row.get(4)),
     }
 }
 
@@ -320,4 +397,44 @@ async fn load_existing_storage_result(
         )
         .await?;
     Ok(row.map(resolve_row))
+}
+
+async fn load_existing_managed_service_result(
+    client: &Client,
+    job_id: uuid::Uuid,
+    job_topic: &str,
+    status: &str,
+) -> Result<Option<ResolvedResult>, tokio_postgres::Error> {
+    let row = client
+        .query_opt(
+            "SELECT outbox.actor_user_id::text, outbox.job_topic, outbox.resource_id, outbox.event_id, extract(epoch from operation.created_at)::bigint \
+             FROM managed_service.managed_service_outbox_records outbox \
+             JOIN managed_service.personal_managed_service_operations operation \
+               ON operation.current_command_event_id = outbox.event_id \
+             WHERE outbox.event_id = $1 AND outbox.job_topic = $2 AND outbox.owner_type = 'PERSONAL' AND outbox.status = $3 \
+             UNION ALL \
+             SELECT outbox.actor_user_id::text, outbox.job_topic, outbox.resource_id, outbox.event_id, extract(epoch from operation.created_at)::bigint \
+             FROM managed_service.managed_service_outbox_records outbox \
+             JOIN managed_service.tenant_managed_service_operations operation \
+               ON operation.current_command_event_id = outbox.event_id \
+             WHERE outbox.event_id = $1 AND outbox.job_topic = $2 AND outbox.owner_type = 'TENANT' AND outbox.status = $3",
+            &[&job_id, &job_topic, &status],
+        )
+        .await?;
+    Ok(row.map(resolve_managed_row))
+}
+
+async fn load_managed_operation_created_at(
+    client: &Client,
+    command_event_id: uuid::Uuid,
+) -> Result<Option<i64>, tokio_postgres::Error> {
+    let row = client
+        .query_opt(
+            "SELECT extract(epoch from created_at)::bigint FROM managed_service.personal_managed_service_operations WHERE current_command_event_id = $1 \
+             UNION ALL \
+             SELECT extract(epoch from created_at)::bigint FROM managed_service.tenant_managed_service_operations WHERE current_command_event_id = $1",
+            &[&command_event_id],
+        )
+        .await?;
+    Ok(row.map(|value| value.get(0)))
 }

@@ -1,5 +1,6 @@
 pub mod hypervisor;
 pub mod mail;
+pub mod managed_service;
 pub mod storage;
 
 use crate::job_runtime::model::ValidatedJob;
@@ -41,6 +42,16 @@ pub enum ExecutorError {
 
     /// [COMMENT]: Hạ tầng tạm thời chưa sẵn sàng; Redis Stream entry phải ở lại PEL để pod claim và thử lại.
     Retryable(String),
+
+    /// A domain with a versioned result contract owns its terminal taxonomy
+    /// and payload. Generic completion may wrap it, but must not flatten it to
+    /// `EXECUTION_FAILED` or drop the inner evidence required by settlement.
+    DomainTerminal {
+        error_code: String,
+        message: String,
+        result_payload: Vec<u8>,
+        result_payload_schema_version: u32,
+    },
 }
 
 /// Cấu trúc kết quả trả về sau khi thực thi nghiệp vụ hoàn tất.

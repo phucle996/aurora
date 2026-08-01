@@ -594,8 +594,8 @@ settlement transaction remains the only writer that changes lifecycle state.
 
 ## 10. P05 — Job Orchestrator CDC, Kafka dispatch, retry timer và DLQ
 
-**Implementation status:** SHIPPED. JO command dispatch is active; Managed Service
-Dataplane execution and JO result admission deliberately remain gated by P06/P07.
+**Implementation status:** SHIPPED. JO command dispatch is active; P06 has since opened
+Dataplane execution, while JO result admission remains gated by P07.
 
 **Mục tiêu:** move durable intent to the exact Zone at-least-once, preserving aggregate
 ordering and never treating broker ACK as CP state.
@@ -696,6 +696,10 @@ blueprint/component contract.
 **Exit gate:** sandbox Zone can safely execute duplicate create/resize/delete command,
 reject foreign/cross-Zone input and return a terminal result. No browser runtime path
 is introduced.
+
+**Implementation status:** P06 executor path is shipped in the Dataplane. Current
+evidence covers Rust compile and workflow-local admission/renderer tests; a real
+Kubernetes sandbox and JO result-consumer run remain the P06→P07 integration gate.
 
 ### MS-070 — Exact-Zone command admission
 
@@ -808,12 +812,18 @@ JO, Notification, telemetry or stale result to decide business state independent
 direct outbox/object/operation transaction; replay, stale result, missing result and reconciliation preserve ordering and
 do not duplicate external side effect.
 
+**Implementation status:** P07 core is shipped. JO validates the canonical inner
+result, directly settles the permitted Controlplane PostgreSQL tables, emits one stable
+timeline identity and runs bounded exact-command redispatch. The typed connection output
+route stays gated because the V1 safe-output snapshot is empty; live Kafka/PostgreSQL/
+Kubernetes fault evidence remains MS-087.
+
 ### MS-080 — JO Managed Service result validation and routing
 
 * **Owner:** JO result-worker owner.
 * **Scope:** decode outer result then inner payload, verify source command/job topic/
   source domain/Zone/attempt/event mapping against authoritative module outbox before
-  forwarding settlement intent.
+  selecting the physical personal/tenant settlement branch.
 * **Disposition:** malformed/cross-wire/unknown source goes sanitized DLQ/quarantine;
   source older than current fence becomes ignore + metric/audit. JO does not change
   desired state itself.
@@ -823,24 +833,29 @@ do not duplicate external side effect.
 ### MS-081 — Personal direct-settlement vertical slice
 
 * **Owner:** Controlplane `personal_instance` result application slice.
-* **Entry:** internal JO-to-Controlplane application boundary, not a browser handler;
-  it maps already validated transport entity to one service/repository function.
-* **Repository CTE:** lock the scoped outbox, instance and operation; verify source
+* **Entry:** JO's capability-scoped Controlplane PostgreSQL settlement connection, not
+  a public/browser API and not a Controlplane inbox.
+* **Settlement CTE:** lock the scoped outbox, instance and operation; verify source
   event, Zone, operation/generation/attempt/delivery epoch/revision and all hashes;
   update bounded observed version and then outbox/object/operation success, terminal
-  or retry transition atomically. No result inbox is created.
+  transition atomically. No result inbox is created.
 * **Lifecycle:** success promotes pending revision; update terminal failure clears
   pending while retaining active; create terminal failure remains `PROVISIONING`;
-  delete terminal failure remains `DELETING`; retry creates delayed outbox only when
-  attempt budget remains.
+  delete terminal failure remains `DELETING`. Dataplane owns attempts `0..4`; JO only
+  receives and settles the terminal result.
 * **Acceptance:** all result paths preserve `read_at`/timeline identity behavior and
-  cannot write raw result payload/provider error to PostgreSQL.
+  cannot write raw result payload/provider error to PostgreSQL. **Shipped:** JO uses
+  the authoritative event/topic/version fence and dispatches one personal CTE; the
+  current P06 result has no observed output payload, so the persisted safe snapshot
+  is `{}`.
 
 ### MS-082 — Tenant direct-settlement vertical slice
 
 * **Owner:** Controlplane `tenant_instance` result application slice.
 * **Scope/acceptance:** independent tenant table/CTE/method, same all-fence logic as
   MS-081, no owner-type branching or shared result repo that can cross tenant scope.
+  **Shipped:** tenant settlement is a separate CTE/function and never falls through
+  the personal table branch.
 
 ### MS-083 — Durable hard-delete, fences and retention workflow
 
@@ -850,36 +865,47 @@ do not duplicate external side effect.
   `max(command retention, result retention, DLQ replay retention) + safety margin`.
 * **Acceptance:** old command/result cannot affect a newly reused code because UUID/
   generation/fence differ; retention job cannot remove replay evidence;
-  hard delete never occurs on DP apply acknowledgement alone.
+  hard delete never occurs on DP apply acknowledgement alone. **Shipped:** DELETE
+  success inserts the deletion fence and hard-deletes revisions/instance in the same
+  transaction; operation/outbox evidence remains for replay retention.
 
 ### MS-084 — Job notification timeline projection
 
 * **Owner:** JO + Notification Service owners.
 * **Scope:** emit `PROCESSING` after durable command ACK and `SUCCESS|FAILED` only
-  after CP settlement. Stable `notification_id=UUIDv5(operation_id)` updates one
+  after CP settlement. Stable `notification_id=command_event_id` updates one
   Scylla activity/inbox row with monotonic `status_version` and preserves `read_at`.
 * **Boundary:** XADD/Notification/Centrifugo are delivery/projection, not rollback of
   business transaction. No Managed Service runtime event/channel is added.
 * **Acceptance:** terminal without observed processing still upserts same identity;
-  duplicate/reconnect does not create activity row per attempt/status.
+  duplicate/reconnect does not create activity row per attempt/status. **Shipped:** JO
+  uses the immutable command event as `notification_id`, computes
+  `status_version=delivery_epoch*2+rank`, writes the terminal event only after
+  settlement, and leaves the Managed Service result offset unsettled when the
+  notification enqueue fails so Kafka redelivery can repair the projection.
 
 ### MS-085 — Reconcile planning and exact-operation redispatch
 
 * **Owner:** JO reconciliation owner + Dataplane executor owner.
-* **Scope:** bounded per-Zone/per-instance scan for missing result, pending outbox,
-  Zone reconnect or observed mismatch. It uses lease/fence, cursor, small batch,
-  deterministic jitter and work/CPU/API budget.
-* **Invariant:** reconciler may redispatch exact current operation/generation or query
-  protected Kubernetes readiness; it never creates revision, changes desired input,
-  resurrects delete or promotes state without matching pending result/fence.
+* **Scope:** bounded scan for missing terminal result and stale pending/processing
+  outbox. It uses deterministic per-replica jitter, a small batch and PostgreSQL
+  `FOR UPDATE SKIP LOCKED` as the HA claim/fence.
+* **Invariant:** reconciler may redispatch only the exact current
+  operation/generation through WAL/CDC; it never queries Kubernetes, publishes Kafka
+  directly, creates revision, changes desired input, resurrects delete or promotes
+  state without a matching terminal result.
 * **Acceptance:** cold start/rebalance/Zone outage test yields no reconciliation storm;
-  stale worker/result cannot overwrite newer observed version.
+  stale worker/result cannot overwrite newer observed version. **Shipped:** JO runs a
+  bounded `FOR UPDATE SKIP LOCKED` scan and resets only stale PENDING/PROCESSING
+  markers to PENDING, letting WAL/CDC redispatch the exact immutable event. No direct
+  Kafka publish, new operation, payload rewrite or state promotion is performed.
 
 ### MS-086 — Safe connection output read workflow
 
 * **Owner:** personal and tenant read slices.
 * **Routes:** `GET .../instances/:code/connection` after P07 safe observed snapshot
-  exists.
+  exists. **Not enabled in P07:** Dataplane V1 currently returns an empty observed
+  output, so no connection route is exposed until a typed safe-output contract exists.
 * **Rules:** return only output-contract allow-list (host/port/database/TLS name etc.);
   no Secret, token, password, raw URI with credentials, raw input or Kubernetes API
   fetch. Missing output is normal observed state, not a reason to query Kubernetes.

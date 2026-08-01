@@ -11,12 +11,15 @@ P04 hiện đã ship instance/operation read projection và các vertical slice 
 resize, rename, delete, manual retry tách riêng cho personal/tenant. Kafka ACK
 không tạo một dispatch-status projection trong Controlplane: JO chỉ cập nhật
 `managed_service_outbox_records.status=PROCESSING` bằng một fence hẹp sau ACK.
-Mutation handler vẫn dormant trong route registry cho đến khi P07 settle result/timeline;
+P07 đã mở customer mutation handlers sau khi direct result/timeline settlement tồn tại;
 không có generic configuration/runtime-metadata patch. Kafka producer/consumer Managed
 Service đã ship command-side ở P05: JO CDC publish exact protected bytes và chỉ cập
-nhật outbox `PROCESSING` sau `acks=all`; DP nhận diện exact route nhưng chặn trước
-HPKE-open/executor. Renderer, Kubernetes side effect và result settlement vẫn thuộc
-P06/P07.
+nhật outbox `PROCESSING` sau `acks=all`. P06 đã ship Dataplane HPKE-open, admission,
+typed YAML renderer, namespace/ownership enforcement, Kubernetes SSA/readiness/delete
+executor và terminal result producer keyed by `instance_id`. P07 đã ship JO result
+admission, personal/tenant direct-settlement CTE, hard-delete fence, stable timeline
+projection và bounded stale-outbox redispatch; safe connection output vẫn gated vì V1
+result snapshot hiện chỉ có `{}`.
 
 Chi tiết product proposal nằm trong [IDEA.md](./IDEA.md). Trình tự staging từ
 contract tới release gate trước khi tách phase/task nằm trong
@@ -172,27 +175,39 @@ bằng auth generation + owner mode + Zone + workspace + revision. List dùng ke
 cursor và page tối đa 100; Console chỉ tải page tiếp theo theo action hữu hạn. P03
 không đăng ký `POST /instances`.
 
-P04 customer instance projection bổ sung tám route read-only; mutation vertical slice
-đã có handler/service/repository nhưng chưa đăng ký route:
+P04 customer instance projection bổ sung tám route read-only. Sau P07 direct
+settlement, các mutation vertical slice được đăng ký với permission
+`managed-service:instance:write`:
 
 ```text
 GET /api/v1/personal/managed-services/instances
 GET /api/v1/personal/managed-services/instances/:code
 GET /api/v1/personal/managed-services/instances/:code/operations
 GET /api/v1/personal/managed-services/instances/:code/operations/:operation_id
+POST /api/v1/personal/managed-services/instances
+PATCH /api/v1/personal/managed-services/instances/:code/name
+POST /api/v1/personal/managed-services/instances/:code/resize
+DELETE /api/v1/personal/managed-services/instances/:code
+POST /api/v1/personal/managed-services/instances/:code/operations/:operation_id/retry
 GET /api/v1/tenant/managed-services/instances
 GET /api/v1/tenant/managed-services/instances/:code
 GET /api/v1/tenant/managed-services/instances/:code/operations
 GET /api/v1/tenant/managed-services/instances/:code/operations/:operation_id
+POST /api/v1/tenant/managed-services/instances
+PATCH /api/v1/tenant/managed-services/instances/:code/name
+POST /api/v1/tenant/managed-services/instances/:code/resize
+DELETE /api/v1/tenant/managed-services/instances/:code
+POST /api/v1/tenant/managed-services/instances/:code/operations/:operation_id/retry
 ```
 
-Các route này dùng `managed-service:instance:read`, lấy owner/workspace/Zone từ typed
-trusted context và trả desired state, observed state, operation state thành ba phần độc
-lập. Repository không select/serialize protected command, input hash hay create-intent
-hash. Personal và tenant dùng physical table, CTE và handler/service/repository riêng.
-Rename display name đã có internal vertical slice với optimistic `metadata_version`;
-nó không đổi code/generation/revision/outbox. Create/resize/delete/retry cũng chỉ mở
-cùng release gate đã chốt; code remains the natural workspace-level dedupe identity.
+Read routes dùng `managed-service:instance:read`; mutation dùng
+`managed-service:instance:write`. Tất cả lấy owner/workspace/Zone từ typed trusted
+context và trả desired state, observed state, operation state thành ba phần độc lập.
+Repository không select/serialize protected command, input hash hay create-intent hash.
+Personal và tenant dùng physical table, CTE và handler/service/repository riêng.
+Rename display name dùng optimistic `metadata_version`; nó không đổi
+code/generation/revision/outbox. Create/resize/delete/retry đã qua cùng P07 settlement
+gate; code remains the natural workspace-level dedupe identity.
 
 Zone admission của module bắt buộc capability `managed_service` trong
 `hierarchy.zone_service_type`. Mọi personal/tenant catalog và version-detail query
@@ -267,11 +282,11 @@ database transaction, CTE, constraint hoặc outbox durability.
   xóa guarded legacy result inbox ở `000010`.
   `migration.go` đã được global app migration runner gọi trong cùng transaction/
   advisory lock. Baseline gồm system catalog, immutable blueprint revision, physical
-  personal/tenant aggregate và outbox; P04 mutation route vẫn dormant nhưng durable
-  workflow slices đã được ship để P07 nối settlement sau.
+  personal/tenant aggregate và outbox; P07 đã mở mutation route sau khi durable
+  settlement/fence được ship.
   Kafka ACK không tạo operation projection; JO chỉ được phép cập nhật outbox
-  `PROCESSING` qua connection write riêng; P05 đã enable command route nhưng result
-  route vẫn fail-close đến P07.
+  `PROCESSING` qua connection write riêng; P05 đã enable command route và P07 đã
+  enable validated terminal result route qua result-settlement connection riêng.
 
 S09 đã chốt physical ownership cho persistence:
 

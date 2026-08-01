@@ -47,6 +47,25 @@ impl JobNotificationService {
             "PROCESSING" => (ActivityOutcome::Started, "info"),
             _ => return Err(boxed_error("job notification status is invalid")),
         };
+        let projection_version = if event.status_version == 0 {
+            if event.status == "PROCESSING" {
+                1
+            } else {
+                2
+            }
+        } else {
+            i64::try_from(event.status_version)
+                .map_err(|_| boxed_error("job notification status version is invalid"))?
+        };
+        if event.event_type == "managed_service.instance.execute"
+            && (event.status_version == 0
+                || (event.status == "PROCESSING" && event.status_version.is_multiple_of(2))
+                || (event.status != "PROCESSING" && !event.status_version.is_multiple_of(2)))
+        {
+            return Err(boxed_error(
+                "managed service notification status version does not match status rank",
+            ));
+        }
 
         let activity = ActivityEvent {
             event_id: notification_id,
@@ -66,9 +85,11 @@ impl JobNotificationService {
             metadata_json: serde_json::json!({
                 "job_version": event.job_version,
                 "attempt": event.attempt,
+                "status_version": event.status_version,
             })
             .to_string(),
             schema_version: 1,
+            projection_version,
         };
         let notification = NotificationItem {
             notification_id,
@@ -80,6 +101,7 @@ impl JobNotificationService {
             operation: event.event_type.clone(),
             resource_id: (!event.resource_id.is_empty()).then(|| event.resource_id.clone()),
             created_at,
+            projection_version,
         };
 
         // Scylla is the durable user-history boundary. Realtime publication is
@@ -96,6 +118,7 @@ impl JobNotificationService {
             "resource_id": event.resource_id,
             "job_version": event.job_version,
             "attempt": event.attempt,
+            "status_version": event.status_version,
             "notification_id": notification_id,
             "event_type": "job.notification",
             "stream": "notification",

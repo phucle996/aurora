@@ -356,6 +356,12 @@ write_kv secret/data/connections/postgres/pg-central/role-cdc-read "$(jq -n \
 write_kv secret/data/connections/postgres/pg-central/role-job-dispatch-rw "$(jq -n \
     --arg url "$JO_DATABASE_URL" \
     '{data:{schema_version:1,database_url:$url}}')"
+# [DEV-ONLY]: Compose shares the local superuser DSN. Production grants this
+# capability only the existing workflow result CTE tables; it must not inherit
+# logical-replication or arbitrary Controlplane business writes.
+write_kv secret/data/connections/postgres/pg-central/role-job-result-rw "$(jq -n \
+    --arg url "$JO_DATABASE_URL" \
+    '{data:{schema_version:1,database_url:$url}}')"
 write_kv secret/data/connections/redis/shared-l2/role-runtime-bridge-rw "$(jq -n \
     --arg url "$JO_SHARED_REDIS_URL" \
     '{data:{schema_version:1,url:$url}}')"
@@ -541,6 +547,7 @@ path "totp/code/admin" { capabilities = ["update"] }'
 write_policy job-orchestrator-connections-read \
 'path "secret/data/connections/postgres/pg-central/role-cdc-read" { capabilities = ["read"] }
 path "secret/data/connections/postgres/pg-central/role-job-dispatch-rw" { capabilities = ["read"] }
+path "secret/data/connections/postgres/pg-central/role-job-result-rw" { capabilities = ["read"] }
 path "secret/data/connections/redis/shared-l2/role-runtime-bridge-rw" { capabilities = ["read"] }
 path "secret/data/connections/kafka/central/role-job-orchestrator" { capabilities = ["read"] }
 path "secret/data/connections/nats/central/role-job-orchestrator" { capabilities = ["read"] }'

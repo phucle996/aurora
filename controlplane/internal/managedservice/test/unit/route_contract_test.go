@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T) {
+func TestManagedServiceRoutesExposeSettledCustomerLifecycle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	module := &managedservice.Module{
 		CategoryHandler:               handler.NewCategoryHandler(nil),
@@ -70,7 +70,7 @@ func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T
 			t.Fatalf("runtime-affecting mutation escaped critical path: %s", route)
 		}
 	}
-	for _, dormant := range []string{
+	for _, mutation := range []string{
 		"POST /api/v1/personal/managed-services/instances",
 		"PATCH /api/v1/personal/managed-services/instances/:code/name",
 		"POST /api/v1/personal/managed-services/instances/:code/resize",
@@ -82,8 +82,8 @@ func TestManagedServiceRoutesKeepRuntimeMutationsBehindCriticalPath(t *testing.T
 		"DELETE /api/v1/tenant/managed-services/instances/:code",
 		"POST /api/v1/tenant/managed-services/instances/:code/operations/:operation_id/retry",
 	} {
-		if _, exists := routes[dormant]; exists {
-			t.Fatalf("P04 mutation admission must remain dormant before protected transport and P07: %s", dormant)
+		if _, exists := routes[mutation]; !exists {
+			t.Fatalf("missing P07 customer mutation route: %s", mutation)
 		}
 	}
 }

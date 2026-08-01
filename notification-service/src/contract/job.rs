@@ -18,6 +18,12 @@ pub fn valid_event(event: &proto::JobNotificationEvent) -> bool {
         && event.title.len() <= 256
         && event.message.len() <= 4_096
         && event.resource_id.len() <= 256
+        && (event.event_type != "managed_service.instance.execute"
+            || (event.status_version > 0
+                && ((event.status == "PROCESSING"
+                    && !event.status_version.is_multiple_of(2))
+                    || (event.status != "PROCESSING"
+                        && event.status_version.is_multiple_of(2)))))
         && crate::observability::tracing::OtelTracer::is_valid_propagation_context(
             &event.trace_parent,
             &event.trace_state,
@@ -47,6 +53,7 @@ mod tests {
             job_version: 1,
             attempt: 0,
             notification_id: uuid::Uuid::new_v4().to_string(),
+            status_version: 0,
         }
     }
 

@@ -189,6 +189,10 @@ impl MetricsManager {
         Self::record_outcome("managed_service_outbox", "processing");
     }
 
+    pub fn record_managed_service_redelivery() {
+        Self::record_outcome("managed_service_outbox", "redelivery_scheduled");
+    }
+
     pub fn inc_kafka_commands_published() {
         Self::kafka_commands_published().add(1, &[]);
         Self::record_outcome("zone_command", "published");

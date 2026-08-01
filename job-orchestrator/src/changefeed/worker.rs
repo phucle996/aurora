@@ -33,6 +33,7 @@ pub struct ChangefeedWorker {
     /// read-only metadata client; deployment SQL grants must restrict this path
     /// to the outbox transition and the worker never uses it for result settlement.
     pub(super) managed_service_outbox_writer: Option<Arc<tokio_postgres::Client>>,
+    pub(super) notification_redis: tokio::sync::Mutex<redis::aio::ConnectionManager>,
     /// [COMMENT]: Cache desired_state của từng (zone_id, service_type) — dùng để phát hiện thay đổi thực sự.
     /// Persist qua các lần reconnect (không reset khi replication stream ngắt/reconnect).
     /// Key: (zone_id, service_type), Value: desired_state hiện tại (true = enabled).
@@ -45,6 +46,7 @@ impl ChangefeedWorker {
     pub async fn new(
         config: Config,
         kafka: Arc<KafkaTransport>,
+        cache_redis: &redis::Client,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // [COMMENT]: Bootstrap snapshot từ DB để khởi tạo cache trước khi nhận WAL events.
         // Tránh publish false-positive khi JO restart và WAL replay các event cũ.
@@ -94,6 +96,8 @@ impl ChangefeedWorker {
         } else {
             None
         };
+        let notification_redis =
+            crate::infra::redis::manager(cache_redis, &config.shared_redis).await?;
 
         // [COMMENT]: Flatten từ HashMap<zone_id, HashMap<svc_type, bool>>
         // sang HashMap<(zone_id, svc_type), bool> để lookup O(1).
@@ -117,6 +121,7 @@ impl ChangefeedWorker {
             kafka,
             metadata_client,
             managed_service_outbox_writer,
+            notification_redis: tokio::sync::Mutex::new(notification_redis),
             desired_state_cache: std::sync::Mutex::new(cache),
         })
     }

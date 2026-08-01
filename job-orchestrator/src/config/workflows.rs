@@ -34,10 +34,18 @@ pub struct OwnershipWorkflowConfig {
 }
 
 #[derive(Clone)]
+pub struct ManagedServiceWorkflowConfig {
+    pub reconcile_interval_secs: u64,
+    pub reconcile_batch_size: i64,
+    pub reconcile_stale_secs: u64,
+}
+
+#[derive(Clone)]
 pub struct WorkflowConfig {
     pub changefeed: ChangefeedConfig,
     pub mail: MailWorkflowConfig,
     pub ownership: OwnershipWorkflowConfig,
+    pub managed_service: ManagedServiceWorkflowConfig,
 }
 
 impl WorkflowConfig {
@@ -168,6 +176,26 @@ impl WorkflowConfig {
                     100_000_usize,
                     1_000,
                     10_000_000,
+                )?,
+            },
+            managed_service: ManagedServiceWorkflowConfig {
+                reconcile_interval_secs: environment.bounded(
+                    "MANAGED_SERVICE_RECONCILE_INTERVAL_SECS",
+                    600_u64,
+                    60,
+                    86_400,
+                )?,
+                reconcile_batch_size: environment.bounded(
+                    "MANAGED_SERVICE_RECONCILE_BATCH_SIZE",
+                    32_i64,
+                    1,
+                    256,
+                )?,
+                reconcile_stale_secs: environment.bounded(
+                    "MANAGED_SERVICE_RECONCILE_STALE_SECS",
+                    120_u64,
+                    30,
+                    3_600,
                 )?,
             },
         })

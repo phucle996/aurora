@@ -86,9 +86,16 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     let hypervisor_runtime =
         crate::executor::hypervisor::HypervisorRuntime::new(&cfg, zone_kv.clone())
             .map_err(|error| format!("initialize Hypervisor runtime failed: {error}"))?;
+    let managed_service_runtime =
+        crate::executor::managed_service::KubernetesRuntime::connect(&cfg)
+            .await
+            .map_err(|error| {
+                format!("initialize Kubernetes managed-service runtime failed: {error}")
+            })?;
     let worker_pool = Arc::new(WorkerLifecycleManager::new(
         mail_runtime,
         hypervisor_runtime,
+        managed_service_runtime,
     ));
 
     Ok(BootstrapResult {

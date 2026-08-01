@@ -77,6 +77,26 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
 			module.PersonalInstanceHandler.GetPersonalInstanceOperation,
 		)
+		personal.POST("/instances",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.CreatePersonalInstance,
+		)
+		personal.PATCH("/instances/:code/name",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.RenamePersonalInstance,
+		)
+		personal.POST("/instances/:code/resize",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.ResizePersonalInstance,
+		)
+		personal.DELETE("/instances/:code",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.DeletePersonalInstance,
+		)
+		personal.POST("/instances/:code/operations/:operation_id/retry",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.PersonalInstanceHandler.RetryPersonalInstance,
+		)
 	}
 
 	tenant := router.Group("/api/v1/tenant/managed-services")
@@ -104,6 +124,26 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		tenant.GET("/instances/:code/operations/:operation_id",
 			middleware.Authorize("managed-service:instance:read", module.L1Registry, "*"),
 			module.TenantInstanceHandler.GetTenantInstanceOperation,
+		)
+		tenant.POST("/instances",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.TenantInstanceHandler.CreateTenantInstance,
+		)
+		tenant.PATCH("/instances/:code/name",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.TenantInstanceHandler.RenameTenantInstance,
+		)
+		tenant.POST("/instances/:code/resize",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.TenantInstanceHandler.ResizeTenantInstance,
+		)
+		tenant.DELETE("/instances/:code",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.TenantInstanceHandler.DeleteTenantInstance,
+		)
+		tenant.POST("/instances/:code/operations/:operation_id/retry",
+			middleware.Authorize("managed-service:instance:write", module.L1Registry, "*"),
+			module.TenantInstanceHandler.RetryTenantInstance,
 		)
 	}
 }

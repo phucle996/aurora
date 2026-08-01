@@ -4,6 +4,7 @@ use super::worker::{ChangefeedWorker, PermanentChangeError};
 use crate::infra::kafka::transport_proto::{JobCommandV1, PayloadEncodingV1, ProtectedPayloadV1};
 use crate::observability::logger::{LogFields, Logger};
 use crate::observability::otel::OtelTracer;
+use crate::results::notify::{JobNotifier, NotificationIntent};
 use pgwire_replication::Lsn;
 use prost::Message;
 
@@ -42,6 +43,15 @@ struct DurableOutboxCommand {
     traceparent: String,
     tracestate: String,
     delivery_epoch: u64,
+}
+
+struct ManagedServiceProcessingNotification {
+    event_id: uuid::Uuid,
+    actor_user_id: String,
+    resource_id: String,
+    job_version: u32,
+    status_version: u64,
+    created_at: i64,
 }
 
 impl ChangefeedWorker {
@@ -360,21 +370,63 @@ impl ChangefeedWorker {
                     "managed service outbox writer is not configured for an enabled source",
                 )
             })?;
-            self.mark_managed_service_outbox_processing(
-                writer,
-                &event_id,
-                &zone_id,
-                &job_topic,
-                &job_version_str,
-                &delivery_epoch_str,
+            let processing = self
+                .mark_managed_service_outbox_processing(
+                    writer,
+                    &event_id,
+                    &zone_id,
+                    &job_topic,
+                    &job_version_str,
+                    &delivery_epoch_str,
+                )
+                .await?;
+            let current_context = opentelemetry::Context::current();
+            let propagation = OtelTracer::inject_context(&current_context);
+            let mut notification_redis = self.notification_redis.lock().await;
+            let notification_result = JobNotifier::notify_realtime(
+                NotificationIntent {
+                    job_id: processing.event_id,
+                    user_id: &processing.actor_user_id,
+                    job_version: processing.job_version,
+                    attempt: 0,
+                    status: "PROCESSING",
+                    job_topic: &job_topic,
+                    resource_id: &processing.resource_id,
+                    message: "Managed Service request accepted for Zone execution",
+                    traceparent: &propagation.traceparent,
+                    tracestate: &propagation.tracestate,
+                    timeline_id: Some(processing.event_id),
+                    created_at: Some(processing.created_at),
+                    status_version: processing.status_version,
+                },
+                &mut notification_redis,
             )
-            .await?;
+            .await;
+            if let Err(error) = notification_result {
+                // Processing is a recoverable projection. A terminal settlement
+                // may upsert the same event identity even if this wake-up is lost;
+                // therefore Redis degradation must not hold the WAL LSN hostage.
+                crate::observability::metrics::MetricsManager::record_notification_failed();
+                Logger::sys_error_with_fields(
+                    "changefeed.managed_service_notify",
+                    "MANAGED_SERVICE_PROCESSING_NOTIFICATION_DROPPED",
+                    "Managed Service command is durable in Kafka; terminal result can repair the timeline projection",
+                    &error.to_string(),
+                    LogFields {
+                        event_id: Some(&event_id),
+                        source_domain: Some("MANAGED_SERVICE"),
+                        retryable: Some(false),
+                        outcome: Some("dropped"),
+                        ..LogFields::default()
+                    },
+                );
+            }
         }
 
         Ok(())
     }
 
-    pub(super) async fn mark_managed_service_outbox_processing(
+    async fn mark_managed_service_outbox_processing(
         &self,
         writer: &tokio_postgres::Client,
         event_id: &str,
@@ -382,7 +434,7 @@ impl ChangefeedWorker {
         job_topic: &str,
         job_version: &str,
         delivery_epoch: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<ManagedServiceProcessingNotification, Box<dyn std::error::Error>> {
         let event_id = uuid::Uuid::parse_str(event_id)
             .map_err(|error| PermanentChangeError(format!("invalid event_id: {error}")))?;
         let zone_id = uuid::Uuid::parse_str(zone_id)
@@ -390,9 +442,15 @@ impl ChangefeedWorker {
         let job_version = job_version
             .parse::<i32>()
             .map_err(|_| PermanentChangeError("invalid job_version".to_string()))?;
+        let notification_job_version = u32::try_from(job_version).map_err(|_| {
+            PermanentChangeError("job_version is outside the notification contract".to_string())
+        })?;
         let delivery_epoch = delivery_epoch
             .parse::<i64>()
             .map_err(|_| PermanentChangeError("invalid delivery_epoch".to_string()))?;
+        let notification_epoch = u64::try_from(delivery_epoch).map_err(|_| {
+            PermanentChangeError("delivery_epoch is outside the notification contract".to_string())
+        })?;
         let row = writer
             .query_opt(
                 "UPDATE managed_service.managed_service_outbox_records
@@ -404,7 +462,8 @@ impl ChangefeedWorker {
                    AND job_version = $4
                    AND delivery_epoch = $5
                    AND status IN ('PENDING', 'PROCESSING')
-                   RETURNING status",
+                   RETURNING status, actor_user_id::text, resource_id,
+                             extract(epoch from created_at)::bigint",
                 &[
                     &event_id,
                     &zone_id,
@@ -424,6 +483,9 @@ impl ChangefeedWorker {
             .into());
         };
         let status: String = row.get(0);
+        let actor_user_id: String = row.get(1);
+        let resource_id: String = row.get(2);
+        let created_at: i64 = row.get(3);
         Logger::job_log_with_fields(
             &event_id.to_string(),
             job_topic,
@@ -440,7 +502,14 @@ impl ChangefeedWorker {
             },
         );
         crate::observability::metrics::MetricsManager::record_managed_service_outbox_processing();
-        Ok(())
+        Ok(ManagedServiceProcessingNotification {
+            event_id,
+            actor_user_id,
+            resource_id,
+            job_version: notification_job_version,
+            status_version: notification_epoch.saturating_mul(2).saturating_add(1),
+            created_at,
+        })
     }
 
     pub(super) async fn observe_managed_service_backlog(&self) {

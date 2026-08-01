@@ -11,9 +11,9 @@
 | Storage current usage | Kafka Zone snapshot | Controlplane PostgreSQL + best-effort Shared Redis notification | `src/storage_usage/` |
 | Mail runtime watch | Shared Redis Stream | NATS Core Zone watch | `src/mail_runtime/watch.rs` |
 | Mail runtime report | NATS Core | Shared Redis TTL snapshot + Pub/Sub | `src/mail_runtime/{ingest,reports}.rs` |
-| Managed Service dispatch/result | PostgreSQL WAL → Kafka / Kafka result | Controlplane desired/observed settlement + job timeline | staged, not implemented |
+| Managed Service dispatch/result | PostgreSQL WAL → Kafka / Kafka result | Controlplane desired/observed settlement + job timeline | `src/results/managed_service/`, `src/reconcile/managed_service.rs` |
 | Mail projection repair | PostgreSQL snapshot | Kafka Zone command | `src/reconcile/mail/` |
-| Job result settlement | Kafka result | PostgreSQL outbox/aggregate transaction | `src/results/{mail,storage}/` |
+| Job result settlement | Kafka result | PostgreSQL outbox/aggregate transaction | `src/results/{mail,storage,hypervisor,managed_service}/` |
 
 Generated Protobuf contracts nằm tại `src/contracts.rs`; result handler, outbox và
 reconciler không phụ thuộc ngược vào runtime worker.
@@ -50,6 +50,13 @@ và ownership projection; Kafka/NATS/Shared Redis notification không là billin
 ## HA and failure semantics
 
 - Kafka consumer manual commit chỉ sau PostgreSQL side effect hoặc durable DLQ.
+- Managed Service terminal result locks the authoritative outbox/operation/instance
+  fence and settles a personal or tenant transaction directly; no Controlplane inbox
+  exists. Notification failure keeps the result offset unsettled so stable-ID timeline
+  projection can recover on redelivery.
+- Managed Service reconciler claims bounded stale PENDING/PROCESSING batches with
+  `FOR UPDATE SKIP LOCKED`, resets only the delivery marker and relies on WAL/CDC to
+  republish the exact immutable command. It never publishes Kafka directly.
 - Zone report worker không bootstrap heartbeat của mọi Zone vào RAM và không cache SRE-owned
   lifecycle/desired state; mỗi report đọc một policy snapshot, tránh stale state và false-down
   khi Kafka đổi partition owner.
@@ -69,6 +76,10 @@ và ownership projection; Kafka/NATS/Shared Redis notification không là billin
 ## Security boundary
 
 - JO không có Zone KV credential; Dataplane không có Shared Redis/PostgreSQL credential.
+- PostgreSQL capability tách ba Vault record/role: `role-cdc-read` cho snapshot/WAL,
+  `role-job-dispatch-rw` cho post-ACK marker + bounded redispatch và
+  `role-job-result-rw` cho các result-settlement CTE đã cấp quyền. Startup fail-close
+  nếu result role read-only; không dùng CDC identity làm write fallback.
 - NATS Core chỉ Central↔Zone soft state. Notification Service và Cost Engine không cần NATS.
 - Managed Service V1 không tạo NATS subject hay runtime consumer tại JO. Customer
   Logs/Metrics đi từ Zone OTel Collector/Victoria qua Zone Public Edge, không qua JO,

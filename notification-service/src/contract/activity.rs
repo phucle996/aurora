@@ -51,6 +51,7 @@ pub fn decode(event: proto::UserActivityEvent) -> Result<ActivityEvent, AppError
         occurred_at,
         metadata_json: event.metadata_json,
         schema_version: event.schema_version,
+        projection_version: 0,
     };
     activity.validate()?;
     Ok(activity)

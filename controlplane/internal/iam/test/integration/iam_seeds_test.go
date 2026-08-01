@@ -63,6 +63,7 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		"billing:credit:adjust",
 		"managed-service:catalog:read",
 		"managed-service:instance:read",
+		"managed-service:instance:write",
 	}
 	readOnlyPermissions := []string{
 		"iam:users:read",

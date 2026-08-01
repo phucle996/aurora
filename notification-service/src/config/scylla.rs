@@ -65,6 +65,7 @@ impl ScyllaConfig {
     }
 }
 
+#[cfg(test)]
 fn valid_identifier(value: &str) -> bool {
     value.len() <= 48
         && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)

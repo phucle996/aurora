@@ -12,7 +12,7 @@
 
 | Thuộc tính | Contract |
 | --- | --- |
-| Trạng thái | P00–P05 shipped through durable JO command dispatch; customer mutation routes, Dataplane Managed Service HPKE-open/Kubernetes executor và result settlement remain disabled until P06/P07 |
+| Trạng thái | P00–P07 core shipped: durable JO command dispatch, Zone Dataplane execution/result producer, direct personal/tenant settlement, hard-delete fence và terminal timeline projection; safe connection output và full fault-suite integration còn gated |
 | Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant desired state, immutable revision, operation, deletion fence và outbox |
 | Durable transport | PostgreSQL outbox/WAL → Job Orchestrator → Kafka → Dataplane Zone → Kafka result → JO/Controlplane settle |
 | Runtime executor | Dataplane đúng Zone gọi Kubernetes API; Controlplane không có Kubernetes credential/client |
@@ -44,8 +44,10 @@ Boundary bắt buộc:
 * Controlplane sở hữu catalog, owner/workspace/Zone binding, desired state và durable
   operation; nó không render YAML, decrypt parameter, publish Kafka trực tiếp hoặc gọi
   Kubernetes.
-* JO là durable WAL/CDC-to-Kafka bridge và result relay. JO không tạo business
-  aggregate, không có Zone KV credential và không tự quyết lifecycle final state.
+* JO là durable WAL/CDC-to-Kafka bridge và deterministic result settler. Nó chỉ áp
+  dụng terminal result khớp toàn bộ durable fence trong một transaction được cấp
+  quyền hẹp; JO không tạo business aggregate, không có Zone KV credential và không
+  tự suy luận lifecycle từ runtime/telemetry.
 * Dataplane chỉ thực thi command đã route đúng Zone. Nó không tin client identity,
   owner, workspace hay permission và không có CP PostgreSQL/Auth-State/Shared L2 Redis
   credential.
@@ -142,7 +144,7 @@ flowchart LR
     DP --> K8S[Kubernetes API / customer graph]
     DP -->|JobExecutionResultProto / Kafka| KR[(Result topic)]
     KR --> JO
-    JO -->|current result settle| CP
+    JO -->|fenced direct result transaction| PG
     JO -->|stable timeline XADD| NS[Notification Service]
     NS --> SCY[(Scylla timeline/inbox)]
     NS --> CF[Centrifugo notification]
@@ -157,20 +159,24 @@ and outbox insert commit in one transaction before JO sees WAL. JO only advances
 after Kafka `acks=all`; a crash after broker ACK before LSN checkpoint intentionally
 redelivers an idempotent command.
 
-P05 activates only the JO command registry for
-`MANAGED_SERVICE/managed_service.instance.execute`. JO re-reads the authoritative
+P05 activates the JO command registry for
+`MANAGED_SERVICE/managed_service.instance.execute`; P06 activates its Zone Dataplane
+consumer/executor. JO re-reads the authoritative
 outbox fence, forwards the exact `ProtectedPayloadV1` bytes, marks only the matching
 outbox row `PROCESSING` through a separate Vault/PostgreSQL capability and then advances
-LSN. The DP recognizes the exact route and rejects source/Zone cross-wire, but returns
-the same-Zone command at the explicit P06 executor gate before HPKE open. This deployment
-gate is retryable/fail-closed: Kafka offset remains unsettled and the command does not
-become DLQ merely because P06 is absent. The JO result registry remains closed until the
-P07 direct-settlement transaction exists.
+LSN. DP rejects source/Zone cross-wire before HPKE open, validates the authenticated
+inner command before Kubernetes and publishes a terminal result only after readiness or
+bounded failure. P07 now admits that result route and settles the matching personal or
+tenant outbox/object/operation transaction using event, generation, attempt and
+delivery-epoch fences.
 
 Managed Service V1 has no NATS subject, no Redis Pub/Sub runtime envelope and no
 `runtime:<user_id>` channel. Terminal customer lifecycle is not inferred from
 Kubernetes API ACK, pod RAM, OTel, Victoria, NATS or Centrifugo; it is settled only by
-the current durable outbox/object/operation result transaction.
+the current durable outbox/object/operation result transaction. A bounded JO reconciler
+resets only stale PENDING/PROCESSING markers; WAL/CDC remains the sole command
+redispatch path. The V1 Dataplane result carries no safe connection fields, so
+`observed_output` remains `{}` and no connection read route is exposed yet.
 
 ## 5. Admin catalog lifecycle
 
@@ -271,8 +277,10 @@ there is no generic configuration or runtime-metadata patch. Rename uses optimis
 `metadata_version` and never changes code, generation, revision heads or outbox. Customer
 cannot mutate protected labels/annotations. Instance detail returns the derived
 namespace, service names and stable pod selectors for customer-authored NetworkPolicy.
-All public mutation routes remain unregistered until the protected command path and P07
-settlement gate are complete.
+P07 registers customer create/rename/resize/delete/retry after the protected command
+path and direct settlement gate. Reads require `managed-service:instance:read`; mutation
+requires `managed-service:instance:write`, with personal/tenant scope still derived from
+trusted context and rechecked in the workflow-local CTE.
 
 ## 6. Customer create path
 
@@ -303,9 +311,11 @@ sequenceDiagram
     DP->>K: terminal result key instance_id
 ```
 
-Trong deployment hiện tại, sequence hoàn tất tại Kafka command ACK và outbox
-`PROCESSING`. Các bước DP HPKE-open, Kubernetes và result trong sơ đồ là target topology
-của P06/P07, không phải bằng chứng executor/result route đã được enable ở P05.
+Trong deployment hiện tại, sequence chạy qua DP HPKE-open, Kubernetes readiness/delete,
+Kafka terminal result producer và JO direct-settlement CTE. Outbox `PROCESSING` chỉ là
+dispatch acknowledgement; business completion chỉ xuất hiện sau transaction settle đã
+commit ở Controlplane. Nếu Redis notification lỗi sau khi transaction settle, JO không
+commit offset Managed Service để Kafka redelivery sửa projection timeline.
 
 The handler validates path/query/body/schema/type/range/size and canonicalizes the flat
 parameter map. It derives owner/workspace/Zone from verified context; client does not
@@ -417,12 +427,11 @@ log/trace local có redaction.
 
 ## 9. Dataplane execution contract
 
-Phần này là contract P06. Ở P05, DP chỉ xác nhận đúng cặp route/source và outer Zone
-fence rồi fail-close bằng retryable executor gate, không settle Kafka offset và không
-DLQ command hợp lệ; nó chưa HPKE-open Managed Service payload, render YAML, gọi
-Kubernetes hay phát result. Generic retry scheduler đã sẵn sàng và có fixture chứng
-minh chỉ đổi outer `attempt`/trace context, giữ nguyên ciphertext, `job_id`,
-`resource_id`, Zone và `delivery_epoch`.
+Phần này là contract P06. DP xác nhận đúng cặp route/source và outer Zone fence,
+HPKE-open toàn bộ payload, validate inner command, render YAML AST, gọi Kubernetes
+đúng Zone và phát terminal result. Generic retry scheduler chỉ đổi outer `attempt`/
+trace context, giữ nguyên ciphertext, `job_id`, `resource_id`, Zone và
+`delivery_epoch`. P07 đã mở JO result admission và direct durable settlement.
 
 DP validates outer public protection metadata and Zone/topic binding, HPKE-opens the complete
 payload, then validates inner Protobuf, command/result route, schema version, command event,
@@ -462,6 +471,11 @@ command event, all fences/hashes, outcome taxonomy, bounded sanitized message an
 SRE-declared-safe observed output. It must not include raw parameter, rendered YAML,
 Secret, token or provider payload.
 
+The current V1 command does not carry the safe-output schema to Dataplane, therefore
+P06 emits an empty `safe_observed_output`. Deterministic namespace, service names and
+protected selectors come from the Controlplane detail projection; Dataplane must not
+guess an undeclared output contract.
+
 JO result settlement is one Controlplane PostgreSQL CTE/transaction:
 
 ```text
@@ -485,15 +499,17 @@ becomes terminal.
 After durable Kafka ACK, JO updates the outbox and may emit one `PROCESSING` timeline
 event. After the same PostgreSQL transaction settles terminal state, JO emits
 `SUCCESS` or `FAILED`. All events use
-`notification_id = UUIDv5(operation_id)`, preserve original creation timestamp and
-update the same Scylla row with monotonic `status_version`; attempt/status never creates
-another customer timeline item. Notification/Redis stream failure is observable and
+`notification_id = command_event_id`, preserve original creation timestamp and
+update the same Scylla row with monotonic
+`status_version=delivery_epoch*2+rank`; attempt/status never creates another customer
+timeline item. Notification/Redis stream failure is observable and
 retried by that path but never rolls back business settlement.
 
-Reconciler is bounded, jittered and lease-fenced per Zone/instance. It can redispatch
-the exact current operation or recheck protected graph/readiness after restart/missing
-result/observed mismatch. It cannot create revision, promote/rollback desired state,
-resurrect hard-deleted aggregate or poll every resource continuously.
+Reconciler is bounded and deterministically jittered per JO replica. PostgreSQL
+`FOR UPDATE SKIP LOCKED` is the HA claim/fence: it resets only stale
+PENDING/PROCESSING markers, then existing WAL/CDC republishes the exact protected
+command. It cannot publish Kafka directly, create revision, promote/rollback desired
+state, resurrect hard-deleted aggregate or poll every resource continuously.
 
 ## 11. Error taxonomy and failure disposition
 
@@ -527,9 +543,9 @@ Hierarchy holds only public X25519 metadata; each fresh Dataplane replica report
 `key_id + public-key fingerprint`, and Controlplane admits a key only after the report's
 all-replica intersection is fresh. Instance revision/outbox pin exact ciphertext, key ID and
 digest; retirement rejects retained Storage/Mail/Hypervisor/Managed Service references after
-the decrypt-only drain window. Managed Service customer mutation remains feature-disabled until
-its P04 CTE writes those exact fields atomically, but no future path may reintroduce nested
-parameter encryption or plaintext persistence.
+the decrypt-only drain window. Managed Service customer mutation is enabled only because
+its P04 CTE writes those exact fields atomically and P07 now settles the full current
+fence; no future path may reintroduce nested parameter encryption or plaintext persistence.
 
 SRE decides through YAML whether a parameter becomes CRD/spec/ConfigMap/Kubernetes
 Secret or an operator-generated value. Platform does not classify input as `secret`,
@@ -569,6 +585,7 @@ registry against the cited platform God Views:
 | Notification | stable timeline identity and non-rollback delivery semantics |
 | Security/Zone | trusted identity, critical route, Zone binding, ACL/RBAC and observability scope |
 
-P00 review đã freeze contract này. P05 đã mở JO command route/dispatcher nhưng vẫn giữ
-customer mutation public, Dataplane Managed Service executor/Kubernetes path và result
-route dormant cho đến đúng phase gate P06/P07.
+P00 review đã freeze contract này. P05 mở JO command route/dispatcher; P06 mở Zone
+Dataplane executor/result producer; P07 mở customer mutation, direct settlement,
+timeline và bounded exact-command redispatch. Safe connection output và live fault
+suite vẫn là release gate chưa đóng.

@@ -5,6 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../contracts/proto/platform_transport.proto");
     println!("cargo:rerun-if-changed=../contracts/proto/managed_service.proto");
     println!("cargo:rerun-if-changed=../contracts/proto/zone_report.proto");
+    println!("cargo:rerun-if-changed=proto/job_event.proto");
     // [COMMENT]: Biên dịch toàn bộ proto files, gồm Billing resource ownership contract.
     prost_build::compile_protos(
         &[

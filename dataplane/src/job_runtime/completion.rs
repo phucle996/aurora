@@ -47,6 +47,7 @@ impl CompletionStatus {
 #[derive(Clone, Debug)]
 pub struct JobExecutionResult {
     pub job_id: String,
+    pub resource_id: String,
     pub job_version: u32,
     pub attempt: u32,
     pub status: CompletionStatus,
@@ -111,6 +112,19 @@ impl JobExecutionResult {
                 Vec::new(),
                 0,
             ),
+            Err(ExecutorError::DomainTerminal {
+                error_code,
+                message,
+                result_payload,
+                result_payload_schema_version,
+            }) => Self::new(
+                job,
+                CompletionStatus::Failed,
+                Some(error_code),
+                message,
+                result_payload,
+                result_payload_schema_version,
+            ),
         }
     }
 
@@ -129,6 +143,7 @@ impl JobExecutionResult {
     ) -> Self {
         Self {
             job_id: job.job_id.clone(),
+            resource_id: job.resource_id.clone(),
             job_version: job.job_version,
             attempt: job.attempt,
             status,
@@ -397,7 +412,13 @@ pub async fn publish_result(
         result_payload: result.result_payload.clone(),
         result_payload_schema_version: result.result_payload_schema_version,
     };
-    let key = proto.job_id.clone();
+    let key = if result.source_domain == "MANAGED_SERVICE" {
+        uuid::Uuid::parse_str(&result.resource_id)
+            .map(|value| value.as_bytes().to_vec())
+            .map_err(|error| format!("managed service result resource_id is not a UUID: {error}"))?
+    } else {
+        proto.job_id.clone()
+    };
     let publish_result = kafka
         .publish_message(&result_topic, &key, &proto)
         .with_context(producer_context.clone())

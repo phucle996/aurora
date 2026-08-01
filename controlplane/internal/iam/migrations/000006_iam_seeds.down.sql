@@ -71,7 +71,8 @@ WHERE (module, object, behavior) IN (
         ('hypervisor', 'image', 'publish'),
         ('hypervisor', 'image', 'delete'),
         ('managed-service', 'catalog', 'read'),
-        ('managed-service', 'instance', 'read')
+        ('managed-service', 'instance', 'read'),
+        ('managed-service', 'instance', 'write')
 );
 
 DELETE FROM user_profiles

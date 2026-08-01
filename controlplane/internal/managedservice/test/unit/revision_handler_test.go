@@ -44,7 +44,7 @@ func TestValidateDraftRejectsLiteralSecretBeforeService(t *testing.T) {
 		"expected_version":            1,
 		"template_yaml":               "apiVersion: v1\nkind: Secret\nmetadata:\n  name: !aurora/component primary\nstringData:\n  password: plaintext\n",
 		"contract_version":            "platform-form/v1",
-		"component_contract":          []any{map[string]any{"id": "primary", "apply_order": 10, "delete_order": 10, "readiness": map[string]any{"type": "exists"}}},
+		"component_contract":          []any{map[string]any{"id": "primary", "apply_order": 10, "delete_order": 10, "readiness": map[string]any{"type": "exists", "deadline_seconds": 300}}},
 		"input_schema":                map[string]any{"fields": []any{map[string]any{"key": "password", "value_type": "STRING", "cardinality": "ONE", "required": true, "mutable": true}}},
 		"ui_schema":                   map[string]any{"groups": []any{map[string]any{"key": "general", "order": 10, "label_i18n": map[string]any{"en": "General"}}}, "fields": []any{map[string]any{"key": "password", "group": "general", "order": 10, "widget": "TEXT", "label_i18n": map[string]any{"en": "Password"}}}},
 		"safe_observed_output_schema": map[string]any{}, "zone_selector": map[string]any{"mode": "all"},
@@ -80,7 +80,7 @@ func TestValidateDraftRejectsUnknownCustomerWidgetBeforeService(t *testing.T) {
 		"expected_version":            1,
 		"template_yaml":               "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: !aurora/component primary\nspec:\n  replicas: !aurora/param replicas\n",
 		"contract_version":            "platform-form/v1",
-		"component_contract":          []any{map[string]any{"id": "primary", "apply_order": 10, "delete_order": 10, "readiness": map[string]any{"type": "deployment_available"}}},
+		"component_contract":          []any{map[string]any{"id": "primary", "apply_order": 10, "delete_order": 10, "readiness": map[string]any{"type": "deployment_available", "deadline_seconds": 300}}},
 		"input_schema":                map[string]any{"fields": []any{map[string]any{"key": "replicas", "value_type": "INT64", "cardinality": "ONE", "required": true, "mutable": true, "min": 1, "max": 100}}},
 		"ui_schema":                   map[string]any{"groups": []any{map[string]any{"key": "capacity", "order": 10, "label_i18n": map[string]any{"en": "Capacity"}}}, "fields": []any{map[string]any{"key": "replicas", "group": "capacity", "order": 10, "widget": "SLIDER", "label_i18n": map[string]any{"en": "Replicas"}}}},
 		"safe_observed_output_schema": map[string]any{}, "zone_selector": map[string]any{"mode": "all"},
@@ -119,11 +119,11 @@ func TestValidateDraftSealsCurrentHashes(t *testing.T) {
 	router.POST("/admin/critical/managed-services/catalog/drafts/:draft_id/validate", h.ValidateDraft)
 	body := map[string]any{
 		"expected_version":            1,
-		"template_yaml":               "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: !aurora/component primary\nspec:\n  replicas: !aurora/param replicas\n",
+		"template_yaml":               "apiVersion: v1\nkind: Secret\nmetadata:\n  name: !aurora/component primary\nstringData:\n  password: !aurora/param password\n",
 		"contract_version":            "platform-form/v1",
-		"component_contract":          []any{map[string]any{"id": "primary", "apply_order": 10, "delete_order": 10, "readiness": map[string]any{"type": "deployment_available"}}},
-		"input_schema":                map[string]any{"fields": []any{map[string]any{"key": "replicas", "value_type": "INT64", "cardinality": "ONE", "required": true, "mutable": true, "min": 1, "max": 100}}},
-		"ui_schema":                   map[string]any{"groups": []any{map[string]any{"key": "capacity", "order": 10, "label_i18n": map[string]any{"en": "Capacity"}}}, "fields": []any{map[string]any{"key": "replicas", "group": "capacity", "order": 10, "widget": "NUMBER", "label_i18n": map[string]any{"en": "Replicas"}}}},
+		"component_contract":          []any{map[string]any{"id": "primary", "apply_order": 10, "delete_order": 10, "readiness": map[string]any{"type": "exists", "deadline_seconds": 300}}},
+		"input_schema":                map[string]any{"fields": []any{map[string]any{"key": "password", "value_type": "STRING", "cardinality": "ONE", "required": true, "mutable": true}}},
+		"ui_schema":                   map[string]any{"groups": []any{map[string]any{"key": "general", "order": 10, "label_i18n": map[string]any{"en": "General"}}}, "fields": []any{map[string]any{"key": "password", "group": "general", "order": 10, "widget": "TEXT", "label_i18n": map[string]any{"en": "Password"}}}},
 		"safe_observed_output_schema": map[string]any{}, "zone_selector": map[string]any{"mode": "all"},
 		"capability_requirement": map[string]any{"all_of": []any{"managed_service"}},
 	}

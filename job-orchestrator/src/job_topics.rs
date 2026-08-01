@@ -1,6 +1,5 @@
-/// Authoritative command allow-list used by the PostgreSQL changefeed. Managed
-/// Service command dispatch is enabled in P05 while its result route remains
-/// closed until the P07 settlement transaction exists.
+/// Authoritative command/result allow-list. Managed Service result admission
+/// still verifies the authoritative outbox fence before any lifecycle update.
 pub fn is_command_registered(source_domain: &str, job_topic: &str) -> bool {
     match source_domain {
         "MAIL" => matches!(
@@ -53,7 +52,7 @@ pub fn is_result_registered(source_domain: &str, job_topic: &str) -> bool {
             job_topic,
             "hypervisor.vm.create" | "hypervisor.image.import" | "hypervisor.image.delete"
         ),
-        "MANAGED_SERVICE" => false,
+        "MANAGED_SERVICE" => job_topic == "managed_service.instance.execute",
         _ => false,
     }
 }
@@ -86,8 +85,8 @@ mod tests {
     }
 
     #[test]
-    fn managed_service_result_remains_closed_until_p07() {
-        assert!(!is_result_registered(
+    fn managed_service_result_route_is_explicit() {
+        assert!(is_result_registered(
             "MANAGED_SERVICE",
             "managed_service.instance.execute"
         ));

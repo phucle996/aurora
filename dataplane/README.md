@@ -162,6 +162,11 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 - `src/executor/mail/runtime/`: customer broker suites.
 - `src/executor/mail/processor/`: render/JMAP/batching.
 - `src/executor/mail/supervisor/`: pod-local runtime reporting; không probe hạ tầng.
+- `src/executor/managed_service/`: Zone-local managed-service admission, typed YAML
+  AST renderer, deterministic namespace/ownership checks, Kubernetes SSA/readiness/
+  delete executor và versioned terminal result producer. Client chỉ dùng mounted
+  Kubernetes service-account token/CA; không đọc Controlplane DB, Shared Redis,
+  Vault hoặc Zone KV.
 
 ## 7. Structured log controls
 

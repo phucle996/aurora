@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +88,82 @@ func (h *RevisionHandler) CreateDraft(c *gin.Context) {
 		json.Unmarshal(request.CapabilityRequirement, &capability) != nil || capability == nil {
 		apires.RespondBadRequest(c, "draft contracts must use the expected JSON shapes")
 		return
+	}
+	componentIDs := make(map[string]struct{}, len(componentContract))
+	applyOrders := make(map[int64]struct{}, len(componentContract))
+	deleteOrders := make(map[int64]struct{}, len(componentContract))
+	componentPattern := regexp.MustCompile(`^[a-z][a-z0-9-]{0,26}$`)
+	if len(componentContract) == 0 || len(componentContract) > 128 {
+		apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+		return
+	}
+	for _, component := range componentContract {
+		if len(component) < 4 || len(component) > 5 {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		id, idOK := component["id"].(string)
+		applyOrder, applyOK := component["apply_order"].(float64)
+		deleteOrder, deleteOK := component["delete_order"].(float64)
+		readiness, readinessOK := component["readiness"].(map[string]any)
+		readinessType, typeOK := readiness["type"].(string)
+		deadline, deadlineOK := readiness["deadline_seconds"].(float64)
+		id = strings.TrimSpace(id)
+		readinessValid := readinessType == "exists" || readinessType == "deployment_available" ||
+			readinessType == "statefulset_ready" || readinessType == "daemonset_ready" || readinessType == "job_complete"
+		if !idOK || !componentPattern.MatchString(id) || !applyOK || !deleteOK ||
+			applyOrder < 1 || applyOrder > 4294967295 || applyOrder != math.Trunc(applyOrder) ||
+			deleteOrder < 1 || deleteOrder > 4294967295 || deleteOrder != math.Trunc(deleteOrder) ||
+			!readinessOK || len(readiness) != 2 || !typeOK || !readinessValid ||
+			!deadlineOK || deadline != math.Trunc(deadline) || deadline < 1 || deadline > 3600 {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		if rawIndexes, exists := component["document_indexes"]; exists {
+			indexes, indexesOK := rawIndexes.([]any)
+			if !indexesOK || len(indexes) > 128 {
+				apires.RespondBadRequest(c, "component contract has an invalid document set")
+				return
+			}
+			normalized := make([]uint32, 0, len(indexes))
+			seenIndexes := make(map[uint32]struct{}, len(indexes))
+			for _, rawIndex := range indexes {
+				index, indexOK := rawIndex.(float64)
+				if !indexOK || index != math.Trunc(index) || index < 0 || index >= 128 {
+					apires.RespondBadRequest(c, "component contract has an invalid document set")
+					return
+				}
+				value := uint32(index)
+				if _, duplicate := seenIndexes[value]; duplicate {
+					apires.RespondBadRequest(c, "component contract has an invalid document set")
+					return
+				}
+				seenIndexes[value] = struct{}{}
+				normalized = append(normalized, value)
+			}
+			if len(normalized) == 0 {
+				delete(component, "document_indexes")
+			} else {
+				sort.Slice(normalized, func(left, right int) bool { return normalized[left] < normalized[right] })
+				component["document_indexes"] = normalized
+			}
+		}
+		component["id"] = id
+		if _, exists := componentIDs[id]; exists {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		if _, exists := applyOrders[int64(applyOrder)]; exists {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		if _, exists := deleteOrders[int64(deleteOrder)]; exists {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		componentIDs[id] = struct{}{}
+		applyOrders[int64(applyOrder)] = struct{}{}
+		deleteOrders[int64(deleteOrder)] = struct{}{}
 	}
 	componentJSON, componentErr := json.Marshal(componentContract)
 	inputJSON, inputErr := json.Marshal(inputSchema)
@@ -320,6 +397,82 @@ func (h *RevisionHandler) PatchDraft(c *gin.Context) {
 		apires.RespondBadRequest(c, "draft contracts must use the expected JSON shapes")
 		return
 	}
+	componentIDs := make(map[string]struct{}, len(componentContract))
+	applyOrders := make(map[int64]struct{}, len(componentContract))
+	deleteOrders := make(map[int64]struct{}, len(componentContract))
+	componentPattern := regexp.MustCompile(`^[a-z][a-z0-9-]{0,26}$`)
+	if len(componentContract) == 0 || len(componentContract) > 128 {
+		apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+		return
+	}
+	for _, component := range componentContract {
+		if len(component) < 4 || len(component) > 5 {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		id, idOK := component["id"].(string)
+		applyOrder, applyOK := component["apply_order"].(float64)
+		deleteOrder, deleteOK := component["delete_order"].(float64)
+		readiness, readinessOK := component["readiness"].(map[string]any)
+		readinessType, typeOK := readiness["type"].(string)
+		deadline, deadlineOK := readiness["deadline_seconds"].(float64)
+		id = strings.TrimSpace(id)
+		readinessValid := readinessType == "exists" || readinessType == "deployment_available" ||
+			readinessType == "statefulset_ready" || readinessType == "daemonset_ready" || readinessType == "job_complete"
+		if !idOK || !componentPattern.MatchString(id) || !applyOK || !deleteOK ||
+			applyOrder < 1 || applyOrder > 4294967295 || applyOrder != math.Trunc(applyOrder) ||
+			deleteOrder < 1 || deleteOrder > 4294967295 || deleteOrder != math.Trunc(deleteOrder) ||
+			!readinessOK || len(readiness) != 2 || !typeOK || !readinessValid ||
+			!deadlineOK || deadline != math.Trunc(deadline) || deadline < 1 || deadline > 3600 {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		if rawIndexes, exists := component["document_indexes"]; exists {
+			indexes, indexesOK := rawIndexes.([]any)
+			if !indexesOK || len(indexes) > 128 {
+				apires.RespondBadRequest(c, "component contract has an invalid document set")
+				return
+			}
+			normalized := make([]uint32, 0, len(indexes))
+			seenIndexes := make(map[uint32]struct{}, len(indexes))
+			for _, rawIndex := range indexes {
+				index, indexOK := rawIndex.(float64)
+				if !indexOK || index != math.Trunc(index) || index < 0 || index >= 128 {
+					apires.RespondBadRequest(c, "component contract has an invalid document set")
+					return
+				}
+				value := uint32(index)
+				if _, duplicate := seenIndexes[value]; duplicate {
+					apires.RespondBadRequest(c, "component contract has an invalid document set")
+					return
+				}
+				seenIndexes[value] = struct{}{}
+				normalized = append(normalized, value)
+			}
+			if len(normalized) == 0 {
+				delete(component, "document_indexes")
+			} else {
+				sort.Slice(normalized, func(left, right int) bool { return normalized[left] < normalized[right] })
+				component["document_indexes"] = normalized
+			}
+		}
+		component["id"] = id
+		if _, exists := componentIDs[id]; exists {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		if _, exists := applyOrders[int64(applyOrder)]; exists {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		if _, exists := deleteOrders[int64(deleteOrder)]; exists {
+			apires.RespondBadRequest(c, "component contract has an invalid readiness or ordering shape")
+			return
+		}
+		componentIDs[id] = struct{}{}
+		applyOrders[int64(applyOrder)] = struct{}{}
+		deleteOrders[int64(deleteOrder)] = struct{}{}
+	}
 	componentJSON, componentErr := json.Marshal(componentContract)
 	inputJSON, inputErr := json.Marshal(inputSchema)
 	uiJSON, uiErr := json.Marshal(uiSchema)
@@ -458,7 +611,6 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 		apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "draft contracts use invalid JSON shapes")
 		return
 	}
-
 	componentJSON, componentErr := json.Marshal(componentContract)
 	inputJSON, inputErr := json.Marshal(inputSchema)
 	uiJSON, uiErr := json.Marshal(uiSchema)
@@ -789,7 +941,7 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 	// publish safety but deliberately does not enumerate !aurora/param keys or
 	// bind them to input_schema; that relationship remains SRE-owned contract.
 	yamlDecoder := yaml.NewDecoder(strings.NewReader(request.TemplateYAML))
-	documentComponents := make(map[string]struct{})
+	documentComponents := make(map[string][]uint32)
 	documentCount := 0
 	componentPattern := regexp.MustCompile(`^[a-z][a-z0-9-]{0,26}$`)
 	for {
@@ -836,11 +988,26 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "apiVersion, kind and metadata must be static")
 			return
 		}
-		// [COMMENT]: Cấm hardcode giá trị trong Secret để tránh lộ credential trong catalog.
-		if kindNode.Value == "Secret" && ((dataNode != nil && dataNode.Kind == yaml.MappingNode && len(dataNode.Content) > 0) ||
-			(stringDataNode != nil && stringDataNode.Kind == yaml.MappingNode && len(stringDataNode.Content) > 0)) {
-			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "literal Kubernetes Secret values are forbidden")
-			return
+		// [COMMENT]: Secret được phép nhận typed customer value, nhưng mọi
+		// value phải là !aurora/param trực tiếp. Literal/nested value sẽ làm
+		// catalog trở thành nơi lưu secret plaintext nên bị chặn tại ingress.
+		if kindNode.Value == "Secret" {
+			for _, secretNode := range []*yaml.Node{dataNode, stringDataNode} {
+				if secretNode == nil {
+					continue
+				}
+				if secretNode.Kind != yaml.MappingNode {
+					apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "Secret data must be a parameter mapping")
+					return
+				}
+				for index := 1; index < len(secretNode.Content); index += 2 {
+					value := secretNode.Content[index]
+					if value.Kind != yaml.ScalarNode || value.Tag != "!aurora/param" || strings.TrimSpace(value.Value) == "" {
+						apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "literal Kubernetes Secret values are forbidden")
+						return
+					}
+				}
+			}
 		}
 
 		var componentName string
@@ -883,6 +1050,7 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "every YAML document must declare a component name")
 			return
 		}
+		componentTagCount := 0
 		allNodes := []*yaml.Node{root}
 		for len(allNodes) > 0 {
 			last := len(allNodes) - 1
@@ -905,6 +1073,7 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 						apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "invalid !aurora/component tag")
 						return
 					}
+					componentTagCount++
 				default:
 					apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "unsupported YAML tag")
 					return
@@ -912,7 +1081,11 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 			}
 			allNodes = append(allNodes, node.Content...)
 		}
-		documentComponents[componentName] = struct{}{}
+		if componentTagCount != 1 {
+			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "each document must contain exactly one !aurora/component tag")
+			return
+		}
+		documentComponents[componentName] = append(documentComponents[componentName], uint32(documentCount-1))
 	}
 	if documentCount == 0 {
 		apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "template must contain at least one YAML document")
@@ -928,17 +1101,69 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 		return
 	}
 	for _, component := range componentContract {
+		if len(component) < 4 || len(component) > 5 {
+			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component contract has an invalid readiness or ordering shape")
+			return
+		}
 		id, idOK := component["id"].(string)
 		applyOrder, applyOK := component["apply_order"].(float64)
 		deleteOrder, deleteOK := component["delete_order"].(float64)
 		readiness, readinessOK := component["readiness"].(map[string]any)
+		readinessType, readinessTypeOK := readiness["type"].(string)
+		readinessDeadline, readinessDeadlineOK := readiness["deadline_seconds"].(float64)
 		id = strings.TrimSpace(id)
+		readinessValid := readinessType == "exists" || readinessType == "deployment_available" ||
+			readinessType == "statefulset_ready" || readinessType == "daemonset_ready" || readinessType == "job_complete"
 		if !idOK || !componentPattern.MatchString(id) || !applyOK || !deleteOK ||
-			applyOrder < 1 || deleteOrder < 1 || applyOrder != math.Trunc(applyOrder) || deleteOrder != math.Trunc(deleteOrder) ||
-			!readinessOK || len(readiness) == 0 {
+			applyOrder < 1 || applyOrder > 4294967295 || deleteOrder < 1 || deleteOrder > 4294967295 ||
+			applyOrder != math.Trunc(applyOrder) || deleteOrder != math.Trunc(deleteOrder) ||
+			!readinessOK || len(readiness) != 2 || !readinessTypeOK ||
+			!readinessDeadlineOK || readinessDeadline != math.Trunc(readinessDeadline) || readinessDeadline < 1 || readinessDeadline > 3600 ||
+			!readinessValid {
 			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component id, order and readiness are required")
 			return
 		}
+		if rawIndexes, exists := component["document_indexes"]; exists {
+			indexes, indexesOK := rawIndexes.([]any)
+			if !indexesOK || len(indexes) > 128 {
+				apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component contract has an invalid document set")
+				return
+			}
+			normalized := make([]uint32, 0, len(indexes))
+			seenIndexes := make(map[uint32]struct{}, len(indexes))
+			for _, rawIndex := range indexes {
+				index, indexOK := rawIndex.(float64)
+				if !indexOK || index != math.Trunc(index) || index < 0 || index >= 128 {
+					apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component contract has an invalid document set")
+					return
+				}
+				value := uint32(index)
+				if _, duplicate := seenIndexes[value]; duplicate {
+					apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component contract has an invalid document set")
+					return
+				}
+				seenIndexes[value] = struct{}{}
+				normalized = append(normalized, value)
+			}
+			if len(normalized) == 0 {
+				delete(component, "document_indexes")
+			} else {
+				sort.Slice(normalized, func(left, right int) bool { return normalized[left] < normalized[right] })
+				component["document_indexes"] = normalized
+				actualIndexes, componentExists := documentComponents[id]
+				if !componentExists || len(actualIndexes) != len(normalized) {
+					apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component document set does not match the YAML bundle")
+					return
+				}
+				for index := range normalized {
+					if normalized[index] != actualIndexes[index] {
+						apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component document set does not match the YAML bundle")
+						return
+					}
+				}
+			}
+		}
+		component["id"] = id
 		if _, exists := contractComponents[id]; exists {
 			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component ids must be unique")
 			return
@@ -967,6 +1192,11 @@ func (h *RevisionHandler) ValidateDraft(c *gin.Context) {
 			apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component contract has no YAML document")
 			return
 		}
+	}
+	componentJSON, componentErr = json.Marshal(componentContract)
+	if componentErr != nil || len(componentJSON) > 256*1024 {
+		apires.RespondUnprocessableEntity(c, "SRE_CATALOG_VALIDATION_FAILED", "component contract cannot be canonicalized")
+		return
 	}
 
 	templateHash := sha256.Sum256([]byte(request.TemplateYAML))

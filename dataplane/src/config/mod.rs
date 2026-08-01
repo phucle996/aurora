@@ -23,6 +23,15 @@ pub struct Config {
     /// to Zone KV, Kafka, logs or runtime snapshots.
     pub job_payload_private_keys_file: PathBuf,
 
+    /// Zone-local Kubernetes API identity. These values are deployment
+    /// configuration only; customer parameters never influence the endpoint,
+    /// token path or trust roots.
+    pub kubernetes_api_url: String,
+    pub kubernetes_token_path: String,
+    pub kubernetes_ca_cert_path: String,
+    pub kubernetes_poll_interval_ms: u64,
+    pub kubernetes_readiness_cap_seconds: u64,
+
     /// [COMMENT]: NATS Core là soft-state Central↔Zone transport cho watch/runtime realtime.
     /// Đây là endpoint độc lập với Zone-local JetStream KV.
     pub nats_core_url: String,
@@ -198,6 +207,21 @@ impl Config {
             job_payload_private_keys_file: PathBuf::from(required_env(
                 "JOB_PAYLOAD_PRIVATE_KEYS_FILE",
             )?),
+            kubernetes_api_url: env::var("KUBERNETES_API_URL")
+                .unwrap_or_else(|_| "https://kubernetes.default.svc".to_owned()),
+            kubernetes_token_path: env::var("KUBERNETES_TOKEN_PATH").unwrap_or_else(|_| {
+                "/var/run/secrets/kubernetes.io/serviceaccount/token".to_owned()
+            }),
+            kubernetes_ca_cert_path: env::var("KUBERNETES_CA_CERT_PATH").unwrap_or_else(|_| {
+                "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt".to_owned()
+            }),
+            kubernetes_poll_interval_ms: parse_env("KUBERNETES_POLL_INTERVAL_MS", 1_000_u64)
+                .clamp(100, 30_000),
+            kubernetes_readiness_cap_seconds: parse_env(
+                "KUBERNETES_READINESS_CAP_SECONDS",
+                3_600_u64,
+            )
+            .clamp(1, 3_600),
             nats_core_url: required_env("NATS_URL")?,
             nats_core_ca_cert: env::var("NATS_CA_CERT").ok(),
             nats_core_client_cert: env::var("NATS_CLIENT_CERT").ok(),
