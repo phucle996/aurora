@@ -94,6 +94,7 @@ pools and then revoking the old credential.
 |---|---|
 | Central business PostgreSQL | `secret/data/connections/postgres/pg-central/role-business-rw` |
 | Central CDC PostgreSQL | `secret/data/connections/postgres/pg-central/role-cdc-read` |
+| Central Managed Service outbox fence | `secret/data/connections/postgres/pg-central/role-job-dispatch-rw` |
 | Billing PostgreSQL API | `secret/data/connections/postgres/pg-billing/role-ledger-rw` |
 | Billing PostgreSQL Engine | `secret/data/connections/postgres/pg-billing/role-engine-read` |
 | Shared L2 request/reply | `secret/data/connections/redis/shared-l2/role-request-reply-rw` |
@@ -140,8 +141,9 @@ notification-service-connections-read
 Each policy grants `read` only on the exact capability records required by that
 workload. Transit/TOTP operation paths are separately granted to the workloads
 that need them. Runtime identities cannot write, delete or list unrelated
-records. The JO policy includes only its Central PostgreSQL CDC, Shared Redis
-runtime bridge, Central Kafka and Central NATS Core records; the Notification
+records. The JO policy includes only its Central PostgreSQL CDC, the narrow
+Managed Service outbox-fence capability, Shared Redis runtime bridge, Central
+Kafka and Central NATS Core records; the Notification
 policy includes only its Shared Redis consume and Central Scylla records.
 Production uses Kubernetes auth; local Compose may use one externally issued
 token per app or AppRole credentials.

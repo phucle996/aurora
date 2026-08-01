@@ -72,15 +72,32 @@ impl ChangefeedWorker {
             .iter()
             .any(|source| source == "managed_service.managed_service_outbox_records")
         {
+            if config.postgres.dispatch_database_url.trim().is_empty() {
+                return Err(
+                    "managed service CDC source requires a Vault-resolved dispatch PostgreSQL URL"
+                        .into(),
+                );
+            }
+            let mut dispatch_config = config.postgres.clone();
+            dispatch_config.database_url = config.postgres.dispatch_database_url.clone();
             // This session owns only the post-ACK outbox transition. It must not
             // be reused by the result worker, which owns terminal settlement.
-            Some(Arc::new(
-                crate::infra::postgres::connect(
-                    &config.postgres,
-                    "changefeed.managed_service_outbox_writer",
-                )
-                .await?,
-            ))
+            let writer = crate::infra::postgres::connect(
+                &dispatch_config,
+                "changefeed.managed_service_outbox_writer",
+            )
+            .await?;
+            let transaction_read_only: String = writer
+                .query_one("SHOW transaction_read_only", &[])
+                .await?
+                .get(0);
+            if transaction_read_only.eq_ignore_ascii_case("on") {
+                return Err(
+                    "managed service outbox writer is attached to a read-only PostgreSQL role"
+                        .into(),
+                );
+            }
+            Some(Arc::new(writer))
         } else {
             None
         };
@@ -142,6 +159,34 @@ impl ChangefeedWorker {
 
     /// Kết nối và chạy stream logical replication cho một phiên kết nối cụ thể.
     async fn run_replication_stream(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Session-scoped advisory lease. Only the holder consumes the logical
+        // replication slot; a crashed pod releases it when PostgreSQL closes
+        // this connection, and a retry creates a fresh lease session after a
+        // transient network failure.
+        let leadership_client = crate::infra::postgres::connect(
+            &self.config.postgres,
+            "changefeed.leadership_postgres",
+        )
+        .await?;
+        let leader = leadership_client
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+                &[&self.config.workflows.changefeed.slot_name],
+            )
+            .await?
+            .get::<_, bool>(0);
+        if !leader {
+            // Standbys must not open competing replication sessions. Returning
+            // after a bounded wait lets the outer reconnect loop re-check the
+            // lease while keeping failover latency below the retry budget.
+            Logger::sys_info(
+                "changefeed.leader",
+                "Another Job Orchestrator replica owns the logical replication lease",
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            return Ok(());
+        }
+
         let (pg_host, pg_port, pg_user, pg_password, pg_db) =
             parse_pg_config(&self.config.postgres.database_url)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -388,7 +433,7 @@ impl ChangefeedWorker {
                 "monitored outbox row is missing event_id/zone route/job_topic".to_string(),
             )));
         }
-        if !crate::job_topics::is_registered(&source_domain, &job_topic) {
+        if !crate::job_topics::is_command_registered(&source_domain, &job_topic) {
             return Err(Box::new(PermanentChangeError(
                 "outbox source_domain and job_topic route is not registered".to_string(),
             )));
@@ -422,6 +467,7 @@ impl ChangefeedWorker {
         let delivery_epoch_str_clone = delivery_epoch_str.clone();
         let idle_str_clone = idle_str.clone();
         let source_domain_clone = source_domain.clone();
+        let metadata_client = self.metadata_client.clone();
         let producer_context = OtelTracer::start_span_with_parent(
             format!("send {}", job_topic_clone),
             opentelemetry::trace::SpanKind::Producer,
@@ -439,7 +485,96 @@ impl ChangefeedWorker {
         let propagation = OtelTracer::inject_context(&producer_context);
 
         use opentelemetry::trace::FutureExt;
-        let publish_result: Result<(), Box<dyn std::error::Error>> = async move {
+        let publish_result: Result<bool, Box<dyn std::error::Error>> = async move {
+            let event_uuid = uuid::Uuid::parse_str(&event_id_clone).map_err(|error| {
+                PermanentChangeError(format!("invalid outbox event_id: {error}"))
+            })?;
+            let target_zone_id = canonical_zone_route(&zone_id_clone).map_err(PermanentChangeError)?;
+            let target_zone_uuid = uuid::Uuid::parse_str(&target_zone_id).map_err(|error| {
+                PermanentChangeError(format!("invalid target Zone UUID: {error}"))
+            })?;
+            let job_version = job_version_str_clone
+                .parse::<u32>()
+                .map_err(|_| PermanentChangeError("invalid job_version".to_string()))?;
+            if job_version == 0 {
+                return Err(PermanentChangeError("job_version must be positive".to_string()).into());
+            }
+            let delivery_epoch = delivery_epoch_str_clone
+                .parse::<u64>()
+                .map_err(|_| PermanentChangeError("invalid delivery_epoch".to_string()))?;
+            if delivery_epoch > i64::MAX as u64 {
+                return Err(PermanentChangeError(
+                    "delivery_epoch exceeds the durable platform range".to_string(),
+                )
+                .into());
+            }
+
+            if source_domain_clone == "MANAGED_SERVICE" {
+                // The WAL row is only a notification. Re-read the authoritative
+                // row immediately before publication so a stale retry UPDATE
+                // cannot enqueue an old protected command after a newer epoch
+                // or terminal result has already won the database race.
+                let row = metadata_client
+                    .query_opt(
+                        "SELECT zone_id, job_topic, job_version, delivery_epoch, status
+                         FROM managed_service.managed_service_outbox_records
+                         WHERE event_id = $1",
+                        &[&event_uuid],
+                    )
+                    .await?;
+                let Some(row) = row else {
+                    return Err(PermanentChangeError(
+                        "managed service outbox row disappeared before publication".to_string(),
+                    )
+                    .into());
+                };
+                let current_zone_id: uuid::Uuid = row.get(0);
+                let current_job_topic: String = row.get(1);
+                let current_job_version: i32 = row.get(2);
+                let current_delivery_epoch: i64 = row.get(3);
+                let current_status: String = row.get(4);
+                let current_epoch_is_newer = current_delivery_epoch
+                    > i64::try_from(delivery_epoch).unwrap_or(i64::MAX);
+                if current_epoch_is_newer
+                    || (current_delivery_epoch == i64::try_from(delivery_epoch).unwrap_or(i64::MAX)
+                        && matches!(current_status.as_str(), "SUCCEEDED" | "FAILED"))
+                {
+                    Logger::job_log_with_fields(
+                        &event_id_clone,
+                        &job_topic_clone,
+                        0,
+                        "changefeed.stale_wal",
+                        "MANAGED_SERVICE_OUTBOX_STALE",
+                        "Skipped stale managed-service WAL after authoritative fence check",
+                        LogFields {
+                            event_id: Some(&event_id_clone),
+                            source_domain: Some("MANAGED_SERVICE"),
+                            job_version: Some(u64::from(job_version)),
+                            outcome: Some("stale"),
+                            ..LogFields::default()
+                        },
+                    );
+                    crate::observability::metrics::MetricsManager::record_managed_service_outbox_stale();
+                    return Ok(false);
+                }
+                if current_zone_id != target_zone_uuid
+                    || current_job_topic != job_topic_clone
+                    || current_job_version != i32::try_from(job_version).unwrap_or(i32::MAX)
+                    || current_delivery_epoch != i64::try_from(delivery_epoch).unwrap_or(i64::MAX)
+                {
+                    return Err(PermanentChangeError(
+                        "managed service outbox authoritative fence does not match WAL".to_string(),
+                    )
+                    .into());
+                }
+                if !matches!(current_status.as_str(), "PENDING" | "PROCESSING") {
+                    return Err(PermanentChangeError(
+                        "managed service outbox has an invalid pre-publication status".to_string(),
+                    )
+                    .into());
+                }
+            }
+
             let payload_bytes = decode_pg_bytea(&payload_hex_clone).map_err(|error| {
                 PermanentChangeError(format!("invalid outbox bytea payload: {error}"))
             })?;
@@ -450,29 +585,12 @@ impl ChangefeedWorker {
                 .into());
             }
 
-            let job_version = job_version_str_clone
-                .parse::<u32>()
-                .map_err(|_| PermanentChangeError("invalid job_version".to_string()))?;
-            if job_version == 0 {
-                return Err(
-                    PermanentChangeError("job_version must be positive".to_string()).into(),
-                );
-            }
             let payload_schema_version = payload_schema_version_str_clone
                 .parse::<u32>()
                 .map_err(|_| PermanentChangeError("invalid payload_schema_version".to_string()))?;
             if payload_schema_version == 0 {
                 return Err(PermanentChangeError(
                     "payload_schema_version must be positive".to_string(),
-                )
-                .into());
-            }
-            let delivery_epoch = delivery_epoch_str_clone
-                .parse::<u64>()
-                .map_err(|_| PermanentChangeError("invalid delivery_epoch".to_string()))?;
-            if delivery_epoch > i64::MAX as u64 {
-                return Err(PermanentChangeError(
-                    "delivery_epoch exceeds the durable platform range".to_string(),
                 )
                 .into());
             }
@@ -489,11 +607,6 @@ impl ChangefeedWorker {
             // [COMMENT]: Durable runtime commands luôn thuộc đúng một Zone.
             // Platform/global routing không được fallback thành shared topic vì một consumer
             // bất kỳ có thể nhận side effect vốn thuộc Zone khác.
-            let target_zone_id =
-                canonical_zone_route(&zone_id_clone).map_err(PermanentChangeError)?;
-            let target_zone_uuid = uuid::Uuid::parse_str(&target_zone_id).map_err(|error| {
-                PermanentChangeError(format!("invalid target Zone UUID: {error}"))
-            })?;
             let expected_key_id = uuid::Uuid::parse_str(&payload_key_id).map_err(|error| {
                 PermanentChangeError(format!("invalid outbox payload_key_id: {error}"))
             })?;
@@ -503,16 +616,32 @@ impl ChangefeedWorker {
             if protected.schema_version != 1
                 || protected.encoding
                     != PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32
-                || protected.recipient_zone_id.as_slice() != target_zone_uuid.as_bytes()
-                || protected.key_id.as_slice() != expected_key_id.as_bytes()
                 || protected.encapsulated_key.len() != 32
                 || protected.plaintext_size == 0
                 || protected.plaintext_size > 1_000_000
-                || protected.ciphertext.len() != protected.plaintext_size as usize + 16
             {
                 return Err(PermanentChangeError(
-                    "outbox protected payload metadata does not match its durable route"
+                    "outbox protected payload contract is invalid"
                         .to_string(),
+                )
+                .into());
+            }
+            if protected.recipient_zone_id.as_slice() != target_zone_uuid.as_bytes() {
+                return Err(PermanentChangeError(
+                    "outbox protected payload target Zone does not match its durable route"
+                        .to_string(),
+                )
+                .into());
+            }
+            if protected.key_id.as_slice() != expected_key_id.as_bytes() {
+                return Err(PermanentChangeError(
+                    "outbox protected payload_key_id does not match protected payload".to_string(),
+                )
+                .into());
+            }
+            if protected.ciphertext.len() != protected.plaintext_size as usize + 16 {
+                return Err(PermanentChangeError(
+                    "outbox protected payload ciphertext length is invalid".to_string(),
                 )
                 .into());
             }
@@ -524,9 +653,6 @@ impl ChangefeedWorker {
                 );
             }
 
-            let event_uuid = uuid::Uuid::parse_str(&event_id_clone).map_err(|error| {
-                PermanentChangeError(format!("invalid outbox event_id: {error}"))
-            })?;
             let command = JobCommandV1 {
                 job_id: event_uuid.as_bytes().to_vec(),
                 job_version,
@@ -573,13 +699,12 @@ impl ChangefeedWorker {
                         },
                     );
                     crate::observability::metrics::MetricsManager::inc_kafka_commands_published();
+                    Ok(true)
                 }
                 Err(error) => {
-                    return Err(std::io::Error::other(error).into());
+                    Err(std::io::Error::other(error).into())
                 }
             }
-
-            Ok(())
         }
         .with_context(producer_context.clone())
         .await;
@@ -590,7 +715,10 @@ impl ChangefeedWorker {
                 .err()
                 .map(|_| "KAFKA_COMMAND_PUBLISH_FAILED"),
         );
-        publish_result?;
+        let published = publish_result?;
+        if !published {
+            return Ok(());
+        }
 
         if source_domain == "MANAGED_SERVICE" {
             let writer = self.managed_service_outbox_writer.as_ref().ok_or_else(|| {
@@ -641,7 +769,8 @@ impl ChangefeedWorker {
                    AND job_topic = $3
                    AND job_version = $4
                    AND delivery_epoch = $5
-                 RETURNING status",
+                   AND status IN ('PENDING', 'PROCESSING')
+                   RETURNING status",
                 &[
                     &event_id,
                     &zone_id,
@@ -689,12 +818,13 @@ impl ChangefeedWorker {
         let payload_hash = format!("{:x}", Sha256::digest(data));
         let identity = format!("{}:{tag}:{payload_hash}", wal_end.0);
         let event_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, identity.as_bytes());
+        let error_code = changefeed_error_code(error);
         let record = DeadLetterRecordV1 {
             event_id: event_id.as_bytes().to_vec(),
             source_topic: "postgres.logical_changefeed".to_string(),
             source_partition: 0,
             source_offset: i64::try_from(wal_end.0).unwrap_or(i64::MAX),
-            error_code: "CHANGEFEED_RECORD_INVALID".to_string(),
+            error_code: error_code.to_string(),
             error_message: format!(
                 "lsn={} tag={} payload_len={} sha256={} error={}",
                 wal_end,
@@ -722,7 +852,7 @@ impl ChangefeedWorker {
         let event_id_text = event_id.to_string();
         Logger::sys_warn_with_fields(
             "changefeed.quarantine",
-            "CHANGEFEED_RECORD_INVALID",
+            error_code,
             "Permanent WAL error was durably quarantined before LSN advance",
             "",
             LogFields {
@@ -849,9 +979,22 @@ fn bounded_utf8(value: &str, max_bytes: usize) -> String {
     value[..end].to_string()
 }
 
+fn changefeed_error_code(error: &str) -> &'static str {
+    if error.contains("target Zone")
+        || error.contains("target Zone UUID")
+        || error.contains("requires a valid zone UUID")
+    {
+        "COMMAND_ZONE_MISMATCH"
+    } else if error.contains("protected payload metadata") || error.contains("payload_key_id") {
+        "COMMAND_HASH_MISMATCH"
+    } else {
+        "COMMAND_CONTRACT_INVALID"
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::canonical_zone_route;
+    use super::{canonical_zone_route, changefeed_error_code};
 
     const ZONE_ID: &str = "019f3d3e-997d-7894-9236-c5122634cb4f";
 
@@ -866,5 +1009,21 @@ mod tests {
         assert!(canonical_zone_route("platform").is_err());
         assert!(canonical_zone_route("global").is_err());
         assert!(canonical_zone_route("00000000-0000-0000-0000-000000000000").is_err());
+    }
+
+    #[test]
+    fn changefeed_dlq_taxonomy_is_bounded_and_route_specific() {
+        assert_eq!(
+            changefeed_error_code("invalid target Zone UUID"),
+            "COMMAND_ZONE_MISMATCH"
+        );
+        assert_eq!(
+            changefeed_error_code("outbox protected payload metadata mismatch"),
+            "COMMAND_HASH_MISMATCH"
+        );
+        assert_eq!(
+            changefeed_error_code("invalid payload_schema_version"),
+            "COMMAND_CONTRACT_INVALID"
+        );
     }
 }

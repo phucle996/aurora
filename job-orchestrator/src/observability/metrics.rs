@@ -130,6 +130,10 @@ impl MetricsManager {
         Self::record_outcome("wal_outbox", "rejected");
     }
 
+    pub fn record_managed_service_outbox_stale() {
+        Self::record_outcome("managed_service_outbox", "stale");
+    }
+
     pub fn inc_kafka_commands_published() {
         Self::kafka_commands_published().add(1, &[]);
         Self::record_outcome("zone_command", "published");

@@ -50,6 +50,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let vault = infra::vault::VaultClient::new(&config.vault).await?;
     infra::postgres::resolve_from_vault(&vault, &mut config.postgres).await?;
+    if config
+        .workflows
+        .changefeed
+        .sources
+        .iter()
+        .any(|source| source == "managed_service.managed_service_outbox_records")
+    {
+        infra::postgres::resolve_dispatch_from_vault(&vault, &mut config.postgres).await?;
+    }
     infra::redis::resolve_from_vault(&vault, &mut config.shared_redis).await?;
     infra::kafka::resolve_from_vault(&vault, &mut config.kafka).await?;
     infra::nats::resolve_from_vault(&vault, &mut config.nats_core).await?;

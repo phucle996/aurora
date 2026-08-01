@@ -350,6 +350,12 @@ ACR_SHARED_REDIS_URL="${VAULT_ACR_SHARED_REDIS_URL:-redis://cp-redis:6379/0}"
 write_kv secret/data/connections/postgres/pg-central/role-cdc-read "$(jq -n \
     --arg url "$JO_DATABASE_URL" \
     '{data:{schema_version:1,database_url:$url}}')"
+# [DEV-ONLY]: This uses the same local DSN as the read record so the compose
+# stack remains runnable. Production must replace it with a PostgreSQL role
+# that can update only managed_service_outbox_records.status/updated_at.
+write_kv secret/data/connections/postgres/pg-central/role-job-dispatch-rw "$(jq -n \
+    --arg url "$JO_DATABASE_URL" \
+    '{data:{schema_version:1,database_url:$url}}')"
 write_kv secret/data/connections/redis/shared-l2/role-runtime-bridge-rw "$(jq -n \
     --arg url "$JO_SHARED_REDIS_URL" \
     '{data:{schema_version:1,url:$url}}')"
@@ -534,6 +540,7 @@ path "totp/code/admin" { capabilities = ["update"] }'
 
 write_policy job-orchestrator-connections-read \
 'path "secret/data/connections/postgres/pg-central/role-cdc-read" { capabilities = ["read"] }
+path "secret/data/connections/postgres/pg-central/role-job-dispatch-rw" { capabilities = ["read"] }
 path "secret/data/connections/redis/shared-l2/role-runtime-bridge-rw" { capabilities = ["read"] }
 path "secret/data/connections/kafka/central/role-job-orchestrator" { capabilities = ["read"] }
 path "secret/data/connections/nats/central/role-job-orchestrator" { capabilities = ["read"] }'

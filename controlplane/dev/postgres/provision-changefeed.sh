@@ -14,6 +14,7 @@ while :; do
          to_regclass('mail.mail_outbox_records') IS NOT NULL
          AND to_regclass('storage.storage_outbox_records') IS NOT NULL
          AND to_regclass('hypervisor.hypervisor_outbox_records') IS NOT NULL
+         AND to_regclass('managed_service.managed_service_outbox_records') IS NOT NULL
          AND to_regclass('hierarchy.zones') IS NOT NULL
          AND to_regclass('hierarchy.zone_services') IS NOT NULL
        )::int"
@@ -43,6 +44,7 @@ FROM (
     ('mail', 'mail_outbox_records'),
     ('storage', 'storage_outbox_records'),
     ('hypervisor', 'hypervisor_outbox_records'),
+    ('managed_service', 'managed_service_outbox_records'),
     ('hierarchy', 'zones'),
     ('hierarchy', 'zone_services')
 ) AS source(schema_name, table_name)

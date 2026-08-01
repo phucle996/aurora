@@ -65,7 +65,7 @@ pub fn decode(payload: &[u8]) -> Result<ValidatedResult, ContractError> {
     }
     if wire.job_topic.is_empty()
         || wire.job_topic.len() > MAX_TOPIC_BYTES
-        || !crate::job_topics::is_registered(&wire.source_domain, &wire.job_topic)
+        || !crate::job_topics::is_result_registered(&wire.source_domain, &wire.job_topic)
     {
         return Err(ContractError::new(
             "JOB_RESULT_ROUTE_INVALID",
@@ -151,5 +151,17 @@ mod tests {
     fn decodes_valid_result_once() {
         let payload = valid_wire().encode_to_vec();
         assert_eq!(decode(&payload).unwrap().wire.job_version, 1);
+    }
+
+    #[test]
+    fn managed_service_result_stays_closed_before_settlement_phase() {
+        let mut wire = valid_wire();
+        wire.source_domain = "MANAGED_SERVICE".to_string();
+        wire.job_topic = "managed_service.instance.execute".to_string();
+        let payload = wire.encode_to_vec();
+        assert_eq!(
+            decode(&payload).unwrap_err().code,
+            "JOB_RESULT_ROUTE_INVALID"
+        );
     }
 }

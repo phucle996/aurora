@@ -36,6 +36,10 @@ impl std::fmt::Display for PostgresTlsMode {
 #[derive(Clone)]
 pub struct PostgresConfig {
     pub database_url: String,
+    /// Optional write capability used only for the post-ACK managed-service
+    /// outbox fence. It is resolved from a separate Vault record and is never
+    /// used for logical replication or result settlement.
+    pub dispatch_database_url: String,
     pub application_name: String,
     pub connect_timeout_secs: u64,
     pub tcp_user_timeout_ms: u64,
@@ -92,6 +96,7 @@ impl PostgresConfig {
 
         Ok(Self {
             database_url,
+            dispatch_database_url: String::new(),
             application_name,
             connect_timeout_secs: environment.bounded(
                 "POSTGRES_CONNECT_TIMEOUT_SECS",

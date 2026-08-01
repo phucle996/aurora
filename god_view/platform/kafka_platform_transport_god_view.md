@@ -160,6 +160,7 @@ sequenceDiagram
     JO->>JO: validate public protection metadata + encode JobCommandV1
     JO->>K: publish stable key, acks=all
     K-->>JO: durable ACK from ISR
+    JO->>PG: mark managed-service outbox PROCESSING through restricted writer
     JO->>PG: advance replication LSN
     K-->>DP: poll đúng Zone command topic
     DP->>DP: validate route + HPKE open + decode domain command
