@@ -1,6 +1,9 @@
 use crate::contracts::hypervisor as hypervisor_proto;
 use prost::Message;
 
+// The result boundary keeps every transport fence explicit; collapsing these
+// arguments into a shared DTO would couple independent Hypervisor workflows.
+#[allow(clippy::too_many_arguments)]
 pub async fn apply_vm_result(
     pg_client: &mut tokio_postgres::Client,
     job_id: uuid::Uuid,

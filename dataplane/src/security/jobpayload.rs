@@ -144,6 +144,9 @@ impl PayloadKeyring {
         self.readiness.as_ref()
     }
 
+    // AAD fences remain explicit at the cryptographic boundary. Collapsing
+    // them into a mutable object risks authenticating a field set from another flow.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         &self,
         protected_wire: &[u8],
@@ -299,6 +302,7 @@ impl PayloadKeyring {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn protect_for_test(
         &self,
         zone_id: Uuid,

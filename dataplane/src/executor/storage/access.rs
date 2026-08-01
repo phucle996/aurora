@@ -169,16 +169,18 @@ mod tests {
             expires_at_unix_seconds: u64::MAX,
             policy_revision: 1,
         };
-        let mut command = crate::infra::kafka::transport_proto::JobCommandV1::default();
-        command.job_id = uuid::Uuid::new_v4().as_bytes().to_vec();
-        command.job_version = 1;
-        command.job_topic = "storage.access.prepare".to_string();
-        command.source_domain = "STORAGE".to_string();
-        command.resource_id = request.resource_id.clone();
-        command.payload_schema_version = 1;
-        command.target_zone_id = uuid::Uuid::new_v4().to_string();
-        command.transport_schema_version = 1;
-        command.payload_encoding = crate::infra::kafka::transport_proto::PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32;
+        let mut command = crate::infra::kafka::transport_proto::JobCommandV1 {
+            job_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+            job_version: 1,
+            job_topic: "storage.access.prepare".to_string(),
+            source_domain: "STORAGE".to_string(),
+            resource_id: request.resource_id.clone(),
+            payload_schema_version: 1,
+            target_zone_id: uuid::Uuid::new_v4().to_string(),
+            transport_schema_version: 1,
+            payload_encoding: crate::infra::kafka::transport_proto::PayloadEncodingV1::PayloadEncodingHpkeX25519HkdfSha256Aes256Gcm as i32,
+            ..Default::default()
+        };
         let keyring = crate::security::jobpayload::PayloadKeyring::for_test();
         command.payload = keyring.protect_for_test(
             uuid::Uuid::parse_str(&command.target_zone_id).unwrap(),

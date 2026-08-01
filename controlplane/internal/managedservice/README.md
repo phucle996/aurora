@@ -13,7 +13,10 @@ không tạo một dispatch-status projection trong Controlplane: JO chỉ cập
 `managed_service_outbox_records.status=PROCESSING` bằng một fence hẹp sau ACK.
 Mutation handler vẫn dormant trong route registry cho đến khi P07 settle result/timeline;
 không có generic configuration/runtime-metadata patch. Kafka producer/consumer Managed
-Service, renderer và Kubernetes client vẫn thuộc các phase sau.
+Service đã ship command-side ở P05: JO CDC publish exact protected bytes và chỉ cập
+nhật outbox `PROCESSING` sau `acks=all`; DP nhận diện exact route nhưng chặn trước
+HPKE-open/executor. Renderer, Kubernetes side effect và result settlement vẫn thuộc
+P06/P07.
 
 Chi tiết product proposal nằm trong [IDEA.md](./IDEA.md). Trình tự staging từ
 contract tới release gate trước khi tách phase/task nằm trong
@@ -267,7 +270,8 @@ database transaction, CTE, constraint hoặc outbox durability.
   personal/tenant aggregate và outbox; P04 mutation route vẫn dormant nhưng durable
   workflow slices đã được ship để P07 nối settlement sau.
   Kafka ACK không tạo operation projection; JO chỉ được phép cập nhật outbox
-  `PROCESSING` qua connection write riêng khi route Managed Service được enable.
+  `PROCESSING` qua connection write riêng; P05 đã enable command route nhưng result
+  route vẫn fail-close đến P07.
 
 S09 đã chốt physical ownership cho persistence:
 

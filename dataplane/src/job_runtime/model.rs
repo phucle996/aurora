@@ -69,6 +69,30 @@ impl JobValidationError {
             retryable: false,
         }
     }
+
+    fn retryable(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    /// Durable DLQ exposes a small behavior taxonomy. Detailed validation
+    /// codes remain in local logs/traces so broker records cannot become a
+    /// second schema surface or leak protection internals.
+    pub fn durable_taxonomy(&self) -> &'static str {
+        match self.code {
+            "JOB_TARGET_ZONE_MISMATCH"
+            | "JOB_CONSUMER_ZONE_INVALID"
+            | "JOB_PROTECTED_PAYLOAD_ZONE_INVALID"
+            | "JOB_PROTECTED_PAYLOAD_ZONE_MISMATCH" => "COMMAND_ZONE_MISMATCH",
+            "JOB_PROTECTED_PAYLOAD_AUTH_FAILED"
+            | "JOB_PROTECTED_PAYLOAD_AAD_INVALID"
+            | "JOB_PROTECTED_PAYLOAD_SIZE_MISMATCH" => "COMMAND_HASH_MISMATCH",
+            _ => "COMMAND_CONTRACT_INVALID",
+        }
+    }
 }
 
 impl ValidatedJob {
@@ -171,16 +195,13 @@ impl ValidatedJob {
             .split_once('.')
             .map(|(workload, _)| workload)
             .unwrap_or_default();
-        match (workload, command.source_domain.as_str()) {
-            ("mail", "MAIL") | ("storage", "STORAGE") | ("hypervisor", "HYPERVISOR") => {}
+        let managed_service_executor_disabled = match (workload, command.source_domain.as_str()) {
+            ("mail", "MAIL") | ("storage", "STORAGE") | ("hypervisor", "HYPERVISOR") => false,
             ("managed_service", "MANAGED_SERVICE") => {
-                // [COMMENT]: Inner proto may exist in P01, but no P01 executor is
-                // allowed to consume it. This explicit rejection prevents a future
-                // accidental topic/ACL change from creating a partial runtime path.
-                return Err(JobValidationError::new(
-                    "JOB_WORKLOAD_DISABLED",
-                    "managed_service workload is not enabled on this Dataplane",
-                ));
+                // P05 recognizes the exact route so source spoofing and Zone
+                // cross-wire are still validated. HPKE open and executor
+                // activation remain fail-closed until P06 ships atomically.
+                true
             }
             ("managed_service", _) => {
                 return Err(JobValidationError::new(
@@ -200,7 +221,7 @@ impl ValidatedJob {
                     "job_topic workload is not enabled on this Dataplane",
                 ));
             }
-        }
+        };
         validate_text(
             "resource_id",
             &command.resource_id,
@@ -256,6 +277,15 @@ impl ValidatedJob {
         })?;
         let mut job_id_bytes = [0_u8; 16];
         job_id_bytes.copy_from_slice(job_uuid.as_bytes());
+        if managed_service_executor_disabled {
+            // P05 admits the durable route but P06 still owns execution. Keep
+            // the Kafka record unsettled so a rollout mismatch cannot turn a
+            // valid command into a permanent DLQ record.
+            return Err(JobValidationError::retryable(
+                "JOB_WORKLOAD_DISABLED",
+                "managed_service executor is not enabled on this Dataplane",
+            ));
+        }
         let trace_id = encode_hex(&command.trace_id);
         let protected_payload: Arc<[u8]> = Arc::from(command.payload.clone());
         let payload = payload_keyring
@@ -447,13 +477,55 @@ mod tests {
     }
 
     #[test]
-    fn validation_keeps_managed_service_route_disabled() {
+    fn validation_recognizes_managed_service_route_but_keeps_p06_executor_disabled() {
         let keyring = PayloadKeyring::for_test();
         let mut command = command(&keyring);
         command.job_topic = "managed_service.instance.execute".to_string();
         command.source_domain = "MANAGED_SERVICE".to_string();
         let error = ValidatedJob::from_command(command, ZONE_A, 5, &keyring).unwrap_err();
         assert_eq!(error.code, "JOB_WORKLOAD_DISABLED");
+        assert!(error.retryable);
+    }
+
+    #[test]
+    fn managed_service_cross_zone_is_rejected_before_the_p06_executor_gate() {
+        let keyring = PayloadKeyring::for_test();
+        let mut command = command(&keyring);
+        command.job_topic = "managed_service.instance.execute".to_string();
+        command.source_domain = "MANAGED_SERVICE".to_string();
+        let error = ValidatedJob::from_command(command, ZONE_B, 5, &keyring).unwrap_err();
+        assert_eq!(error.code, "JOB_TARGET_ZONE_MISMATCH");
+        assert_eq!(error.durable_taxonomy(), "COMMAND_ZONE_MISMATCH");
+    }
+
+    #[test]
+    fn managed_service_retry_fixture_keeps_exact_ciphertext_and_route_fences() {
+        let keyring = PayloadKeyring::for_test();
+        let source = command(&keyring);
+        let protected = source.payload.clone();
+        let mut job = ValidatedJob::from_command(source, ZONE_A, 5, &keyring).unwrap();
+        job.job_topic = "managed_service.instance.execute".to_string();
+        job.source_domain = "MANAGED_SERVICE".to_string();
+        job.delivery_epoch = 9;
+        let retry = job.command_for_attempt(2, "parent".to_string(), String::new());
+        assert_eq!(retry.payload, protected);
+        assert_eq!(retry.job_topic, "managed_service.instance.execute");
+        assert_eq!(retry.source_domain, "MANAGED_SERVICE");
+        assert_eq!(retry.delivery_epoch, 9);
+        assert_eq!(retry.attempt, 2);
+    }
+
+    #[test]
+    fn durable_command_taxonomy_is_generic_and_bounded() {
+        assert_eq!(
+            JobValidationError::new("JOB_PROTECTED_PAYLOAD_AUTH_FAILED", "tampered")
+                .durable_taxonomy(),
+            "COMMAND_HASH_MISMATCH"
+        );
+        assert_eq!(
+            JobValidationError::new("JOB_COMMAND_PROTO_INVALID", "invalid").durable_taxonomy(),
+            "COMMAND_CONTRACT_INVALID"
+        );
     }
 
     #[test]

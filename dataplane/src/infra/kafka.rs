@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_service_root_contract_round_trips_while_route_is_disabled() {
+    fn managed_service_root_contract_round_trips_while_p06_executor_is_disabled() {
         let command = managed_service_proto::ManagedServiceCommandV1 {
             command_event_id: vec![1; 16],
             operation_id: vec![2; 16],

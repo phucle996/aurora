@@ -1,11 +1,14 @@
+#[allow(dead_code)]
 pub mod mail {
     include!(concat!(env!("OUT_DIR"), "/mail.runtime.v1.rs"));
 }
 
+#[allow(dead_code)]
 pub mod storage {
     include!(concat!(env!("OUT_DIR"), "/storage.rs"));
 }
 
+#[allow(dead_code)]
 pub mod hypervisor {
     include!(concat!(env!("OUT_DIR"), "/hypervisor.rs"));
 }

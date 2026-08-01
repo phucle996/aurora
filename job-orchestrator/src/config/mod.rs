@@ -81,7 +81,9 @@ mod tests {
     #[test]
     fn explicit_development_contract_loads_without_security_fallbacks() {
         let environment = Environment::from_pairs(REQUIRED_DEVELOPMENT_ENV);
-        assert!(Config::from_environment(&environment).is_ok());
+        let config = Config::from_environment(&environment).unwrap();
+        assert_eq!(config.workflows.changefeed.buffer_events, 128);
+        assert_eq!(config.workflows.changefeed.shutdown_grace_ms, 5_000);
     }
 
     #[test]
@@ -96,5 +98,16 @@ mod tests {
             .err()
             .expect("missing Kafka topic prefix must fail");
         assert!(error.contains("KAFKA_TOPIC_PREFIX"));
+    }
+
+    #[test]
+    fn changefeed_buffer_cannot_expand_past_the_memory_budget() {
+        let mut values = REQUIRED_DEVELOPMENT_ENV.to_vec();
+        values.push(("CHANGEFEED_BUFFER_EVENTS", "257"));
+        let environment = Environment::from_pairs(&values);
+        let error = Config::from_environment(&environment)
+            .err()
+            .expect("oversized changefeed buffer must fail");
+        assert!(error.contains("CHANGEFEED_BUFFER_EVENTS"));
     }
 }

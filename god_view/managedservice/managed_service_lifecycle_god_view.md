@@ -12,7 +12,7 @@
 
 | Thuộc tính | Contract |
 | --- | --- |
-| Trạng thái | P00 frozen; P01 foundation, P02 SRE catalog/admin, P03 customer catalog/form và P04 instance/operation reads shipped; customer mutation/runtime admission remains disabled |
+| Trạng thái | P00–P05 shipped through durable JO command dispatch; customer mutation routes, Dataplane Managed Service HPKE-open/Kubernetes executor và result settlement remain disabled until P06/P07 |
 | Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant desired state, immutable revision, operation, deletion fence và outbox |
 | Durable transport | PostgreSQL outbox/WAL → Job Orchestrator → Kafka → Dataplane Zone → Kafka result → JO/Controlplane settle |
 | Runtime executor | Dataplane đúng Zone gọi Kubernetes API; Controlplane không có Kubernetes credential/client |
@@ -157,6 +157,16 @@ and outbox insert commit in one transaction before JO sees WAL. JO only advances
 after Kafka `acks=all`; a crash after broker ACK before LSN checkpoint intentionally
 redelivers an idempotent command.
 
+P05 activates only the JO command registry for
+`MANAGED_SERVICE/managed_service.instance.execute`. JO re-reads the authoritative
+outbox fence, forwards the exact `ProtectedPayloadV1` bytes, marks only the matching
+outbox row `PROCESSING` through a separate Vault/PostgreSQL capability and then advances
+LSN. The DP recognizes the exact route and rejects source/Zone cross-wire, but returns
+the same-Zone command at the explicit P06 executor gate before HPKE open. This deployment
+gate is retryable/fail-closed: Kafka offset remains unsettled and the command does not
+become DLQ merely because P06 is absent. The JO result registry remains closed until the
+P07 direct-settlement transaction exists.
+
 Managed Service V1 has no NATS subject, no Redis Pub/Sub runtime envelope and no
 `runtime:<user_id>` channel. Terminal customer lifecycle is not inferred from
 Kubernetes API ACK, pod RAM, OTel, Victoria, NATS or Centrifugo; it is settled only by
@@ -293,6 +303,10 @@ sequenceDiagram
     DP->>K: terminal result key instance_id
 ```
 
+Trong deployment hiện tại, sequence hoàn tất tại Kafka command ACK và outbox
+`PROCESSING`. Các bước DP HPKE-open, Kubernetes và result trong sơ đồ là target topology
+của P06/P07, không phải bằng chứng executor/result route đã được enable ở P05.
+
 The handler validates path/query/body/schema/type/range/size and canonicalizes the flat
 parameter map. It derives owner/workspace/Zone from verified context; client does not
 send trusted routing/ownership. Service/repository receive normalized workflow entity
@@ -397,8 +411,18 @@ Every UUID is 16 raw bytes; schema version, route, Zone, source event, all revis
 fences and trace context are validated before side effect. Malformed/oversize/cross-Zone
 record is quarantined/DLQ without raw payload. Stale but well-formed result is ignored
 with sanitized metric/audit and never overwrites a newer desired/observed state.
+Durable command DLQ chỉ dùng taxonomy `COMMAND_CONTRACT_INVALID`,
+`COMMAND_ZONE_MISMATCH` hoặc `COMMAND_HASH_MISMATCH`; detailed parser/crypto code chỉ ở
+log/trace local có redaction.
 
 ## 9. Dataplane execution contract
+
+Phần này là contract P06. Ở P05, DP chỉ xác nhận đúng cặp route/source và outer Zone
+fence rồi fail-close bằng retryable executor gate, không settle Kafka offset và không
+DLQ command hợp lệ; nó chưa HPKE-open Managed Service payload, render YAML, gọi
+Kubernetes hay phát result. Generic retry scheduler đã sẵn sàng và có fixture chứng
+minh chỉ đổi outer `attempt`/trace context, giữ nguyên ciphertext, `job_id`,
+`resource_id`, Zone và `delivery_epoch`.
 
 DP validates outer public protection metadata and Zone/topic binding, HPKE-opens the complete
 payload, then validates inner Protobuf, command/result route, schema version, command event,
@@ -545,6 +569,6 @@ registry against the cited platform God Views:
 | Notification | stable timeline identity and non-rollback delivery semantics |
 | Security/Zone | trusted identity, critical route, Zone binding, ACL/RBAC and observability scope |
 
-P00 review đã freeze contract này. P01 có thể giữ migration và canonical inner protobuf
-dormant, nhưng không được register command route, customer mutation, JO dispatcher,
-Dataplane executor hoặc Kubernetes client trước các phase gate tương ứng.
+P00 review đã freeze contract này. P05 đã mở JO command route/dispatcher nhưng vẫn giữ
+customer mutation public, Dataplane Managed Service executor/Kubernetes path và result
+route dormant cho đến đúng phase gate P06/P07.

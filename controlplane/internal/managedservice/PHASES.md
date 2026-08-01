@@ -594,6 +594,9 @@ settlement transaction remains the only writer that changes lifecycle state.
 
 ## 10. P05 — Job Orchestrator CDC, Kafka dispatch, retry timer và DLQ
 
+**Implementation status:** SHIPPED. JO command dispatch is active; Managed Service
+Dataplane execution and JO result admission deliberately remain gated by P06/P07.
+
 **Mục tiêu:** move durable intent to the exact Zone at-least-once, preserving aggregate
 ordering and never treating broker ACK as CP state.
 
@@ -649,6 +652,9 @@ and no Managed Service code uses NATS or a direct CP Kafka producer.
   `instance_id + operation_id + generation`.
 * **Acceptance:** retry/rebalance/restart proves identical ciphertext, no early source
   commit, no second Kubernetes resource and terminal result after budget exhaustion.
+* **P05 activation boundary:** generic bounded retry and exact-ciphertext fixture are
+  shipped. Managed Service cannot invoke the scheduler until P06 enables HPKE-open and
+  the executor; P05 does not create a disabled-workload retry/result loop.
 
 ### MS-064 — DP/JO contract rejection and DLQ path
 
@@ -659,6 +665,8 @@ and no Managed Service code uses NATS or a direct CP Kafka producer.
 * **Acceptance:** DLQ excludes raw ciphertext/plaintext/manifest/Secret, retains source
   event/correlation/taxonomy only; terminal current operation settlement is delegated
   to P07 and stale source is only audited.
+* **Result boundary:** Managed Service result registry stays fail-closed until P07; P05
+  only ships command-side quarantine and the generic DP durable-DLQ contract.
 
 ### MS-065 — JO graceful shutdown, backpressure and observability
 

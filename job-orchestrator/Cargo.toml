@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tokio-postgres = { version = "0.7", features = ["runtime", "with-uuid-1", "with-chrono-0_4"] }
 tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
 postgres-protocol = "0.6"

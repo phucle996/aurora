@@ -322,6 +322,13 @@ Production:
 - JO dùng `job_orchestrator_kafka_operations_total{operation,outcome}` và
   `job_orchestrator_kafka_operation_duration_seconds{operation}` cho mọi logical publish/commit;
   metric không gắn raw topic per-Zone, Zone UUID hoặc job ID.
+- Managed Service dispatch thêm
+  `job_orchestrator_managed_service_outbox_age_seconds`,
+  `job_orchestrator_changefeed_lag_bytes` và
+  `job_orchestrator_managed_service_pending_outbox_records`; label duy nhất là bounded
+  `source_domain=MANAGED_SERVICE`.
+- Logical replication buffer fail-close ở tối đa 256 event. SIGTERM hủy WAL lane trong
+  bounded grace; publish/DB update bị hủy không được advance LSN và sẽ replay an toàn.
 - Không dùng resource ID, email, workspace hoặc Zone UUID làm metric label có cardinality không giới hạn.
 
 ## 11. Code map

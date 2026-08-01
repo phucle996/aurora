@@ -516,6 +516,9 @@ impl ProxmoxClient {
             .map_err(|_| "PROXMOX_IMAGE_DOWNLOAD_RESPONSE_INVALID".to_string())
     }
 
+    // Every provider fence remains explicit at the Proxmox boundary; hiding it
+    // in a shared request object would couple import and normal VM workflows.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_vm_from_import(
         &self,
         node: &str,

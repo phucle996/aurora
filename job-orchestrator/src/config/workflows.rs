@@ -9,6 +9,7 @@ pub struct ChangefeedConfig {
     pub status_interval_ms: u64,
     pub idle_wakeup_secs: u64,
     pub buffer_events: usize,
+    pub shutdown_grace_ms: u64,
 }
 
 #[derive(Clone)]
@@ -91,9 +92,15 @@ impl WorkflowConfig {
                 )?,
                 buffer_events: environment.bounded(
                     "CHANGEFEED_BUFFER_EVENTS",
-                    8_192_usize,
-                    128,
-                    1_048_576,
+                    128_usize,
+                    8,
+                    256,
+                )?,
+                shutdown_grace_ms: environment.bounded(
+                    "CHANGEFEED_SHUTDOWN_GRACE_MS",
+                    5_000_u64,
+                    100,
+                    30_000,
                 )?,
             },
             mail: MailWorkflowConfig {

@@ -22,6 +22,9 @@ const MAX_UNSETTLED_RECORDS_PER_READY_WORKER: usize = 4;
 ///
 /// Kafka offsets are only registered here. Settlement remains exclusively in
 /// completion/retry code after a durable downstream boundary.
+// Intake dependencies are explicit because this function is the Kafka trust
+// boundary; a generic context object would make credential/settlement ownership opaque.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_zone_job_intake(
     config: Arc<crate::config::Config>,
     kafka: Arc<KafkaTransport>,
@@ -257,16 +260,22 @@ pub async fn run_zone_job_intake(
                     if error.retryable {
                         Logger::sys_error(
                             "job.intake",
-                            "Dataplane cannot open a protected command with its loaded keyring; leaving the offset uncommitted and restarting fail-closed",
+                            "Dataplane cannot safely admit the command in this deployment; leaving the offset uncommitted and restarting fail-closed",
                             error.code,
                         );
                         return;
                     }
+                    let durable_error_code = error.durable_taxonomy();
+                    Logger::sys_warn(
+                        "job.intake.contract",
+                        "Command failed strict Dataplane validation and will be quarantined with bounded taxonomy",
+                        error.code,
+                    );
                     quarantine_invalid_command(
                         kafka.as_ref(),
                         &delivery,
-                        error.code,
-                        &error.message,
+                        durable_error_code,
+                        "command rejected at the Dataplane trust boundary",
                         raw_payload.as_ref(),
                     )
                     .await;

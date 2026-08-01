@@ -17,6 +17,9 @@ static RECORD_OUTCOMES: OnceLock<Counter<u64>> = OnceLock::new();
 static KAFKA_OPERATIONS: OnceLock<Counter<u64>> = OnceLock::new();
 static KAFKA_OPERATION_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static WORKER_TERMINATIONS: OnceLock<Counter<u64>> = OnceLock::new();
+static MANAGED_SERVICE_OUTBOX_AGE: OnceLock<Histogram<f64>> = OnceLock::new();
+static CHANGEFEED_LAG_BYTES: OnceLock<Histogram<f64>> = OnceLock::new();
+static MANAGED_SERVICE_PENDING_OUTBOX: OnceLock<Histogram<u64>> = OnceLock::new();
 
 pub struct MetricsManager;
 
@@ -30,6 +33,9 @@ impl MetricsManager {
         let _ = Self::kafka_operations();
         let _ = Self::kafka_operation_duration();
         let _ = Self::worker_terminations();
+        let _ = Self::managed_service_outbox_age();
+        let _ = Self::changefeed_lag_bytes();
+        let _ = Self::managed_service_pending_outbox();
 
         Logger::sys_info_with_fields(
             "metrics.init",
@@ -121,6 +127,39 @@ impl MetricsManager {
         })
     }
 
+    fn managed_service_outbox_age() -> &'static Histogram<f64> {
+        MANAGED_SERVICE_OUTBOX_AGE.get_or_init(|| {
+            global::meter(METER_NAME)
+                .f64_histogram("job_orchestrator_managed_service_outbox_age_seconds")
+                .with_unit(Unit::new("s"))
+                .with_description("Age of Managed Service durable outbox intent at dispatch")
+                .init()
+        })
+    }
+
+    fn changefeed_lag_bytes() -> &'static Histogram<f64> {
+        CHANGEFEED_LAG_BYTES.get_or_init(|| {
+            global::meter(METER_NAME)
+                .f64_histogram("job_orchestrator_changefeed_lag_bytes")
+                .with_unit(Unit::new("By"))
+                .with_description(
+                    "PostgreSQL WAL bytes between a Managed Service record and current WAL head",
+                )
+                .init()
+        })
+    }
+
+    fn managed_service_pending_outbox() -> &'static Histogram<u64> {
+        MANAGED_SERVICE_PENDING_OUTBOX.get_or_init(|| {
+            global::meter(METER_NAME)
+                .u64_histogram("job_orchestrator_managed_service_pending_outbox_records")
+                .with_description(
+                    "Sampled count of Managed Service outbox records awaiting Kafka ACK",
+                )
+                .init()
+        })
+    }
+
     pub fn inc_wal_records_accepted() {
         Self::wal_records_accepted().add(1, &[]);
         Self::record_outcome("wal_outbox", "accepted");
@@ -132,6 +171,22 @@ impl MetricsManager {
 
     pub fn record_managed_service_outbox_stale() {
         Self::record_outcome("managed_service_outbox", "stale");
+    }
+
+    pub fn record_managed_service_dispatch_lag(outbox_age_seconds: f64, cdc_lag_bytes: f64) {
+        let attributes = [KeyValue::new("source_domain", "MANAGED_SERVICE")];
+        Self::managed_service_outbox_age().record(outbox_age_seconds.max(0.0), &attributes);
+        Self::changefeed_lag_bytes().record(cdc_lag_bytes.max(0.0), &attributes);
+    }
+
+    pub fn record_managed_service_backlog(pending_records: u64, oldest_age_seconds: f64) {
+        let attributes = [KeyValue::new("source_domain", "MANAGED_SERVICE")];
+        Self::managed_service_pending_outbox().record(pending_records, &attributes);
+        Self::managed_service_outbox_age().record(oldest_age_seconds.max(0.0), &attributes);
+    }
+
+    pub fn record_managed_service_outbox_processing() {
+        Self::record_outcome("managed_service_outbox", "processing");
     }
 
     pub fn inc_kafka_commands_published() {

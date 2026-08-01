@@ -18,6 +18,7 @@ use observability::logger::Logger;
 use observability::metrics::MetricsManager;
 use observability::otel::OtelTracer;
 use results::ResultWorker;
+use tokio_util::sync::CancellationToken;
 use workers::RuntimeWorkers;
 
 struct OtelShutdownGuard;
@@ -123,11 +124,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kafka.clone(),
         nats_client,
     );
+    let shutdown = CancellationToken::new();
+    let changefeed_future = changefeed_worker.run(shutdown.clone());
+    tokio::pin!(changefeed_future);
+    let mut changefeed_finished = false;
 
     // [COMMENT]: Không gọi process::exit sau khi OTel đã khởi tạo; exit thô bỏ
     // toàn bộ batch queue. Mọi terminal branch hội tụ về một bounded shutdown.
     let run_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
-        res = changefeed_worker.run() => {
+        res = &mut changefeed_future => {
+            changefeed_finished = true;
             MetricsManager::record_worker_termination("changefeed");
             match res {
                 Ok(()) => Err("changefeed worker stopped unexpectedly".into()),
@@ -175,6 +181,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
+
+    // Cancel the WAL lane for both operator shutdown and a sibling critical
+    // worker failure. A cancelled publish/update future cannot advance LSN;
+    // replay after restart is therefore the only allowed ambiguous outcome.
+    shutdown.cancel();
+    if !changefeed_finished {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(
+                config.workflows.changefeed.shutdown_grace_ms,
+            ),
+            &mut changefeed_future,
+        )
+        .await
+        {
+            Ok(Ok(())) => Logger::sys_info(
+                "main.shutdown",
+                "Changefeed stopped inside its bounded shutdown budget",
+            ),
+            Ok(Err(error)) => Logger::sys_error(
+                "main.shutdown",
+                "Changefeed returned an error during shutdown",
+                &error.to_string(),
+            ),
+            Err(_) => Logger::sys_warn(
+                "main.shutdown",
+                "Changefeed shutdown budget elapsed; dropping the source connection without advancing an in-flight LSN",
+                "CHANGEFEED_SHUTDOWN_TIMEOUT",
+            ),
+        }
+    }
 
     if let Err(error) = &run_result {
         Logger::sys_error(

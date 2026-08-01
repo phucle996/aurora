@@ -105,6 +105,7 @@ impl NatsCoreConfig {
     }
 }
 
+#[cfg(test)]
 fn validate_auth(
     mode: NatsAuthMode,
     token: &Option<String>,

@@ -398,7 +398,7 @@ mod managed_service_contract_tests {
     use prost::Message;
 
     #[test]
-    fn managed_service_root_contract_round_trips_before_route_registration() {
+    fn managed_service_root_contract_stays_canonical_after_command_route_activation() {
         let command = managed_service_proto::ManagedServiceCommandV1 {
             command_event_id: vec![1; 16],
             operation_id: vec![2; 16],
