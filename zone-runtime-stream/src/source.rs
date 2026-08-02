@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 use sha2::Digest;
@@ -18,6 +19,10 @@ pub enum SourceError {
     Request(#[from] reqwest::Error),
     #[error("victoria response was not successful")]
     Status,
+    #[error("victoria response exceeded the configured byte budget")]
+    ResponseTooLarge,
+    #[error("victoria response was not valid JSON")]
+    Decode,
     #[error("runtime scope cannot be rendered into a query")]
     Scope,
 }
@@ -103,7 +108,23 @@ impl VictoriaSource {
         if !response.status().is_success() {
             return Err(SourceError::Status);
         }
-        let value: Value = response.json().await?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.max_event_bytes as u64)
+        {
+            return Err(SourceError::ResponseTooLarge);
+        }
+        let mut response_stream = response.bytes_stream();
+        let mut response_bytes = Vec::with_capacity(self.max_event_bytes.min(64 * 1024));
+        while let Some(chunk) = response_stream.next().await {
+            let chunk = chunk?;
+            if response_bytes.len().saturating_add(chunk.len()) > self.max_event_bytes {
+                return Err(SourceError::ResponseTooLarge);
+            }
+            response_bytes.extend_from_slice(&chunk);
+        }
+        let value: Value =
+            serde_json::from_slice(&response_bytes).map_err(|_| SourceError::Decode)?;
         let mut payload = BTreeMap::new();
         payload.insert("source".into(), Value::String("victoria".into()));
         payload.insert("panel_id".into(), Value::String(scope.panel_id.clone()));

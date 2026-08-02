@@ -123,6 +123,15 @@ async fn runtime_stream(
         Ok(value) => value,
         Err(_) => return too_many_requests().into_response(),
     };
+    // Access audit deliberately omits owner/workspace/resource identity and
+    // ticket material. Module/resource type/panel are bounded registries.
+    tracing::info!(
+        event_code = "ZONE_RUNTIME_STREAM_OPENED",
+        module = %scope.module,
+        resource_type = %scope.resource_type,
+        panel = %scope.panel_id,
+        outcome = "allowed"
+    );
     let stream = event_stream(runtime, scope, receiver, permit, subscription, resumed);
     let mut response = Sse::new(stream).into_response();
     let headers = response.headers_mut();
@@ -156,6 +165,13 @@ fn event_stream(
             tokio::select! {
                 _ = &mut deadline => {
                     runtime.stream_expired();
+                    tracing::info!(
+                        event_code = "ZONE_RUNTIME_STREAM_EXPIRED",
+                        module = %scope.module,
+                        resource_type = %scope.resource_type,
+                        panel = %scope.panel_id,
+                        outcome = "expired"
+                    );
                     yield Ok(Event::default().event("stream.error").id(next_event_id()).json_data(json!({"code": "STREAM_EXPIRED"})).unwrap());
                     break;
                 }
@@ -172,7 +188,31 @@ fn event_stream(
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             runtime.gap_event();
+                            if scope.panel_id == "logs" {
+                                // Logs are ordered records: dropping arbitrary lines and
+                                // continuing would present a false complete tail. Close so
+                                // the browser reconnects with a bounded snapshot window.
+                                yield Ok(Event::default().event("stream.error").id(next_event_id()).json_data(json!({"code": "BACKPRESSURE"})).unwrap());
+                                break;
+                            }
+                            // Metrics/state are soft snapshots. Drain the bounded receiver
+                            // and deliver only the newest frame after declaring the gap.
+                            let mut latest = None;
+                            loop {
+                                match receiver.try_recv() {
+                                    Ok(frame) => latest = Some(frame),
+                                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                                    | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                                }
+                            }
                             yield Ok(Event::default().event("runtime.gap").id(next_event_id()).json_data(json!({"reason": "backpressure"})).unwrap());
+                            if let Some(frame) = latest {
+                                let event_type = frame.event_type();
+                                let event_id = frame.event_id().to_string();
+                                let data = frame.data().unwrap_or_else(|_| "{\"code\":\"FRAME_SERIALIZATION_FAILED\"}".into());
+                                yield Ok(Event::default().event(event_type).id(event_id).data(data));
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -205,6 +245,13 @@ impl SubscriptionGuard {
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         self.runtime.connection_closed();
+        tracing::info!(
+            event_code = "ZONE_RUNTIME_STREAM_CLOSED",
+            module = %self.scope.module,
+            resource_type = %self.scope.resource_type,
+            panel = %self.scope.panel_id,
+            outcome = "closed"
+        );
         if self
             .subscription
             .clients

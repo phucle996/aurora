@@ -65,6 +65,10 @@ impl RuntimeStream {
             Ok(permit) => permit,
             Err(_) => {
                 self.telemetry.connection_rejected();
+                tracing::warn!(
+                    event_code = "ZONE_RUNTIME_STREAM_CONNECTION_REJECTED",
+                    outcome = "capacity"
+                );
                 return Err(SubscribeError::Capacity);
             }
         };
@@ -77,6 +81,10 @@ impl RuntimeStream {
         } else {
             if subscriptions.len() >= self.config.max_fanout_groups {
                 self.telemetry.connection_rejected();
+                tracing::warn!(
+                    event_code = "ZONE_RUNTIME_STREAM_CONNECTION_REJECTED",
+                    outcome = "fanout_capacity"
+                );
                 return Err(SubscribeError::Capacity);
             }
             let subscription = Subscription::new(self.config.max_buffered_events);
@@ -205,10 +213,33 @@ fn source_error_code(error: &SourceError) -> &'static str {
     match error {
         SourceError::Request(_) => "VICTORIA_UNAVAILABLE",
         SourceError::Status => "VICTORIA_UNAVAILABLE",
+        SourceError::ResponseTooLarge => "VICTORIA_RESPONSE_TOO_LARGE",
+        SourceError::Decode => "VICTORIA_RESPONSE_INVALID",
         SourceError::Scope => "RUNTIME_SCOPE_INVALID",
     }
 }
 
 pub fn next_event_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn victoria_failure_taxonomy_is_sanitized() {
+        assert_eq!(
+            source_error_code(&SourceError::ResponseTooLarge),
+            "VICTORIA_RESPONSE_TOO_LARGE"
+        );
+        assert_eq!(
+            source_error_code(&SourceError::Decode),
+            "VICTORIA_RESPONSE_INVALID"
+        );
+        assert_eq!(
+            source_error_code(&SourceError::Scope),
+            "RUNTIME_SCOPE_INVALID"
+        );
+    }
 }

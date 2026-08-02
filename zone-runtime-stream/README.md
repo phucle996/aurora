@@ -146,6 +146,11 @@ Oversized responses are replaced by a byte count and SHA-256 digest, never
 forwarded in full to a browser. Component IDs are escaped before they enter the
 fixed regex query so a valid component name cannot widen its scope.
 
+[`alerts.yml`](./alerts.yml) contains fixed-cardinality availability, Victoria,
+backpressure and capacity rules. Stream access logs contain only the bounded
+module/resource-type/panel registry and outcome; owner, workspace, resource ID,
+ticket, raw query and returned telemetry are deliberately excluded.
+
 Docker development injects the app-owned `.env` from
 `dev/zone/compose.yml`. The service is attached only to the
 Zone Victoria read network and the dedicated Public Edge runtime network; it

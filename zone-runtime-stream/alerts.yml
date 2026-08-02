@@ -1,0 +1,43 @@
+groups:
+  - name: aurora-zone-runtime-stream
+    interval: 30s
+    rules:
+      - alert: AuroraZoneRuntimeStreamUnavailable
+        expr: absent(aurora_zone_runtime_stream_connections_active) == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: zone-runtime-stream
+        annotations:
+          summary: Zone Runtime Stream metrics are absent
+          description: The Zone runtime read plane is unavailable or no longer being scraped.
+
+      - alert: AuroraZoneRuntimeStreamVictoriaErrors
+        expr: sum(rate(aurora_zone_runtime_stream_source_errors_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: zone-runtime-stream
+        annotations:
+          summary: Zone Runtime Stream cannot read Victoria reliably
+          description: Runtime diagnostics may be unavailable; lifecycle state is unaffected.
+
+      - alert: AuroraZoneRuntimeStreamBackpressure
+        expr: sum(rate(aurora_zone_runtime_stream_gap_events_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: zone-runtime-stream
+        annotations:
+          summary: Runtime stream clients are falling behind
+          description: Bounded client buffers are producing gaps or closing log streams.
+
+      - alert: AuroraZoneRuntimeStreamCapacityRejected
+        expr: sum(rate(aurora_zone_runtime_stream_connections_rejected_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: zone-runtime-stream
+        annotations:
+          summary: Runtime stream connection capacity is exhausted
+          description: Scale the read plane or reduce per-Zone stream concurrency.
