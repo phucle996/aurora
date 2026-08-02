@@ -2,14 +2,29 @@ package security
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
+
 	"github.com/google/uuid"
 )
+
+type zonePayloadKeyResolverStub struct {
+	result *hierarchyEntity.ResolveZonePayloadKey
+	err    error
+	input  *hierarchyEntity.ResolveZonePayloadKey
+}
+
+func (s *zonePayloadKeyResolverStub) ResolveZonePayloadKey(_ context.Context, in *hierarchyEntity.ResolveZonePayloadKey) (*hierarchyEntity.ResolveZonePayloadKey, error) {
+	s.input = in
+	return s.result, s.err
+}
 
 func TestProtectedJobPayloadV1Vector(t *testing.T) {
 	var vector struct {
@@ -46,5 +61,43 @@ func TestProtectedJobPayloadV1Vector(t *testing.T) {
 	}
 	if actual := base64.StdEncoding.EncodeToString(protected.Payload); actual != vector.ProtectedPayloadBase64 {
 		t.Fatalf("protected payload wire drifted:\nwant %s\n got %s", vector.ProtectedPayloadBase64, actual)
+	}
+}
+
+func TestProtectorResolvesZoneKeyWithoutDatabaseOwnership(t *testing.T) {
+	zoneID := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	keyID := uuid.MustParse("10000000-0000-7000-8000-000000000001")
+	privateKey, err := ecdh.X25519().GenerateKey(bytes.NewReader(bytes.Repeat([]byte{0x33}, 32)))
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	resolver := &zonePayloadKeyResolverStub{result: &hierarchyEntity.ResolveZonePayloadKey{
+		ZoneID: zoneID, KeyID: keyID, PublicKey: privateKey.PublicKey().Bytes(), Available: true,
+	}}
+	protector, err := NewProtector(resolver)
+	if err != nil {
+		t.Fatalf("construct protector: %v", err)
+	}
+	protected, err := protector.Seal(context.Background(), Metadata{
+		ZoneID: zoneID, SourceDomain: "STORAGE", JobTopic: "storage.bucket.create",
+		ResourceID: "bucket-1", JobVersion: 1, PayloadSchemaVersion: 1,
+	}, []byte("payload"))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if resolver.input == nil || resolver.input.ZoneID != zoneID || protected.KeyID != keyID {
+		t.Fatalf("resolver boundary mismatch: input=%+v key=%s", resolver.input, protected.KeyID)
+	}
+}
+
+func TestProtectorFailsClosedWhenHierarchyKeyIsUnavailable(t *testing.T) {
+	resolver := &zonePayloadKeyResolverStub{result: &hierarchyEntity.ResolveZonePayloadKey{}}
+	protector, err := NewProtector(resolver)
+	if err != nil {
+		t.Fatalf("construct protector: %v", err)
+	}
+	_, err = protector.Seal(context.Background(), Metadata{ZoneID: uuid.New()}, []byte("payload"))
+	if !errors.Is(err, ErrKeyUnavailable) {
+		t.Fatalf("expected ErrKeyUnavailable, got %v", err)
 	}
 }

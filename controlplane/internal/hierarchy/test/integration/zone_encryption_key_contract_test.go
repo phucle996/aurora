@@ -111,18 +111,45 @@ func TestProtectedPayloadRetentionAndCommitRaceGuardsCoverEveryRuntimeOutbox(t *
 }
 
 func TestProducerReadinessRequiresARecentFencedZoneObservation(t *testing.T) {
-	producerSource, err := os.ReadFile("../../../security/job_payload.go")
+	repositorySource, err := os.ReadFile("../../repository/zone_encryption_key_repo.go")
 	if err != nil {
-		t.Fatalf("read protected payload producer: %v", err)
+		t.Fatalf("read Hierarchy key repository: %v", err)
 	}
 	for _, required := range []string{
 		"status = 'active'",
 		"loaded_at is not null",
-		"loaded_observed_at >= now() - interval '30 seconds'",
+		"loaded_observed_at >= statement_timestamp() - interval '30 seconds'",
 		"loaded_observed_fencing_token is not null",
+		"ready_for_nanoseconds",
 	} {
-		if !strings.Contains(strings.ToLower(string(producerSource)), required) {
+		if !strings.Contains(strings.ToLower(string(repositorySource)), required) {
 			t.Fatalf("protected-payload producer readiness is missing %q", required)
+		}
+	}
+
+	serviceSource, err := os.ReadFile("../../service/zone_encryption_key_service.go")
+	if err != nil {
+		t.Fatalf("read Hierarchy key service: %v", err)
+	}
+	for _, required := range []string{
+		"hierarchy_zone_payload_key",
+		"cacheengine.register",
+		"usableuntil",
+		"cacheengine.getorload",
+	} {
+		if !strings.Contains(strings.ToLower(string(serviceSource)), required) {
+			t.Fatalf("L1-only key resolution is missing %q", required)
+		}
+	}
+
+	producerSource, err := os.ReadFile("../../../security/job_payload.go")
+	if err != nil {
+		t.Fatalf("read protected payload producer: %v", err)
+	}
+	producer := strings.ToLower(string(producerSource))
+	for _, forbidden := range []string{"pgxpool", "queryrow", "zone_encryption_keys"} {
+		if strings.Contains(producer, forbidden) {
+			t.Fatalf("security boundary must not own PostgreSQL detail %q", forbidden)
 		}
 	}
 }

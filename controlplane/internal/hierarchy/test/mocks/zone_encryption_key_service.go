@@ -11,21 +11,25 @@ type ZoneEncryptionKeyService struct {
 	ListCalls     int
 	ActivateCalls int
 	RetireCalls   int
+	ResolveCalls  int
 
 	Registered *entity.RegisterZoneEncryptionKey
 	Listed     *entity.ListZoneEncryptionKeys
 	Activated  *entity.ActivateZoneEncryptionKey
 	Retired    *entity.RetireZoneEncryptionKey
+	Resolved   *entity.ResolveZonePayloadKey
 
 	RegisterResult *entity.RegisterZoneEncryptionKey
 	ListResult     []entity.ListZoneEncryptionKeys
 	ActivateResult *entity.ActivateZoneEncryptionKey
 	RetireResult   *entity.RetireZoneEncryptionKey
+	ResolveResult  *entity.ResolveZonePayloadKey
 
 	RegisterErr error
 	ListErr     error
 	ActivateErr error
 	RetireErr   error
+	ResolveErr  error
 }
 
 func (s *ZoneEncryptionKeyService) RegisterZoneEncryptionKey(_ context.Context, in *entity.RegisterZoneEncryptionKey) (*entity.RegisterZoneEncryptionKey, error) {
@@ -50,4 +54,10 @@ func (s *ZoneEncryptionKeyService) RetireZoneEncryptionKey(_ context.Context, in
 	s.RetireCalls++
 	s.Retired = in
 	return s.RetireResult, s.RetireErr
+}
+
+func (s *ZoneEncryptionKeyService) ResolveZonePayloadKey(_ context.Context, in *entity.ResolveZonePayloadKey) (*entity.ResolveZonePayloadKey, error) {
+	s.ResolveCalls++
+	s.Resolved = in
+	return s.ResolveResult, s.ResolveErr
 }

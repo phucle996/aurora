@@ -228,6 +228,15 @@ Các invariant đã được implementation enforce:
 11. Sau retire và retention cleanup, rollout mới được gỡ private counterpart khỏi
     read-only Dataplane keyring. Zone hard-delete vẫn phải fail closed khi retained
     ciphertext của Zone tồn tại; không cascade public metadata để che mất evidence.
+12. Controlplane resolve ACTIVE public key qua Hierarchy service và Cache Engine L1
+    của từng replica; `internal/security` không query PostgreSQL. Cache miss mới gọi
+    đúng một Hierarchy repository function. Key bytes không đi vào Redis L2 hay
+    cache fanout payload, miss/unavailable không được negative-cache. PostgreSQL trả
+    remaining readiness duration và service dựng hard monotonic deadline ngắn hơn
+    lease; TTL jitter không được kéo dài quyền seal. Pod restart chỉ làm cold L1 và
+    DB lỗi sau hard deadline phải fail-close. Sau activation commit, service phát
+    invalidate-only fanout với payload rỗng để replica xóa L1; Pub/Sub mất message
+    không rollback transaction và hard deadline vẫn là fallback.
 
 ---
 

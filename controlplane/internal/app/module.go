@@ -102,7 +102,7 @@ func NewGlobalModules(cfg *config.Config,
 	if hierarchyModule == nil {
 		return nil, errors.New("app: init critical hierarchy module: hierarchy module is nil")
 	}
-	payloadProtector, err := jobpayload.NewProtector(db, cfg.SchemaSQL.Hierarchy)
+	payloadProtector, err := jobpayload.NewProtector(hierarchyModule.ZoneEncryptionKeyService)
 	if err != nil {
 		return nil, fmt.Errorf("app: init protected job payload boundary: %w", err)
 	}

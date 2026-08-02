@@ -340,6 +340,16 @@ DTO, schema, response, event hoặc cache của Hierarchy.
 `ACTIVE` chỉ được dùng để seal khi `loaded_at` có fresh Zone report. Report là giao
 của keyring trên mọi Dataplane replica fresh, không phải báo cáo riêng của leader;
 JO fence report bằng timestamp cùng Zone-KV leader token.
+Hierarchy resolve key qua một workflow nội bộ duy nhất: service đọc Cache Engine
+L1, cache miss mới gọi repository lấy PostgreSQL. Public-key bytes không được đưa
+vào L2 Redis hoặc fanout payload. Cache value mang hard readiness deadline tính từ
+remaining duration do PostgreSQL trả về; deadline này luôn được kiểm tra tại cache
+boundary vì TTL jitter chỉ có trách nhiệm dọn RAM, không được gia hạn quyền seal.
+Miss, stale readiness và Zone chưa có key không được negative-cache. Package
+`internal/security` chỉ nhận typed resolver, không giữ pool, schema hoặc SQL của
+Hierarchy. Sau activation commit, service publish invalidate-only qua fanout với
+payload rỗng để các replica xóa L1; lỗi/mất Pub/Sub không rollback business
+transaction và hard deadline vẫn là fallback.
 Retire `DECRYPT_ONLY` có drain window và CTE kiểm tra mọi retained ciphertext; còn
 reference thì trả conflict. Outbox INSERT ở từng module khóa Zone/key và từ chối key
 đã retired, đóng race giữa seal, rotation và durable commit.

@@ -25,6 +25,12 @@ import (
 type Cache = l1_cache.Cache
 type L1Envelope = l1_cache.L1Envelope
 type RedisFanout = fanout_cache.RedisFanout
+
+// FanoutPublisher is the narrow invalidation-only surface consumed by modules.
+// It intentionally exposes no Redis client or cache payload serialization.
+type FanoutPublisher interface {
+	Publish(context.Context, string, []byte) (int64, error)
+}
 type L2Cache = l2_cache.L2Cache
 type L2LuaExecutor = l2_lua_executor.L2LuaExecutor
 type L2Envelope = l2_cache.L2Envelope

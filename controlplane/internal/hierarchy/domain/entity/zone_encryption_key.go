@@ -98,3 +98,16 @@ type RetireZoneEncryptionKey struct {
 	RetiredAt    *time.Time
 	StateChanged bool
 }
+
+// ResolveZonePayloadKey is the internal read workflow used by the platform
+// payload protector. ReadyFor is calculated by PostgreSQL from the latest
+// fenced Zone observation; UsableUntil is then derived by the service on the
+// local monotonic clock so wall-clock skew cannot extend the readiness lease.
+type ResolveZonePayloadKey struct {
+	ZoneID      uuid.UUID
+	KeyID       uuid.UUID
+	PublicKey   []byte
+	ReadyFor    time.Duration
+	UsableUntil time.Time
+	Available   bool
+}

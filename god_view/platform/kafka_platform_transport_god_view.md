@@ -126,6 +126,13 @@ vì vậy rolling update không thể đưa ciphertext cho pod cũ chưa có key
 offset và process fail-safe để supervisor restart. Sai suite/AAD/auth/route là poison terminal:
 publish sanitized DLQ durable rồi mới settle, không copy raw command/ciphertext vào DLQ.
 
+ACTIVE key admission thuộc Hierarchy: service resolve qua L1 RAM riêng từng
+Controlplane replica, cache miss mới gọi Hierarchy repository/PostgreSQL. Security
+codec không giữ DB pool hoặc biết schema. L1 không dùng L2 Redis cho key bytes và
+không negative-cache unavailable outcome; hard readiness deadline do DB duration
+derive luôn thắng TTL jitter. Sau deadline, DB miss/lỗi phải fail-close trước khi
+business mutation/outbox commit.
+
 Hierarchy giữ public X25519 key và lifecycle `STAGED|ACTIVE|DECRYPT_ONLY|RETIRED`; Dataplane giữ
 private counterpart. Activate khóa row Zone để serialize rotation. Outbox INSERT khóa Zone/key và
 chỉ nhận `ACTIVE|DECRYPT_ONLY`; `DECRYPT_ONLY` có drain window 5 phút trước retire để request đã

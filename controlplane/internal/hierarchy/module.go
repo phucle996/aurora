@@ -32,6 +32,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
+	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
 
 	hierarchyRepoImpl "controlplane/internal/hierarchy/repository"
 	hierarchySvcImpl "controlplane/internal/hierarchy/service"
@@ -49,6 +50,7 @@ type Module struct {
 	tenantService            *hierarchySvcImpl.TenantService
 	ZoneHandler              *hierarchyHandler.ZoneHandler
 	ZoneEncryptionKeyHandler *hierarchyHandler.ZoneEncryptionKeyHandler
+	ZoneEncryptionKeyService hierarchySvcInterface.ZoneEncryptionKeyService
 	WorkspacePersonalHandler *hierarchyHandler.WorkspacePersonalHandler
 	WorkspaceTenantHandler   *hierarchyHandler.WorkspaceTenantHandler
 	TenantHandler            *hierarchyHandler.TenantHandler
@@ -75,6 +77,9 @@ func NewModule(
 	}
 	if cacheEngine == nil {
 		return nil, fmt.Errorf("hierarchy module: cache registry is required")
+	}
+	if cacheEngine.Fanout == nil {
+		return nil, fmt.Errorf("hierarchy module: cache invalidation fanout is required")
 	}
 	if otel == nil {
 		return nil, fmt.Errorf("hierarchy module: observability is required")
@@ -132,7 +137,7 @@ func NewModule(
 	if zoneEncryptionKeyRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key repository is nil")
 	}
-	zoneEncryptionKeyService := hierarchySvcImpl.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo, metrics)
+	zoneEncryptionKeyService := hierarchySvcImpl.NewZoneEncryptionKeyService(zoneEncryptionKeyRepo, cacheEngine, cacheEngine.Fanout, metrics)
 	if zoneEncryptionKeyService == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key service is nil")
 	}
@@ -193,6 +198,7 @@ func NewModule(
 		tenantService:            concreteTenantService,
 		ZoneHandler:              zHandler,
 		ZoneEncryptionKeyHandler: zoneEncryptionKeyHTTPHandler,
+		ZoneEncryptionKeyService: zoneEncryptionKeyService,
 		WorkspacePersonalHandler: wPersonalHandler,
 		WorkspaceTenantHandler:   wTenantHandler,
 		TenantHandler:            tHandler,

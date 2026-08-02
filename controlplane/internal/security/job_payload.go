@@ -16,13 +16,11 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strings"
 
+	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	platformtransportproto "controlplane/pkg/platformtransport/proto"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -57,58 +55,45 @@ type Protector interface {
 	Seal(context.Context, Metadata, []byte) (*Protected, error)
 }
 
+// ZonePayloadKeyResolver is implemented by Hierarchy, the owner of Zone public
+// key lifecycle and readiness. Security deliberately has no PostgreSQL/schema
+// dependency and trusts the typed result returned by this upstream boundary.
+type ZonePayloadKeyResolver interface {
+	ResolveZonePayloadKey(context.Context, *hierarchyEntity.ResolveZonePayloadKey) (*hierarchyEntity.ResolveZonePayloadKey, error)
+}
+
 type protector struct {
-	db     *pgxpool.Pool
-	query  string
-	random io.Reader
+	resolver ZonePayloadKeyResolver
+	random   io.Reader
 }
 
 // NewProtector returns the single platform codec shared by job-producing
-// modules. The dependency graph validates db/schema once; services and
-// repositories never probe dependencies during a workflow.
-func NewProtector(db *pgxpool.Pool, hierarchySchema string) (Protector, error) {
-	if db == nil {
-		return nil, errors.New("jobpayload: postgres pool is required")
-	}
-	hierarchySchema = strings.TrimSpace(hierarchySchema)
-	if hierarchySchema == "" {
-		return nil, errors.New("jobpayload: hierarchy schema is required")
-	}
-	for _, r := range hierarchySchema {
-		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
-			return nil, errors.New("jobpayload: hierarchy schema contains an unsafe identifier")
-		}
+// modules. App bootstrap validates the Hierarchy resolver once; workflow code
+// never probes dependencies or reaches into the Hierarchy database directly.
+func NewProtector(resolver ZonePayloadKeyResolver) (Protector, error) {
+	if resolver == nil {
+		return nil, errors.New("jobpayload: Zone payload key resolver is required")
 	}
 	return &protector{
-		db: db,
-		query: fmt.Sprintf(`
-			SELECT id, public_key
-			FROM %s.zone_encryption_keys
-			WHERE zone_id = $1
-			  AND status = 'active'
-			  AND loaded_at IS NOT NULL
-			  AND loaded_observed_at >= now() - interval '30 seconds'
-			  AND loaded_observed_fencing_token IS NOT NULL
-		`, hierarchySchema),
-		random: rand.Reader,
+		resolver: resolver,
+		random:   rand.Reader,
 	}, nil
 }
 
 func (p *protector) Seal(ctx context.Context, metadata Metadata, plaintext []byte) (*Protected, error) {
-	var keyID uuid.UUID
-	var recipientPublicKey []byte
-	if err := p.db.QueryRow(ctx, p.query, metadata.ZoneID).Scan(&keyID, &recipientPublicKey); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Missing, stale or not-yet-loaded key material is one admission
-			// outcome. The workflow remains uncommitted and can be retried after
-			// the next fresh Zone readiness report.
-			return nil, ErrKeyUnavailable
-		}
+	resolved, err := p.resolver.ResolveZonePayloadKey(ctx, &hierarchyEntity.ResolveZonePayloadKey{ZoneID: metadata.ZoneID})
+	if err != nil {
 		// Preserve infrastructure cause for correlated logs/traces while the
 		// handler still maps the generic security taxonomy.
-		return nil, fmt.Errorf("%w: active Zone key lookup: %w", ErrProtectionFailed, err)
+		return nil, fmt.Errorf("%w: resolve active Zone key: %w", ErrProtectionFailed, err)
 	}
-	return seal(p.random, nil, keyID, recipientPublicKey, metadata, plaintext)
+	if resolved == nil || !resolved.Available {
+		// Missing, stale or not-yet-loaded key material is one admission
+		// outcome. The workflow remains uncommitted and can be retried after
+		// the next fresh Zone readiness report.
+		return nil, ErrKeyUnavailable
+	}
+	return seal(p.random, nil, resolved.KeyID, resolved.PublicKey, metadata, plaintext)
 }
 
 func seal(randomSource io.Reader, deterministicEphemeralKey []byte, keyID uuid.UUID, recipientPublicKey []byte, metadata Metadata, plaintext []byte) (*Protected, error) {

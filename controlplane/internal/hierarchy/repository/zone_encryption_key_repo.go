@@ -21,6 +21,7 @@ type zoneEncryptionKeyRepository struct {
 	listQuery     string
 	activateQuery string
 	retireQuery   string
+	resolveQuery  string
 }
 
 func NewZoneEncryptionKeyRepository(
@@ -204,6 +205,32 @@ func NewZoneEncryptionKeyRepository(
 				COALESCE((SELECT state_changed FROM selected), false),
 				COALESCE((SELECT has_retained_ciphertext FROM retained_ciphertext), false)
 		`, hierarchySchema, hierarchySchema, storageSchema, mailSchema, mailSchema, hypervisorSchema, managedServiceSchema, managedServiceSchema, managedServiceSchema, hierarchySchema),
+		resolveQuery: fmt.Sprintf(`
+			WITH target_zone AS MATERIALIZED (
+				SELECT id
+				FROM %s.zones
+				WHERE id = $1
+			), selected AS MATERIALIZED (
+				SELECT key.id, key.zone_id, key.public_key,
+					(EXTRACT(EPOCH FROM (
+						key.loaded_observed_at + interval '30 seconds' - statement_timestamp()
+					)) * 1000000000)::bigint AS ready_for_nanoseconds
+				FROM %s.zone_encryption_keys key
+				JOIN target_zone ON target_zone.id = key.zone_id
+				WHERE key.status = 'active'
+					AND key.algorithm = $2
+					AND key.loaded_at IS NOT NULL
+					AND key.loaded_observed_at >= statement_timestamp() - interval '30 seconds'
+					AND key.loaded_observed_fencing_token IS NOT NULL
+			)
+			SELECT
+				EXISTS(SELECT 1 FROM target_zone),
+				EXISTS(SELECT 1 FROM selected),
+				COALESCE((SELECT id FROM selected), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT zone_id FROM selected), '00000000-0000-0000-0000-000000000000'::uuid),
+				COALESCE((SELECT public_key FROM selected), decode('', 'hex')),
+				COALESCE((SELECT ready_for_nanoseconds FROM selected), 0)
+		`, hierarchySchema, hierarchySchema),
 	}
 }
 
@@ -355,5 +382,30 @@ func (r *zoneEncryptionKeyRepository) RetireZoneEncryptionKey(ctx context.Contex
 		currentStatus != string(hierarchyEntity.ZoneEncryptionKeyStatusRetired)) {
 		return nil, hierarchyTaxonomy.ErrInvalidTransition
 	}
+	return out, nil
+}
+
+func (r *zoneEncryptionKeyRepository) ResolveZonePayloadKey(ctx context.Context, in *hierarchyEntity.ResolveZonePayloadKey) (*hierarchyEntity.ResolveZonePayloadKey, error) {
+	out := &hierarchyEntity.ResolveZonePayloadKey{ZoneID: in.ZoneID}
+	var zoneExists, selected bool
+	var readyForNanoseconds int64
+	err := r.db.QueryRow(ctx, r.resolveQuery, in.ZoneID, hierarchyEntity.ZoneEncryptionKeyAlgorithm).Scan(
+		&zoneExists,
+		&selected,
+		&out.KeyID,
+		&out.ZoneID,
+		&out.PublicKey,
+		&readyForNanoseconds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !zoneExists {
+		return nil, hierarchyTaxonomy.ErrNotFound
+	}
+	if !selected || readyForNanoseconds <= 0 {
+		return nil, hierarchyTaxonomy.ErrPreconditionFailed
+	}
+	out.ReadyFor = time.Duration(readyForNanoseconds)
 	return out, nil
 }
