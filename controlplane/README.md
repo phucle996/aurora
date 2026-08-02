@@ -8,6 +8,10 @@ Tài liệu này định nghĩa cấu trúc kiến trúc, quy ước đặt tên
 
 `controlplane` đóng vai trò là bộ não điều phối trung tâm của nền tảng Cloud Native. Nó chịu trách nhiệm nhận yêu cầu quản trị, xác thực phân quyền, quản lý trạng thái nghiệp vụ chuẩn hóa (Source of Truth) lưu tại PostgreSQL, và phân phối chỉ thị cho các Dataplane hoặc Agent chạy ở biên.
 
+Môi trường Docker development được vận hành bên ngoài module bằng hai stack
+Central/Zone độc lập; xem [dev/README.md](../dev/README.md) để biết boundary,
+thứ tự start/stop và quy tắc giữ data volume.
+
 ### Nguyên tắc Luồng Dữ liệu (Strict Layered Data Flow)
 Luồng đi của dữ liệu là **luồng một chiều nghiêm ngặt** từ ngoài vào trong:
 ```

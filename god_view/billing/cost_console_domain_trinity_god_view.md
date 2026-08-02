@@ -429,7 +429,7 @@ Nonce chỉ consume sau signature hợp lệ. Replay, body/path/method mismatch 
 | Alias/source verification | `acr/src/billing/verify.rs` |
 | ACR dispatch/header overwrite | `acr/src/gateway/ext_authz.rs` |
 | IAM five-level Render Context | `controlplane/internal/iam/service/rbac_platform_service.go` |
-| Cost vhost IAM context branch | `controlplane/dev/envoy/routes/cost_manager_vhost.yaml`, `https_routes.yaml` |
+| Cost vhost IAM context branch | `dev/central/envoy/routes/cost_manager_vhost.yaml`, `https_routes.yaml` |
 | Redis role split config | `acr/src/config.rs`, `acr/src/main.rs` |
 | IAM Shared Redis responder + Auth Redis writer | `controlplane/internal/iam/transport/pubsub/handler/billing_authorization_redis.go` |
 | IAM RBAC invalidation | `controlplane/internal/iam/service/rbac_platform_service.go`, `user_service.go` |

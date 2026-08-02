@@ -1,0 +1,138 @@
+extensions:
+  # Filelog offsets and exporter queues survive a collector restart. This is
+  # diagnostic durability only; Kafka/result state remains authoritative.
+  file_storage:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Docker development lacks the Kubernetes namespace filesystem boundary.
+  # Read the canonical Docker path once and reject every non-Zone record in a
+  # bounded processor before it can reach Zone VictoriaLogs.
+  filelog:
+    start_at: end
+    storage: file_storage
+    max_log_size: 1MiB
+    max_log_size_behavior: truncate
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    exclude:
+      - /var/lib/docker/containers/${env:HOSTNAME}*/*
+    include_file_path: true
+    operators:
+      - type: json_parser
+        id: parser_docker
+        on_error: send_quiet
+      - type: move
+        id: move_log_to_body
+        from: attributes.log
+        to: body
+        on_error: send_quiet
+      - type: json_parser
+        id: parser_app
+        on_error: send_quiet
+      - type: move
+        id: move_message_to_body
+        from: attributes.message
+        to: body
+        on_error: send_quiet
+      - type: move
+        id: move_msg_to_body
+        from: attributes.msg
+        to: body
+        on_error: send_quiet
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+
+  transform/zone_identity:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(resource.attributes["service.name"], attributes["service_name"]) where attributes["service_name"] != nil
+          - set(resource.attributes["service.instance.id"], attributes["service_instance_id"]) where attributes["service_instance_id"] != nil
+          - set(resource.attributes["aurora.component.scope"], "zone") where attributes["zone_id"] != nil
+          - set(resource.attributes["aurora.zone.id"], attributes["zone_id"]) where attributes["zone_id"] != nil
+          - set(severity_text, attributes["level"]) where attributes["level"] != nil
+          - delete_key(attributes, "log.file.name")
+          - delete_key(attributes, "log.file.path")
+          - delete_key(attributes, "stream")
+
+  filter/only_zone_runtime:
+    error_mode: ignore
+    logs:
+      log_record:
+        # Drop a record unless it carries the Dataplane Zone identity or is a
+        # reviewed Zone Edge access-log schema. This prevents the two Docker
+        # collectors from duplicating Central logs into the customer store.
+        - attributes["zone_id"] == nil and attributes["log_type"] == nil
+        - attributes["zone_id"] == nil and attributes["log_type"] != nil and not IsMatch(attributes["log_type"], "^zone-")
+
+  batch:
+
+exporters:
+  prometheusremotewrite:
+    endpoint: "http://zone-victoriametrics:8428/api/v1/write"
+    tls:
+      insecure: true
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  otlphttp/victorialogs:
+    endpoint: "http://zone-victorialogs:9428/insert/opentelemetry"
+    headers:
+      "VL-Stream-Fields": "service_name,zone_id,node_id,aurora_module,aurora_resource_type,aurora_resource_id"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 0s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 10000
+      storage: file_storage
+    tls:
+      insecure: true
+
+  otlphttp/victoriatraces:
+    endpoint: "http://zone-victoriatraces:10428/insert/opentelemetry"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 0s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 10000
+      storage: file_storage
+    tls:
+      insecure: true
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/victoriatraces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, batch]
+      exporters: [otlphttp/victorialogs]

@@ -448,7 +448,7 @@ Customer Logs/Metrics là Zone-local observability read path, không phải oper
 runtime truth. Managed-service workload đi qua OTel Collector vào VictoriaMetrics/
 VictoriaLogs của đúng Zone. Browser trước hết đi assertion path qua Zone Control Edge
 để nhận scoped ticket TTL 5 phút, rồi mở stream tối đa 5 phút qua Zone Public Edge tới Rust service
-`zone-observability-stream`. Service chỉ nhận trusted scope đã inject, tự thêm filter
+generic `zone-runtime-stream`. Service chỉ nhận trusted scope đã inject, tự thêm filter
 Zone/workspace/owner/instance/component và chỉ chạy panel allow-list; Console không
 query Victoria trực tiếp hoặc gửi raw PromQL/LogsQL. Metrics là sampled/eventual,
 logs tail có thể mất khi reconnect; `SUCCESS`/`FAILED` vẫn chỉ được xác nhận qua

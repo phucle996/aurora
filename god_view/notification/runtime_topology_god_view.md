@@ -74,8 +74,8 @@ Managed Service không thêm `RealtimeKind`, Redis Pub/Sub producer hay
 runtime protocol cho Managed Service; nó không được relay sang Notification,
 Centrifugo, Zone Public Edge hoặc Browser.
 
-Customer-facing logs/metrics là Zone-local Victoria read path qua
-`zone-observability-stream` và Zone Public Edge, nằm ngoài Notification topology.
+Customer-facing runtime logs/metrics/events là Zone-local Victoria read path qua
+generic `zone-runtime-stream` và Zone Public Edge, nằm ngoài Notification topology.
 `PROCESSING → SUCCESS|FAILED` vẫn là job notification durable path duy nhất: JO XADD
 `stream:{job_notifications}`, Notification upsert cùng một Scylla timeline/inbox
 identity, rồi publish `notifications:<user_id>`. Đây là business completion; Victoria

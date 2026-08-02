@@ -9,7 +9,7 @@ import (
 )
 
 func TestTelemetryBackendCorrelationConfiguration(t *testing.T) {
-	collector, err := os.ReadFile("../../dev/otel/otel-collector.yml")
+	collector, err := os.ReadFile("../../../dev/central/otel/otel-collector.yml")
 	if err != nil {
 		t.Fatalf("read collector config: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestTelemetryBackendCorrelationConfiguration(t *testing.T) {
 		}
 	}
 
-	datasources, err := os.ReadFile("../../dev/grafana/provisioning/datasources/datasources.yml")
+	datasources, err := os.ReadFile("../../../dev/central/grafana/provisioning/datasources/datasources.yml")
 	if err != nil {
 		t.Fatalf("read Grafana datasource config: %v", err)
 	}

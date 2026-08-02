@@ -78,6 +78,6 @@ Zone Edge path enter aggregates. MinIO direct data-plane ports remain private.
 | Presigned data ingress | `zone-public-edge-gateway/envoy.yaml` |
 | Staged Zone assertion verifier | `zone-control-edge-gateway/authorizer/src/authorization.rs` |
 | Staged access projection | `dataplane/src/infra/zone_kv.rs` (`AURORA_ZONE_ACCESS`) |
-| Hourly usage schema | `controlplane/dev/clickhouse/init.sql` |
+| Hourly usage schema | `dev/central/clickhouse/init.sql` |
 | Owner resolution and debit | `cost-manager/engine/src/service/storage/egress_billing.rs` |
 | Pipeline God View | `god_view/billing/resource_ownership_god_view.md` |

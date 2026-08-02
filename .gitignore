@@ -53,3 +53,4 @@ logs/
 controlplane/tmp/
 dataplane/target/
 zone-control-edge-gateway/authorizer/target/
+zone-runtime-stream/target/

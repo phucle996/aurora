@@ -64,7 +64,7 @@ P01 Shared foundation, Zone binding, migration, transport base
                          ↓
                        P07 Result settlement/reconcile/timeline
                       ↙                         ↘
-            P08 Console admin/customer UI      P09 Zone observability read path
+            P08 Console admin/customer UI      P09 generic Zone Runtime Stream
                       ↘                         ↙
                          P10 Staging drills, pilot, release gate
 ```
@@ -986,10 +986,18 @@ instance through Console without raw YAML/input/Secret or optimistic runtime fic
   request handling explains accepted/unknown state without retrying non-idempotent HTTP
   mutation automatically.
 
-## 14. P09 — Zone-local customer observability read path
+## 14. P09 — Generic Zone Runtime Stream read path
 
-**Mục tiêu:** customer xem metrics/logs của đúng managed instance qua two existing Zone
-gateways và Victoria, nhưng path này không ảnh hưởng command/lifecycle/timeline.
+**Implementation status:** FOUNDATION SHIPPED — root Rust subproject
+`zone-runtime-stream` đã có generic trusted scope, fixed Victoria query shaping,
+bounded snapshot/live read, shared SSE fan-out, backpressure gap, stream lifetime,
+graceful shutdown và design README. OTel enrichment, `runtime.read` ticket, Public
+Edge route, Managed Service panel adapter và Console integration vẫn pending.
+
+**Mục tiêu:** customer xem runtime metrics/logs/events của đúng resource qua hai
+existing Zone gateways và Victoria. Managed Service là adapter đầu tiên; Hypervisor,
+Mail và Storage sẽ dùng cùng stream contract. Path này không ảnh hưởng
+command/lifecycle/timeline.
 
 **Dependency:** P01 Zone-binding/telemetry foundation, P06 protected Kubernetes
 metadata, P07 durable instance scope. Public enablement waits for P10 security/drill.
@@ -997,7 +1005,7 @@ metadata, P07 durable instance scope. Public enablement waits for P10 security/d
 **Exit gate:** a scoped browser session can open a bounded read-only stream for one
 authorized instance; forged scope/raw query/slow client/Victoria outage fail safely.
 
-### MS-100 — OTel Collector managed-service metadata enrichment
+### MS-100 — OTel Collector generic runtime metadata enrichment
 
 * **Owner:** Zone observability owner.
 * **Scope:** read trusted Kubernetes annotations/labels and overwrite workload-supplied
@@ -1008,12 +1016,12 @@ authorized instance; forged scope/raw query/slow client/Victoria outage fail saf
 * **Acceptance:** spoofed workload OTLP attribute is overwritten; query filter fixture
   cannot fan out outside one verified owner/workspace/Zone/instance.
 
-### MS-101 — Generic scoped observability ticket preparation
+### MS-101 — Generic scoped runtime ticket preparation
 
 * **Owner:** ACR/Zone Control Edge/Control Authorizer owners.
-* **Scope:** reuse the generic assertion/ticket profile rather than invent a Managed
-  Service gateway or security principal. Ticket audience is
-  `zone-public-edge-gateway`, capability `observability.read`, TTL 5 minutes.
+* **Scope:** reuse the generic assertion/ticket profile rather than invent a
+  module gateway or security principal. Ticket audience is
+  `zone-public-edge-gateway`, capability `runtime.read`, TTL 5 minutes.
 * **Scope binding:** `jti`, actor/auth generation, owner/workspace/Zone/instance,
   allowed component/panel, method/path, policy revision and expiry. Zone Control
   Authorizer remains sole Zone assertion verifier.
@@ -1021,7 +1029,7 @@ authorized instance; forged scope/raw query/slow client/Victoria outage fail saf
   replay can at most open a quota-bounded second connection, never invoke business
   mutation.
 
-### MS-102 — Zone Public Edge observability stream route
+### MS-102 — Zone Public Edge generic runtime stream route
 
 * **Owner:** Zone Public Edge/Envoy owner.
 * **Scope:** named public stream route does one authorizer check at connection open,
@@ -1032,7 +1040,7 @@ authorized instance; forged scope/raw query/slow client/Victoria outage fail saf
 * **Acceptance:** Public Edge has no Victoria/NATS/Kafka/Zone KV credential and cannot
   forward raw client owner/namespace/selector/query headers.
 
-### MS-103 — `zone-observability-stream` Rust subproject
+### MS-103 — `zone-runtime-stream` Rust subproject
 
 * **Owner:** Zone observability service owner.
 * **Scope:** create separate root Rust project/Deployment with read-only egress only to
@@ -1058,7 +1066,7 @@ authorized instance; forged scope/raw query/slow client/Victoria outage fail saf
 * **Acceptance:** retention/series settings are Zone-local; observability access cannot
   become billing/authorization/completion evidence.
 
-### MS-105 — Console metrics/logs panels
+### MS-105 — Console generic runtime panels
 
 * **Owner:** Cloud Console + Zone edge integration owner.
 * **Scope:** feature obtains generic scoped ticket, opens separate SSE/read transport,

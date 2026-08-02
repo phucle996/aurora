@@ -3825,8 +3825,8 @@
       },
       {
         "current": {
-          "text": "controlplane-psql-exporter:9187",
-          "value": "controlplane-psql-exporter:9187"
+            "text": "psql-exporter:9187",
+            "value": "psql-exporter:9187"
         },
         "datasource": "victoriametrics",
         "definition": "",

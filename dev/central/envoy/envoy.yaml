@@ -1,7 +1,7 @@
 # [COMMENT]: Định danh Node và Cluster cho Envoy (bắt buộc khi dùng RDS Route Discovery Service)
 node:
-  id: controlplane-envoy-node
-  cluster: controlplane-envoy-cluster
+id: central-envoy-node
+cluster: central-envoy-cluster
 
 static_resources:
   listeners:

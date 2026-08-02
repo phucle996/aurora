@@ -730,7 +730,7 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | UI sign-in orchestration/error return | [`cloud-console/src/app/signin/signin-form.tsx`](../../cloud-console/src/app/signin/signin-form.tsx), [`page.tsx`](../../cloud-console/src/app/signin/page.tsx) |
 | UI login/OAuth API | [`cloud-console/src/features/auth/api.ts`](../../cloud-console/src/features/auth/api.ts) |
 | UI Ed25519 key/signing | [`cloud-console/src/lib/security/deviceKey.ts`](../../cloud-console/src/lib/security/deviceKey.ts) |
-| ACR ExtAuthz ordering/rate limit và route-only OAuth timeout | [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`ratelimit.rs`](../../acr/src/gateway/ratelimit.rs), [`controlplane/dev/envoy/routes/cloud_vhost.yaml`](../../controlplane/dev/envoy/routes/cloud_vhost.yaml) |
+| ACR ExtAuthz ordering/rate limit và route-only OAuth timeout | [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`ratelimit.rs`](../../acr/src/gateway/ratelimit.rs), [`dev/central/envoy/routes/cloud_vhost.yaml`](../../dev/central/envoy/routes/cloud_vhost.yaml) |
 | ACR login/challenge/session issue | [`acr/src/user/login.rs`](../../acr/src/user/login.rs) |
 | ACR Google/GitHub provider verification and zone-bound callback | [`acr/src/user/oauth.rs`](../../acr/src/user/oauth.rs), [`acr/src/config.rs`](../../acr/src/config.rs) |
 | ACR proof primitives | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs) |

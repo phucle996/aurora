@@ -1,0 +1,319 @@
+name: aurora-zone-z1-dev
+
+services:
+  # Zone JetStream is a local database for config, health and coordination.
+  # It is deliberately absent from the shared Central/Zone transport network.
+  nats-zone-z1:
+    cpuset: "0-5"
+    image: nats:2.10-alpine
+    container_name: zone-z1-nats-kv
+    command: [ "-js", "-sd", "/data", "-m", "8222" ]
+    ports:
+      - "14222:4222"
+      - "18222:8222"
+    volumes:
+      - dataplane_zone_z1_nats_data:/data
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      zone-infra:
+    restart: unless-stopped
+
+  dataplane-vn-n1:
+    cpuset: "0-5"
+    build:
+      context: ../..
+      dockerfile: dataplane/Dockerfile.prod
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: zone-z1-dataplane-1
+    init: true
+    env_file:
+      - ../../dataplane/.env
+    volumes:
+      # Zone-private HPKE keys never enter env, image, Central or Zone KV.
+      - ../../dataplane/.secrets:/run/secrets/aurora:ro
+    depends_on:
+      nats-zone-z1:
+        condition: service_healthy
+      zone-otel-collector:
+        condition: service_started
+    networks:
+      zone-infra:
+      # Dataplane reaches only Kafka and NATS Core on this shared boundary.
+      # Missing Central dependencies fail at bootstrap and restart boundedly.
+      aurora-transport:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  dataplane-vn-n2:
+    cpuset: "0-5"
+    build:
+      context: ../..
+      dockerfile: dataplane/Dockerfile.prod
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: zone-z1-dataplane-2
+    init: true
+    env_file:
+      - ../../dataplane/.env
+    volumes:
+      - ../../dataplane/.secrets:/run/secrets/aurora:ro
+    depends_on:
+      nats-zone-z1:
+        condition: service_healthy
+      zone-otel-collector:
+        condition: service_started
+    networks:
+      zone-infra:
+      aurora-transport:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  dataplane-vn-n3:
+    cpuset: "0-5"
+    build:
+      context: ../..
+      dockerfile: dataplane/Dockerfile.prod
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: zone-z1-dataplane-3
+    init: true
+    env_file:
+      - ../../dataplane/.env
+    volumes:
+      - ../../dataplane/.secrets:/run/secrets/aurora:ro
+    depends_on:
+      nats-zone-z1:
+        condition: service_healthy
+      zone-otel-collector:
+        condition: service_started
+    networks:
+      zone-infra:
+      aurora-transport:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  zone-otel-collector:
+    cpuset: "0-5"
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    container_name: zone-z1-otel-collector
+    user: "0:0"
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+      # Docker development has no per-Zone node filesystem. The collector tails
+      # the host path but its filter retains only records carrying trusted Zone
+      # identity or a Zone Edge log type.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - zone_z1_otel_file_storage:/var/lib/otelcol/file_storage
+    expose:
+      - "4317"
+      - "4318"
+    depends_on:
+      zone-victoriametrics:
+        condition: service_started
+      zone-victorialogs:
+        condition: service_started
+      zone-victoriatraces:
+        condition: service_started
+    networks:
+      zone-infra:
+      zone-telemetry-ingest:
+    restart: unless-stopped
+
+  zone-victoriametrics:
+    cpuset: "0-5"
+    image: victoriametrics/victoria-metrics:latest
+    container_name: zone-z1-victoriametrics
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-httpListenAddr=:8428"
+      - "-retentionPeriod=7d"
+    volumes:
+      - zone_z1_vmetrics_data:/victoria-metrics-data
+    expose:
+      - "8428"
+    networks:
+      zone-telemetry-ingest:
+      zone-runtime-read:
+    restart: unless-stopped
+
+  zone-victorialogs:
+    cpuset: "0-5"
+    image: victoriametrics/victoria-logs:latest
+    container_name: zone-z1-victorialogs
+    command:
+      - "-storageDataPath=/vlogs"
+      - "-httpListenAddr=:9428"
+      - "-retentionPeriod=3d"
+    volumes:
+      - zone_z1_vlogs_data:/vlogs
+    expose:
+      - "9428"
+    networks:
+      zone-telemetry-ingest:
+      zone-runtime-read:
+    restart: unless-stopped
+
+  zone-victoriatraces:
+    cpuset: "0-5"
+    image: victoriametrics/victoria-traces:latest
+    container_name: zone-z1-victoriatraces
+    command:
+      - "-storageDataPath=/vtraces"
+      - "-httpListenAddr=:10428"
+    volumes:
+      - zone_z1_vtraces_data:/vtraces
+    expose:
+      - "10428"
+    networks:
+      zone-telemetry-ingest:
+    restart: unless-stopped
+
+  zone-runtime-stream:
+    cpuset: "0-5"
+    build:
+      context: ../../zone-runtime-stream
+      dockerfile: Dockerfile
+    container_name: zone-z1-runtime-stream
+    init: true
+    env_file:
+      - ../../zone-runtime-stream/.env
+    depends_on:
+      zone-victoriametrics:
+        condition: service_started
+      zone-victorialogs:
+        condition: service_started
+    # No host port: the runtime read-plane is reachable only from a named Zone
+    # Public Edge route after the scoped-ticket contract is enabled.
+    expose:
+      - "8080"
+    networks:
+      # This service cannot resolve Dataplane, Zone KV, MinIO, Stalwart, OTel
+      # ingestion or the Central transport from either network.
+      zone-runtime-read:
+      zone-edge-runtime:
+    restart: unless-stopped
+
+  zone-public-edge-gateway:
+    cpuset: "0-5"
+    image: envoyproxy/envoy:v1.38.3
+    container_name: zone-z1-public-edge-gateway
+    command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
+    volumes:
+      - ../../zone-public-edge-gateway/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ../shared/tls/grpc-server.crt:/etc/aurora/tls/tls.crt:ro
+      - ../shared/tls/grpc-server.key:/etc/aurora/tls/tls.key:ro
+    ports:
+      - "29000:8080"
+    depends_on:
+      minio:
+        condition: service_started
+    networks:
+      # Separate networks prevent runtime-stream from gaining a path to MinIO
+      # merely because both are named Public Edge upstreams.
+      zone-edge-storage:
+      zone-edge-runtime:
+    restart: unless-stopped
+
+  stalwart:
+    cpuset: "0-5"
+    image: stalwartlabs/stalwart:v0.16.11
+    container_name: zone-z1-stalwart
+    ports:
+      - "8085:8080"
+    environment:
+      - STALWART_RECOVERY_ADMIN=admin:27012004
+      - STALWART_SECURITY_BLOCK_ENABLED=false
+      - STALWART_SECURITY_TRUSTED_NETWORK=172.16.0.0/12,127.0.0.1/8
+    volumes:
+      - controlplane_stalwart_etc:/etc/stalwart
+      - controlplane_stalwart_data:/var/lib/stalwart
+    networks:
+      zone-infra:
+        aliases:
+          - stalwart-mail
+    restart: unless-stopped
+
+  minio:
+    cpuset: "0-5"
+    image: minio/minio:RELEASE.2024-06-06T09-36-42Z
+    container_name: zone-z1-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      zone-infra:
+      zone-edge-storage:
+    restart: unless-stopped
+
+volumes:
+  # Preserve the pre-split local data volume names. The split does not delete
+  # or silently fork existing Zone KV, MinIO or Stalwart state.
+  dataplane_zone_z1_nats_data:
+    name: controlplane_dataplane_zone_z1_nats_data
+  controlplane_stalwart_etc:
+    name: controlplane_controlplane_stalwart_etc
+  controlplane_stalwart_data:
+    name: controlplane_controlplane_stalwart_data
+  minio_data:
+    name: controlplane_minio_data
+  zone_z1_otel_file_storage:
+  zone_z1_vmetrics_data:
+  zone_z1_vlogs_data:
+  zone_z1_vtraces_data:
+
+networks:
+  zone-infra:
+    internal: true
+  zone-telemetry-ingest:
+    internal: true
+  zone-runtime-read:
+    internal: true
+  zone-edge-storage:
+    internal: true
+  zone-edge-runtime:
+    internal: true
+  aurora-transport:
+    # The Central compose creates this exact network. Declaring it external
+    # prevents `zone down` from deleting the transport under a running Central.
+    external: true
+    name: aurora-dev-transport

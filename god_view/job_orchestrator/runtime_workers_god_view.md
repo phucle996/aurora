@@ -107,7 +107,7 @@ Cả SQL connection và logical replication dùng cùng `PostgresConfig`/TLS ide
 
 Các path private key chỉ được đọc tại connection factory và `Config` cố ý không implement
 `Debug`, tránh vô tình serialize DSN/password/token. File
-`controlplane/dev/job-orchestrator.env` là profile development được Compose nạp bằng
+`job-orchestrator/.env` là profile development được `dev/central/compose.yml` nạp bằng
 `env_file`; production phải inject cùng contract qua ConfigMap/Secret và volume certificate,
 không dùng hoặc copy credential development.
 

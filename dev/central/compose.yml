@@ -1,23 +1,26 @@
+name: aurora-central-dev
+
 services:
 
   controlplane1:
     cpuset: "0-5"
     build:
-      context: .
+      context: ../../controlplane
       # Chạy Dockerfile.prod: biên dịch Go binary tĩnh (CGO_ENABLED=0), image runtime chỉ ~30MB.
-      # Không có hot-reload. Mỗi lần thay đổi code cần `docker compose up --build` để rebuild.
+      # Không có hot-reload. Khi cần rebuild dùng đúng Central file:
+      # `docker compose -f dev/central/compose.yml up -d --build` từ repo root.
       dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: controlplane-dev-1
+    container_name: central-controlplane-1
     init: true
     env_file:
-      - .env
+      - ../../controlplane/.env
     volumes:
       # Mount TLS certs vào đúng path mà binary prod đọc (xem GRPC_TLS_* trong .env).
-      - ./dev/tls:/etc/controlplane/tls:ro
+      - ../shared/tls:/etc/controlplane/tls:ro
       # Binary prod chạy với WORKDIR /var/lib/controlplane và đọc policy tại
     depends_on:
       pbouncer:
@@ -47,18 +50,18 @@ services:
   controlplane2:
     cpuset: "0-5"
     build:
-      context: .
+      context: ../../controlplane
       dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: controlplane-dev-2
+    container_name: central-controlplane-2
     init: true
     env_file:
-      - .env
+      - ../../controlplane/.env
     volumes:
-      - ./dev/tls:/etc/controlplane/tls:ro
+      - ../shared/tls:/etc/controlplane/tls:ro
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -87,18 +90,18 @@ services:
   controlplane3:
     cpuset: "0-5"
     build:
-      context: .
+      context: ../../controlplane
       dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: controlplane-dev-3
+    container_name: central-controlplane-3
     init: true
     env_file:
-      - .env
+      - ../../controlplane/.env
     volumes:
-      - ./dev/tls:/etc/controlplane/tls:ro
+      - ../shared/tls:/etc/controlplane/tls:ro
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -127,20 +130,20 @@ services:
   envoy:
     cpuset: "0-5"
     image: envoyproxy/envoy:v1.38.3
-    container_name: controlplane-envoy
+    container_name: central-envoy
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
     volumes:
       # Cung cấp cấu hình định tuyến tĩnh và động v3 API cho Envoy.
-      - ./dev/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-      - ./dev/envoy/routes:/etc/envoy/routes:ro
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy/routes:/etc/envoy/routes:ro
       # Cung cấp chứng chỉ SSL chất lượng cao phục vụ TLS termination tại Edge.
-      - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
-      - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
+      - ../shared/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
+      - ../shared/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
       # Local single-Zone mTLS material. Production uses a dedicated workload
       # identity Secret and a private Zone endpoint.
-      - ./dev/tls/grpc-server.crt:/etc/envoy/zone-control/tls.crt:ro
-      - ./dev/tls/grpc-server.key:/etc/envoy/zone-control/tls.key:ro
-      - ./dev/tls/grpc-server.crt:/etc/envoy/zone-control/ca.crt:ro
+      - ../shared/tls/grpc-server.crt:/etc/envoy/zone-control/tls.crt:ro
+      - ../shared/tls/grpc-server.key:/etc/envoy/zone-control/tls.key:ro
+      - ../shared/tls/grpc-server.crt:/etc/envoy/zone-control/ca.crt:ro
     ports:
       - "80:8080" # Cổng HTTP tiêu chuẩn định tuyến đến Cloud UI/Admin UI
       - "443:443" # Cổng HTTPS bảo mật terminate TLS cho các giao tiếp an toàn (đã chuyển listener port của container sang 443)
@@ -159,25 +162,10 @@ services:
           - controlplane.aurora.local
     restart: unless-stopped
 
-  zone-public-edge-gateway:
-    cpuset: "0-5"
-    image: envoyproxy/envoy:v1.38.3
-    container_name: zone-public-edge-gateway
-    command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
-    volumes:
-      - ../zone-public-edge-gateway/envoy.yaml:/etc/envoy/envoy.yaml:ro
-      - ./dev/tls/grpc-server.crt:/etc/aurora/tls/tls.crt:ro
-      - ./dev/tls/grpc-server.key:/etc/aurora/tls/tls.key:ro
-    ports:
-      - "29000:8080" # HTTPS data path; MinIO validates presigned/SigV4 requests.
-    depends_on:
-      - minio
-    restart: unless-stopped
-
   clickhouse:
     cpuset: "0-5"
     image: clickhouse/clickhouse-server:latest
-    container_name: clickhouse-server
+    container_name: central-clickhouse
     environment:
       - CLICKHOUSE_SKIP_USER_SETUP=1
     ports:
@@ -185,13 +173,13 @@ services:
       - "19000:9000" # Cổng native protocol của ClickHouse
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./dev/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
 
   psql:
     cpuset: "0-5"
     image: postgres:18
-    container_name: controlplane-psql
+    container_name: central-controlplane-postgres
     command: [ "postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10" ]
     environment:
       POSTGRES_DB: controlplane
@@ -204,7 +192,7 @@ services:
       # Sử dụng named volume để lưu trữ dữ liệu bền vững, tránh mất mát dữ liệu khi container bị hủy.
       - controlplane_psql_data:/var/lib/postgresql
       # [SECURITY]: Mount script khởi tạo tài khoản giám sát postgres_exporter với phân quyền tối thiểu (Least Privilege).
-      - ./dev/postgres/init-monitoring.sql:/docker-entrypoint-initdb.d/init-monitoring.sql:ro
+      - ./postgres/init-monitoring.sql:/docker-entrypoint-initdb.d/init-monitoring.sql:ro
     healthcheck:
       # Thực thi pg_isready định kỳ để đảm bảo DB chỉ nhận kết nối khi đã sẵn sàng hoàn toàn.
       test: [ "CMD-SHELL", "pg_isready -U postgres -d controlplane" ]
@@ -224,7 +212,7 @@ services:
       PUBLICATION_NAME: outbox_pub
       REPLICATION_SLOT_NAME: outbox_slot
     volumes:
-      - ./dev/postgres/provision-changefeed.sh:/usr/local/bin/provision-changefeed.sh:ro
+      - ./postgres/provision-changefeed.sh:/usr/local/bin/provision-changefeed.sh:ro
     entrypoint: [ "/bin/sh", "/usr/local/bin/provision-changefeed.sh" ]
     depends_on:
       psql:
@@ -234,7 +222,7 @@ services:
   billing-psql:
     cpuset: "0-5"
     image: postgres:18
-    container_name: billing-psql
+    container_name: central-billing-postgres
     environment:
       POSTGRES_DB: billing
       POSTGRES_USER: billing_admin
@@ -253,18 +241,18 @@ services:
   cost-manager:
     cpuset: "0-5"
     build:
-      context: ../cost-manager
+      context: ../../cost-manager
       dockerfile: Dockerfile.dev
-    container_name: cost-manager
+    container_name: central-cost-manager
     ports:
       - "8084:8084" # REST API port
       - "9094:9094" # gRPC port
     # API and embedded Engine identities live in this app-owned file. The API
     # remaps VAULT_ENGINE_TOKEN only for the Engine child process.
     env_file:
-      - ../cost-manager/api/.env
+      - ../../cost-manager/api/.env
     volumes:
-      - ../cost-manager/api:/app/api
+      - ../../cost-manager/api:/app/api
     depends_on:
       billing-psql:
         condition: service_healthy
@@ -281,7 +269,7 @@ services:
   pbouncer:
     cpuset: "0-5"
     image: edoburu/pgbouncer:latest
-    container_name: controlplane-pbouncer
+    container_name: central-pgbouncer
     environment:
       - LISTEN_PORT=6432
       - DB_HOST=psql
@@ -322,7 +310,7 @@ services:
   psql-exporter:
     cpuset: "0-5"
     image: prometheuscommunity/postgres-exporter:v0.19.1
-    container_name: controlplane-psql-exporter
+    container_name: central-postgres-exporter
     environment:
       # [SECURITY]: Chuỗi kết nối sử dụng tài khoản postgres_exporter chuyên dụng có quyền pg_monitor.
       # Không sử dụng tài khoản root 'postgres' để đảm bảo tuân thủ tiêu chuẩn an ninh thông tin.
@@ -334,7 +322,7 @@ services:
       - PG_EXPORTER_AUTO_DISCOVER_DATABASES=false # Chỉ giám sát db controlplane để hạn chế số lượng active backends.
       - PG_EXPORTER_EXTEND_QUERY_PATH=/etc/postgres_exporter/queries.yaml
     volumes:
-      - ./dev/postgres/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+      - ./postgres/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
     depends_on:
       psql:
         condition: service_healthy
@@ -344,11 +332,11 @@ services:
   redis-exporter:
     cpuset: "0-5"
     image: oliver006/redis_exporter:v1.85.0
-    container_name: controlplane-redis-exporter
-    command: [ "-redis.addr=redis://controlplane-cp-redis:6379" ]
+    container_name: central-redis-exporter
+    command: [ "-redis.addr=redis://cp-redis:6379" ]
     environment:
       # [COMMENT]: Exporter chỉ scrape rebuildable Shared L2; không được cấp credential Auth Redis.
-      - REDIS_ADDR=redis://controlplane-cp-redis:6379
+      - REDIS_ADDR=redis://cp-redis:6379
     depends_on:
       cp-redis:
         condition: service_healthy
@@ -357,14 +345,14 @@ services:
   acr-redis:
     cpuset: "0-5"
     image: redis:8.8.0
-    container_name: controlplane-acr-redis
+    container_name: central-auth-redis
     # [COMMENT]: DB 0 duy nhất tương thích Redis Cluster; prefix + ACL cô lập session và authz projection.
     command: [ "redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--aclfile", "/usr/local/etc/redis/users.acl" ]
     ports:
       - "16380:6379" # Port core Redis dùng cho Identity Sessions và Rate Limiting của ACR
     volumes:
       - controlplane_acr_redis_data:/data
-      - ./dev/redis/auth-users.acl:/usr/local/etc/redis/users.acl:ro
+      - ./redis/auth-users.acl:/usr/local/etc/redis/users.acl:ro
     healthcheck:
       test: [ "CMD", "redis-cli", "--user", "health", "--pass", "aurora-dev-health-secret", "ping" ]
       interval: 5s
@@ -375,7 +363,7 @@ services:
   cp-redis:
     cpuset: "0-5"
     image: redis:8.8.0
-    container_name: controlplane-cp-redis
+    container_name: central-shared-redis
     # [COMMENT]: AOF phục hồi bounded Stream sau restart; volatile-lru chỉ được
     # evict cache key có TTL, không được xóa stream entry đang chờ consumer.
     command: [ "redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru" ]
@@ -393,26 +381,32 @@ services:
   nats:
     cpuset: "0-5"
     image: nats:2.10-alpine
-    container_name: controlplane-nats
-    # [COMMENT]: NATS Core trung tâm chỉ chở realtime soft state; ownership nội vùng dùng Shared Redis.
-    command: [ "-js", "-sd", "/data", "-m", "8222" ]
+    container_name: central-nats-core
+    # [COMMENT]: Central transport is NATS Core only. Enabling JetStream here
+    # would blur it with the independent Zone KV database.
+    command: [ "-m", "8222" ]
     ports:
       - "4222:4222" # Port client kết nối NATS
       - "8222:8222" # Port monitor NATS HTTP
-    volumes:
-      - controlplane_nats_data:/data
     healthcheck:
       test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      default:
+      # Only NATS Core crosses the Central/Zone dev boundary. Zone JetStream KV
+      # remains on the Zone-private network and has a different credential path.
+      aurora-transport:
+        aliases:
+          - nats
     restart: unless-stopped
 
   # [COMMENT]: Dev local chạy 1 combined broker/controller KRaft; replication=1 để tiết kiệm tài nguyên CPU.
   kafka-1:
     cpuset: "0-5"
     image: apache/kafka:3.9.0
-    container_name: aurora-kafka-1
+    container_name: central-kafka-1
     environment:
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
       KAFKA_NODE_ID: "1"
@@ -442,13 +436,20 @@ services:
       timeout: 5s
       retries: 20
       start_period: 20s
+    networks:
+      default:
+      # Kafka is the only durable Central/Zone transport exposed to the Zone
+      # stack. Infrastructure services are intentionally not attached here.
+      aurora-transport:
+        aliases:
+          - kafka-1
     restart: unless-stopped
 
   # [COMMENT]: Topic provisioning cho Single-node Kafka trong môi trường Dev.
   kafka-init:
     cpuset: "0-5"
     image: apache/kafka:3.9.0
-    container_name: aurora-kafka-init
+    container_name: central-kafka-init
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -479,7 +480,7 @@ services:
   kafka-ui:
     cpuset: "0-5"
     image: provectuslabs/kafka-ui:v0.7.2
-    container_name: aurora-kafka-ui
+    container_name: central-kafka-ui
     environment:
       KAFKA_CLUSTERS_0_NAME: "aurora-dev"
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka-1:9092"
@@ -491,131 +492,17 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  nats-zone-z1:
-    cpuset: "0-5"
-    image: nats:2.10-alpine
-    container_name: dataplane-zone-z1-nats
-    # [COMMENT]: Database KV riêng của Zone 1; JetStream file storage không dùng chung NATS Core trung tâm.
-    command: [ "-js", "-sd", "/data", "-m", "8222" ]
-    ports:
-      - "14222:4222"
-      - "18222:8222"
-    volumes:
-      - dataplane_zone_z1_nats_data:/data
-    healthcheck:
-      test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-  dataplane-vn-n1:
-    cpuset: "0-5"
-    build:
-      context: ..
-      dockerfile: dataplane/Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
-    container_name: dataplane-vn-n1
-    init: true
-    # Every replica in this Zone receives the same Zone-scoped transport and
-    # infrastructure identity contract.
-    env_file:
-      - ../dataplane/.env
-    volumes:
-      # Private Zone key material never enters .env or the image. The ignored
-      # host directory is mounted read-only for every replica in this Zone.
-      - ../dataplane/.secrets:/run/secrets/aurora:ro
-    depends_on:
-      controlplane1:
-        condition: service_started
-      kafka-init:
-        condition: service_completed_successfully
-      nats:
-        condition: service_healthy
-      nats-zone-z1:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
-
-  dataplane-vn-n2:
-    cpuset: "0-5"
-    build:
-      context: ..
-      dockerfile: dataplane/Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
-    container_name: dataplane-vn-n2
-    init: true
-    env_file:
-      - ../dataplane/.env
-    volumes:
-      - ../dataplane/.secrets:/run/secrets/aurora:ro
-    depends_on:
-      controlplane2:
-        condition: service_started
-      kafka-init:
-        condition: service_completed_successfully
-      nats:
-        condition: service_healthy
-      nats-zone-z1:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    restart: unless-stopped
-
-  dataplane-vn-n3:
-    cpuset: "0-5"
-    build:
-      context: ..
-      dockerfile: dataplane/Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
-    container_name: dataplane-vn-n3
-    init: true
-    env_file:
-      - ../dataplane/.env
-    volumes:
-      - ../dataplane/.secrets:/run/secrets/aurora:ro
-    depends_on:
-      controlplane3:
-        condition: service_started
-      kafka-init:
-        condition: service_completed_successfully
-      nats:
-        condition: service_healthy
-      nats-zone-z1:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    restart: unless-stopped
-
   otel-collector:
     cpuset: "0-5"
     image: otel/opentelemetry-collector-contrib:0.154.0
-    container_name: controlplane-otel-collector
+    container_name: central-otel-collector
     # Chạy với quyền root (0:0) để có quyền đọc file logs trong /var/lib/docker/containers
     user: "0:0"
     command:
       - "--config=/etc/otelcol-contrib/config.yaml"
     volumes:
       # Nạp tệp cấu hình các receivers, processors, và exporters của OpenTelemetry.
-      - ./dev/otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+      - ./otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
       # Gắn thư mục chứa logs của Docker container để filelog đọc trực tiếp log file
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       # [COMMENT]: Mount docker.sock để OpenTelemetry Collector giao tiếp với Docker Daemon truy vấn container metadata.
@@ -635,7 +522,7 @@ services:
   victoriatraces:
     cpuset: "0-5"
     image: victoriametrics/victoria-traces:latest
-    container_name: controlplane-victoriatraces
+    container_name: central-victoriatraces
     command:
       - "-storageDataPath=/vtraces"
       - "-httpListenAddr=:10428"
@@ -648,7 +535,7 @@ services:
   victoriametrics:
     cpuset: "0-5"
     image: victoriametrics/victoria-metrics:latest
-    container_name: controlplane-victoriametrics
+    container_name: central-victoriametrics
     command:
       - "-storageDataPath=/victoria-metrics-data"
       - "-httpListenAddr=:8428"
@@ -661,7 +548,7 @@ services:
   victorialogs:
     cpuset: "0-5"
     image: victoriametrics/victoria-logs:latest
-    container_name: controlplane-victorialogs
+    container_name: central-victorialogs
     command:
       - "-storageDataPath=/vlogs"
       - "-httpListenAddr=:9428"
@@ -674,7 +561,7 @@ services:
   grafana:
     cpuset: "0-5"
     image: grafana/grafana:11.6
-    container_name: controlplane-grafana
+    container_name: central-grafana
     environment:
       # Tài khoản quản trị tối cao của hệ thống Dashboard Grafana
       GF_SECURITY_ADMIN_USER: admin
@@ -685,7 +572,7 @@ services:
     volumes:
       - controlplane_grafana_data:/var/lib/grafana
       # Tự động nạp sẵn các Data Sources (Loki, Tempo, Prometheus) và các Dashboards tiêu chuẩn.
-      - ./dev/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "13001:3000" # Cổng UI chính thức của Grafana để giám sát và phân tích toàn hệ thống
     depends_on:
@@ -704,22 +591,22 @@ services:
   cloud-console:
     cpuset: "0-5"
     build:
-      context: ../cloud-console
+      context: ../../cloud-console
       dockerfile: Dockerfile.prod
-    container_name: cloud-console-dev
+    container_name: central-cloud-console
     # Runtime browser configuration is owned by Cloud Console. The public
     # values are loaded from its own .env and are also consumed by its Docker
     # build stage because Next.js bakes them into the static client bundle.
     env_file:
-      - ../cloud-console/.env
+      - ../../cloud-console/.env
     restart: unless-stopped
 
   admin-ui-nginx:
     cpuset: "0-5"
     build:
-      context: ../admin-ui
+      context: ../../admin-ui
       dockerfile: Dockerfile.nginx
-    container_name: admin-ui-nginx
+    container_name: central-admin-ui
     ports:
       - "5175:5173"
     restart: unless-stopped
@@ -727,13 +614,13 @@ services:
   cost-console-nginx:
     cpuset: "0-5"
     build:
-      context: ../cost-console
+      context: ../../cost-console
       dockerfile: Dockerfile.nginx
       args:
         # [DEV-ONLY]: Starting Billing from Cost Console must return to the
         # same localhost Cloud Console origin used by OAuth.
         VITE_CLOUD_CONSOLE_URL: https://localhost
-    container_name: cost-console-nginx
+    container_name: central-cost-console
     ports:
       - "5176:5173"
     restart: unless-stopped
@@ -741,20 +628,20 @@ services:
   job-orchestrator:
     cpuset: "0-5"
     build:
-      context: ..
+      context: ../..
       dockerfile: job-orchestrator/Dockerfile
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: aurora-job-orchestrator
+    container_name: central-job-orchestrator
     init: true
     volumes:
-      - ./dev/tls:/etc/job-orchestrator/tls:ro
+      - ../shared/tls:/etc/job-orchestrator/tls:ro
     # One reviewed development profile keeps Compose readable. Production
     # injects the same contract from ConfigMap/Secret plus mounted TLS identity.
     env_file:
-      - ../job-orchestrator/.env
+      - ../../job-orchestrator/.env
     environment:
       VAULT_TOKEN: "${VAULT_JOB_ORCHESTRATOR_TOKEN:-aurora-dev-job-orchestrator-token}"
     depends_on:
@@ -777,11 +664,11 @@ services:
   centrifugo:
     cpuset: "0-5"
     image: centrifugo/centrifugo:v5
-    container_name: aurora-centrifugo
+    container_name: central-centrifugo
     ports:
       - "8000:8000"
     volumes:
-      - ./dev/centrifugo/config.json:/centrifugo/config.json:ro
+      - ./centrifugo/config.json:/centrifugo/config.json:ro
     command: centrifugo --config /centrifugo/config.json
     # Chỉ sử dụng API Key cho Server-to-Server communication (gửi message), xác thực kết nối khách hàng đã được ủy quyền cho Connect Proxy.
     environment:
@@ -789,7 +676,7 @@ services:
       # OpenTelemetry: Kết nối Centrifugo tới OTel Collector để sinh spans phục vụ distributed tracing E2E
       - CENTRIFUGO_OPENTELEMETRY=1
       - CENTRIFUGO_OPENTELEMETRY_API=1
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
     depends_on:
       otel-collector:
@@ -799,15 +686,15 @@ services:
   acr:
     cpuset: "0-5"
     build:
-      context: ../acr
+      context: ../../acr
       dockerfile: Dockerfile
-    container_name: aurora-acr
+    container_name: central-acr
     init: true
     # [COMMENT]: Mount chứng chỉ TLS để thiết lập kết nối mTLS bảo mật đến các node Controlplane
     volumes:
-      - ./dev/tls:/etc/acr/tls:ro
+      - ../shared/tls:/etc/acr/tls:ro
     env_file:
-      - ../acr/.env
+      - ../../acr/.env
     depends_on:
       acr-redis:
         condition: service_healthy
@@ -822,13 +709,13 @@ services:
   notification-service:
     cpuset: "0-5"
     build:
-      context: ../notification-service
+      context: ../../notification-service
       dockerfile: Dockerfile
-    container_name: aurora-notification-service
+    container_name: central-notification-service
     ports:
       - "8083:8083"
     env_file:
-      - ../notification-service/.env
+      - ../../notification-service/.env
     depends_on:
       centrifugo:
         condition: service_started
@@ -845,7 +732,7 @@ services:
   scylla:
     cpuset: "0-5"
     image: scylladb/scylla:2026.2.1
-    container_name: aurora-timeline-scylla
+    container_name: central-timeline-scylla
     command:
       - --smp
       - "1"
@@ -878,83 +765,44 @@ services:
         exec su-exec vault vault server -config=/vault/config/vault.hcl
       "
     volumes:
-      - ./dev/vault/vault.hcl:/vault/config/vault.hcl:ro
+      - ./vault/vault.hcl:/vault/config/vault.hcl:ro
       - controlplane_vault_data:/vault/data
     ports:
       - "8200:8200"
-    restart: unless-stopped
-
-  stalwart:
-    cpuset: "0-5"
-    image: stalwartlabs/stalwart:v0.16.11
-    container_name: stalwart
-    restart: unless-stopped
-    ports:
-      - "8085:8080" # Admin HTTP API & Web UI (Dành cho dev cấu hình)
-    environment:
-      - STALWART_RECOVERY_ADMIN=admin:27012004
-      # [COMMENT]: Tắt cơ chế chặn IP tự động (security.ip-blocked) của Stalwart trong môi trường dev
-      - STALWART_SECURITY_BLOCK_ENABLED=false
-      # [COMMENT]: Đưa dải IP Docker internal vào Trusted Network để Stalwart không chặn dataplane/controlplane
-      - STALWART_SECURITY_TRUSTED_NETWORK=172.16.0.0/12,127.0.0.1/8
-    volumes:
-      - controlplane_stalwart_etc:/etc/stalwart
-      - controlplane_stalwart_data:/var/lib/stalwart
-    networks:
-      default:
-        aliases:
-          - stalwart-mail
-
-  minio:
-    cpuset: "0-5"
-    image: minio/minio:RELEASE.2024-06-06T09-36-42Z
-    container_name: minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
+    container_name: central-vault
     restart: unless-stopped
 
 volumes:
-  # Thư mục lưu cấu hình và dữ liệu của Stalwart Mail Server
-  controlplane_stalwart_etc:
-  controlplane_stalwart_data: # [COMMENT]: Lưu trữ dữ liệu Raft bền vững của Vault
-
-  controlplane_vault_data:
-
-  # Caching thư viện Golang cho cụm Controlplane
-  controlplane_go_mod: # Thư mục chứa tệp dữ liệu vật lý của PostgreSQL
-
-  controlplane_psql_data: # Thư mục lưu snapshot dữ liệu của Redis Core
-
+  controlplane_vault_data: # [COMMENT]: Lưu trữ dữ liệu Raft bền vững của Vault
+    name: controlplane_controlplane_vault_data
+  controlplane_psql_data: # Thư mục chứa tệp dữ liệu vật lý của PostgreSQL
+    name: controlplane_controlplane_psql_data
   controlplane_acr_redis_data:
+    name: controlplane_controlplane_acr_redis_data
   controlplane_cp_redis_data:
-
+    name: controlplane_controlplane_cp_redis_data
   controlplane_vmetrics_data: # Cơ sở dữ liệu chuỗi thời gian của VictoriaMetrics
-
+    name: controlplane_controlplane_vmetrics_data
   controlplane_vtraces_data: # Bộ đệm dữ liệu traces của VictoriaTraces
-
+    name: controlplane_controlplane_vtraces_data
   controlplane_vlogs_data: # Bộ đệm dữ liệu logs của VictoriaLogs
+    name: controlplane_controlplane_vlogs_data
   controlplane_otel_file_storage: # Checkpoint offset/fingerprint của OTel filelog receiver
+    name: controlplane_controlplane_otel_file_storage
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
+    name: controlplane_controlplane_grafana_data
   controlplane_timeline_scylla_data:
-  admin_ui_node_modules:
+    name: controlplane_controlplane_timeline_scylla_data
   controlplane_kafka_1_data:
-  controlplane_kafka_2_data:
-  controlplane_kafka_3_data:
-  controlplane_nats_data:
-  dataplane_zone_z1_nats_data:
-  dataplane_cargo_target_z1:
-  dataplane_cargo_cache_z1:
-  dataplane_cargo_target_z2_n1:
-  dataplane_cargo_cache_z2_n1:
-  dataplane_cargo_target_z2_n2:
-  dataplane_cargo_cache_z2_n2:
-  minio_data:
+    name: controlplane_controlplane_kafka_1_data
   clickhouse_data:
+    name: controlplane_clickhouse_data
   billing_psql_data:
+    name: controlplane_billing_psql_data
+
+networks:
+  aurora-transport:
+    # Central owns creation of the local transport network. The Zone compose
+    # declares it external, so Central must be started first and each stack can
+    # otherwise be operated independently.
+    name: aurora-dev-transport

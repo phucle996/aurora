@@ -346,4 +346,5 @@ Production:
 | DP command intake | `dataplane/src/job_runtime/intake.rs` |
 | DP result/retry | `dataplane/src/job_runtime/{execution,completion}.rs` |
 | Shared contracts | `contracts/proto/platform_transport.proto`, `contracts/proto/zone_report.proto`, `contracts/proto/managed_service.proto` |
-| Dev topology | `controlplane/docker-compose.dev.yml` |
+| Dev Central topology | `dev/central/compose.yml` |
+| Dev Zone topology | `dev/zone/compose.yml` |

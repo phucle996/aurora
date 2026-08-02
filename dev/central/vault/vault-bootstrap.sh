@@ -427,7 +427,7 @@ write_kv secret/data/connections/kafka/central/role-job-orchestrator "$(jq -n \
         }
     }')"
 
-JO_NATS_URLS="${VAULT_JO_NATS_URLS:-nats://controlplane-nats:4222}"
+JO_NATS_URLS="${VAULT_JO_NATS_URLS:-nats://nats:4222}"
 JO_NATS_CLIENT_NAME="${VAULT_JO_NATS_CLIENT_NAME:-aurora-job-orchestrator}"
 JO_NATS_AUTH_MODE="${VAULT_JO_NATS_AUTH_MODE:-none}"
 JO_NATS_TOKEN="${VAULT_JO_NATS_TOKEN:-}"

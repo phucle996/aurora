@@ -172,4 +172,4 @@ Notification duy trì một Pub/Sub reply socket cho cả pod. Mỗi request đ�
 - **ACR Shared Redis Router**: [redis.rs](../../acr/src/transport/redis.rs).
 - **ACR Session Validator**: [verify.rs](../../acr/src/user/verify.rs), [verify.rs](../../acr/src/sre/verify.rs).
 - **Cấu hình Router**: [router.rs](../../notification-service/src/app/router.rs) - Cấu hình đường dẫn `/api/v1/realtime/connect`.
-- **Cấu hình Centrifugo**: [config.json](../../controlplane/dev/centrifugo/config.json) - Cấu hình Connect Proxy Endpoint và danh sách headers được uỷ quyền.
+- **Cấu hình Centrifugo**: [config.json](../../dev/central/centrifugo/config.json) - Cấu hình Connect Proxy Endpoint và danh sách headers được uỷ quyền.

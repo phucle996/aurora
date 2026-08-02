@@ -53,6 +53,12 @@ Git ignore. Operator phải provision `job-payload-keys.json`, đăng ký public
 critical Hierarchy API, chờ tất cả replica report fresh rồi mới activate key. Không commit key mẫu hay
 fallback private material để làm local stack tự chạy.
 
+Docker development chạy Dataplane trong `dev/zone/compose.yml`.
+Dataplane export OTLP vào `zone-otel-collector:4317`; nó không fallback sang
+Central Collector. Zone Collector/Victoria dùng volume và network riêng, còn
+Kafka/NATS Core đi qua `aurora-dev-transport`. Xem
+`dev/README.md` cho start/stop order và network boundary.
+
 ## 2. Job runtime
 
 ```mermaid

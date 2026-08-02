@@ -694,7 +694,7 @@ Logs/metrics customer-facing không thuộc execution RAM. Zone OTel Collector �
 protected Kubernetes metadata và overwrite telemetry attributes owner/workspace/
 instance/component trước khi metrics vào Zone VictoriaMetrics và logs vào Zone
 VictoriaLogs. Console và Controlplane không query Zone Victoria trực tiếp; Rust
-`zone-observability-stream` đúng Zone là read-only adapter sau hai Zone edge, nhận
+generic `zone-runtime-stream` đúng Zone là read-only adapter sau hai Zone edge, nhận
 trusted scope đã inject và tự thêm filter instance/workspace/Zone/component cho
 panel/query allow-list. Không nhận raw PromQL/LogsQL từ browser. Đây là observed,
 eventual read path, không quyết định desired state, operation result hay authorization
@@ -763,11 +763,11 @@ ticket; Zone Public Edge chỉ expose stream sau một lần ext-authz ở lúc 
 Zone Control Authorizer verify assertion/audience/Zone/expiry và Zone access projection,
 rồi inject scope `owner_id + workspace_id + zone_id + instance_id + component policy +
 panel policy`; Public Edge strip ticket và toàn bộ header scope từ browser trước khi
-forward tới `zone-observability-stream`. Rust service không nhận Central session,
+forward tới `zone-runtime-stream`. Rust service không nhận Central session,
 không tự authorization, không mint identity và không có Zone KV credential.
 
 Ticket là read-only scope proof TTL đúng 5 phút, audience
-`zone-public-edge-gateway`, capability `observability.read` và stream lifetime tối đa
+`zone-public-edge-gateway`, capability `runtime.read` và stream lifetime tối đa
 5 phút. Nó bind `jti`, actor, auth generation, owner/workspace/Zone/instance,
 component/panel allow-list, policy revision, method/path và expiry. Replay không tạo
 side effect business nhưng có thể tạo một connection thứ hai, nên Public
@@ -843,7 +843,7 @@ Customer Logs/Metrics là Zone-local read path, tách tuyệt đối khỏi NATS
 Managed Service pods
   → Zone OTel Collector (verified Kubernetes metadata enrichment)
   → VictoriaMetrics / VictoriaLogs đúng Zone
-  → zone-observability-stream (Rust, read-only)
+  → zone-runtime-stream (generic Rust service, read-only)
   → Zone Public Edge
   → Browser
 ```
@@ -853,7 +853,7 @@ mở SSE/read stream tối đa 5 phút tới Zone Public Edge. Public Edge chỉ
 lần khi mở connection; không authorize từng byte và không retry upstream stream tự
 động. Auth/workspace/Zone/instance/policy scope đổi phải close stream; browser lấy
 ticket mới trước reconnect.
-`zone-observability-stream` nhận only trusted injected scope và request bounded
+`zone-runtime-stream` nhận only trusted injected scope và request bounded
 `panel_id + component selector allow-list + time range/cursor`; service tự dựng
 Victoria query. Raw PromQL, LogsQL, arbitrary metric name/label, namespace, owner,
 workspace, Zone và instance ID từ client đều reject. Console/Controlplane không có
@@ -868,7 +868,7 @@ và không trả `READY`/`SUCCESS` giả. `SUCCESS`/`FAILED`, desired state, rec
 timeline vẫn chỉ do Kafka result → JO → Controlplane/Notification durable path quyết
 định.
 
-`zone-observability-stream` là root Rust subproject/Deployment riêng đúng Zone, có
+`zone-runtime-stream` là root Rust subproject/Deployment riêng đúng Zone, có
 read-only network identity tới VictoriaMetrics/VictoriaLogs và không có access tới
 Kafka, NATS, PostgreSQL, Shared/Auth Redis, Zone KV, Kubernetes API hoặc Vault.
 Service/edge/authorizer scale độc lập theo connection/query load, dùng bounded

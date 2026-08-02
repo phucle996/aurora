@@ -24,18 +24,18 @@ receivers:
         - job_name: 'postgres-exporter'
           scrape_interval: 15s
           static_configs:
-            - targets: ['controlplane-psql-exporter:9187']
+            - targets: ['psql-exporter:9187']
               labels:
                 kubernetes_namespace: "controlplane"
                 release: "controlplane"
 
         # [REDIS SCRAPER]: Dev exporter chỉ cào Shared L2; Auth Redis cần credential metrics riêng trong production.
-        # Cơ chế hoạt động: Gửi request đến http://controlplane-redis-exporter:9121/scrape?target=redis://...
+        # Cơ chế hoạt động: Gửi request đến http://redis-exporter:9121/scrape?target=redis://...
         - job_name: 'redis-exporter'
           scrape_interval: 15s
           static_configs:
             - targets:
-                - 'redis://controlplane-cp-redis:6379'
+                - 'redis://cp-redis:6379'
           metrics_path: /scrape
           relabel_configs:
             # 1. Chuyển địa chỉ đích ban đầu thành tham số query "target" cho exporter
@@ -46,7 +46,7 @@ receivers:
               target_label: instance
             # 3. Ghi đè địa chỉ đích thực sự mà collector sẽ gửi HTTP request tới là container redis-exporter
             - target_label: __address__
-              replacement: 'controlplane-redis-exporter:9121'
+              replacement: 'redis-exporter:9121'
 
   # filelog đọc một canonical raw Docker path. Không tail đồng thời symlink của cùng inode vì
   # dual path tạo duplicate-ingestion ambiguity khi fingerprint/checkpoint được rebuild.
@@ -133,6 +133,19 @@ processors:
         # Chỉ loại bỏ log "login attempt" phát sinh từ localhost (127.0.0.1) của chính container pbouncer.
         - IsMatch(body, "login attempt:") and IsMatch(body, "@127\\.0\\.0\\.1")
 
+  # Central and Zone have independent customer telemetry stores. Docker filelog
+  # can see the whole development host, so Central discards records carrying
+  # Zone/customer identity before export. Unlabelled MinIO/Stalwart infra logs
+  # remain part of the Central operator plane. The separate metering pipeline
+  # below still receives reviewed storage access logs for ClickHouse.
+  filter/exclude_zone_runtime:
+    error_mode: ignore
+    logs:
+      log_record:
+        - attributes["zone_id"] != nil
+        - attributes["service_name"] == "aurora-dataplane"
+        - IsMatch(attributes["log_type"], "^zone-")
+
   # transform processor ánh xạ container_id sang container_name thực tế và dọn dẹp các trường log thừa
   transform:
     error_mode: ignore
@@ -148,42 +161,40 @@ processors:
           # JSON-looking application lines that failed parser_app remain raw in body. Preserve an
           # explicit diagnostic attribute instead of silently presenting them as structured logs.
           - set(attributes["app_json_parse_error"], true) where IsMatch(body, "^\\s*\\{") and attributes["level"] == nil
-          - set(attributes["container_name"], "admin-ui-nginx") where IsMatch(attributes["container_id"], "^42eca33b4987")
-          - set(attributes["container_name"], "aurora-acr") where IsMatch(attributes["container_id"], "^2b5f8445e46e")
-          - set(attributes["container_name"], "aurora-centrifugo") where IsMatch(attributes["container_id"], "^73df715e7d6c")
-          - set(attributes["container_name"], "aurora-job-orchestrator") where IsMatch(attributes["container_id"], "^32f7088da814")
-          - set(attributes["container_name"], "aurora-kafka-1") where IsMatch(attributes["container_id"], "^f66012f8d9d2")
-          - set(attributes["container_name"], "aurora-kafka-2") where IsMatch(attributes["container_id"], "^e991a07056ee")
-          - set(attributes["container_name"], "aurora-kafka-3") where IsMatch(attributes["container_id"], "^4ea19e979588")
-          - set(attributes["container_name"], "aurora-kafka-ui") where IsMatch(attributes["container_id"], "^9a7822958f41")
-          - set(attributes["container_name"], "aurora-notification-service") where IsMatch(attributes["container_id"], "^d05acd18d716")
-          - set(attributes["container_name"], "billing-psql") where IsMatch(attributes["container_id"], "^bd3f7252f059")
-          - set(attributes["container_name"], "clickhouse-server") where IsMatch(attributes["container_id"], "^b649dec551d6")
-          - set(attributes["container_name"], "cloud-console-dev") where IsMatch(attributes["container_id"], "^82c5fcf1393b")
-          - set(attributes["container_name"], "controlplane-acr-redis") where IsMatch(attributes["container_id"], "^0df83601df85")
-          - set(attributes["container_name"], "controlplane-cp-redis") where IsMatch(attributes["container_id"], "^0ed3c9a37c56")
-          - set(attributes["container_name"], "controlplane-dev-1") where IsMatch(attributes["container_id"], "^3c84167b5202")
-          - set(attributes["container_name"], "controlplane-dev-2") where IsMatch(attributes["container_id"], "^ae9d865ee5bf")
-          - set(attributes["container_name"], "controlplane-dev-3") where IsMatch(attributes["container_id"], "^7dc4f18fd476")
-          - set(attributes["container_name"], "controlplane-envoy") where IsMatch(attributes["container_id"], "^c661beafdbb4")
-          - set(attributes["container_name"], "controlplane-grafana") where IsMatch(attributes["container_id"], "^0f5ec008ada4")
-          - set(attributes["container_name"], "controlplane-nats") where IsMatch(attributes["container_id"], "^727bd0dce525")
-          - set(attributes["container_name"], "controlplane-pbouncer") where IsMatch(attributes["container_id"], "^aed6e35d9f75")
-          - set(attributes["container_name"], "controlplane-psql") where IsMatch(attributes["container_id"], "^5f548d0ffbd7")
-          - set(attributes["container_name"], "controlplane-psql-exporter") where IsMatch(attributes["container_id"], "^c5c255cbaf57")
-          - set(attributes["container_name"], "controlplane-redis-exporter") where IsMatch(attributes["container_id"], "^782d368ba475")
-          - set(attributes["container_name"], "controlplane-vault-1") where IsMatch(attributes["container_id"], "^693c30475941")
-          - set(attributes["container_name"], "controlplane-victorialogs") where IsMatch(attributes["container_id"], "^624d58be0e90")
-          - set(attributes["container_name"], "controlplane-victoriametrics") where IsMatch(attributes["container_id"], "^d3fb10661abe")
-          - set(attributes["container_name"], "controlplane-victoriatraces") where IsMatch(attributes["container_id"], "^369532ced466")
-          - set(attributes["container_name"], "cost-console-nginx") where IsMatch(attributes["container_id"], "^425356df2ddf")
-          - set(attributes["container_name"], "cost-manager") where IsMatch(attributes["container_id"], "^faa400b8472c")
-          - set(attributes["container_name"], "dataplane-vn-n1") where IsMatch(attributes["container_id"], "^4653fa82f037")
-          - set(attributes["container_name"], "dataplane-vn-n2") where IsMatch(attributes["container_id"], "^c4b1bf9f8113")
-          - set(attributes["container_name"], "dataplane-vn-n3") where IsMatch(attributes["container_id"], "^49ac1f110b26")
-          - set(attributes["container_name"], "dataplane-zone-z1-nats") where IsMatch(attributes["container_id"], "^e1660272af97")
-          - set(attributes["container_name"], "minio") where IsMatch(attributes["container_id"], "^613eb1bbd2c5")
-          - set(attributes["container_name"], "stalwart") where IsMatch(attributes["container_id"], "^227967eb4fab")
+          - set(attributes["container_name"], "central-admin-ui") where IsMatch(attributes["container_id"], "^42eca33b4987")
+          - set(attributes["container_name"], "central-acr") where IsMatch(attributes["container_id"], "^2b5f8445e46e")
+          - set(attributes["container_name"], "central-centrifugo") where IsMatch(attributes["container_id"], "^73df715e7d6c")
+          - set(attributes["container_name"], "central-job-orchestrator") where IsMatch(attributes["container_id"], "^32f7088da814")
+          - set(attributes["container_name"], "central-kafka-1") where IsMatch(attributes["container_id"], "^f66012f8d9d2")
+          - set(attributes["container_name"], "central-kafka-ui") where IsMatch(attributes["container_id"], "^9a7822958f41")
+          - set(attributes["container_name"], "central-notification-service") where IsMatch(attributes["container_id"], "^d05acd18d716")
+          - set(attributes["container_name"], "central-billing-postgres") where IsMatch(attributes["container_id"], "^bd3f7252f059")
+          - set(attributes["container_name"], "central-clickhouse") where IsMatch(attributes["container_id"], "^b649dec551d6")
+          - set(attributes["container_name"], "central-cloud-console") where IsMatch(attributes["container_id"], "^82c5fcf1393b")
+          - set(attributes["container_name"], "central-auth-redis") where IsMatch(attributes["container_id"], "^0df83601df85")
+          - set(attributes["container_name"], "central-shared-redis") where IsMatch(attributes["container_id"], "^0ed3c9a37c56")
+          - set(attributes["container_name"], "central-controlplane-1") where IsMatch(attributes["container_id"], "^3c84167b5202")
+          - set(attributes["container_name"], "central-controlplane-2") where IsMatch(attributes["container_id"], "^ae9d865ee5bf")
+          - set(attributes["container_name"], "central-controlplane-3") where IsMatch(attributes["container_id"], "^7dc4f18fd476")
+          - set(attributes["container_name"], "central-envoy") where IsMatch(attributes["container_id"], "^c661beafdbb4")
+          - set(attributes["container_name"], "central-grafana") where IsMatch(attributes["container_id"], "^0f5ec008ada4")
+          - set(attributes["container_name"], "central-nats-core") where IsMatch(attributes["container_id"], "^727bd0dce525")
+          - set(attributes["container_name"], "central-pgbouncer") where IsMatch(attributes["container_id"], "^aed6e35d9f75")
+          - set(attributes["container_name"], "central-controlplane-postgres") where IsMatch(attributes["container_id"], "^5f548d0ffbd7")
+          - set(attributes["container_name"], "central-postgres-exporter") where IsMatch(attributes["container_id"], "^c5c255cbaf57")
+          - set(attributes["container_name"], "central-redis-exporter") where IsMatch(attributes["container_id"], "^782d368ba475")
+          - set(attributes["container_name"], "central-vault") where IsMatch(attributes["container_id"], "^693c30475941")
+          - set(attributes["container_name"], "central-victorialogs") where IsMatch(attributes["container_id"], "^624d58be0e90")
+          - set(attributes["container_name"], "central-victoriametrics") where IsMatch(attributes["container_id"], "^d3fb10661abe")
+          - set(attributes["container_name"], "central-victoriatraces") where IsMatch(attributes["container_id"], "^369532ced466")
+          - set(attributes["container_name"], "central-cost-console") where IsMatch(attributes["container_id"], "^425356df2ddf")
+          - set(attributes["container_name"], "central-cost-manager") where IsMatch(attributes["container_id"], "^faa400b8472c")
+          - set(attributes["container_name"], "zone-z1-dataplane-1") where IsMatch(attributes["container_id"], "^4653fa82f037")
+          - set(attributes["container_name"], "zone-z1-dataplane-2") where IsMatch(attributes["container_id"], "^c4b1bf9f8113")
+          - set(attributes["container_name"], "zone-z1-dataplane-3") where IsMatch(attributes["container_id"], "^49ac1f110b26")
+          - set(attributes["container_name"], "zone-z1-nats-kv") where IsMatch(attributes["container_id"], "^e1660272af97")
+          - set(attributes["container_name"], "zone-z1-minio") where IsMatch(attributes["container_id"], "^613eb1bbd2c5")
+          - set(attributes["container_name"], "zone-z1-stalwart") where IsMatch(attributes["container_id"], "^227967eb4fab")
           # [COMMENT]: Nếu container_name chưa có (fallback), gán ngắn theo short container_id (12 ký tự)
           - set(attributes["container_name"], Substring(attributes["container_id"], 0, 12)) where attributes["container_name"] == nil and attributes["container_id"] != nil
           # Xóa các thuộc tính siêu dữ liệu dư thừa từ filelog receiver và Docker để giữ log sạch
@@ -225,14 +236,14 @@ exporters:
     verbosity: basic
   # Exporter gửi dữ liệu metrics sang VictoriaMetrics bằng chuẩn Remote Write
   prometheusremotewrite:
-    endpoint: "http://controlplane-victoriametrics:8428/api/v1/write"
+    endpoint: "http://victoriametrics:8428/api/v1/write"
     tls:
       insecure: true
     resource_to_telemetry_conversion:
       enabled: true
   # Exporter gửi dữ liệu logs sang VictoriaLogs bằng chuẩn OTLP HTTP
   otlphttp/victorialogs:
-    endpoint: "http://controlplane-victorialogs:9428/insert/opentelemetry"
+    endpoint: "http://victorialogs:9428/insert/opentelemetry"
     headers:
       "VL-Stream-Fields": "container_name,service_name,zone_id,node_id"
     retry_on_failure:
@@ -250,7 +261,7 @@ exporters:
   # Exporter gửi dữ liệu traces sang VictoriaTraces bằng chuẩn OTLP HTTP
   # [VictoriaTraces Integration]: Đóng vai trò làm backend lưu trữ traces cho hệ thống
   otlphttp/victoriatraces:
-    endpoint: "http://controlplane-victoriatraces:10428/insert/opentelemetry"
+    endpoint: "http://victoriatraces:10428/insert/opentelemetry"
     retry_on_failure:
       enabled: true
       initial_interval: 1s
@@ -283,7 +294,7 @@ service:
     logs:
       receivers: [otlp, filelog]
       # Bổ sung filter/exclude_noise trước transform để lọc bỏ log rác ngay khi nhận được
-      processors: [memory_limiter, filter/exclude_noise, transform, batch]
+      processors: [memory_limiter, filter/exclude_noise, transform, filter/exclude_zone_runtime, batch]
       exporters: [otlphttp/victorialogs]
 
     # Pipeline logs/metering: Lọc logs Envoy Storage, trích xuất metrics và lưu vào ClickHouse

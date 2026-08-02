@@ -25,7 +25,7 @@ datasources:
     uid: prometheus
     type: prometheus
     access: proxy
-    url: http://controlplane-victoriametrics:8428
+    url: http://victoriametrics:8428
     isDefault: true
     editable: false
     jsonData:
@@ -37,7 +37,7 @@ datasources:
     uid: victorialogs
     type: victoriametrics-logs-datasource
     access: proxy
-    url: http://controlplane-victorialogs:9428
+    url: http://victorialogs:9428
     editable: false
     # [VictoriaTraces Integration]: Liên kết tự động Logs của VictoriaLogs với Traces của VictoriaTraces (Jaeger API)
     jsonData:
@@ -53,14 +53,14 @@ datasources:
     uid: jaeger
     type: jaeger
     access: proxy
-    url: http://controlplane-victoriatraces:10428/select/jaeger
+    url: http://victoriatraces:10428/select/jaeger
     editable: false
 
   - name: VictoriaMetrics
     uid: victoriametrics
     type: prometheus
     access: proxy
-    url: http://controlplane-victoriametrics:8428
+    url: http://victoriametrics:8428
     isDefault: false
     editable: false
     jsonData:
@@ -73,7 +73,7 @@ datasources:
     uid: postgresql
     type: postgres
     access: proxy
-    url: controlplane-psql:5432
+    url: psql:5432
     user: postgres
     jsonData:
       database: controlplane
@@ -87,5 +87,5 @@ datasources:
     uid: redis-core
     type: redis-datasource
     access: proxy
-    url: redis://controlplane-cp-redis:6379
+    url: redis://cp-redis:6379
     editable: false

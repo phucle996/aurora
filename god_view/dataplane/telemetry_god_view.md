@@ -35,7 +35,18 @@ flowchart LR
 - Không bật thêm OTLP Logs cho cùng stdout record, tránh dual-ingestion.
 - OTel runtime metrics được ghi từ `NodeRuntimeSample` trong RAM. Admission và leader không
   đọc ngược từ Collector.
-- Docker hiện dùng một Collector; Kubernetes multi-replica Collector là deployment phase riêng.
+- Docker development dùng hai Collector độc lập: Central Collector chỉ export vào
+  Central Victoria, Zone Collector chỉ export telemetry có Zone identity vào bộ
+  Victoria của Zone. Hai Collector có file-storage/checkpoint và volume backend riêng;
+  customer runtime có Zone identity không fallback/cross-write sang Central Victoria.
+  Việc cùng tail canonical Docker host path là giới hạn riêng của dev và được chặn
+  bằng filter trước customer exporter. Raw MinIO/Stalwart infrastructure logs không
+  được đưa vào customer Zone store; chúng vẫn có thể thuộc Central operator plane.
+  Kubernetes
+  multi-replica Collector theo namespace/node boundary là deployment phase riêng.
+- Development deployment nằm ở root `dev/`, không thuộc ownership của module
+  Controlplane. Container vật lý dùng prefix `central-` hoặc `zone-`; connection
+  string giữa service dùng Compose service DNS, không bind vào `container_name`.
 
 ## 2. Unified identity và correlation
 
@@ -66,19 +77,20 @@ JO là process Central đa-Zone: OTel Resource mang `aurora.component.scope=cent
 `aurora.zone.id`. `service.instance.id` của log, metric và trace cùng dùng một `boot_id`; Zone chỉ
 được gắn trên command/report span tương ứng để không biến một pod JO thành resource thuộc một Zone giả.
 
-### 2.1. Managed Service customer observability read path (staged, not implemented)
+### 2.1. Zone Runtime Stream customer read path (staged platform path)
 
-Customer telemetry của Managed Service không đọc Dataplane RAM, không subscribe
-NATS và không đi qua JO/Notification/Centrifugo. Luồng duy nhất là:
+Customer runtime telemetry của Managed Service, Hypervisor, Mail và Storage không
+đọc Central state, không subscribe NATS và không đi qua JO/Notification/Centrifugo.
+Managed Service là adapter đầu tiên của generic Zone Runtime Stream:
 
 ```mermaid
 flowchart LR
     MSP[Managed Service pods] --> OC[Zone OTel Collector]
     OC --> VM[(VictoriaMetrics Zone)]
     OC --> VL[(VictoriaLogs Zone)]
-    VM --> ZOS[zone-observability-stream]
-    VL --> ZOS
-    ZOS --> ZPE[Zone Public Edge]
+    VM --> ZRS[zone-runtime-stream]
+    VL --> ZRS
+    ZRS --> ZPE[Zone Public Edge]
     ZPE --> B[Browser]
 ```
 
@@ -96,12 +108,12 @@ Victoria read plane với series/retention budget riêng theo Zone. Chúng khôn
 làm metric label health/alert platform hoặc query fan-out qua nhiều instance ngoài
 scope đã verify.
 
-`zone-observability-stream` là Rust Deployment riêng trong Zone. Nó chỉ dùng
+`zone-runtime-stream` là Rust Deployment riêng trong Zone. Nó chỉ dùng
 read-only VictoriaMetrics/VictoriaLogs identity và trusted scope mà Zone Public Edge
 inject sau Authorization check. Nó không có Dataplane, NATS, Kafka, Redis,
 PostgreSQL, Zone KV, Kubernetes API hoặc Vault credential. Browser không có Victoria
 credential và không thể gửi raw PromQL/LogsQL, arbitrary label selector hay namespace;
-service derive fixed query từ `panel_id` allow-list và append telemetry filters từ scope.
+service derive fixed query từ generic `panel_id`/module registry allow-list và append telemetry filters từ scope.
 
 V1 retention của customer Victoria plane là metrics 7 ngày và logs 3 ngày. Metrics là
 sampled/eventual observation; logs tail là best-effort stream và không cam kết
@@ -342,9 +354,12 @@ queue flush. Telemetry không được trở thành command path hoặc business
 - `job-orchestrator/src/results/worker.rs`: validation, quarantine, consumer/settlement spans.
 - `job-orchestrator/src/results/apply.rs`: PostgreSQL transaction và ownership fast path.
 - `job-orchestrator/src/results/notify.rs`: best-effort Shared Redis notification outcome.
-- `controlplane/dev/grafana/provisioning/dashboards/job-runtime.json`: JO throughput,
+- `dev/central/grafana/provisioning/dashboards/job-runtime.json`: JO throughput,
   Kafka latency/failure, DLQ, worker-exit và log-loss panels.
-- `controlplane/dev/grafana/provisioning/dashboards/job-logs.json`: cross-service job/trace log search.
+- `dev/central/grafana/provisioning/dashboards/job-logs.json`: cross-service job/trace log search.
 - `notification-service/src/inbound/job_stream.rs`
 - `notification-service/src/infra/centrifugo.rs`
-- `controlplane/dev/otel/otel-collector.yml`
+- `dev/central/otel/otel-collector.yml`: Central Collector.
+- `dev/zone/otel/otel-collector.yml`: Zone-local Collector cho dev.
+- `dev/central/compose.yml` và `dev/zone/compose.yml`:
+  hai stack độc lập; chỉ Kafka/NATS Core nằm trên shared transport network.

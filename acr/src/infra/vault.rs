@@ -23,7 +23,7 @@ use std::time::Duration;
 pub struct VaultClient {
     // HTTP client tái sử dụng connection pool
     http_client: reqwest::Client,
-    // Địa chỉ Vault Server (ví dụ: http://controlplane-vault:8200)
+    // Địa chỉ Vault Server (ví dụ Compose: http://vault:8200)
     addr: String,
     // Token xác thực REST API (được lấy từ AppRole login hoặc static token)
     token: String,

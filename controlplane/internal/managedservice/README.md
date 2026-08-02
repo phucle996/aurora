@@ -118,17 +118,17 @@ concrete JO consumer và God View riêng, không được suy ra từ module nà
 Managed Service workload / Kubernetes telemetry
     -> Zone OTel Collector
     -> Zone VictoriaMetrics / VictoriaLogs
-    -> zone-observability-stream (Rust service, Zone-local, read-only)
+    -> zone-runtime-stream (generic Rust service, Zone-local, read-only)
     -> Zone Public Edge
     -> Browser
 ```
 
-`zone-observability-stream` là Rust subproject/Deployment riêng của Zone, không
+`zone-runtime-stream` là generic Rust subproject/Deployment riêng của Zone, không
 phải package của Dataplane và không có credential Kafka, NATS, PostgreSQL, Zone KV
 hay Controlplane. Zone Control Edge xử lý assertion/short-lived scoped ticket;
 Zone Public Edge chỉ mở một stream đã được kiểm tra scope tại thời điểm connect.
-Service tự inject scope verified `zone + workspace + owner + instance + component`,
-chỉ chấp nhận panel/query allow-list và không nhận raw PromQL/LogsQL. Terminal
+Service chỉ nhận scope verified `zone + workspace + owner + module + resource + component`,
+chấp nhận module/panel query registry allow-list và không nhận raw PromQL/LogsQL. Terminal
 operation vẫn đi Kafka/Controlplane/timeline durable path.
 
 SRE catalog là admin-plane riêng:

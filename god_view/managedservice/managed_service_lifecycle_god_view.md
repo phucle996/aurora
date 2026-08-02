@@ -18,7 +18,7 @@
 | Runtime executor | Dataplane đúng Zone gọi Kubernetes API; Controlplane không có Kubernetes credential/client |
 | Delivery | At-least-once; ordering chỉ theo `instance_id`; external fence là `instance_id + operation_id + generation` |
 | Customer completion | Durable Controlplane operation/API và một Notification timeline row; không dùng NATS runtime hay apply ACK |
-| Telemetry | Zone OTel → VictoriaMetrics/VictoriaLogs → `zone-observability-stream` → Zone Public Edge; read-only, eventual |
+| Telemetry | Zone OTel → VictoriaMetrics/VictoriaLogs → generic `zone-runtime-stream` → Zone Public Edge; read-only, eventual; Managed Service adapter first |
 | Canonical inner protobuf | `contracts/proto/managed_service.proto` được freeze ở P00 và generate từ root này tại P01 |
 | Related SoT | [Kafka transport](../platform/kafka_platform_transport_god_view.md), [Notification timeline](../notification/user_timeline_god_view.md), [Dataplane telemetry](../dataplane/telemetry_god_view.md), [Zone Public Edge](../platform/zone_edge_gateway_god_view.md) |
 
@@ -30,8 +30,10 @@ customer tạo desired state trong workspace hiện tại; Dataplane render grap
 Kubernetes object do customer gửi.
 
 V1 **không** bao gồm arbitrary Helm/raw YAML runner, Kubernetes dashboard, billing/
-quota, customer-selected Zone, secret Vault Zone, arbitrary Secret read-back, generic
-runtime stream, NATS runtime protocol hoặc gateway thứ ba. SRE bootstrap cluster-scoped
+quota, customer-selected Zone, secret Vault Zone, arbitrary Secret read-back,
+module-specific runtime gateway, NATS runtime protocol hoặc gateway thứ ba. Generic
+Zone Runtime Stream là platform read-plane riêng, Managed Service chỉ là adapter đầu tiên.
+SRE bootstrap cluster-scoped
 operator/CRD là platform concern ngoài customer instance graph.
 
 Boundary bắt buộc:
@@ -149,7 +151,7 @@ flowchart LR
     NS --> SCY[(Scylla timeline/inbox)]
     NS --> CF[Centrifugo notification]
     OTEL[Managed service pods] --> VC[Zone OTel + Victoria]
-    VC --> OBS[zone-observability-stream]
+    VC --> OBS[zone-runtime-stream]
     OBS --> ZPE[Zone Public Edge]
     ZPE --> UI
 ```
@@ -556,14 +558,15 @@ Customer observability is strictly a Zone-local read path:
 
 ```text
 Managed Service pods → Zone OTel Collector → VictoriaMetrics/VictoriaLogs
-  → zone-observability-stream → Zone Public Edge → Browser
+  → generic zone-runtime-stream → Zone Public Edge → Browser
 ```
 
 OTel Collector overwrites workload-supplied owner/workspace/instance/component telemetry
 attributes from protected Kubernetes metadata. Zone Control Edge prepares a scoped
-five-minute `observability.read` ticket; Zone Public Edge strips client-supplied scope
-and allows one bounded stream. Browser supplies panel/component/time/cursor only, never
-raw PromQL/LogsQL, namespace, label selector or owner/Zone identity. Stream disconnect
+five-minute `runtime.read` ticket; Zone Public Edge strips client-supplied scope
+and allows one bounded stream. Ticket/Edge injects allowed panel/component; browser
+supplies only bounded time/cursor, never raw PromQL/LogsQL, namespace, label selector
+or owner/Zone identity. Stream disconnect
 cancels upstream; slow metric clients coalesce and slow log clients close. This path
 does not create timeline entries or mutate business state.
 
