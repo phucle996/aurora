@@ -186,6 +186,10 @@ impl RuntimeStream {
         self.telemetry.gap_event();
     }
 
+    pub fn stream_expired(&self) {
+        self.telemetry.stream_expired();
+    }
+
     pub fn prometheus_metrics(&self) -> String {
         self.telemetry.prometheus()
     }

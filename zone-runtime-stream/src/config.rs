@@ -3,6 +3,11 @@ use std::{env, net::SocketAddr, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
 
+const MAX_STREAM_LIFETIME_SECONDS: u64 = 300;
+const MAX_SNAPSHOT_SECONDS: u64 = 300;
+const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LOG_LINES: usize = 1_000;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen_addr: SocketAddr,
@@ -16,6 +21,8 @@ pub struct Config {
     pub heartbeat: Duration,
     pub query_interval: Duration,
     pub max_snapshot: Duration,
+    pub max_event_bytes: usize,
+    pub max_log_lines: usize,
 }
 
 #[derive(Debug, Error)]
@@ -26,6 +33,8 @@ pub enum ConfigError {
     Invalid(&'static str),
     #[error("{0} must be greater than zero")]
     Zero(&'static str),
+    #[error("{0} exceeds the hard safety limit")]
+    Limit(&'static str),
 }
 
 impl Config {
@@ -56,6 +65,8 @@ impl Config {
         let heartbeat_seconds = parsed("RUNTIME_STREAM_HEARTBEAT_SECONDS", 15_u64)?;
         let query_interval_ms = parsed("RUNTIME_STREAM_QUERY_INTERVAL_MS", 1_000_u64)?;
         let max_snapshot_seconds = parsed("RUNTIME_STREAM_MAX_SNAPSHOT_SECONDS", 300_u64)?;
+        let max_event_bytes = parsed("RUNTIME_STREAM_MAX_EVENT_BYTES", 256 * 1024)?;
+        let max_log_lines = parsed("RUNTIME_STREAM_MAX_LOG_LINES", 100)?;
         if max_connections == 0 {
             return Err(ConfigError::Zero("RUNTIME_STREAM_MAX_CONNECTIONS"));
         }
@@ -68,6 +79,9 @@ impl Config {
         if max_lifetime_seconds == 0 {
             return Err(ConfigError::Zero("RUNTIME_STREAM_MAX_LIFETIME_SECONDS"));
         }
+        if max_lifetime_seconds > MAX_STREAM_LIFETIME_SECONDS {
+            return Err(ConfigError::Limit("RUNTIME_STREAM_MAX_LIFETIME_SECONDS"));
+        }
         if heartbeat_seconds == 0 {
             return Err(ConfigError::Zero("RUNTIME_STREAM_HEARTBEAT_SECONDS"));
         }
@@ -76,6 +90,21 @@ impl Config {
         }
         if max_snapshot_seconds == 0 {
             return Err(ConfigError::Zero("RUNTIME_STREAM_MAX_SNAPSHOT_SECONDS"));
+        }
+        if max_snapshot_seconds > MAX_SNAPSHOT_SECONDS {
+            return Err(ConfigError::Limit("RUNTIME_STREAM_MAX_SNAPSHOT_SECONDS"));
+        }
+        if max_event_bytes == 0 {
+            return Err(ConfigError::Zero("RUNTIME_STREAM_MAX_EVENT_BYTES"));
+        }
+        if max_event_bytes > MAX_EVENT_BYTES {
+            return Err(ConfigError::Limit("RUNTIME_STREAM_MAX_EVENT_BYTES"));
+        }
+        if max_log_lines == 0 {
+            return Err(ConfigError::Zero("RUNTIME_STREAM_MAX_LOG_LINES"));
+        }
+        if max_log_lines > MAX_LOG_LINES {
+            return Err(ConfigError::Limit("RUNTIME_STREAM_MAX_LOG_LINES"));
         }
         Ok(Self {
             listen_addr,
@@ -89,6 +118,8 @@ impl Config {
             heartbeat: Duration::from_secs(heartbeat_seconds),
             query_interval: Duration::from_millis(query_interval_ms),
             max_snapshot: Duration::from_secs(max_snapshot_seconds),
+            max_event_bytes,
+            max_log_lines,
         })
     }
 }
@@ -128,6 +159,8 @@ mod tests {
             heartbeat: Duration::from_secs(1),
             query_interval: Duration::from_millis(100),
             max_snapshot: Duration::from_secs(1),
+            max_event_bytes: 256 * 1024,
+            max_log_lines: 100,
         };
         assert!(config.max_lifetime > config.heartbeat);
     }

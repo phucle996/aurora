@@ -29,6 +29,8 @@ pub struct VictoriaSource {
     logs_url: Url,
     timeout: Duration,
     live_window: Duration,
+    max_event_bytes: usize,
+    max_log_lines: usize,
 }
 
 impl VictoriaSource {
@@ -46,6 +48,8 @@ impl VictoriaSource {
             logs_url,
             timeout: Duration::from_secs(5),
             live_window: config.query_interval,
+            max_event_bytes: config.max_event_bytes,
+            max_log_lines: config.max_log_lines,
         })
     }
 
@@ -84,7 +88,7 @@ impl VictoriaSource {
             request = request.query(&[
                 ("start", start.to_string()),
                 ("end", now.to_string()),
-                ("limit", "100".to_string()),
+                ("limit", self.max_log_lines.to_string()),
             ]);
         } else {
             request = request.query(&[
@@ -103,7 +107,7 @@ impl VictoriaSource {
         let mut payload = BTreeMap::new();
         payload.insert("source".into(), Value::String("victoria".into()));
         payload.insert("panel_id".into(), Value::String(scope.panel_id.clone()));
-        payload.insert("data".into(), bounded_value(value));
+        payload.insert("data".into(), bounded_value(value, self.max_event_bytes));
         Ok(RuntimeEvent {
             schema_version: 1,
             module: scope.module.clone(),
@@ -133,7 +137,7 @@ fn fixed_query(scope: &RuntimeScope) -> Result<String, SourceError> {
     let component = scope
         .component_id
         .as_deref()
-        .map(query_label)
+        .map(query_regex_label)
         .transpose()?
         .unwrap_or_else(|| ".*".to_string());
     let metric = match scope.panel_id.as_str() {
@@ -165,9 +169,30 @@ fn query_label(value: &str) -> Result<String, SourceError> {
     Ok(value.to_string())
 }
 
-fn bounded_value(value: Value) -> Value {
+fn query_regex_label(value: &str) -> Result<String, SourceError> {
+    let value = query_label(value)?;
+    // Component IDs are inserted into a regex matcher. Escape regex syntax so
+    // a trusted-but-unusual component name cannot widen the Victoria query.
+    Ok(regex_escape(&value))
+}
+
+fn regex_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+fn bounded_value(value: Value, max_bytes: usize) -> Value {
     let encoded = serde_json::to_vec(&value).unwrap_or_default();
-    if encoded.len() <= 256 * 1024 {
+    if encoded.len() <= max_bytes {
         return value;
     }
     serde_json::json!({
@@ -204,5 +229,21 @@ mod tests {
     fn query_builder_rejects_untrusted_label_syntax() {
         assert!(fixed_query(&scope("managed_service")).is_ok());
         assert!(fixed_query(&scope("managed\"_service")).is_err());
+    }
+
+    #[test]
+    fn component_regex_is_exactly_escaped() {
+        let mut scoped = scope("managed_service");
+        scoped.component_id = Some("broker.v1".into());
+        let rendered = fixed_query(&scoped).unwrap();
+        assert!(rendered.contains("aurora_component_id=~\"broker\\.v1\""));
+    }
+
+    #[test]
+    fn oversized_payload_is_reduced_to_digest() {
+        let value = Value::String("x".repeat(32));
+        let bounded = bounded_value(value, 8);
+        assert_eq!(bounded["truncated"], true);
+        assert!(bounded["sha256"].is_string());
     }
 }

@@ -115,12 +115,6 @@ async fn runtime_stream(
         tracing::warn!(event_code = "ZONE_RUNTIME_STREAM_SCOPE_REJECTED", reason = %error);
         return forbidden("runtime scope rejected").into_response();
     }
-    if !matches!(
-        scope.panel_id.as_str(),
-        "health" | "metrics" | "logs" | "events"
-    ) {
-        return bad_request("unsupported panel_id").into_response();
-    }
     if snapshot_seconds > runtime.max_snapshot().as_secs() {
         return bad_request("from_seconds exceeds the stream snapshot budget").into_response();
     }
@@ -133,6 +127,7 @@ async fn runtime_stream(
     let mut response = Sse::new(stream).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
     headers.insert("x-accel-buffering", "no".parse().unwrap());
     response
 }
@@ -160,6 +155,7 @@ fn event_stream(
         loop {
             tokio::select! {
                 _ = &mut deadline => {
+                    runtime.stream_expired();
                     yield Ok(Event::default().event("stream.error").id(next_event_id()).json_data(json!({"code": "STREAM_EXPIRED"})).unwrap());
                     break;
                 }

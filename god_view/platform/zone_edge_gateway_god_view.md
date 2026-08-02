@@ -294,6 +294,7 @@ provisioned, the Zone control route remains staged and must fail closed.
 | Rust authorizer | `zone-control-edge-gateway/authorizer/src/` |
 | Authorizer workload boundary | `k8s/zone-control-authorizer.yaml` |
 | Zone Runtime Stream service | `zone-runtime-stream/` (Rust subproject; Managed Service adapter first) |
+| Zone Runtime Stream workload boundary | `k8s/zone-runtime-stream.yaml` (internal only; public route gated) |
 | Central assertion producer | `acr/src/storage/control_assertion.rs` |
 | Central private route | `dev/central/envoy/routes/https_routes.yaml` |
 | Zone access projection | `dataplane/src/infra/zone_kv.rs` |

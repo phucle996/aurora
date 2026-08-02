@@ -8,6 +8,7 @@ pub struct Telemetry {
     source_queries_total: AtomicU64,
     source_errors_total: AtomicU64,
     gap_events_total: AtomicU64,
+    stream_expired_total: AtomicU64,
 }
 
 impl Telemetry {
@@ -16,7 +17,11 @@ impl Telemetry {
     }
 
     pub fn connection_closed(&self) {
-        self.connections_active.fetch_sub(1, Ordering::Relaxed);
+        let _ =
+            self.connections_active
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_sub(1)
+                });
     }
 
     pub fn connection_rejected(&self) {
@@ -29,7 +34,11 @@ impl Telemetry {
     }
 
     pub fn fanout_group_closed(&self) {
-        self.fanout_groups_active.fetch_sub(1, Ordering::Relaxed);
+        let _ =
+            self.fanout_groups_active
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_sub(1)
+                });
     }
 
     pub fn source_query(&self) {
@@ -42,6 +51,10 @@ impl Telemetry {
 
     pub fn gap_event(&self) {
         self.gap_events_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn stream_expired(&self) {
+        self.stream_expired_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn prometheus(&self) -> String {
@@ -58,7 +71,9 @@ impl Telemetry {
                 "# TYPE aurora_zone_runtime_stream_source_errors_total counter\n",
                 "aurora_zone_runtime_stream_source_errors_total {}\n",
                 "# TYPE aurora_zone_runtime_stream_gap_events_total counter\n",
-                "aurora_zone_runtime_stream_gap_events_total {}\n"
+                "aurora_zone_runtime_stream_gap_events_total {}\n",
+                "# TYPE aurora_zone_runtime_stream_expired_total counter\n",
+                "aurora_zone_runtime_stream_expired_total {}\n"
             ),
             self.connections_active.load(Ordering::Relaxed),
             self.connections_rejected_total.load(Ordering::Relaxed),
@@ -66,6 +81,7 @@ impl Telemetry {
             self.source_queries_total.load(Ordering::Relaxed),
             self.source_errors_total.load(Ordering::Relaxed),
             self.gap_events_total.load(Ordering::Relaxed),
+            self.stream_expired_total.load(Ordering::Relaxed),
         )
     }
 }

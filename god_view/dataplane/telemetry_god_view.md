@@ -115,6 +115,12 @@ PostgreSQL, Zone KV, Kubernetes API hoặc Vault credential. Browser không có 
 credential và không thể gửi raw PromQL/LogsQL, arbitrary label selector hay namespace;
 service derive fixed query từ generic `panel_id`/module registry allow-list và append telemetry filters từ scope.
 
+Workload boundary của read plane nằm trong
+`k8s/zone-runtime-stream.yaml`: ba replica stateless, ingress chỉ từ Zone Public
+Edge và egress chỉ tới VictoriaMetrics/VictoriaLogs. Việc deploy workload này không
+tự enable public route; `runtime.read` ticket và Edge authorization vẫn là gate
+riêng.
+
 V1 retention của customer Victoria plane là metrics 7 ngày và logs 3 ngày. Metrics là
 sampled/eventual observation; logs tail là best-effort stream và không cam kết
 ordering/replay sau reconnect. Không result, state machine, billing, audit timeline

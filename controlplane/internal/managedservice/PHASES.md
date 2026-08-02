@@ -988,11 +988,13 @@ instance through Console without raw YAML/input/Secret or optimistic runtime fic
 
 ## 14. P09 — Generic Zone Runtime Stream read path
 
-**Implementation status:** FOUNDATION SHIPPED — root Rust subproject
-`zone-runtime-stream` đã có generic trusted scope, fixed Victoria query shaping,
-bounded snapshot/live read, shared SSE fan-out, backpressure gap, stream lifetime,
-graceful shutdown và design README. OTel enrichment, `runtime.read` ticket, Public
-Edge route, Managed Service panel adapter và Console integration vẫn pending.
+**Implementation status:** FOUNDATION + READ-PLANE SLICE SHIPPED — root Rust
+subproject `zone-runtime-stream` đã có generic trusted scope, fixed Victoria query
+shaping với regex escaping, bounded snapshot/live read, response/Log line budgets,
+shared SSE fan-out, backpressure gap, stream lifetime, expiry metrics, graceful
+shutdown và Zone Kubernetes deployment/network boundary. OTel enrichment,
+`runtime.read` ticket, Public Edge route, Managed Service panel adapter và Console
+integration vẫn pending; deployment này không tự mở public route.
 
 **Mục tiêu:** customer xem runtime metrics/logs/events của đúng resource qua hai
 existing Zone gateways và Victoria. Managed Service là adapter đầu tiên; Hypervisor,

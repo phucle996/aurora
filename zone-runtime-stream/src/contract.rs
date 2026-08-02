@@ -7,6 +7,7 @@ const MAX_MODULE_LENGTH: usize = 64;
 const MAX_RESOURCE_TYPE_LENGTH: usize = 64;
 const MAX_COMPONENT_LENGTH: usize = 128;
 const MAX_PANEL_LENGTH: usize = 64;
+const SUPPORTED_PANELS: [&str; 4] = ["health", "metrics", "logs", "events"];
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RuntimeScope {
@@ -65,11 +66,17 @@ impl RuntimeScope {
             "resource_type",
         )?;
         validate_token(&self.panel_id, MAX_PANEL_LENGTH, "panel_id")?;
+        if !SUPPORTED_PANELS.contains(&self.panel_id.as_str()) {
+            return Err(ContractError::UnsupportedPanel);
+        }
         if let Some(component_id) = &self.component_id {
             validate_token(component_id, MAX_COMPONENT_LENGTH, "component_id")?;
         }
         if self.resource_id.is_nil() || self.owner_id.is_nil() || self.workspace_id.is_nil() {
             return Err(ContractError::NilIdentity);
+        }
+        if self.snapshot_seconds == 0 {
+            return Err(ContractError::SnapshotWindowInvalid);
         }
         Ok(())
     }
@@ -115,6 +122,10 @@ pub enum ContractError {
     NilIdentity,
     #[error("{0} is invalid")]
     InvalidToken(&'static str),
+    #[error("panel is not enabled")]
+    UnsupportedPanel,
+    #[error("snapshot window is invalid")]
+    SnapshotWindowInvalid,
 }
 
 fn validate_token(
@@ -153,5 +164,31 @@ mod tests {
         };
         assert!(scope.validate(zone).is_ok());
         assert!(scope.validate(Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn scope_rejects_unknown_panel_and_zero_snapshot() {
+        let zone = Uuid::new_v4();
+        let mut scope = RuntimeScope {
+            module: "managed_service".into(),
+            resource_type: "instance".into(),
+            resource_id: Uuid::new_v4(),
+            owner_id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            zone_id: zone,
+            component_id: None,
+            panel_id: "shell".into(),
+            snapshot_seconds: 60,
+        };
+        assert!(matches!(
+            scope.validate(zone),
+            Err(ContractError::UnsupportedPanel)
+        ));
+        scope.panel_id = "health".into();
+        scope.snapshot_seconds = 0;
+        assert!(matches!(
+            scope.validate(zone),
+            Err(ContractError::SnapshotWindowInvalid)
+        ));
     }
 }

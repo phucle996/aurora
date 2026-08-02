@@ -133,6 +133,19 @@ See [`.env.example`](./.env.example). Required identity and Victoria endpoints
 fail fast. Connection, fan-out, snapshot, heartbeat, query and buffer budgets
 are bounded at bootstrap; there is no unbounded default queue.
 
+The Zone deployment template is
+[`k8s/zone-runtime-stream.yaml`](../k8s/zone-runtime-stream.yaml). It runs as a
+three-replica, stateless read plane with a read-only NetworkPolicy to the Zone
+Victoria services and ingress only from the Zone Public Edge. The public route
+and scoped `runtime.read` ticket remain a separate security gate; deploying this
+service does not expose a direct host or browser path.
+
+`RUNTIME_STREAM_MAX_EVENT_BYTES` bounds each Victoria response embedded in an
+SSE event, while `RUNTIME_STREAM_MAX_LOG_LINES` bounds the Victoria Logs request.
+Oversized responses are replaced by a byte count and SHA-256 digest, never
+forwarded in full to a browser. Component IDs are escaped before they enter the
+fixed regex query so a valid component name cannot widen its scope.
+
 Docker development injects the app-owned `.env` from
 `dev/zone/compose.yml`. The service is attached only to the
 Zone Victoria read network and the dedicated Public Edge runtime network; it
