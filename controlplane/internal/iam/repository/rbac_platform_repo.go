@@ -463,28 +463,6 @@ func (r *RbacPlatformRepository) GetUserRolePermissions(ctx context.Context, use
 	return mergedBytes, nil
 }
 
-// [COMMENT]: GetRoleIDByUserID lấy role_id và level của user tại platform scope (nil UUID) phục vụ check session
-func (r *RbacPlatformRepository) GetRoleIDByUserID(ctx context.Context, userID uuid.UUID) (string, int32, error) {
-	var roleIDStr string
-	var roleLevel int32
-
-	query := fmt.Sprintf(`
-		SELECT role_id::text, role_level FROM %s.user_role
-		WHERE user_id = $1 AND workspace_id = '00000000-0000-0000-0000-000000000000'
-		LIMIT 1
-	`, r.schema)
-
-	err := r.db.QueryRow(ctx, query, userID).Scan(&roleIDStr, &roleLevel)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", 0, iamTaxonomy.ErrRoleNotFound
-		}
-		return "", 0, err
-	}
-
-	return roleIDStr, roleLevel, nil
-}
-
 // [COMMENT]: DeleteRolePlatform xóa vai trò platform nếu callerLevel < roleLevel và không còn user/tenant nào được gán
 func (r *RbacPlatformRepository) DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error {
 	query := fmt.Sprintf(`

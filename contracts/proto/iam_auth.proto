@@ -24,7 +24,8 @@ message RecoverUserSessionResponse {
   string user_id = 3;
   string username = 4;
   string resolved_tenant_id = 5;
-  string role_id = 6;
+  reserved 6;
+  reserved "role_id";
   int32 role_level = 7;
   string client_device_id = 8;
   bool personal_fallback_authorized = 9;
@@ -60,7 +61,8 @@ message VerifyUserCredentialsRequest {
 message VerifyUserCredentialsResponse {
   bool valid = 1;              // Cờ báo hiệu xác thực thông tin thành công hay thất bại
   string user_id = 2;          // UUID của người dùng dưới dạng chuỗi
-  string role_id = 3;          // UUID của Role đang hoạt động của người dùng (dưới dạng chuỗi)
+  reserved 3;
+  reserved "role_id";
   int32 level = 4;             // Cấp độ quyền (level)
   string tenant_id = 5;              // ID/Context của Tenant liên đới (nếu có)
   string client_device_id = 6;  // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
@@ -97,7 +99,8 @@ message VerifyExternalIdentityRequest {
 message VerifyExternalIdentityResponse {
   bool valid = 1;
   string user_id = 2;
-  string role_id = 3;
+  reserved 3;
+  reserved "role_id";
   int32 level = 4;
   string tenant_id = 5;
   string client_device_id = 6;
@@ -154,7 +157,8 @@ message VerifyMfaChallengeRequest {
 message VerifyMfaChallengeResponse {
   bool valid = 1;
   string user_id = 2;
-  string role_id = 3;
+  reserved 3;
+  reserved "role_id";
   int32 level = 4;
   string tenant_id = 5;
   string client_device_id = 6;

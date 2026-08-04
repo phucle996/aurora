@@ -49,7 +49,6 @@ pub async fn handle_sre_session_rotation(
             sub: claims.sub.clone(),
             zone_id: claims.zone_id.clone(),
             access_key: new_access_key.clone(),
-            jti: uuid::Uuid::new_v4().to_string(),
             iss: claims.iss.clone(),
             exp: chrono::Utc::now().timestamp() + config.session_ttl_secs as i64,
             iat: chrono::Utc::now().timestamp(),

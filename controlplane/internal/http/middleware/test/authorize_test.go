@@ -35,7 +35,6 @@ func TestAuthorize_TenantScope(t *testing.T) {
 
 	tenantID := uuid.NewString()
 	workspaceID := uuid.NewString()
-	roleID := uuid.NewString()
 	userID := uuid.NewString()
 
 	// [COMMENT]: DB đã lưu sẵn full 5-part key với tenant_uuid và workspace_uuid thực tế
@@ -45,8 +44,6 @@ func TestAuthorize_TenantScope(t *testing.T) {
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Request.Header.Set("X-User-ID", userID)
-		c.Request.Header.Set("X-User-Role", "tenant_admin")
-		c.Request.Header.Set("X-User-Role-ID", roleID)
 		c.Request.Header.Set("X-Tenant-ID", tenantID)
 		c.Request.Header.Set("X-Workspace-ID", workspaceID)
 		c.Next()
@@ -86,7 +83,6 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 
 	username := "alice"
 	workspaceID := uuid.NewString()
-	roleID := uuid.NewString()
 	userID := uuid.NewString()
 
 	// [COMMENT]: DB đã lưu sẵn full 5-part key với username và workspace_uuid thực tế
@@ -97,7 +93,6 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 	router.Use(func(c *gin.Context) {
 		c.Request.Header.Set("X-User-ID", userID)
 		c.Request.Header.Set("X-User-Name", username)
-		c.Request.Header.Set("X-User-Role-ID", roleID)
 		c.Request.Header.Set("X-Workspace-ID", workspaceID)
 		// [COMMENT]: Không set X-Tenant-ID → middleware đi nhánh personal
 		c.Next()
@@ -139,7 +134,6 @@ func TestAuthorize_MissingWorkspaceID(t *testing.T) {
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Request.Header.Set("X-User-ID", uuid.NewString())
-		c.Request.Header.Set("X-User-Role-ID", uuid.NewString())
 		c.Request.Header.Set("X-Tenant-ID", uuid.NewString())
 		// [COMMENT]: Không set X-Workspace-ID → phải reject
 		c.Next()
@@ -165,7 +159,6 @@ func TestAuthorize_UserLevelChecking(t *testing.T) {
 
 	tenantID := uuid.NewString()
 	workspaceID := uuid.NewString()
-	roleID := uuid.NewString()
 	userID := uuid.NewString()
 
 	expectedPerm := tenantID + ":" + workspaceID + ":hierarchy:tenant-member:delete"
@@ -176,8 +169,6 @@ func TestAuthorize_UserLevelChecking(t *testing.T) {
 		r := gin.New()
 		r.Use(func(c *gin.Context) {
 			c.Request.Header.Set("X-User-ID", userID)
-			c.Request.Header.Set("X-User-Role", "tenant_admin")
-			c.Request.Header.Set("X-User-Role-ID", roleID)
 			c.Request.Header.Set("X-Tenant-ID", tenantID)
 			c.Request.Header.Set("X-Workspace-ID", workspaceID)
 			if level != "" {

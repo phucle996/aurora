@@ -54,7 +54,6 @@ type ResolveTenantAccess struct {
 	UserID       uuid.UUID
 	TenantID     uuid.UUID
 	TenantDomain string
-	RoleID       uuid.UUID
 	RoleLevel    int32
 }
 

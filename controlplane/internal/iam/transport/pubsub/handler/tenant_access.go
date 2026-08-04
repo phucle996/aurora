@@ -131,10 +131,9 @@ func (h *TenantAccessRedisHandler) resolve(payload []byte) {
 		UserID: userID, TenantID: tenantID, TenantDomain: domain,
 	})
 	if resolveErr == nil {
-		response = make([]byte, 21)
+		response = make([]byte, 5)
 		response[0] = 1
-		copy(response[1:17], out.RoleID[:])
-		binary.BigEndian.PutUint32(response[17:21], uint32(out.RoleLevel))
+		binary.BigEndian.PutUint32(response[1:5], uint32(out.RoleLevel))
 	}
 	replyCtx, replyCancel := context.WithTimeout(context.WithoutCancel(ctx), 300*time.Millisecond)
 	defer replyCancel()

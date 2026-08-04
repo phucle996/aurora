@@ -416,7 +416,6 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		MfaRequired:           res.MFARequired,
 		MfaSettingId:          res.MFASettingID,
 		UserId:                res.UserID,
-		RoleId:                res.RoleID,
 		Level:                 res.Level,
 		TenantId:              res.TenantID,
 		ClientDeviceId:        res.ClientDeviceID,
@@ -562,7 +561,6 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		MfaRequired:           res.MFARequired,
 		MfaSettingId:          res.MFASettingID,
 		UserId:                res.UserID,
-		RoleId:                res.RoleID,
 		Level:                 res.Level,
 		TenantId:              res.TenantID,
 		ClientDeviceId:        res.ClientDeviceID,
@@ -663,7 +661,6 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 	respond(&iamproto.VerifyMfaChallengeResponse{
 		Valid:                 result.Valid,
 		UserId:                result.UserID,
-		RoleId:                result.RoleID,
 		Level:                 result.Level,
 		TenantId:              result.TenantID,
 		ClientDeviceId:        result.ClientDeviceID,
@@ -800,7 +797,6 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 		response.Username = recovered.Username
 	}
 	if recovered.ContextAuthorized || recovered.PersonalFallbackAuthorized {
-		response.RoleId = recovered.RoleID.String()
 		response.RoleLevel = recovered.RoleLevel
 		if recovered.ResolvedTenantID != nil {
 			response.ResolvedTenantId = recovered.ResolvedTenantID.String()

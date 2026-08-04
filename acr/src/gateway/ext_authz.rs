@@ -1247,7 +1247,6 @@ impl Authorization for ExtAuthzService {
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, "sre".to_string()),
                             (HEADER_X_USER_NAME, "sre".to_string()),
-                            (HEADER_X_USER_ROLE_ID, "sre".to_string()),
                             (HEADER_X_USER_LEVEL, "0".to_string()),
                             (HEADER_X_CLIENT_DEVICE_ID, device_id),
                             (
@@ -1269,8 +1268,6 @@ impl Authorization for ExtAuthzService {
                     }
                 } else {
                     if let Some(c) = claims {
-                        let roles_str = c.get_roles().join(",");
-
                         let device_id =
                             extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID)
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -1280,7 +1277,6 @@ impl Authorization for ExtAuthzService {
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, c.uid.clone()),
                             (HEADER_X_USER_NAME, c.sub.clone()),
-                            (HEADER_X_USER_ROLE_ID, roles_str),
                             (HEADER_X_USER_LEVEL, c.lvl.to_string()),
                             (
                                 HEADER_X_TENANT_ID,

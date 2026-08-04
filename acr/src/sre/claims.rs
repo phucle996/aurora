@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// [COMMENT]: SreClaims — JWT payload cô lập dành riêng cho SRE Admin.
-/// Không mang thông tin định danh cá nhân (uid, role_id, lvl). Chỉ mang tính chất ngữ cảnh đăng nhập SRE.
+/// Không mang thông tin định danh cá nhân hay RBAC. Chỉ mang ngữ cảnh đăng nhập SRE.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SreClaims {
     #[serde(rename = "sub")]
@@ -19,9 +19,6 @@ pub struct SreClaims {
 
     #[serde(rename = "access_key")]
     pub access_key: String,
-
-    #[serde(rename = "jti", default)]
-    pub jti: String,
 
     #[serde(rename = "iss", default)]
     pub iss: Option<String>,

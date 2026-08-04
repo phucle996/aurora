@@ -18,7 +18,6 @@ const (
 	CtxTenantID       = "ctx_tenant_id"
 	CtxWorkspaceID    = "ctx_workspace_id"
 	CtxUserName       = "ctx_username"
-	CtxUserRoleID     = "ctx_user_role_id"
 	CtxClientDeviceID = "ctx_client_device_id"
 )
 
@@ -149,28 +148,6 @@ func GetUserName(c *gin.Context, op string) (string, bool) {
 	return "", false
 }
 
-// [COMMENT]: GetUserRoleID trích xuất và parse UUID của role đang hoạt động từ Gin Context.
-// Tự động ghi log warning và trả lỗi HTTP nếu thiếu hoặc sai định dạng.
-func GetUserRoleID(c *gin.Context, op string) (uuid.UUID, bool) {
-	val, ok := c.Get(CtxUserRoleID)
-	if !ok {
-		logger.HandlerWarn(c, op, nil, "missing active role context")
-		apires.RespondUnauthorized(c, "missing role context")
-		return uuid.Nil, false
-	}
-	if err, ok := val.(error); ok {
-		logger.HandlerWarn(c, op, err, "invalid user role id format")
-		apires.RespondUnauthorized(c, "missing role context")
-		return uuid.Nil, false
-	}
-	if id, ok := val.(uuid.UUID); ok {
-		return id, true
-	}
-	logger.HandlerWarn(c, op, nil, "invalid user role id context type")
-	apires.RespondUnauthorized(c, "missing role context")
-	return uuid.Nil, false
-}
-
 // [COMMENT]: GetClientDeviceID trích xuất và parse UUID của device đang kết nối từ Gin Context.
 // Tự động ghi log warning và trả lỗi HTTP nếu thiếu hoặc sai định dạng.
 func GetClientDeviceID(c *gin.Context, op string) (uuid.UUID, bool) {
@@ -192,7 +169,6 @@ func GetClientDeviceID(c *gin.Context, op string) (uuid.UUID, bool) {
 	apires.RespondUnauthorized(c, "unauthorized")
 	return uuid.Nil, false
 }
-
 
 // [COMMENT]: GetTraceparent trích xuất traceparent header cho mục đích tracing telemetry (nếu có).
 func GetTraceparent(c *gin.Context) string {

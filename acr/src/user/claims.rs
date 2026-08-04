@@ -21,10 +21,6 @@ pub struct Claims {
     #[serde(rename = "uid")]
     pub uid: String,
 
-    // Role UUID từ Go controlplane (ID-based authorization)
-    #[serde(rename = "role_id", default)]
-    pub role_id: String,
-
     // Level phân quyền (0 = cao nhất)
     #[serde(rename = "lvl", default)]
     pub lvl: i32,
@@ -41,10 +37,6 @@ pub struct Claims {
     #[serde(rename = "access_key")]
     pub access_key: String,
 
-    // JWT ID (unique token identifier, chống replay)
-    #[serde(rename = "jti", default)]
-    pub jti: String,
-
     // Issuer
     #[serde(rename = "iss", default)]
     pub iss: Option<String>,
@@ -56,15 +48,4 @@ pub struct Claims {
     // Issued At timestamp
     #[serde(rename = "iat", default)]
     pub iat: i64,
-}
-
-impl Claims {
-    /// [COMMENT]: Trả về role_id dưới dạng Vec để tương thích với PolicyEvaluator / AuthContext.
-    pub fn get_roles(&self) -> Vec<String> {
-        if self.role_id.is_empty() {
-            vec![]
-        } else {
-            vec![self.role_id.clone()]
-        }
-    }
 }

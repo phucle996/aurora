@@ -318,14 +318,19 @@ pub async fn handle_tenant_switch(
             ))));
         }
     };
-    if access_response.len() != 21 || access_response[0] != 1 {
+    if access_response.first() != Some(&1) {
         return Some(Ok(Response::new(build_denied_json(
             HttpStatusCode::Forbidden,
             "Tenant unavailable",
         ))));
     }
-    let role_id = match uuid::Uuid::from_slice(&access_response[1..17]) {
-        Ok(value) if !value.is_nil() => value,
+
+    // [COMMENT]: Accept the former 21-byte reply during an ACR-first rolling
+    // deployment, but ignore its retired metadata. Once every Controlplane
+    // replica emits the canonical 5-byte shape both paths resolve only level.
+    let level_bytes = match access_response.len() {
+        5 => &access_response[1..5],
+        21 => &access_response[17..21],
         _ => {
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::ServiceUnavailable,
@@ -334,7 +339,7 @@ pub async fn handle_tenant_switch(
         }
     };
     let role_level = i32::from_be_bytes(
-        access_response[17..21]
+        level_bytes
             .try_into()
             .expect("tenant access level wire has fixed width"),
     );
@@ -343,7 +348,6 @@ pub async fn handle_tenant_switch(
     // decision. Client query values never become role claims on their own.
     let tenant_id = tenant_uuid.to_string();
     claims.tenant_id = Some(tenant_id.clone());
-    claims.role_id = role_id.to_string();
     claims.lvl = role_level;
 
     let new_jwt = match token_mgr.generate_token(&claims).await {

@@ -28,9 +28,6 @@ type RbacPlatformRepository interface {
 	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user theo user id
 	GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error)
 
-	// [COMMENT]: GetRoleIDByUserID lấy role_id và level của user tại platform scope (nil UUID) phục vụ check session
-	GetRoleIDByUserID(ctx context.Context, userID uuid.UUID) (string, int32, error)
-
 	// [COMMENT]: DeleteRolePlatform xóa vai trò platform nếu callerLevel < roleLevel và không còn user/tenant nào được gán
 	DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error
 

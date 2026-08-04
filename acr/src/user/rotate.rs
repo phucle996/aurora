@@ -50,12 +50,10 @@ pub async fn handle_user_session_rotation(
         let new_claims = Claims {
             sub: claims.sub.clone(),
             uid: claims.uid.clone(),
-            role_id: claims.role_id.clone(),
             lvl: claims.lvl,
             tenant_id: claims.tenant_id.clone(),
             zone_id: claims.zone_id.clone(),
             access_key: new_access_key.clone(),
-            jti: uuid::Uuid::new_v4().to_string(),
             iss: claims.iss.clone(),
             exp: chrono::Utc::now().timestamp() + config.session_ttl_secs as i64,
             iat: chrono::Utc::now().timestamp(),

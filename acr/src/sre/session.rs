@@ -211,7 +211,6 @@ pub async fn release_sre_session(
         sub: "sre".to_string(),
         zone_id: Some("global".to_string()),
         access_key: access_key.clone(),
-        jti: Uuid::new_v4().to_string(),
         iss: Some("aurora-acr".to_string()),
         exp: exp_unix,
         iat: now_unix,

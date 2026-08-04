@@ -26,12 +26,11 @@ const (
 	CtxTenantID       = "ctx_tenant_id"
 	CtxWorkspaceID    = "ctx_workspace_id"
 	CtxUserName       = "ctx_username"
-	CtxUserRoleID     = "ctx_user_role_id"
 	CtxClientDeviceID = "ctx_client_device_id"
 )
 
 // ContextInjector là middleware toàn cục thực hiện đọc, parse và lưu trữ tất cả các
-// thông tin định danh (User ID, Role ID, Tenant ID...) từ headers (được inject bởi ACR)
+// thông tin định danh (User ID, Tenant ID...) từ headers (được inject bởi ACR)
 // trực tiếp vào Gin Context để tối ưu hóa bộ nhớ và hiệu năng xử lý (CPU) cho các logic phía sau.
 func ContextInjector() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -93,16 +92,7 @@ func ContextInjector() gin.HandlerFunc {
 			c.Set(CtxUserName, username)
 		}
 
-		// 7. Role ID (X-User-Role-ID)
-		if idStr := strings.TrimSpace(c.GetHeader("X-User-Role-ID")); idStr != "" {
-			if id, err := uuid.Parse(idStr); err == nil {
-				c.Set(CtxUserRoleID, id)
-			} else {
-				c.Set(CtxUserRoleID, err)
-			}
-		}
-
-		// 8. Device ID (X-Client-Device-ID)
+		// 7. Device ID (X-Client-Device-ID)
 		if idStr := strings.TrimSpace(c.GetHeader("X-Client-Device-ID")); idStr != "" {
 			if id, err := uuid.Parse(idStr); err == nil {
 				c.Set(CtxClientDeviceID, id)

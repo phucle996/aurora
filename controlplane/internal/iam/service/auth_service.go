@@ -326,7 +326,6 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 			MFARequired:          true,
 			UserID:               user.ID.String(),
 			MFASettingID:         mfaSetting.ID.String(),
-			RoleID:               user.RoleID,
 			Level:                user.Level,
 			TenantID:             tenantID,
 			ClientDeviceID:       req.ClientDeviceID.String(),
@@ -394,10 +393,8 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &iamEntity.VerifyUserCredentialsResult{
-		Valid:  true,
-		UserID: user.ID.String(),
-		// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
-		RoleID:                user.RoleID,
+		Valid:                 true,
+		UserID:                user.ID.String(),
 		Level:                 user.Level,
 		TenantID:              tenantID,
 		ClientDeviceID:        clientDeviceID,
@@ -508,7 +505,6 @@ func (s *AuthService) VerifyMfaLogin(
 	return &iamEntity.VerifyUserCredentialsResult{
 		Valid:                 true,
 		UserID:                user.ID.String(),
-		RoleID:                user.RoleID,
 		Level:                 user.Level,
 		TenantID:              tenantID,
 		ClientDeviceID:        clientDeviceID.String(),
@@ -593,7 +589,6 @@ func (s *AuthService) VerifyExternalIdentity(
 			MFARequired:  true,
 			UserID:       user.ID.String(),
 			MFASettingID: mfaSetting.ID.String(),
-			RoleID:       user.RoleID,
 			Level:        user.Level,
 			Username:     user.Username,
 			ZoneCode:     req.ZoneCode,
@@ -661,7 +656,6 @@ func (s *AuthService) VerifyExternalIdentity(
 	return &iamEntity.ExternalLoginResult{
 		Valid:                 true,
 		UserID:                user.ID.String(),
-		RoleID:                user.RoleID,
 		Level:                 user.Level,
 		ClientDeviceID:        clientDeviceID.String(),
 		RefreshToken:          rawRefresh,

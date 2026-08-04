@@ -92,7 +92,7 @@ func TestSessionRefreshIssueRejectsInactiveDevice(t *testing.T) {
 }
 
 func TestSessionRecoveryMapsCredentialAndContextOutcomes(t *testing.T) {
-	userID, deviceID, roleID, tenantID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	userID, deviceID, tenantID := uuid.New(), uuid.New(), uuid.New()
 	tests := []struct {
 		name         string
 		stub         *refreshTokenRepositoryStub
@@ -106,7 +106,7 @@ func TestSessionRecoveryMapsCredentialAndContextOutcomes(t *testing.T) {
 			name: "tenant authorized",
 			stub: &refreshTokenRepositoryStub{recovered: &iamEntity.RecoverUserSession{
 				CredentialValid: true, ContextAuthorized: true, UserID: userID,
-				DeviceID: deviceID, RoleID: roleID, RoleLevel: 8, ResolvedTenantID: &tenantID,
+				DeviceID: deviceID, RoleLevel: 8, ResolvedTenantID: &tenantID,
 			}},
 			requested: &tenantID, wantValid: true, wantAccess: true,
 		},

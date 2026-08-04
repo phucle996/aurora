@@ -33,6 +33,5 @@ type RecoverUserSession struct {
 	ClientDeviceID             string
 	Username                   string
 	ResolvedTenantID           *uuid.UUID
-	RoleID                     uuid.UUID
 	RoleLevel                  int32
 }

@@ -47,7 +47,6 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 			u.email,
 			u.password_hash, 
 			u.status,
-			COALESCE(ur.role_id::text, '') AS role_id,
 			COALESCE(ur.role_level, 99)    AS role_level
 		FROM %s.users u
 		LEFT JOIN %s.user_role ur ON ur.user_id = u.id 
@@ -59,7 +58,6 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 
 	var (
 		userModel iamModel.User
-		roleID    string
 		roleLevel int32
 	)
 	if err := r.db.QueryRow(ctx, query, username).Scan(
@@ -68,7 +66,6 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 		&userModel.Email,
 		&userModel.PasswordHash,
 		&userModel.Status,
-		&roleID,
 		&roleLevel,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -84,7 +81,6 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 		Email:        userModel.Email,
 		PasswordHash: &passwordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
-		RoleID:       roleID,
 		Level:        roleLevel,
 	}
 
@@ -106,7 +102,6 @@ func (r *AuthRepository) LoginUserTenant(
 			u.password_hash,
 			u.status,
 			t.id::text   AS tenant_id,
-			mr.tenant_role_id::text AS role_id,
 			mr.role_level
 		FROM %s.users u
 		JOIN %s.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
@@ -122,7 +117,6 @@ func (r *AuthRepository) LoginUserTenant(
 	var (
 		userModel iamModel.User
 		tenantID  string
-		roleID    string
 		roleLevel int32
 	)
 	if err := r.db.QueryRow(ctx, query, username, tenantDomain).Scan(
@@ -132,7 +126,6 @@ func (r *AuthRepository) LoginUserTenant(
 		&userModel.PasswordHash,
 		&userModel.Status,
 		&tenantID,
-		&roleID,
 		&roleLevel,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -149,7 +142,6 @@ func (r *AuthRepository) LoginUserTenant(
 		PasswordHash: &passwordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
 		TenantID:     &tenantID,
-		RoleID:       roleID,
 		Level:        roleLevel,
 	}
 
@@ -479,16 +471,15 @@ func (r *AuthRepository) VerifyExternalIdentity(
 		return nil, nil, iamTaxonomy.ErrInvalidCredentials
 	}
 
-	var roleID string
 	var roleLevel int32
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`
-		SELECT COALESCE(ur.role_id::text, ''), COALESCE(ur.role_level, 99)
+		SELECT COALESCE(ur.role_level, 99)
 		FROM %s.user_role ur
 		WHERE ur.user_id = $1
 		  AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
 		ORDER BY ur.role_level ASC
 		LIMIT 1
-	`, r.schema), userID).Scan(&roleID, &roleLevel); err != nil {
+	`, r.schema), userID).Scan(&roleLevel); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, iamTaxonomy.ErrRoleRequired
 		}
@@ -504,7 +495,6 @@ func (r *AuthRepository) VerifyExternalIdentity(
 		Email:        email,
 		PasswordHash: userPasswordHash,
 		Status:       iamEntity.UserStatus(status),
-		RoleID:       roleID,
 		Level:        roleLevel,
 	}
 	return &identity, loginUser, nil

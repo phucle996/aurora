@@ -319,6 +319,8 @@ in PostgreSQL, and a future request can rebuild the decision.
 - Tenant definitions without `tenant_id` ownership.
 - Seeding tenant roles before a tenant exists.
 - Trusting `x-user-role-id` to select tenant permission cache entries.
+- Emitting `x-user-role-id` from ACR or carrying `role_id` in Trinity JWT; the
+  effective compiled grant is selected by verified actor and owner context.
 - Storing three-level permissions in `user_role` or `membership_role`.
 - Letting ACR switch tenant solely from query/cookie values.
 - Returning plaintext invitation token after the create response.

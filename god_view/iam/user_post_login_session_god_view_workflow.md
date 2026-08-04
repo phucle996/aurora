@@ -167,10 +167,17 @@ RecoverUserSessionResponse {
   user_id, username
   client_device_id
   resolved_tenant_id
-  role_id, role_level
+  role_level
   personal_fallback_authorized
 }
 ```
+
+`role_id` is deliberately absent from the recovery contract and Trinity JWT.
+Controlplane authorization resolves compiled grants by the verified
+`user_id + tenant_id` context; ACR must not forward an internal role UUID as an
+authority claim. The JWT also has no `jti`: its replay and revocation boundary
+is the Redis-backed `access_key + access_secret` session, while critical
+mutations use their own one-time session-proof challenge.
 
 Transport is bounded Shared L2 Redis request/reply, not gRPC and not Kafka:
 

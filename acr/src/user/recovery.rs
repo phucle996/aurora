@@ -36,7 +36,6 @@ fn build_success_response(
     config: &Config,
     user_id: &str,
     client_device_id: &str,
-    role_id: &str,
     level: i32,
     tenant_id: &str,
     new_jwt: &str,
@@ -142,7 +141,6 @@ fn build_success_response(
             use envoy_types::pb::envoy::config::core::v3::HeaderValueOption;
             for (key, value) in [
                 (HEADER_X_USER_ID, user_id.to_string()),
-                (HEADER_X_USER_ROLE_ID, role_id.to_string()),
                 (HEADER_X_USER_LEVEL, level.to_string()),
                 (HEADER_X_TENANT_ID, tenant_id.to_string()),
                 (HEADER_X_ZONE_ID, zone_id.to_string()),
@@ -275,7 +273,6 @@ pub async fn try_handle_recovery_session(
             config,
             &cache.user_id,
             &cache.client_device_id,
-            &cache.role_id,
             cache.level,
             &cache.tenant_id,
             &cache.new_jwt,
@@ -295,7 +292,6 @@ pub async fn try_handle_recovery_session(
                     config,
                     &cache.user_id,
                     &cache.client_device_id,
-                    &cache.role_id,
                     cache.level,
                     &cache.tenant_id,
                     &cache.new_jwt,
@@ -418,8 +414,6 @@ pub async fn try_handle_recovery_session(
         Uuid::parse_str(&response.client_device_id),
         Ok(device_id) if !device_id.is_nil()
     );
-    let role_id_valid =
-        matches!(Uuid::parse_str(&response.role_id), Ok(role_id) if !role_id.is_nil());
     let resolved_tenant_id = response.resolved_tenant_id.trim();
     let context_binding_valid = if context_reset {
         resolved_tenant_id.is_empty()
@@ -440,7 +434,6 @@ pub async fn try_handle_recovery_session(
     };
     if !user_id_valid
         || !client_device_id_valid
-        || !role_id_valid
         || !context_binding_valid
         || response.username.trim().is_empty()
         || response.role_level < 0
@@ -466,7 +459,6 @@ pub async fn try_handle_recovery_session(
         config,
         &response.user_id,
         &response.username,
-        &response.role_id,
         response.role_level,
         release_tenant_id,
         &resolved_zone_id,
@@ -496,7 +488,6 @@ pub async fn try_handle_recovery_session(
     let cache = RecoverySessionCache {
         user_id: response.user_id.clone(),
         client_device_id: response.client_device_id.clone(),
-        role_id: response.role_id.clone(),
         level: response.role_level,
         tenant_id: tenant_id.clone(),
         new_jwt: released.access_token.clone(),
@@ -522,7 +513,6 @@ pub async fn try_handle_recovery_session(
         config,
         &response.user_id,
         &response.client_device_id,
-        &response.role_id,
         response.role_level,
         &tenant_id,
         &released.access_token,

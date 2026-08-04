@@ -50,9 +50,9 @@ type LoginUser struct {
 	// [COMMENT]: TenantID và TenantCode phục vụ flow login username@tenant_domain.
 	// Rỗng/nil nếu login global.
 	TenantID *string
-	// [COMMENT]: RoleID (UUID) và Level được join trực tiếp từ RBAC trong repo
-	RoleID string
-	Level  int32
+	// [COMMENT]: Effective level được resolve từ assignment hiện hành; role UUID
+	// là metadata RBAC và không được đưa vào Trinity.
+	Level int32
 }
 
 type LoginRequest struct {
@@ -79,12 +79,10 @@ type VerifySessionResult struct {
 
 // VerifyUserCredentialsResult chứa thông tin phản hồi sau khi xác thực credentials người dùng thành công
 type VerifyUserCredentialsResult struct {
-	Valid        bool
-	MFARequired  bool
-	UserID       string
-	MFASettingID string
-	// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
-	RoleID                string
+	Valid                 bool
+	MFARequired           bool
+	UserID                string
+	MFASettingID          string
 	Level                 int32
 	TenantID              string
 	ClientDeviceID        string
@@ -147,7 +145,6 @@ type ExternalLoginResult struct {
 	MFARequired           bool
 	UserID                string
 	MFASettingID          string
-	RoleID                string
 	Level                 int32
 	TenantID              string
 	ClientDeviceID        string

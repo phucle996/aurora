@@ -13,7 +13,6 @@ type RbacTenantRepository interface {
 	ListTenantRoles(context.Context, *iamEntity.ListTenantRoles) ([]iamEntity.ListTenantRoles, error)
 	CreateTenantRole(context.Context, *iamEntity.CreateTenantRole) (*iamEntity.CreateTenantRole, error)
 	ResolveTenantAccess(context.Context, *iamEntity.ResolveTenantAccess) (*iamEntity.ResolveTenantAccess, error)
-	GetRoleIDByUserAndTenantID(context.Context, uuid.UUID, uuid.UUID) (string, int32, error)
 
 	// GetUserTenantBillingPermissions resolves the active membership role for
 	// one user+tenant tuple and returns canonical five-part keys.

@@ -254,15 +254,15 @@ Sau khi xác thực thành công SRE API Key và TOTP, JWT được tạo ra đ�
 | Claim | Kiểu dữ liệu | Giá trị mẫu / Định dạng | Mô tả |
 | :--- | :--- | :--- | :--- |
 | `sub` | String | `"sre"` | Định danh đối tượng (Subject) cố định cho SRE |
-| `role` | String | `""` | Không gán Role cho thực thể ảo SRE |
-| `lvl` | i32 | `0` | Default level hệ thống |
-| `tenant_id` | String / Null | `null` | Không thuộc bất kỳ tenant cụ thể nào |
-| `zone_id` | String | `"global"` | Zone quản trị tối cao của SRE |
+| `zid` | String | `"global"` | Zone quản trị tối cao của SRE |
 | `access_key` | String (UUIDv4) | `"e1a38f38-a15d-4f10-9c4c-7033502213e8"` | Key định danh phiên, dùng làm khóa tra cứu trong Redis L2 |
-| `jti` | String (UUIDv4) | `"552d76a7-0e62-4217-b087-20224e772cc4"` | ID duy nhất bảo vệ chống trùng lặp token (JWT ID) |
-| `iss` | String | `"acr"` | Nguồn phát hành (Issuer) |
+| `iss` | String | `"aurora-acr"` | Nguồn phát hành (Issuer) |
 | `exp` | i64 (Unix timestamp) | `1782278400` | Thời điểm hết hạn của Token |
 | `iat` | i64 (Unix timestamp) | `1782274800` | Thời điểm phát hành Token |
+
+SRE Trinity không mang `role_id` hoặc `jti`. `access_key` bind JWT với session
+Redis và là revocation boundary; critical SRE requests dùng nonce Ed25519 riêng
+làm replay fence, vì vậy một `jti` không được consume sẽ chỉ là dead metadata.
 
 ---
 

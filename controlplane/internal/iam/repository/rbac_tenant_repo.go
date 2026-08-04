@@ -172,7 +172,7 @@ func (r *RbacTenantRepository) CreateTenantRole(ctx context.Context, in *iamEnti
 
 func (r *RbacTenantRepository) ResolveTenantAccess(ctx context.Context, in *iamEntity.ResolveTenantAccess) (*iamEntity.ResolveTenantAccess, error) {
 	query := fmt.Sprintf(`
-		SELECT mr.tenant_role_id, mr.role_level
+		SELECT mr.role_level
 		FROM %s.tenant_memberships tm
 		JOIN %s.tenants t ON t.id=tm.tenant_id AND t.status='active'
 		JOIN %s.tenant_domains td ON td.tenant_id=t.id AND lower(td.domain)=lower($3)
@@ -185,36 +185,13 @@ func (r *RbacTenantRepository) ResolveTenantAccess(ctx context.Context, in *iamE
 		LIMIT 1
 	`, r.cfg.SchemaSQL.Hierarchy, r.cfg.SchemaSQL.Hierarchy, r.cfg.SchemaSQL.Hierarchy, r.schema, r.schema)
 	out := &iamEntity.ResolveTenantAccess{UserID: in.UserID, TenantID: in.TenantID, TenantDomain: in.TenantDomain}
-	if err := r.db.QueryRow(ctx, query, in.UserID, in.TenantID, in.TenantDomain).Scan(&out.RoleID, &out.RoleLevel); err != nil {
+	if err := r.db.QueryRow(ctx, query, in.UserID, in.TenantID, in.TenantDomain).Scan(&out.RoleLevel); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, iamTaxonomy.ErrActionNotAllowed
 		}
 		return nil, fmt.Errorf("tenant rbac repo: resolve access: %w", err)
 	}
 	return out, nil
-}
-
-func (r *RbacTenantRepository) GetRoleIDByUserAndTenantID(ctx context.Context, userID uuid.UUID, tenantID uuid.UUID) (string, int32, error) {
-	query := fmt.Sprintf(`
-		SELECT mr.tenant_role_id::text, mr.role_level
-		FROM %s.tenant_memberships tm
-		JOIN %s.tenants t ON t.id=tm.tenant_id AND t.status='active'
-		JOIN %s.membership_role mr
-		  ON mr.membership_id=tm.id
-		 AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
-		WHERE tm.user_id=$1 AND tm.tenant_id=$2 AND tm.status='active'
-		ORDER BY mr.role_level, mr.tenant_role_id
-		LIMIT 1
-	`, r.cfg.SchemaSQL.Hierarchy, r.cfg.SchemaSQL.Hierarchy, r.schema)
-	var roleID string
-	var level int32
-	if err := r.db.QueryRow(ctx, query, userID, tenantID).Scan(&roleID, &level); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", 0, iamTaxonomy.ErrNotFound
-		}
-		return "", 0, fmt.Errorf("tenant rbac repo: resolve role: %w", err)
-	}
-	return roleID, level, nil
 }
 
 func (r *RbacTenantRepository) GetUserTenantBillingPermissions(ctx context.Context, userID uuid.UUID, tenantID uuid.UUID) ([]byte, error) {

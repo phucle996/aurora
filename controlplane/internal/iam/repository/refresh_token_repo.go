@@ -82,7 +82,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			 AND device.revoked_at IS NULL
 			WHERE token.token_hash=$1 AND token.expires_at>$3
 		), platform_authority AS MATERIALIZED (
-			SELECT assignment.role_id, assignment.role_level
+			SELECT assignment.role_level
 			FROM credential
 			JOIN %s.user_role assignment
 			  ON assignment.user_id=credential.user_id
@@ -93,7 +93,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			ORDER BY assignment.role_level, assignment.role_id
 			LIMIT 1
 		), tenant_authority AS MATERIALIZED (
-			SELECT assignment.tenant_role_id AS role_id, assignment.role_level
+			SELECT assignment.role_level
 			FROM credential
 			JOIN %s.tenant_memberships membership
 			  ON membership.user_id=credential.user_id
@@ -127,11 +127,6 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 		       COALESCE((SELECT username FROM credential), ''),
 		       CASE WHEN EXISTS(SELECT 1 FROM tenant_authority) THEN $2::uuid ELSE NULL::uuid END,
 		       COALESCE(
-		           (SELECT role_id FROM tenant_authority),
-		           (SELECT role_id FROM platform_authority),
-		           '00000000-0000-0000-0000-000000000000'::uuid
-		       ),
-		       COALESCE(
 		           (SELECT role_level FROM tenant_authority),
 		           (SELECT role_level FROM platform_authority),
 		           0
@@ -145,7 +140,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 	if err := r.db.QueryRow(ctx, query, in.TokenHash, in.RequestedTenantID, in.Now).Scan(
 		&out.CredentialValid, &out.ContextAuthorized, &out.PersonalFallbackAuthorized,
 		&out.UserID, &out.DeviceID,
-		&out.ClientDeviceID, &out.Username, &out.ResolvedTenantID, &out.RoleID, &out.RoleLevel,
+		&out.ClientDeviceID, &out.Username, &out.ResolvedTenantID, &out.RoleLevel,
 	); err != nil {
 		return nil, fmt.Errorf("refresh token repo: recover user session: %w", err)
 	}

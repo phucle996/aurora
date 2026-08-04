@@ -85,7 +85,6 @@ type RecoverUserSessionResponse struct {
 	UserId                     string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Username                   string                 `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
 	ResolvedTenantId           string                 `protobuf:"bytes,5,opt,name=resolved_tenant_id,json=resolvedTenantId,proto3" json:"resolved_tenant_id,omitempty"`
-	RoleId                     string                 `protobuf:"bytes,6,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
 	RoleLevel                  int32                  `protobuf:"varint,7,opt,name=role_level,json=roleLevel,proto3" json:"role_level,omitempty"`
 	ClientDeviceId             string                 `protobuf:"bytes,8,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
 	PersonalFallbackAuthorized bool                   `protobuf:"varint,9,opt,name=personal_fallback_authorized,json=personalFallbackAuthorized,proto3" json:"personal_fallback_authorized,omitempty"`
@@ -154,13 +153,6 @@ func (x *RecoverUserSessionResponse) GetUsername() string {
 func (x *RecoverUserSessionResponse) GetResolvedTenantId() string {
 	if x != nil {
 		return x.ResolvedTenantId
-	}
-	return ""
-}
-
-func (x *RecoverUserSessionResponse) GetRoleId() string {
-	if x != nil {
-		return x.RoleId
 	}
 	return ""
 }
@@ -400,7 +392,6 @@ type VerifyUserCredentialsResponse struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Valid                 bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`                                                                   // Cờ báo hiệu xác thực thông tin thành công hay thất bại
 	UserId                string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                                                    // UUID của người dùng dưới dạng chuỗi
-	RoleId                string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`                                                    // UUID của Role đang hoạt động của người dùng (dưới dạng chuỗi)
 	Level                 int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`                                                                   // Cấp độ quyền (level)
 	TenantId              string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                                              // ID/Context của Tenant liên đới (nếu có)
 	ClientDeviceId        string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`                          // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
@@ -455,13 +446,6 @@ func (x *VerifyUserCredentialsResponse) GetValid() bool {
 func (x *VerifyUserCredentialsResponse) GetUserId() string {
 	if x != nil {
 		return x.UserId
-	}
-	return ""
-}
-
-func (x *VerifyUserCredentialsResponse) GetRoleId() string {
-	if x != nil {
-		return x.RoleId
 	}
 	return ""
 }
@@ -706,7 +690,6 @@ type VerifyExternalIdentityResponse struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Valid                 bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
 	UserId                string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RoleId                string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
 	Level                 int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`
 	TenantId              string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	ClientDeviceId        string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
@@ -762,13 +745,6 @@ func (x *VerifyExternalIdentityResponse) GetValid() bool {
 func (x *VerifyExternalIdentityResponse) GetUserId() string {
 	if x != nil {
 		return x.UserId
-	}
-	return ""
-}
-
-func (x *VerifyExternalIdentityResponse) GetRoleId() string {
-	if x != nil {
-		return x.RoleId
 	}
 	return ""
 }
@@ -1164,7 +1140,6 @@ type VerifyMfaChallengeResponse struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Valid                 bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
 	UserId                string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RoleId                string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
 	Level                 int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`
 	TenantId              string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	ClientDeviceId        string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
@@ -1218,13 +1193,6 @@ func (x *VerifyMfaChallengeResponse) GetValid() bool {
 func (x *VerifyMfaChallengeResponse) GetUserId() string {
 	if x != nil {
 		return x.UserId
-	}
-	return ""
-}
-
-func (x *VerifyMfaChallengeResponse) GetRoleId() string {
-	if x != nil {
-		return x.RoleId
 	}
 	return ""
 }
@@ -1431,18 +1399,17 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"\x19RecoverUserSessionRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x123\n" +
 	"\x13requested_tenant_id\x18\x02 \x01(\tH\x00R\x11requestedTenantId\x88\x01\x01B\x16\n" +
-	"\x14_requested_tenant_id\"\xfd\x02\n" +
+	"\x14_requested_tenant_id\"\xf3\x02\n" +
 	"\x1aRecoverUserSessionResponse\x12)\n" +
 	"\x10credential_valid\x18\x01 \x01(\bR\x0fcredentialValid\x12-\n" +
 	"\x12context_authorized\x18\x02 \x01(\bR\x11contextAuthorized\x12\x17\n" +
 	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x1a\n" +
 	"\busername\x18\x04 \x01(\tR\busername\x12,\n" +
-	"\x12resolved_tenant_id\x18\x05 \x01(\tR\x10resolvedTenantId\x12\x17\n" +
-	"\arole_id\x18\x06 \x01(\tR\x06roleId\x12\x1d\n" +
+	"\x12resolved_tenant_id\x18\x05 \x01(\tR\x10resolvedTenantId\x12\x1d\n" +
 	"\n" +
 	"role_level\x18\a \x01(\x05R\troleLevel\x12(\n" +
 	"\x10client_device_id\x18\b \x01(\tR\x0eclientDeviceId\x12@\n" +
-	"\x1cpersonal_fallback_authorized\x18\t \x01(\bR\x1apersonalFallbackAuthorized\"F\n" +
+	"\x1cpersonal_fallback_authorized\x18\t \x01(\bR\x1apersonalFallbackAuthorizedJ\x04\b\x06\x10\aR\arole_id\"F\n" +
 	"\x1fRevokeOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\"\n" +
 	" RevokeOpaqueRefreshTokenResponse\"\x83\x03\n" +
@@ -1462,11 +1429,10 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"\n" +
 	"user_agent\x18\n" +
 	" \x01(\tR\tuserAgent\x12#\n" +
-	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xe3\x03\n" +
+	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xd9\x03\n" +
 	"\x1dVerifyUserCredentialsResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
-	"\arole_id\x18\x03 \x01(\tR\x06roleId\x12\x14\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
 	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
 	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
@@ -1477,7 +1443,7 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	" \x01(\tR\x14clientProofPublicKey\x127\n" +
 	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12!\n" +
 	"\fmfa_required\x18\f \x01(\bR\vmfaRequired\x12$\n" +
-	"\x0emfa_setting_id\x18\r \x01(\tR\fmfaSettingId\"\xcc\x04\n" +
+	"\x0emfa_setting_id\x18\r \x01(\tR\fmfaSettingIdJ\x04\b\x03\x10\x04R\arole_id\"\xcc\x04\n" +
 	"\x1dVerifyExternalIdentityRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
 	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12\x1a\n" +
@@ -1500,11 +1466,10 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"\tzone_code\x18\x0e \x01(\tR\bzoneCode\x12\x1b\n" +
 	"\tclient_ip\x18\x0f \x01(\tR\bclientIp\x12\x1d\n" +
 	"\n" +
-	"user_agent\x18\x10 \x01(\tR\tuserAgent\"\xb6\x04\n" +
+	"user_agent\x18\x10 \x01(\tR\tuserAgent\"\xac\x04\n" +
 	"\x1eVerifyExternalIdentityResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
-	"\arole_id\x18\x03 \x01(\tR\x06roleId\x12\x14\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
 	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
 	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
@@ -1516,7 +1481,7 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12\x1b\n" +
 	"\tzone_code\x18\f \x01(\tR\bzoneCode\x12!\n" +
 	"\fmfa_required\x18\x0f \x01(\bR\vmfaRequired\x12$\n" +
-	"\x0emfa_setting_id\x18\x10 \x01(\tR\fmfaSettingIdJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x10onboarding_tokenR\x15onboarding_expires_at\"\xdc\x02\n" +
+	"\x0emfa_setting_id\x18\x10 \x01(\tR\fmfaSettingIdJ\x04\b\x03\x10\x04J\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\arole_idR\x10onboarding_tokenR\x15onboarding_expires_at\"\xdc\x02\n" +
 	"\x1bLinkExternalIdentityRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
 	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12\x17\n" +
@@ -1550,11 +1515,10 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"\tclient_ip\x18\f \x01(\tR\bclientIp\x12\x1d\n" +
 	"\n" +
 	"user_agent\x18\r \x01(\tR\tuserAgent\x12$\n" +
-	"\x0emfa_setting_id\x18\x0e \x01(\tR\fmfaSettingId\"\xb8\x03\n" +
+	"\x0emfa_setting_id\x18\x0e \x01(\tR\fmfaSettingId\"\xae\x03\n" +
 	"\x1aVerifyMfaChallengeResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
-	"\arole_id\x18\x03 \x01(\tR\x06roleId\x12\x14\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
 	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
 	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
@@ -1565,7 +1529,7 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	" \x01(\tR\x14clientProofPublicKey\x127\n" +
 	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\x12\x1f\n" +
 	"\vtenant_code\x18\f \x01(\tR\n" +
-	"tenantCode\"-\n" +
+	"tenantCodeJ\x04\b\x03\x10\x04R\arole_id\"-\n" +
 	"\tRoleEntry\x12 \n" +
 	"\vpermissions\x18\x01 \x03(\tR\vpermissions\"\xdc\x01\n" +
 	"\x0fMfaSetupPending\x12\x19\n" +
