@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: auth.proto
+// source: contracts/proto/iam_auth.proto
 
 package iamproto
 
@@ -21,31 +21,32 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Request xác thực Opaque Refresh Token
-type VerifyOpaqueRefreshTokenRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RefreshToken  string                 `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
-	TenantId      *string                `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3,oneof" json:"tenant_id,omitempty"`
-	UserId        string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+// requested_tenant_id is context requested by an already authenticated device
+// credential. It is not an identity claim and Controlplane resolves current
+// membership/role authority independently.
+type RecoverUserSessionRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	RefreshToken      string                 `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	RequestedTenantId *string                `protobuf:"bytes,2,opt,name=requested_tenant_id,json=requestedTenantId,proto3,oneof" json:"requested_tenant_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
-func (x *VerifyOpaqueRefreshTokenRequest) Reset() {
-	*x = VerifyOpaqueRefreshTokenRequest{}
-	mi := &file_auth_proto_msgTypes[0]
+func (x *RecoverUserSessionRequest) Reset() {
+	*x = RecoverUserSessionRequest{}
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *VerifyOpaqueRefreshTokenRequest) String() string {
+func (x *RecoverUserSessionRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*VerifyOpaqueRefreshTokenRequest) ProtoMessage() {}
+func (*RecoverUserSessionRequest) ProtoMessage() {}
 
-func (x *VerifyOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[0]
+func (x *RecoverUserSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,61 +57,57 @@ func (x *VerifyOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use VerifyOpaqueRefreshTokenRequest.ProtoReflect.Descriptor instead.
-func (*VerifyOpaqueRefreshTokenRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{0}
+// Deprecated: Use RecoverUserSessionRequest.ProtoReflect.Descriptor instead.
+func (*RecoverUserSessionRequest) Descriptor() ([]byte, []int) {
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *VerifyOpaqueRefreshTokenRequest) GetRefreshToken() string {
+func (x *RecoverUserSessionRequest) GetRefreshToken() string {
 	if x != nil {
 		return x.RefreshToken
 	}
 	return ""
 }
 
-func (x *VerifyOpaqueRefreshTokenRequest) GetTenantId() string {
-	if x != nil && x.TenantId != nil {
-		return *x.TenantId
+func (x *RecoverUserSessionRequest) GetRequestedTenantId() string {
+	if x != nil && x.RequestedTenantId != nil {
+		return *x.RequestedTenantId
 	}
 	return ""
 }
 
-func (x *VerifyOpaqueRefreshTokenRequest) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
+// Domain failures are explicit outcomes. Infrastructure failures intentionally
+// produce no response so ACR fails closed on its bounded request timeout.
+type RecoverUserSessionResponse struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	CredentialValid            bool                   `protobuf:"varint,1,opt,name=credential_valid,json=credentialValid,proto3" json:"credential_valid,omitempty"`
+	ContextAuthorized          bool                   `protobuf:"varint,2,opt,name=context_authorized,json=contextAuthorized,proto3" json:"context_authorized,omitempty"`
+	UserId                     string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Username                   string                 `protobuf:"bytes,4,opt,name=username,proto3" json:"username,omitempty"`
+	ResolvedTenantId           string                 `protobuf:"bytes,5,opt,name=resolved_tenant_id,json=resolvedTenantId,proto3" json:"resolved_tenant_id,omitempty"`
+	RoleId                     string                 `protobuf:"bytes,6,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	RoleLevel                  int32                  `protobuf:"varint,7,opt,name=role_level,json=roleLevel,proto3" json:"role_level,omitempty"`
+	ClientDeviceId             string                 `protobuf:"bytes,8,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
+	PersonalFallbackAuthorized bool                   `protobuf:"varint,9,opt,name=personal_fallback_authorized,json=personalFallbackAuthorized,proto3" json:"personal_fallback_authorized,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
-// Response trả về khi xác thực Opaque Refresh Token
-type VerifyOpaqueRefreshTokenResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Valid         bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
-	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	TenantId      string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
-	Level         int32                  `protobuf:"varint,5,opt,name=level,proto3" json:"level,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	Username      string                 `protobuf:"bytes,7,opt,name=username,proto3" json:"username,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *VerifyOpaqueRefreshTokenResponse) Reset() {
-	*x = VerifyOpaqueRefreshTokenResponse{}
-	mi := &file_auth_proto_msgTypes[1]
+func (x *RecoverUserSessionResponse) Reset() {
+	*x = RecoverUserSessionResponse{}
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *VerifyOpaqueRefreshTokenResponse) String() string {
+func (x *RecoverUserSessionResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*VerifyOpaqueRefreshTokenResponse) ProtoMessage() {}
+func (*RecoverUserSessionResponse) ProtoMessage() {}
 
-func (x *VerifyOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[1]
+func (x *RecoverUserSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -121,58 +118,72 @@ func (x *VerifyOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use VerifyOpaqueRefreshTokenResponse.ProtoReflect.Descriptor instead.
-func (*VerifyOpaqueRefreshTokenResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{1}
+// Deprecated: Use RecoverUserSessionResponse.ProtoReflect.Descriptor instead.
+func (*RecoverUserSessionResponse) Descriptor() ([]byte, []int) {
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *VerifyOpaqueRefreshTokenResponse) GetValid() bool {
+func (x *RecoverUserSessionResponse) GetCredentialValid() bool {
 	if x != nil {
-		return x.Valid
+		return x.CredentialValid
 	}
 	return false
 }
 
-func (x *VerifyOpaqueRefreshTokenResponse) GetUserId() string {
+func (x *RecoverUserSessionResponse) GetContextAuthorized() bool {
+	if x != nil {
+		return x.ContextAuthorized
+	}
+	return false
+}
+
+func (x *RecoverUserSessionResponse) GetUserId() string {
 	if x != nil {
 		return x.UserId
 	}
 	return ""
 }
 
-func (x *VerifyOpaqueRefreshTokenResponse) GetTenantId() string {
-	if x != nil {
-		return x.TenantId
-	}
-	return ""
-}
-
-func (x *VerifyOpaqueRefreshTokenResponse) GetRole() string {
-	if x != nil {
-		return x.Role
-	}
-	return ""
-}
-
-func (x *VerifyOpaqueRefreshTokenResponse) GetLevel() int32 {
-	if x != nil {
-		return x.Level
-	}
-	return 0
-}
-
-func (x *VerifyOpaqueRefreshTokenResponse) GetErrorMessage() string {
-	if x != nil {
-		return x.ErrorMessage
-	}
-	return ""
-}
-
-func (x *VerifyOpaqueRefreshTokenResponse) GetUsername() string {
+func (x *RecoverUserSessionResponse) GetUsername() string {
 	if x != nil {
 		return x.Username
 	}
 	return ""
+}
+
+func (x *RecoverUserSessionResponse) GetResolvedTenantId() string {
+	if x != nil {
+		return x.ResolvedTenantId
+	}
+	return ""
+}
+
+func (x *RecoverUserSessionResponse) GetRoleId() string {
+	if x != nil {
+		return x.RoleId
+	}
+	return ""
+}
+
+func (x *RecoverUserSessionResponse) GetRoleLevel() int32 {
+	if x != nil {
+		return x.RoleLevel
+	}
+	return 0
+}
+
+func (x *RecoverUserSessionResponse) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *RecoverUserSessionResponse) GetPersonalFallbackAuthorized() bool {
+	if x != nil {
+		return x.PersonalFallbackAuthorized
+	}
+	return false
 }
 
 // [COMMENT]: Request chứa raw refresh token từ client cookie để CP hash & revoke
@@ -185,7 +196,7 @@ type RevokeOpaqueRefreshTokenRequest struct {
 
 func (x *RevokeOpaqueRefreshTokenRequest) Reset() {
 	*x = RevokeOpaqueRefreshTokenRequest{}
-	mi := &file_auth_proto_msgTypes[2]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -197,7 +208,7 @@ func (x *RevokeOpaqueRefreshTokenRequest) String() string {
 func (*RevokeOpaqueRefreshTokenRequest) ProtoMessage() {}
 
 func (x *RevokeOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[2]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -210,7 +221,7 @@ func (x *RevokeOpaqueRefreshTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeOpaqueRefreshTokenRequest.ProtoReflect.Descriptor instead.
 func (*RevokeOpaqueRefreshTokenRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{2}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RevokeOpaqueRefreshTokenRequest) GetRefreshToken() string {
@@ -229,7 +240,7 @@ type RevokeOpaqueRefreshTokenResponse struct {
 
 func (x *RevokeOpaqueRefreshTokenResponse) Reset() {
 	*x = RevokeOpaqueRefreshTokenResponse{}
-	mi := &file_auth_proto_msgTypes[3]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -241,7 +252,7 @@ func (x *RevokeOpaqueRefreshTokenResponse) String() string {
 func (*RevokeOpaqueRefreshTokenResponse) ProtoMessage() {}
 
 func (x *RevokeOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[3]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -254,7 +265,7 @@ func (x *RevokeOpaqueRefreshTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeOpaqueRefreshTokenResponse.ProtoReflect.Descriptor instead.
 func (*RevokeOpaqueRefreshTokenResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{3}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{3}
 }
 
 // [COMMENT]: Request xác thực thông tin đăng nhập thô từ client gửi lên gateway
@@ -279,7 +290,7 @@ type VerifyUserCredentialsRequest struct {
 
 func (x *VerifyUserCredentialsRequest) Reset() {
 	*x = VerifyUserCredentialsRequest{}
-	mi := &file_auth_proto_msgTypes[4]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -291,7 +302,7 @@ func (x *VerifyUserCredentialsRequest) String() string {
 func (*VerifyUserCredentialsRequest) ProtoMessage() {}
 
 func (x *VerifyUserCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[4]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -304,7 +315,7 @@ func (x *VerifyUserCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyUserCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*VerifyUserCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{4}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *VerifyUserCredentialsRequest) GetUsername() string {
@@ -406,7 +417,7 @@ type VerifyUserCredentialsResponse struct {
 
 func (x *VerifyUserCredentialsResponse) Reset() {
 	*x = VerifyUserCredentialsResponse{}
-	mi := &file_auth_proto_msgTypes[5]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -418,7 +429,7 @@ func (x *VerifyUserCredentialsResponse) String() string {
 func (*VerifyUserCredentialsResponse) ProtoMessage() {}
 
 func (x *VerifyUserCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[5]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -431,7 +442,7 @@ func (x *VerifyUserCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyUserCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*VerifyUserCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{5}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *VerifyUserCredentialsResponse) GetValid() bool {
@@ -551,7 +562,7 @@ type VerifyExternalIdentityRequest struct {
 
 func (x *VerifyExternalIdentityRequest) Reset() {
 	*x = VerifyExternalIdentityRequest{}
-	mi := &file_auth_proto_msgTypes[6]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -563,7 +574,7 @@ func (x *VerifyExternalIdentityRequest) String() string {
 func (*VerifyExternalIdentityRequest) ProtoMessage() {}
 
 func (x *VerifyExternalIdentityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[6]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -576,7 +587,7 @@ func (x *VerifyExternalIdentityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyExternalIdentityRequest.ProtoReflect.Descriptor instead.
 func (*VerifyExternalIdentityRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{6}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *VerifyExternalIdentityRequest) GetOperationId() string {
@@ -713,7 +724,7 @@ type VerifyExternalIdentityResponse struct {
 
 func (x *VerifyExternalIdentityResponse) Reset() {
 	*x = VerifyExternalIdentityResponse{}
-	mi := &file_auth_proto_msgTypes[7]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +736,7 @@ func (x *VerifyExternalIdentityResponse) String() string {
 func (*VerifyExternalIdentityResponse) ProtoMessage() {}
 
 func (x *VerifyExternalIdentityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[7]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +749,7 @@ func (x *VerifyExternalIdentityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyExternalIdentityResponse.ProtoReflect.Descriptor instead.
 func (*VerifyExternalIdentityResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{7}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *VerifyExternalIdentityResponse) GetValid() bool {
@@ -858,7 +869,7 @@ type LinkExternalIdentityRequest struct {
 
 func (x *LinkExternalIdentityRequest) Reset() {
 	*x = LinkExternalIdentityRequest{}
-	mi := &file_auth_proto_msgTypes[8]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -870,7 +881,7 @@ func (x *LinkExternalIdentityRequest) String() string {
 func (*LinkExternalIdentityRequest) ProtoMessage() {}
 
 func (x *LinkExternalIdentityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[8]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -883,7 +894,7 @@ func (x *LinkExternalIdentityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkExternalIdentityRequest.ProtoReflect.Descriptor instead.
 func (*LinkExternalIdentityRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{8}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *LinkExternalIdentityRequest) GetOperationId() string {
@@ -959,7 +970,7 @@ type LinkExternalIdentityResponse struct {
 
 func (x *LinkExternalIdentityResponse) Reset() {
 	*x = LinkExternalIdentityResponse{}
-	mi := &file_auth_proto_msgTypes[9]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -971,7 +982,7 @@ func (x *LinkExternalIdentityResponse) String() string {
 func (*LinkExternalIdentityResponse) ProtoMessage() {}
 
 func (x *LinkExternalIdentityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[9]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -984,7 +995,7 @@ func (x *LinkExternalIdentityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkExternalIdentityResponse.ProtoReflect.Descriptor instead.
 func (*LinkExternalIdentityResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{9}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *LinkExternalIdentityResponse) GetLinked() bool {
@@ -1023,7 +1034,7 @@ type VerifyMfaChallengeRequest struct {
 
 func (x *VerifyMfaChallengeRequest) Reset() {
 	*x = VerifyMfaChallengeRequest{}
-	mi := &file_auth_proto_msgTypes[10]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1035,7 +1046,7 @@ func (x *VerifyMfaChallengeRequest) String() string {
 func (*VerifyMfaChallengeRequest) ProtoMessage() {}
 
 func (x *VerifyMfaChallengeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[10]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1048,7 +1059,7 @@ func (x *VerifyMfaChallengeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyMfaChallengeRequest.ProtoReflect.Descriptor instead.
 func (*VerifyMfaChallengeRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{10}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *VerifyMfaChallengeRequest) GetOperationId() string {
@@ -1169,7 +1180,7 @@ type VerifyMfaChallengeResponse struct {
 
 func (x *VerifyMfaChallengeResponse) Reset() {
 	*x = VerifyMfaChallengeResponse{}
-	mi := &file_auth_proto_msgTypes[11]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +1192,7 @@ func (x *VerifyMfaChallengeResponse) String() string {
 func (*VerifyMfaChallengeResponse) ProtoMessage() {}
 
 func (x *VerifyMfaChallengeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[11]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +1205,7 @@ func (x *VerifyMfaChallengeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyMfaChallengeResponse.ProtoReflect.Descriptor instead.
 func (*VerifyMfaChallengeResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{11}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *VerifyMfaChallengeResponse) GetValid() bool {
@@ -1291,7 +1302,7 @@ type RoleEntry struct {
 
 func (x *RoleEntry) Reset() {
 	*x = RoleEntry{}
-	mi := &file_auth_proto_msgTypes[12]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1303,7 +1314,7 @@ func (x *RoleEntry) String() string {
 func (*RoleEntry) ProtoMessage() {}
 
 func (x *RoleEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[12]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1316,7 +1327,7 @@ func (x *RoleEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoleEntry.ProtoReflect.Descriptor instead.
 func (*RoleEntry) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{12}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RoleEntry) GetPermissions() []string {
@@ -1342,7 +1353,7 @@ type MfaSetupPending struct {
 
 func (x *MfaSetupPending) Reset() {
 	*x = MfaSetupPending{}
-	mi := &file_auth_proto_msgTypes[13]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1354,7 +1365,7 @@ func (x *MfaSetupPending) String() string {
 func (*MfaSetupPending) ProtoMessage() {}
 
 func (x *MfaSetupPending) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[13]
+	mi := &file_contracts_proto_iam_auth_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1367,7 +1378,7 @@ func (x *MfaSetupPending) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MfaSetupPending.ProtoReflect.Descriptor instead.
 func (*MfaSetupPending) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{13}
+	return file_contracts_proto_iam_auth_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MfaSetupPending) GetSetupId() string {
@@ -1412,26 +1423,26 @@ func (x *MfaSetupPending) GetSchemaVersion() uint32 {
 	return 0
 }
 
-var File_auth_proto protoreflect.FileDescriptor
+var File_contracts_proto_iam_auth_proto protoreflect.FileDescriptor
 
-const file_auth_proto_rawDesc = "" +
+const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"\n" +
+	"\x1econtracts/proto/iam_auth.proto\x12\aiam.rpc\"\x8d\x01\n" +
+	"\x19RecoverUserSessionRequest\x12#\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x123\n" +
+	"\x13requested_tenant_id\x18\x02 \x01(\tH\x00R\x11requestedTenantId\x88\x01\x01B\x16\n" +
+	"\x14_requested_tenant_id\"\xfd\x02\n" +
+	"\x1aRecoverUserSessionResponse\x12)\n" +
+	"\x10credential_valid\x18\x01 \x01(\bR\x0fcredentialValid\x12-\n" +
+	"\x12context_authorized\x18\x02 \x01(\bR\x11contextAuthorized\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x1a\n" +
+	"\busername\x18\x04 \x01(\tR\busername\x12,\n" +
+	"\x12resolved_tenant_id\x18\x05 \x01(\tR\x10resolvedTenantId\x12\x17\n" +
+	"\arole_id\x18\x06 \x01(\tR\x06roleId\x12\x1d\n" +
 	"\n" +
-	"auth.proto\x12\aiam.rpc\"\x8f\x01\n" +
-	"\x1fVerifyOpaqueRefreshTokenRequest\x12#\n" +
-	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x12 \n" +
-	"\ttenant_id\x18\x02 \x01(\tH\x00R\btenantId\x88\x01\x01\x12\x17\n" +
-	"\auser_id\x18\x03 \x01(\tR\x06userIdB\f\n" +
-	"\n" +
-	"_tenant_id\"\xd9\x01\n" +
-	" VerifyOpaqueRefreshTokenResponse\x12\x14\n" +
-	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
-	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12\x12\n" +
-	"\x04role\x18\x04 \x01(\tR\x04role\x12\x14\n" +
-	"\x05level\x18\x05 \x01(\x05R\x05level\x12#\n" +
-	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12\x1a\n" +
-	"\busername\x18\a \x01(\tR\busername\"F\n" +
+	"role_level\x18\a \x01(\x05R\troleLevel\x12(\n" +
+	"\x10client_device_id\x18\b \x01(\tR\x0eclientDeviceId\x12@\n" +
+	"\x1cpersonal_fallback_authorized\x18\t \x01(\bR\x1apersonalFallbackAuthorized\"F\n" +
 	"\x1fRevokeOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\"\n" +
 	" RevokeOpaqueRefreshTokenResponse\"\x83\x03\n" +
@@ -1564,28 +1575,28 @@ const file_auth_proto_rawDesc = "" +
 	"setting_id\x18\x03 \x01(\tR\tsettingId\x12+\n" +
 	"\x11secret_ciphertext\x18\x04 \x01(\tR\x10secretCiphertext\x12\"\n" +
 	"\rsecret_key_id\x18\x05 \x01(\tR\vsecretKeyId\x12%\n" +
-	"\x0eschema_version\x18\x06 \x01(\rR\rschemaVersion2\xd7\x02\n" +
-	"\vAuthService\x12o\n" +
-	"\x18VerifyOpaqueRefreshToken\x12(.iam.rpc.VerifyOpaqueRefreshTokenRequest\x1a).iam.rpc.VerifyOpaqueRefreshTokenResponse\x12o\n" +
+	"\x0eschema_version\x18\x06 \x01(\rR\rschemaVersion2\xc5\x02\n" +
+	"\vAuthService\x12]\n" +
+	"\x12RecoverUserSession\x12\".iam.rpc.RecoverUserSessionRequest\x1a#.iam.rpc.RecoverUserSessionResponse\x12o\n" +
 	"\x18RevokeOpaqueRefreshToken\x12(.iam.rpc.RevokeOpaqueRefreshTokenRequest\x1a).iam.rpc.RevokeOpaqueRefreshTokenResponse\x12f\n" +
 	"\x15VerifyUserCredentials\x12%.iam.rpc.VerifyUserCredentialsRequest\x1a&.iam.rpc.VerifyUserCredentialsResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
-	file_auth_proto_rawDescOnce sync.Once
-	file_auth_proto_rawDescData []byte
+	file_contracts_proto_iam_auth_proto_rawDescOnce sync.Once
+	file_contracts_proto_iam_auth_proto_rawDescData []byte
 )
 
-func file_auth_proto_rawDescGZIP() []byte {
-	file_auth_proto_rawDescOnce.Do(func() {
-		file_auth_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)))
+func file_contracts_proto_iam_auth_proto_rawDescGZIP() []byte {
+	file_contracts_proto_iam_auth_proto_rawDescOnce.Do(func() {
+		file_contracts_proto_iam_auth_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_contracts_proto_iam_auth_proto_rawDesc), len(file_contracts_proto_iam_auth_proto_rawDesc)))
 	})
-	return file_auth_proto_rawDescData
+	return file_contracts_proto_iam_auth_proto_rawDescData
 }
 
-var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
-var file_auth_proto_goTypes = []any{
-	(*VerifyOpaqueRefreshTokenRequest)(nil),  // 0: iam.rpc.VerifyOpaqueRefreshTokenRequest
-	(*VerifyOpaqueRefreshTokenResponse)(nil), // 1: iam.rpc.VerifyOpaqueRefreshTokenResponse
+var file_contracts_proto_iam_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_contracts_proto_iam_auth_proto_goTypes = []any{
+	(*RecoverUserSessionRequest)(nil),        // 0: iam.rpc.RecoverUserSessionRequest
+	(*RecoverUserSessionResponse)(nil),       // 1: iam.rpc.RecoverUserSessionResponse
 	(*RevokeOpaqueRefreshTokenRequest)(nil),  // 2: iam.rpc.RevokeOpaqueRefreshTokenRequest
 	(*RevokeOpaqueRefreshTokenResponse)(nil), // 3: iam.rpc.RevokeOpaqueRefreshTokenResponse
 	(*VerifyUserCredentialsRequest)(nil),     // 4: iam.rpc.VerifyUserCredentialsRequest
@@ -1599,11 +1610,11 @@ var file_auth_proto_goTypes = []any{
 	(*RoleEntry)(nil),                        // 12: iam.rpc.RoleEntry
 	(*MfaSetupPending)(nil),                  // 13: iam.rpc.MfaSetupPending
 }
-var file_auth_proto_depIdxs = []int32{
-	0, // 0: iam.rpc.AuthService.VerifyOpaqueRefreshToken:input_type -> iam.rpc.VerifyOpaqueRefreshTokenRequest
+var file_contracts_proto_iam_auth_proto_depIdxs = []int32{
+	0, // 0: iam.rpc.AuthService.RecoverUserSession:input_type -> iam.rpc.RecoverUserSessionRequest
 	2, // 1: iam.rpc.AuthService.RevokeOpaqueRefreshToken:input_type -> iam.rpc.RevokeOpaqueRefreshTokenRequest
 	4, // 2: iam.rpc.AuthService.VerifyUserCredentials:input_type -> iam.rpc.VerifyUserCredentialsRequest
-	1, // 3: iam.rpc.AuthService.VerifyOpaqueRefreshToken:output_type -> iam.rpc.VerifyOpaqueRefreshTokenResponse
+	1, // 3: iam.rpc.AuthService.RecoverUserSession:output_type -> iam.rpc.RecoverUserSessionResponse
 	3, // 4: iam.rpc.AuthService.RevokeOpaqueRefreshToken:output_type -> iam.rpc.RevokeOpaqueRefreshTokenResponse
 	5, // 5: iam.rpc.AuthService.VerifyUserCredentials:output_type -> iam.rpc.VerifyUserCredentialsResponse
 	3, // [3:6] is the sub-list for method output_type
@@ -1613,27 +1624,27 @@ var file_auth_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_auth_proto_init() }
-func file_auth_proto_init() {
-	if File_auth_proto != nil {
+func init() { file_contracts_proto_iam_auth_proto_init() }
+func file_contracts_proto_iam_auth_proto_init() {
+	if File_contracts_proto_iam_auth_proto != nil {
 		return
 	}
-	file_auth_proto_msgTypes[0].OneofWrappers = []any{}
+	file_contracts_proto_iam_auth_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_contracts_proto_iam_auth_proto_rawDesc), len(file_contracts_proto_iam_auth_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_auth_proto_goTypes,
-		DependencyIndexes: file_auth_proto_depIdxs,
-		MessageInfos:      file_auth_proto_msgTypes,
+		GoTypes:           file_contracts_proto_iam_auth_proto_goTypes,
+		DependencyIndexes: file_contracts_proto_iam_auth_proto_depIdxs,
+		MessageInfos:      file_contracts_proto_iam_auth_proto_msgTypes,
 	}.Build()
-	File_auth_proto = out.File
-	file_auth_proto_goTypes = nil
-	file_auth_proto_depIdxs = nil
+	File_contracts_proto_iam_auth_proto = out.File
+	file_contracts_proto_iam_auth_proto_goTypes = nil
+	file_contracts_proto_iam_auth_proto_depIdxs = nil
 }

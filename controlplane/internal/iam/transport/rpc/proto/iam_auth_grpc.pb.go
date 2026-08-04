@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.30.2
-// source: internal/iam/transport/rpc/proto/auth.proto
+// source: contracts/proto/iam_auth.proto
 
 package iamproto
 
@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AuthService_VerifyOpaqueRefreshToken_FullMethodName = "/iam.rpc.AuthService/VerifyOpaqueRefreshToken"
+	AuthService_RecoverUserSession_FullMethodName       = "/iam.rpc.AuthService/RecoverUserSession"
 	AuthService_RevokeOpaqueRefreshToken_FullMethodName = "/iam.rpc.AuthService/RevokeOpaqueRefreshToken"
 	AuthService_VerifyUserCredentials_FullMethodName    = "/iam.rpc.AuthService/VerifyUserCredentials"
 )
@@ -28,10 +28,10 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Dịch vụ xác thực các luồng qua gRPC (gọi nội bộ từ acr Service)
+// Shared IAM authentication contract carried over bounded Shared Redis
+// request/reply. ACR never derives an identity from an expired access token.
 type AuthServiceClient interface {
-	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
-	VerifyOpaqueRefreshToken(ctx context.Context, in *VerifyOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*VerifyOpaqueRefreshTokenResponse, error)
+	RecoverUserSession(ctx context.Context, in *RecoverUserSessionRequest, opts ...grpc.CallOption) (*RecoverUserSessionResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
 	RevokeOpaqueRefreshToken(ctx context.Context, in *RevokeOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*RevokeOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
@@ -46,10 +46,10 @@ func NewAuthServiceClient(cc grpc.ClientConnInterface) AuthServiceClient {
 	return &authServiceClient{cc}
 }
 
-func (c *authServiceClient) VerifyOpaqueRefreshToken(ctx context.Context, in *VerifyOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*VerifyOpaqueRefreshTokenResponse, error) {
+func (c *authServiceClient) RecoverUserSession(ctx context.Context, in *RecoverUserSessionRequest, opts ...grpc.CallOption) (*RecoverUserSessionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(VerifyOpaqueRefreshTokenResponse)
-	err := c.cc.Invoke(ctx, AuthService_VerifyOpaqueRefreshToken_FullMethodName, in, out, cOpts...)
+	out := new(RecoverUserSessionResponse)
+	err := c.cc.Invoke(ctx, AuthService_RecoverUserSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -80,10 +80,10 @@ func (c *authServiceClient) VerifyUserCredentials(ctx context.Context, in *Verif
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
 //
-// Dịch vụ xác thực các luồng qua gRPC (gọi nội bộ từ acr Service)
+// Shared IAM authentication contract carried over bounded Shared Redis
+// request/reply. ACR never derives an identity from an expired access token.
 type AuthServiceServer interface {
-	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
-	VerifyOpaqueRefreshToken(context.Context, *VerifyOpaqueRefreshTokenRequest) (*VerifyOpaqueRefreshTokenResponse, error)
+	RecoverUserSession(context.Context, *RecoverUserSessionRequest) (*RecoverUserSessionResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
 	RevokeOpaqueRefreshToken(context.Context, *RevokeOpaqueRefreshTokenRequest) (*RevokeOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
@@ -98,8 +98,8 @@ type AuthServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedAuthServiceServer struct{}
 
-func (UnimplementedAuthServiceServer) VerifyOpaqueRefreshToken(context.Context, *VerifyOpaqueRefreshTokenRequest) (*VerifyOpaqueRefreshTokenResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method VerifyOpaqueRefreshToken not implemented")
+func (UnimplementedAuthServiceServer) RecoverUserSession(context.Context, *RecoverUserSessionRequest) (*RecoverUserSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RecoverUserSession not implemented")
 }
 func (UnimplementedAuthServiceServer) RevokeOpaqueRefreshToken(context.Context, *RevokeOpaqueRefreshTokenRequest) (*RevokeOpaqueRefreshTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeOpaqueRefreshToken not implemented")
@@ -128,20 +128,20 @@ func RegisterAuthServiceServer(s grpc.ServiceRegistrar, srv AuthServiceServer) {
 	s.RegisterService(&AuthService_ServiceDesc, srv)
 }
 
-func _AuthService_VerifyOpaqueRefreshToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(VerifyOpaqueRefreshTokenRequest)
+func _AuthService_RecoverUserSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecoverUserSessionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AuthServiceServer).VerifyOpaqueRefreshToken(ctx, in)
+		return srv.(AuthServiceServer).RecoverUserSession(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AuthService_VerifyOpaqueRefreshToken_FullMethodName,
+		FullMethod: AuthService_RecoverUserSession_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AuthServiceServer).VerifyOpaqueRefreshToken(ctx, req.(*VerifyOpaqueRefreshTokenRequest))
+		return srv.(AuthServiceServer).RecoverUserSession(ctx, req.(*RecoverUserSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -190,8 +190,8 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*AuthServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "VerifyOpaqueRefreshToken",
-			Handler:    _AuthService_VerifyOpaqueRefreshToken_Handler,
+			MethodName: "RecoverUserSession",
+			Handler:    _AuthService_RecoverUserSession_Handler,
 		},
 		{
 			MethodName: "RevokeOpaqueRefreshToken",
@@ -203,5 +203,5 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/iam/transport/rpc/proto/auth.proto",
+	Metadata: "contracts/proto/iam_auth.proto",
 }

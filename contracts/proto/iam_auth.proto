@@ -4,10 +4,10 @@ package iam.rpc;
 // Đường dẫn package Go khi sinh code
 option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
 
-// Dịch vụ xác thực các luồng qua gRPC (gọi nội bộ từ acr Service)
+// Shared IAM authentication contract carried over bounded Shared Redis
+// request/reply. ACR never derives an identity from an expired access token.
 service AuthService {
-  // Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
-  rpc VerifyOpaqueRefreshToken (VerifyOpaqueRefreshTokenRequest) returns (VerifyOpaqueRefreshTokenResponse);
+  rpc RecoverUserSession (RecoverUserSessionRequest) returns (RecoverUserSessionResponse);
 
   // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
   rpc RevokeOpaqueRefreshToken (RevokeOpaqueRefreshTokenRequest) returns (RevokeOpaqueRefreshTokenResponse);
@@ -16,22 +16,26 @@ service AuthService {
   rpc VerifyUserCredentials (VerifyUserCredentialsRequest) returns (VerifyUserCredentialsResponse);
 }
 
-// Request xác thực Opaque Refresh Token
-message VerifyOpaqueRefreshTokenRequest {
+// requested_tenant_id is context requested by an already authenticated device
+// credential. It is not an identity claim and Controlplane resolves current
+// membership/role authority independently.
+message RecoverUserSessionRequest {
   string refresh_token = 1;
-  optional string tenant_id = 2;
-  string user_id = 3;
+  optional string requested_tenant_id = 2;
 }
 
-// Response trả về khi xác thực Opaque Refresh Token
-message VerifyOpaqueRefreshTokenResponse {
-  bool valid = 1;
-  string user_id = 2;
-  string tenant_id = 3;
-  string role = 4;
-  int32 level = 5;
-  string error_message = 6;
-  string username = 7;
+// Domain failures are explicit outcomes. Infrastructure failures intentionally
+// produce no response so ACR fails closed on its bounded request timeout.
+message RecoverUserSessionResponse {
+  bool credential_valid = 1;
+  bool context_authorized = 2;
+  string user_id = 3;
+  string username = 4;
+  string resolved_tenant_id = 5;
+  string role_id = 6;
+  int32 role_level = 7;
+  string client_device_id = 8;
+  bool personal_fallback_authorized = 9;
 }
 
 // [COMMENT]: Request chứa raw refresh token từ client cookie để CP hash & revoke
