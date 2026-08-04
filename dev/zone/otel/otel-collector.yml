@@ -16,7 +16,7 @@ receivers:
   # Docker development lacks the Kubernetes namespace filesystem boundary.
   # Read the canonical Docker path once and reject every non-Zone record in a
   # bounded processor before it can reach Zone VictoriaLogs.
-  filelog:
+  file_log:
     start_at: end
     storage: file_storage
     max_log_size: 1MiB
@@ -60,35 +60,43 @@ processors:
     log_statements:
       - context: log
         statements:
-          - set(resource.attributes["aurora.component.scope"], "zone") where attributes["zone_id"] != nil
-          - set(resource.attributes["aurora.zone.id"], attributes["zone_id"]) where attributes["zone_id"] != nil
+          - set(resource.attributes["aurora.component.scope"], "zone") where log.attributes["zone_id"] != nil
+          - set(resource.attributes["aurora.zone.id"], log.attributes["zone_id"]) where log.attributes["zone_id"] != nil
           # Unknown Zone/infra records share one bounded quarantine stream. Never
           # derive a stream label from a container, pod or customer resource ID.
-          - set(attributes["service_name"], "infra") where attributes["service_name"] == nil
-          - set(severity_text, "DEBUG") where attributes["level"] == "debug"
-          - set(severity_number, 5) where attributes["level"] == "debug"
-          - set(severity_text, "INFO") where attributes["level"] == "info"
-          - set(severity_number, 9) where attributes["level"] == "info"
-          - set(severity_text, "WARN") where attributes["level"] == "warn"
-          - set(severity_number, 13) where attributes["level"] == "warn"
-          - set(severity_text, "ERROR") where attributes["level"] == "error"
-          - set(severity_number, 17) where attributes["level"] == "error"
-          - delete_key(attributes, "log.file.name")
-          - delete_key(attributes, "log.file.path")
-          - delete_key(attributes, "stream")
-          - delete_key(attributes, "level") where attributes["level"] != nil
-          - delete_key(attributes, "event_id") where attributes["event_id"] == ""
-          - delete_key(attributes, "operation_id") where attributes["operation_id"] == ""
-          - delete_key(attributes, "retryable") where attributes["retryable"] == false
-          - delete_key(attributes, "duration_ms") where attributes["duration_ms"] == 0
-          - delete_key(attributes, "leader_fencing_token") where attributes["leader_fencing_token"] == 0
-          - delete_key(attributes, "fencing_token") where attributes["fencing_token"] == 0
-          - delete_key(attributes, "runtime_generation") where attributes["runtime_generation"] == 0
-          - delete_key(attributes, "slot") where attributes["slot"] == 0
-          - delete_key(attributes, "assignment_epoch") where attributes["assignment_epoch"] == 0
-          - delete_key(attributes, "trace_id") where attributes["trace_id"] == ""
-          - delete_key(attributes, "span_id") where attributes["span_id"] == ""
-          - delete_key(attributes, "error") where attributes["error"] == ""
+          - set(log.attributes["service_name"], "infra") where log.attributes["service_name"] == nil
+          - set(log.severity_text, "DEBUG") where log.attributes["level"] == "debug"
+          - set(log.severity_number, 5) where log.attributes["level"] == "debug"
+          - set(log.severity_text, "INFO") where log.attributes["level"] == "info"
+          - set(log.severity_number, 9) where log.attributes["level"] == "info"
+          - set(log.severity_text, "WARN") where log.attributes["level"] == "warn"
+          - set(log.severity_number, 13) where log.attributes["level"] == "warn"
+          - set(log.severity_text, "ERROR") where log.attributes["level"] == "error"
+          - set(log.severity_number, 17) where log.attributes["level"] == "error"
+          - delete_key(log.attributes, "log.file.name")
+          - delete_key(log.attributes, "log.file.path")
+          - delete_key(log.attributes, "stream")
+          - delete_key(log.attributes, "level") where log.attributes["level"] != nil
+          - delete_key(log.attributes, "event_id") where log.attributes["event_id"] == ""
+          - delete_key(log.attributes, "operation_id") where log.attributes["operation_id"] == ""
+          - delete_key(log.attributes, "source_domain") where log.attributes["source_domain"] == ""
+          - delete_key(log.attributes, "kafka_topic") where log.attributes["kafka_topic"] == ""
+          # filelog can preserve JSON scalars as strings; cover both forms so a
+          # restart loop cannot amplify default-value noise in Zone VictoriaLogs.
+          - delete_key(log.attributes, "kafka_partition") where log.attributes["kafka_partition"] == -1 or log.attributes["kafka_partition"] == "-1"
+          - delete_key(log.attributes, "kafka_offset") where log.attributes["kafka_offset"] == -1 or log.attributes["kafka_offset"] == "-1"
+          - delete_key(log.attributes, "job_version") where log.attributes["job_version"] == 0 or log.attributes["job_version"] == "0"
+          - delete_key(log.attributes, "suppressed_count") where log.attributes["suppressed_count"] == 0 or log.attributes["suppressed_count"] == "0"
+          - delete_key(log.attributes, "retryable") where log.attributes["retryable"] == false or log.attributes["retryable"] == "false"
+          - delete_key(log.attributes, "duration_ms") where log.attributes["duration_ms"] == 0 or log.attributes["duration_ms"] == "0"
+          - delete_key(log.attributes, "leader_fencing_token") where log.attributes["leader_fencing_token"] == 0 or log.attributes["leader_fencing_token"] == "0"
+          - delete_key(log.attributes, "fencing_token") where log.attributes["fencing_token"] == 0 or log.attributes["fencing_token"] == "0"
+          - delete_key(log.attributes, "runtime_generation") where log.attributes["runtime_generation"] == 0 or log.attributes["runtime_generation"] == "0"
+          - delete_key(log.attributes, "slot") where log.attributes["slot"] == 0 or log.attributes["slot"] == "0"
+          - delete_key(log.attributes, "assignment_epoch") where log.attributes["assignment_epoch"] == 0 or log.attributes["assignment_epoch"] == "0"
+          - delete_key(log.attributes, "trace_id") where log.attributes["trace_id"] == ""
+          - delete_key(log.attributes, "span_id") where log.attributes["span_id"] == ""
+          - delete_key(log.attributes, "error") where log.attributes["error"] == ""
 
   filter/only_zone_runtime:
     error_mode: ignore
@@ -103,17 +111,18 @@ processors:
   batch:
 
 exporters:
-  prometheusremotewrite:
+  prometheus_remote_write:
     endpoint: "http://zone-victoriametrics:8428/api/v1/write"
     tls:
       insecure: true
     resource_to_telemetry_conversion:
       enabled: true
 
-  otlphttp/victorialogs:
+  otlp_http/victorialogs:
     endpoint: "http://zone-victorialogs:9428/insert/opentelemetry"
     headers:
       "VL-Stream-Fields": "service_name"
+      "VL-Ignore-Fields": "scope.name,scope.version"
     retry_on_failure:
       enabled: true
       initial_interval: 1s
@@ -127,7 +136,7 @@ exporters:
     tls:
       insecure: true
 
-  otlphttp/victoriatraces:
+  otlp_http/victoriatraces:
     endpoint: "http://zone-victoriatraces:10428/insert/opentelemetry"
     retry_on_failure:
       enabled: true
@@ -148,12 +157,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlphttp/victoriatraces]
+      exporters: [otlp_http/victoriatraces]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus_remote_write]
     logs:
-      receivers: [filelog]
+      receivers: [file_log]
       processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, batch]
-      exporters: [otlphttp/victorialogs]
+      exporters: [otlp_http/victorialogs]

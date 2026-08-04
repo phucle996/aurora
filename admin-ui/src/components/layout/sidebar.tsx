@@ -32,22 +32,17 @@ type NavItem = {
   to?: string
 }
 
+// [COMMENT]: Danh sách các menu tổng quan chính thức trong Admin UI
 const primaryItems: NavItem[] = [
   { label: 'Overview', to: '/', icon: Gauge },
   { label: 'Analytics', icon: BarChart3 },
-  { label: 'Revenue', icon: BarChart3 },
-  { label: 'Billing', icon: ReceiptText },
   { label: 'Tenants', to: '/users', icon: Users },
 ]
 
+// [COMMENT]: Các menu quản lý hạ tầng chính thức của Aurora Admin UI
 const infraItems: NavItem[] = [
   { label: 'Hypervisor Images', to: '/hypervisor/images', icon: Server },
-  { label: 'Resources', to: '/resource-platform', icon: Database },
   { label: 'Managed Services', to: '/managed-services', icon: Boxes },
-  { label: 'Storage', icon: HardDrive },
-  { label: 'Kubernetes', icon: Boxes },
-  { label: 'Database', icon: Database },
-  { label: 'Network', icon: Network },
 ]
 
 const opsItems: NavItem[] = [

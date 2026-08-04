@@ -19,6 +19,7 @@ func TestTelemetryBackendCorrelationConfiguration(t *testing.T) {
 	}
 	for _, required := range [][]byte{
 		[]byte(`"VL-Stream-Fields": "service_name"`),
+		[]byte(`"VL-Ignore-Fields": "scope.name,scope.version"`),
 	} {
 		if !bytes.Contains(collector, required) {
 			t.Fatalf("collector config is missing %s", required)
@@ -39,6 +40,9 @@ func TestTelemetryBackendCorrelationConfiguration(t *testing.T) {
 	}
 	if !bytes.Contains(zoneCollector, []byte(`"VL-Stream-Fields": "service_name"`)) {
 		t.Fatal("zone collector must keep the same bounded service_name stream contract")
+	}
+	if !bytes.Contains(zoneCollector, []byte(`"VL-Ignore-Fields": "scope.name,scope.version"`)) {
+		t.Fatal("zone collector must drop default OTLP scope noise before storage")
 	}
 	if bytes.Contains(zoneCollector, []byte(`VL-Stream-Fields": "service_name,zone_id`)) {
 		t.Fatal("zone or customer identity must not be a VictoriaLogs stream dimension")

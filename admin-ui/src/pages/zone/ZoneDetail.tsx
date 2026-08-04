@@ -47,6 +47,8 @@ import ZoneActivityPanel, { type ZoneActivity } from './sections/ZoneActivityPan
 import ZoneEssentialsSection from './sections/ZoneEssentialsSection'
 import ZoneServicesSection from './sections/ZoneServicesSection'
 import ZoneQuickLinksSection from './sections/ZoneQuickLinksSection'
+// [COMMENT]: Import component quản lý khóa mã hóa E2EE X25519 cho Zone
+import ZoneEncryptionKeysPanel from './sections/ZoneEncryptionKeysPanel'
 
 // ─── Domain Types ───────────────────────────────────────────────────────────
 // Mirrors the API contract from GET /admin/hierarchy/zones/:zone_id
@@ -252,8 +254,8 @@ export default function ZoneDetailPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [otpAction, setOtpAction] = useState<'status' | 'delete' | null>(null)
 
-  // ── Tab state & Layout customization ──────────────────────────────────────
-  const tabs = ['Overview', 'Workspaces', 'Inventory', 'Monitoring', 'Activity log', 'Access control', 'Tags']
+  // [COMMENT]: Danh sách các Tab điều hướng trong màn hình Chi tiết Zone
+  const tabs = ['Overview', 'Workspaces', 'Inventory', 'Encryption Keys', 'Monitoring', 'Activity log', 'Access control', 'Tags']
   const [activeTab, setActiveTab] = useState('Overview')
 
 
@@ -655,6 +657,9 @@ export default function ZoneDetailPage() {
         return <ZoneWorkspacesPanel workspaces={detail.workspaces.items} totalCount={detail.workspaces.total} />
       case 'Inventory':
         return <ZoneInventoryPanel metrics={detail.resource_inventory} />
+      case 'Encryption Keys':
+        // [COMMENT]: Hiển thị Panel quản lý Encryption Keys khi chọn Tab Encryption Keys
+        return <ZoneEncryptionKeysPanel zoneId={zoneID} />
       case 'Activity log':
         return <ZoneActivityPanel activities={detail.recent_activity} />
       default:
