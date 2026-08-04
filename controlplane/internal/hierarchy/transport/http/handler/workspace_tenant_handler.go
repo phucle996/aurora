@@ -131,7 +131,6 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        X-Tenant-ID   header string true "Tenant ID (UUID) bắt buộc"
-// @Param        X-User-Role-ID header string true "Active Role ID (UUID) bắt buộc"
 // @Success      200 {object} map[string]interface{} "List workspaces success"
 // @Router       /api/v1/tenant/hierarchy/workspaces [get]
 func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
@@ -141,7 +140,7 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	_, ok := pkgcontext.GetUserID(c, op)
+	actorUserID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -152,15 +151,9 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Trích xuất và kiểm tra định danh Active Role ID từ header thông qua helper
-	roleID, ok := pkgcontext.GetUserRoleID(c, op)
-	if !ok {
-		return
-	}
-
 	// [COMMENT]: Truy vấn danh sách các workspace của tenant được phân quyền truy cập
 	workspaces, err := h.tenantSvc.ListWorkspacesForTenant(ctx, &hierarchyEntity.ListTenantWorkspaces{
-		TenantID: tenantID, RoleID: roleID,
+		TenantID: tenantID, ActorUserID: actorUserID,
 	})
 	if err != nil {
 		logger.HandlerError(c, op, err)
@@ -194,7 +187,6 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 // @Produce      json
 // @Param        X-Zone-ID      header string true "Zone ID (UUID) để lọc catalog"
 // @Param        X-Tenant-ID    header string true "Tenant ID (UUID) bắt buộc"
-// @Param        X-User-Role-ID  header string true "Active Role ID (UUID) bắt buộc"
 // @Success      200 {object} map[string]interface{} "Workspace catalog success"
 // @Router       /api/v1/tenant/hierarchy/workspaces/catalog [get]
 func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
@@ -204,7 +196,7 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	_, ok := pkgcontext.GetUserID(c, op)
+	actorUserID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -221,15 +213,9 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Trích xuất và kiểm tra định danh Active Role ID từ header thông qua helper
-	roleID, ok := pkgcontext.GetUserRoleID(c, op)
-	if !ok {
-		return
-	}
-
 	// [COMMENT]: Truy vấn danh mục catalog tối giản dựa trên tenant, zone, user và role
 	catalog, err := h.tenantSvc.ListWorkspaceCatalogForTenant(ctx, &hierarchyEntity.ListTenantWorkspaceCatalog{
-		TenantID: tenantID, ZoneID: zoneID, RoleID: roleID,
+		TenantID: tenantID, ZoneID: zoneID, ActorUserID: actorUserID,
 	})
 	if err != nil {
 		logger.HandlerError(c, op, err)

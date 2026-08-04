@@ -27,8 +27,6 @@ package hierarchy
 
 import (
 	"fmt"
-	"regexp"
-	"strings"
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
@@ -54,6 +52,7 @@ type Module struct {
 	WorkspacePersonalHandler *hierarchyHandler.WorkspacePersonalHandler
 	WorkspaceTenantHandler   *hierarchyHandler.WorkspaceTenantHandler
 	TenantHandler            *hierarchyHandler.TenantHandler
+	TenantInvitationHandler  *hierarchyHandler.TenantInvitationHandler
 	L1Registry               *cacheengine.CacheRegistry
 }
 
@@ -85,23 +84,6 @@ func NewModule(
 		return nil, fmt.Errorf("hierarchy module: observability is required")
 	}
 	metrics := otel.WorkflowRecorder("hierarchy")
-	hierarchySchema := strings.TrimSpace(cfg.SchemaSQL.Hierarchy)
-	storageSchema := strings.TrimSpace(cfg.SchemaSQL.Storage)
-	mailSchema := strings.TrimSpace(cfg.SchemaSQL.Mail)
-	hypervisorSchema := strings.TrimSpace(cfg.SchemaSQL.Hypervisor)
-	managedServiceSchema := strings.TrimSpace(cfg.SchemaSQL.ManagedService)
-	schemaPattern := regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
-	for _, schema := range []string{
-		hierarchySchema,
-		storageSchema,
-		mailSchema,
-		hypervisorSchema,
-		managedServiceSchema,
-	} {
-		if !schemaPattern.MatchString(schema) {
-			return nil, fmt.Errorf("hierarchy module: database schema is invalid")
-		}
-	}
 
 	// 1) SoT data access for secret lifecycle.
 	// 3) Rotation orchestration - Chỉ truyền một đối tượng cacheEngine duy nhất
@@ -128,11 +110,7 @@ func NewModule(
 	// Dataplane private-key loading remains a separate filesystem boundary.
 	zoneEncryptionKeyRepo := hierarchyRepoImpl.NewZoneEncryptionKeyRepository(
 		db,
-		hierarchySchema,
-		storageSchema,
-		mailSchema,
-		hypervisorSchema,
-		managedServiceSchema,
+		cfg.SchemaSQL,
 	)
 	if zoneEncryptionKeyRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: zone encryption key repository is nil")
@@ -190,6 +168,18 @@ func NewModule(
 	if tHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant handler is nil")
 	}
+	tenantInvitationRepo := hierarchyRepoImpl.NewTenantInvitationRepository(cfg, db)
+	if tenantInvitationRepo == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant invitation repository is nil")
+	}
+	tenantInvitationService := hierarchySvcImpl.NewTenantInvitationService(tenantInvitationRepo, cacheEngine, metrics)
+	if tenantInvitationService == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant invitation service is nil")
+	}
+	tenantInvitationHandler := hierarchyHandler.NewTenantInvitationHandler(tenantInvitationService)
+	if tenantInvitationHandler == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant invitation handler is nil")
+	}
 
 	// [COMMENT]: Lược bỏ việc khởi tạo BackpressureService do đã chuyển đổi hoàn toàn sang mô hình event-driven ở job-orchestrator.
 
@@ -202,6 +192,7 @@ func NewModule(
 		WorkspacePersonalHandler: wPersonalHandler,
 		WorkspaceTenantHandler:   wTenantHandler,
 		TenantHandler:            tHandler,
+		TenantInvitationHandler:  tenantInvitationHandler,
 		L1Registry:               cacheEngine,
 	}, nil
 }

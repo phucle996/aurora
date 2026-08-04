@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"controlplane/internal/config"
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
@@ -24,13 +25,10 @@ type zoneEncryptionKeyRepository struct {
 	resolveQuery  string
 }
 
+// [COMMENT]: NewZoneEncryptionKeyRepository khởi tạo repository nhận trực tiếp đối tượng schemaCfg config.SchemaSQLCfg
 func NewZoneEncryptionKeyRepository(
 	db *pgxpool.Pool,
-	hierarchySchema string,
-	storageSchema string,
-	mailSchema string,
-	hypervisorSchema string,
-	managedServiceSchema string,
+	schemaCfg config.SchemaSQLCfg,
 ) hierarchyRepoInterface.ZoneEncryptionKeyRepository {
 	return &zoneEncryptionKeyRepository{
 		db: db,
@@ -60,7 +58,7 @@ func NewZoneEncryptionKeyRepository(
 				COALESCE((SELECT registered_by FROM upserted), ''),
 				COALESCE((SELECT created_at FROM upserted), now()),
 				COALESCE((SELECT updated_at FROM upserted), now())
-		`, hierarchySchema, hierarchySchema),
+		`, schemaCfg.Hierarchy, schemaCfg.Hierarchy),
 		listQuery: fmt.Sprintf(`
 			WITH target_zone AS MATERIALIZED (
 				SELECT id FROM %s.zones WHERE id = $1
@@ -76,7 +74,7 @@ func NewZoneEncryptionKeyRepository(
 				AND (NOT $2 OR (key.created_at, key.id) < ($3, $4))
 			ORDER BY key.created_at DESC, key.id DESC
 			LIMIT $5
-		`, hierarchySchema, hierarchySchema),
+		`, schemaCfg.Hierarchy, schemaCfg.Hierarchy),
 		activateQuery: fmt.Sprintf(`
 			WITH zone_lock AS MATERIALIZED (
 				-- [COMMENT]: The Zone row is the per-Zone mutex. It serializes
@@ -135,7 +133,7 @@ func NewZoneEncryptionKeyRepository(
 				COALESCE((SELECT updated_at FROM selected), now()),
 				(SELECT activated_at FROM selected),
 				COALESCE((SELECT state_changed FROM selected), false)
-		`, hierarchySchema, hierarchySchema, hierarchySchema, hierarchySchema, hierarchySchema),
+		`, schemaCfg.Hierarchy, schemaCfg.Hierarchy, schemaCfg.Hierarchy, schemaCfg.Hierarchy, schemaCfg.Hierarchy),
 		retireQuery: fmt.Sprintf(`
 			WITH zone_lock AS MATERIALIZED (
 				SELECT id FROM %s.zones WHERE id = $1 FOR UPDATE
@@ -204,7 +202,7 @@ func NewZoneEncryptionKeyRepository(
 				(SELECT retired_at FROM selected),
 				COALESCE((SELECT state_changed FROM selected), false),
 				COALESCE((SELECT has_retained_ciphertext FROM retained_ciphertext), false)
-		`, hierarchySchema, hierarchySchema, storageSchema, mailSchema, mailSchema, hypervisorSchema, managedServiceSchema, managedServiceSchema, managedServiceSchema, hierarchySchema),
+		`, schemaCfg.Hierarchy, schemaCfg.Hierarchy, schemaCfg.Storage, schemaCfg.Mail, schemaCfg.Mail, schemaCfg.Hypervisor, schemaCfg.ManagedService, schemaCfg.ManagedService, schemaCfg.ManagedService, schemaCfg.Hierarchy),
 		resolveQuery: fmt.Sprintf(`
 			WITH target_zone AS MATERIALIZED (
 				SELECT id
@@ -230,7 +228,7 @@ func NewZoneEncryptionKeyRepository(
 				COALESCE((SELECT zone_id FROM selected), '00000000-0000-0000-0000-000000000000'::uuid),
 				COALESCE((SELECT public_key FROM selected), decode('', 'hex')),
 				COALESCE((SELECT ready_for_nanoseconds FROM selected), 0)
-		`, hierarchySchema, hierarchySchema),
+		`, schemaCfg.Hierarchy, schemaCfg.Hierarchy),
 	}
 }
 
