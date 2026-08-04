@@ -4,13 +4,9 @@ import {
   BarChart3,
   Boxes,
   Cloud,
-  Database,
   Gauge,
   MapPin,
-  HardDrive,
   LifeBuoy,
-  Network,
-  ReceiptText,
   Server,
   Settings,
   ShieldAlert,
@@ -113,7 +109,7 @@ function SidebarSkeleton({ collapsed }: { collapsed: boolean }) {
       <div className="flex-1 overflow-y-auto px-2 py-4 space-y-5">
         {Array.from({ length: 3 }).map((_, section) => (
           <div key={section} className="space-y-2">
-            {Array.from({ length: [5,7,7][section] }).map((__, index) => (
+            {Array.from({ length: [5, 7, 7][section] }).map((__, index) => (
               <div key={index} className={cn('flex items-center rounded-lg', collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2')}>
                 <Skeleton className="size-4 rounded" />
                 {!collapsed && <Skeleton className="h-4 flex-1 rounded" />}

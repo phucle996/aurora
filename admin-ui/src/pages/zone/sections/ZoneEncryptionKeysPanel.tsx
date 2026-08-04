@@ -432,7 +432,7 @@ export default function ZoneEncryptionKeysPanel({ zoneId }: Props) {
       <OTPVerificationDialog
         open={isOTPOpen}
         onOpenChange={setIsOTPOpen}
-        onVerify={pendingAction ? executeActionKey : executeRegisterKey}
+        onConfirm={pendingAction ? executeActionKey : executeRegisterKey}
         loading={signing}
         title={pendingAction ? `Xác thực 2FA để ${pendingAction.type} Key` : 'Xác thực 2FA để Đăng Ký Encryption Key'}
         description="Đòn bẩy bảo mật SRE Critical Action: Nhập mã 6 chữ số từ ứng dụng Authenticator của bạn."
