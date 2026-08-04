@@ -41,7 +41,7 @@ func NewWorkspacePersonalHandler(
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) bắt buộc"
 // @Param        request     body   hierarchyReq.CreatePersonalWorkspaceRequest true "Thông tin khởi tạo workspace"
 // @Success      201 {object} map[string]interface{} "Workspace created"
-// @Router       /api/v1/me/hierarchy/workspace/create [post]
+// @Router       /api/v1/personal/hierarchy/workspaces [post]
 func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 	const op = "hierarchy.workspace.personal.create"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
@@ -120,7 +120,7 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Success      200 {object} map[string]interface{} "List workspaces success"
-// @Router       /api/v1/me/hierarchy/workspace/read [get]
+// @Router       /api/v1/personal/hierarchy/workspaces [get]
 func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 	const op = "hierarchy.workspace.personal.list"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
@@ -163,7 +163,7 @@ func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) để lọc catalog"
 // @Success      200 {object} map[string]interface{} "Workspace catalog success"
-// @Router       /api/v1/me/hierarchy/workspace/catalog [get]
+// @Router       /api/v1/personal/hierarchy/workspaces/catalog [get]
 func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 	const op = "hierarchy.workspace.personal.catalog"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
@@ -213,7 +213,7 @@ func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 // @Produce      json
 // @Param        workspace_id   path   string true "Workspace ID (UUID) cần xóa"
 // @Success      200 {object} map[string]interface{} "Workspace deleted successfully"
-// @Router       /api/v1/me/hierarchy/workspace/delete/{workspace_id} [delete]
+// @Router       /api/v1/personal/hierarchy/workspaces/{workspace_id} [delete]
 func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 	const op = "hierarchy.workspace.personal.delete"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)

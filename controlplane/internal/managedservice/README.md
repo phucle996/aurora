@@ -154,18 +154,21 @@ consume proof bind method/path/body; Controlplane chỉ fail-close nếu marker/
 ID do ACR inject bị thiếu. Blueprint/draft/validate/publish/retire/delete không có
 normal-route mirror: chúng luôn đi thẳng qua `/admin/critical/`. Repository CTE vẫn
 quyết định transition/pin hợp lệ; critical proof không bypass immutable revision,
-FK hoặc hard-delete guard. Customer route vẫn đi qua nhánh
-`/api/v1/personal/managed-services/*` hoặc `/api/v1/tenant/managed-services/*`
-và middleware authorization tương ứng.
+FK hoặc hard-delete guard. Console/SDK chỉ gọi
+`/api/v1/managed-services/*`; ACR rewrite từ verified session sang internal
+`/api/v1/personal/managed-services/*` hoặc
+`/api/v1/tenant/managed-services/*` và middleware authorization tương ứng.
+Direct owner-prefixed request từ client bị từ chối.
 
-P03 customer discovery có đúng bốn route read-only:
+P03 public customer discovery có đúng hai route read-only:
 
 ```text
-GET /api/v1/personal/managed-services/catalog
-GET /api/v1/personal/managed-services/catalog/versions/:version_id
-GET /api/v1/tenant/managed-services/catalog
-GET /api/v1/tenant/managed-services/catalog/versions/:version_id
+GET /api/v1/managed-services/catalog
+GET /api/v1/managed-services/catalog/versions/:version_id
 ```
+
+Controlplane vẫn có hai implementation branch internal với cùng suffix; chúng
+không phải browser contract.
 
 Chúng dùng `managed-service:catalog:read`, typed context từ `pkg/context` và CTE
 workflow-local để bind workspace với owner/tenant + Zone. Public response không có
@@ -175,29 +178,19 @@ bằng auth generation + owner mode + Zone + workspace + revision. List dùng ke
 cursor và page tối đa 100; Console chỉ tải page tiếp theo theo action hữu hạn. P03
 không đăng ký `POST /instances`.
 
-P04 customer instance projection bổ sung tám route read-only. Sau P07 direct
-settlement, các mutation vertical slice được đăng ký với permission
-`managed-service:instance:write`:
+P04 customer instance projection và P07 mutation dùng public neutral prefix
+`/api/v1/managed-services`; ACR mới thêm internal owner prefix. Các suffix là:
 
 ```text
-GET /api/v1/personal/managed-services/instances
-GET /api/v1/personal/managed-services/instances/:code
-GET /api/v1/personal/managed-services/instances/:code/operations
-GET /api/v1/personal/managed-services/instances/:code/operations/:operation_id
-POST /api/v1/personal/managed-services/instances
-PATCH /api/v1/personal/managed-services/instances/:code/name
-POST /api/v1/personal/managed-services/instances/:code/resize
-DELETE /api/v1/personal/managed-services/instances/:code
-POST /api/v1/personal/managed-services/instances/:code/operations/:operation_id/retry
-GET /api/v1/tenant/managed-services/instances
-GET /api/v1/tenant/managed-services/instances/:code
-GET /api/v1/tenant/managed-services/instances/:code/operations
-GET /api/v1/tenant/managed-services/instances/:code/operations/:operation_id
-POST /api/v1/tenant/managed-services/instances
-PATCH /api/v1/tenant/managed-services/instances/:code/name
-POST /api/v1/tenant/managed-services/instances/:code/resize
-DELETE /api/v1/tenant/managed-services/instances/:code
-POST /api/v1/tenant/managed-services/instances/:code/operations/:operation_id/retry
+GET /api/v1/managed-services/instances
+GET /api/v1/managed-services/instances/:code
+GET /api/v1/managed-services/instances/:code/operations
+GET /api/v1/managed-services/instances/:code/operations/:operation_id
+POST /api/v1/managed-services/instances
+PATCH /api/v1/managed-services/instances/:code/name
+POST /api/v1/managed-services/instances/:code/resize
+DELETE /api/v1/managed-services/instances/:code
+POST /api/v1/managed-services/instances/:code/operations/:operation_id/retry
 ```
 
 Read routes dùng `managed-service:instance:read`; mutation dùng

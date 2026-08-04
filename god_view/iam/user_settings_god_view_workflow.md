@@ -17,13 +17,20 @@
 | MFA secret và recovery hashes | PostgreSQL | Durable encrypted/hashed state |
 | Device/session revocation | Controlplane IAM + ACR runtime indexes | PostgreSQL quyết định ownership; ACR xóa runtime session |
 
-Settings có bốn route-driven tab:
+Settings là self-identity UI không phụ thuộc renderer và không cần
+permission từ Render Context. UI có thể trình bày nó khi bất kỳ renderer
+nào đang active, nhưng mọi request vẫn chỉ dùng một self contract `/me`;
+không có personal/tenant API variant. Bốn tab hiện có các URL trình bày:
 
 ```text
-/settings/personalization
-/settings/mfa
-/settings/social-links
-/settings/devices
+/personal/settings/personalization
+/personal/settings/mfa
+/personal/settings/social-links
+/personal/settings/devices
+/tenant/settings/personalization
+/tenant/settings/mfa
+/tenant/settings/social-links
+/tenant/settings/devices
 ```
 
 Không có tab đổi mật khẩu hoặc API key giả. Username, account email và password không thể sửa
@@ -41,8 +48,8 @@ từ Settings. Password chỉ thay đổi qua workflow quên mật khẩu/recove
 | `POST /api/v1/me/iam/mfa/recovery/regenerate` | User session + current TOTP | Replace recovery set atomically |
 | `DELETE /api/v1/me/iam/mfa` | User session + current TOTP | Hard-delete enrollment and recovery hashes |
 | `GET /api/v1/me/iam/social-link` | User session | Fixed Google/GitHub state list |
-| `POST /api/v1/critical/me/iam/social-link/:provider/start` | User session + critical proof | ACR local authorization URL |
-| `DELETE /api/v1/critical/me/iam/social-link/:provider` | User session + critical proof | Idempotent unlink |
+| `POST /api/v1/me/critical/iam/social-link/:provider/start` | User session + critical proof | ACR local authorization URL |
+| `DELETE /api/v1/me/critical/iam/social-link/:provider` | User session + critical proof | Idempotent unlink |
 | `GET /api/v1/me/iam/device/read` | User session | Owned devices |
 | `POST /api/v1/me/iam/device/delete/:device_id` | User session | Revoke one non-current owned device |
 | `POST /api/v1/me/iam/device/delete-others` | User session | Revoke all other devices |
@@ -82,7 +89,7 @@ sequenceDiagram
     participant IAM as Controlplane IAM
     participant DB as PostgreSQL
 
-    UI->>E: POST critical social-link/{provider}/start + exact signed body
+    UI->>E: POST /api/v1/me/critical/iam/social-link/{provider}/start + exact signed body
     E->>AR: consume critical challenge
     E->>AR: atomically replace pending state/index, EX <= 300
     E-->>UI: provider authorization_url
@@ -95,7 +102,7 @@ sequenceDiagram
     SR->>IAM: one bounded winning consumer
     IAM->>DB: one CTE link/reactivate transaction
     IAM-->>E: generic linked/error response
-    E-->>UI: 303 /settings/social-links?social_link=linked|failed
+    E-->>UI: 303 /{personal|tenant}/settings/social-links?social_link=linked|failed
 ```
 
 Link state binds `user_id`, `zone_id`, `tenant_id`, `client_device_id` và session proof public

@@ -84,7 +84,7 @@ sequenceDiagram
     participant acr as 🛡️ acr Edge Proxy (Rust)
     participant L2 as ⚡ Redis L2 Session
 
-    UI->>acr: POST /api/v1/me/hierarchy/workspace/create hoặc /api/v1/tenant/hierarchy/workspaces<br/>Headers: Authorization (JWT)
+    UI->>acr: POST /api/v1/hierarchy/workspaces<br/>ACR rewrite theo verified owner context
     Note over acr: B1: Giải mã & Kiểm tra chữ ký JWT
     alt JWT Token không hợp lệ / Hết hạn
         acr-->>UI: HTTP 401 Unauthorized (ErrExpiredToken / ErrInvalidToken)
@@ -227,8 +227,10 @@ Các ràng buộc nghiệp vụ được siết chặt và thực thi tuyệt đ
 
 ### HTTP Request
 
-- Personal: `POST /api/v1/me/hierarchy/workspace/create`.
-- Tenant: `POST /api/v1/tenant/hierarchy/workspaces`.
+- Browser/SDK: `POST /api/v1/hierarchy/workspaces`.
+- ACR internal personal target: `POST /api/v1/personal/hierarchy/workspaces`.
+- ACR internal tenant target: `POST /api/v1/tenant/hierarchy/workspaces`.
+- Client gọi trực tiếp owner-prefixed route bị ACR từ chối.
 
 #### 📥 Header Parameters:
 * `X-Zone-ID` (String/UUID - Bắt buộc): ID của Zone khởi tạo.

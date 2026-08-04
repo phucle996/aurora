@@ -1,7 +1,8 @@
 # IAM RBAC — God View
 
 > Đây là Source of Truth cho platform role, tenant role, compiled permission
-> assignment, tenant authorization cache và tenant-session resolution. Code,
+> assignment, tenant authorization cache, console render context và
+> tenant-session resolution. Code,
 > migration hoặc route mâu thuẫn với tài liệu này phải được sửa trong cùng
 > change-set.
 
@@ -204,8 +205,12 @@ root role; the owner may create weaker tenant roles later.
 Route:
 
 ```text
-POST /api/v1/tenant/critical/iam/rbac/role
+Browser: POST /api/v1/critical/iam/rbac/role
+Internal after verified tenant rewrite: POST /api/v1/tenant/critical/iam/rbac/role
 ```
+
+The Console never chooses the internal tenant prefix. ACR derives it from the
+verified session and rejects direct client access to that target.
 
 Security chain:
 
@@ -269,9 +274,62 @@ Mutation invalidation:
 For a newly joined member, missed fanout only yields bounded stale deny. It must
 not convert a successfully consumed one-time invitation into an HTTP failure.
 
-## 11. Tenant-session resolution
+## 11. Console Render Context
+
+Browser chỉ gọi một route trung lập:
+
+```text
+GET /api/v1/iam/context/read
+```
+
+ACR xác minh Trinity hoặc Cost Billing Alias trước, sau đó rewrite từ context
+đã được xác minh; cookie/header tenant do client gửi không được dùng để chọn
+branch:
+
+| Verified context | Internal Controlplane route |
+|---|---|
+| Không có tenant | `GET /api/v1/personal/iam/context/read` |
+| Concrete tenant UUID | `GET /api/v1/tenant/iam/context/read` |
+
+Hai internal route không phải public API. ACR phải từ chối request client gọi
+trực tiếp một trong hai path này, vì nếu không client có thể tự chọn owner
+branch trước security boundary.
+
+Controlplane triển khai hai workflow tách biệt:
+
+1. Personal handler chỉ nhận verified user identity, đọc namespace L1
+   `user_role`, và không đọc tenant context.
+2. Tenant handler bắt buộc nhận verified user + concrete tenant UUID, đọc
+   namespace L1 `membership_role`, và không fallback sang platform role.
+3. L1 miss mới đi tới repository loader/PostgreSQL. Shared Redis L2 không giữ
+   compiled permission nhạy cảm.
+4. Loader/repository/cache lỗi trả unavailable; thiếu active assignment trả
+   forbidden. Không workflow nào trả navigation rỗng như một personal fallback.
+
+Response là discriminated contract, không dùng boolean mơ hồ:
+
+```json
+{"kind":"personal","navigation":[],"capabilities":{}}
+```
+
+```json
+{"kind":"tenant","tenant_id":"<verified-uuid>","navigation":[],"capabilities":{}}
+```
+
+Cloud Console có hai URL/composition root thật `/personal/*` và `/tenant/*`.
+Root tương ứng chỉ mount khi `kind` khớp; mismatch phải unmount UI, hủy request
+đang chạy, clear query/workspace state và chuyển sang đúng root. Query key mang
+session generation, `kind`, tenant ID, Zone và workspace để response trễ từ
+context cũ không thể hydrate context mới. Permission client chỉ là presentation
+fence; backend vẫn authorize mọi API.
+
+## 12. Tenant-session resolution
 
 `POST /api/v1/tenant/go-to-tenant` is intercepted by ACR.
+Đây là ACR-local control endpoint để đổi verified session context, không phải
+owner-prefixed Controlplane route và không được forward xuống backend. Ngoại lệ
+này không cho phép Console dựng `/api/v1/personal/*` hoặc `/api/v1/tenant/*`
+cho bất kỳ business API nào.
 
 ```mermaid
 sequenceDiagram
@@ -297,7 +355,7 @@ The request is fail-closed:
 Shared Redis payload is bounded soft request/reply. Durable membership remains
 in PostgreSQL, and a future request can rebuild the decision.
 
-## 12. Failure and concurrency semantics
+## 13. Failure and concurrency semantics
 
 - All durable business mutation commits in PostgreSQL before cache fanout.
 - Duplicate tenant code, role code or active target invitation maps to generic
@@ -313,11 +371,14 @@ in PostgreSQL, and a future request can rebuild the decision.
 - There is no exactly-once claim across HTTP retries; unique constraints and
   one-time token consumption provide the idempotency boundary.
 
-## 13. Forbidden designs
+## 14. Forbidden designs
 
 - One shared `roles` table with a mutable `scope` discriminator.
 - Tenant definitions without `tenant_id` ownership.
 - Seeding tenant roles before a tenant exists.
+- Route Render Context dưới `/me`, vì `/me` không đi qua owner rewrite.
+- Một handler/service branch theo tenant optional rồi fallback sang personal.
+- Dùng `is_personal ?? true` hoặc default personal khi response context lỗi.
 - Trusting `x-user-role-id` to select tenant permission cache entries.
 - Emitting `x-user-role-id` from ACR or carrying `role_id` in Trinity JWT; the
   effective compiled grant is selected by verified actor and owner context.
@@ -327,7 +388,7 @@ in PostgreSQL, and a future request can rebuild the decision.
 - Soft-delete state for a successfully consumed one-time invitation.
 - Treating Shared Redis as membership SoT.
 
-## 14. Required verification
+## 15. Required verification
 
 - Migration tests enforce zero-state seed semantics and absence of legacy tenant
   role seeds.

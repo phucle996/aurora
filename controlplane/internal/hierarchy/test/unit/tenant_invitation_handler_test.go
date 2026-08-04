@@ -77,7 +77,7 @@ func TestCreateTenantInvitationValidatesAndCanonicalizesAtHandler(t *testing.T) 
 	if capture.createInput == nil || capture.createInput.TargetIdentifier != "user@example.com" || !capture.createInput.TargetByEmail {
 		t.Fatalf("handler did not canonicalize the target: %#v", capture.createInput)
 	}
-	if !strings.Contains(response.Body.String(), "/settings/tenant-invitations/join?token=") {
+	if !strings.Contains(response.Body.String(), "/personal/settings/tenant-invitations/join?token=") {
 		t.Fatal("create response must return the one-time console join link")
 	}
 }

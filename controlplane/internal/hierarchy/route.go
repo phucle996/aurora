@@ -46,9 +46,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	)
 
 	// ========================================================================
-	// 🗂️ WORKSPACE — PERSONAL SCOPE (/api/v1/me)
-	// [COMMENT]: Nhóm /me phục vụ các hành động tự-phục-vụ của người dùng hiện tại
-	// tương tự pattern /api/v1/me trong IAM route
+	// 🗂️ SELF IDENTITY — không phụ thuộc owner context
 	// ========================================================================
 	meGroup := router.Group("/api/v1/me")
 	{
@@ -61,23 +59,29 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 			middleware.RequireSessionProof(),
 			module.TenantInvitationHandler.JoinTenantInvitation,
 		)
-		// [COMMENT]: Tạo workspace cá nhân mới — vẫn cần quyền hierarchy:workspace:create
-		meGroup.POST("/hierarchy/workspace/create",
+	}
+
+	// Owner-prefixed routes are internal rewrite targets. Browser/SDK always
+	// calls the corresponding neutral route and cannot select this branch.
+	personalGroup := router.Group("/api/v1/personal")
+	{
+		personalGroup.POST("/hierarchy/workspaces",
 			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
 			module.WorkspacePersonalHandler.CreateWorkspacePersonal,
 		)
-		// [COMMENT]: Lấy danh sách workspace cá nhân mà user có quyền read
-		meGroup.GET("/hierarchy/workspace/read",
+		personalGroup.GET("/hierarchy/workspaces",
 			module.WorkspacePersonalHandler.ListWorkspacesPersonal,
 		)
-		// [COMMENT]: Hot path catalog cá nhân — không dùng Authorize do tình huống chicken-and-egg
-		meGroup.GET("/hierarchy/workspace/catalog",
+		personalGroup.GET("/hierarchy/workspaces/catalog",
 			module.WorkspacePersonalHandler.GetWorkspaceCatalogPersonal,
 		)
-		// [COMMENT]: Xóa workspace cá nhân — không áp Authorize middleware,
-		// ownership được kiểm tra trong handler qua X-User-ID header
-		meGroup.DELETE("/hierarchy/workspace/delete/:workspace_id",
+		personalGroup.DELETE("/hierarchy/workspaces/:workspace_id",
 			module.WorkspacePersonalHandler.DeleteWorkspacePersonal,
+		)
+		// Tenant creation is a personal-owner action. A tenant session cannot
+		// create a sibling tenant through a generic route.
+		personalGroup.POST("/tenants",
+			module.TenantHandler.CreateTenant,
 		)
 	}
 
@@ -117,8 +121,4 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		)
 	}
 
-	// [COMMENT]: Route tạo tenant mới — cần x-user-id header bắt buộc, x-tenant-id phải trống
-	router.POST("/api/v1/tenants",
-		module.TenantHandler.CreateTenant,
-	)
 }

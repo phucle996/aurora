@@ -511,7 +511,7 @@ impl OAuthProviderService {
         cookies_to_set: &[String],
     ) -> Option<Result<Response<CheckResponse>, Status>> {
         let path_without_query = path.split('?').next().unwrap_or(path);
-        let rest = path_without_query.strip_prefix("/api/v1/critical/me/iam/social-link/")?;
+        let rest = path_without_query.strip_prefix("/api/v1/me/critical/iam/social-link/")?;
         let provider = rest.strip_suffix("/start")?;
         if provider.contains('/') || !matches!(provider, "google" | "github") {
             return Some(Ok(Response::new(error_json(
@@ -558,8 +558,10 @@ impl OAuthProviderService {
         };
         let return_to = payload
             .return_to
-            .unwrap_or_else(|| "/settings/social-links".to_string());
-        if return_to != "/settings/social-links" {
+            .unwrap_or_else(|| "/personal/settings/social-links".to_string());
+        if return_to != "/personal/settings/social-links"
+            && return_to != "/tenant/settings/social-links"
+        {
             return Some(Ok(Response::new(error_json(
                 HttpStatusCode::BadRequest,
                 "Invalid return path",
@@ -1630,7 +1632,8 @@ fn pkce_challenge(verifier: &str) -> String {
 
 fn safe_return_to(value: &str) -> bool {
     value == "/"
-        || value == "/settings/social-links"
+        || value == "/personal/settings/social-links"
+        || value == "/tenant/settings/social-links"
         || (value.starts_with("/billing/authorize?") && !value.starts_with("//"))
 }
 
@@ -1669,10 +1672,12 @@ fn oauth_social_link_redirect(
     outcome: &str,
     cookies_to_set: &[String],
 ) -> CheckResponse {
-    let destination = if return_to == "/settings/social-links" {
+    let destination = if return_to == "/personal/settings/social-links"
+        || return_to == "/tenant/settings/social-links"
+    {
         format!("{return_to}?social_link={outcome}")
     } else {
-        "/settings/social-links?social_link=failed".to_string()
+        "/personal/settings/social-links?social_link=failed".to_string()
     };
     let mut builder = DeniedHttpResponseBuilder::new();
     builder.set_http_status(HttpStatusCode::SeeOther);
@@ -1826,7 +1831,8 @@ mod tests {
     #[test]
     fn return_path_allowlist_rejects_external_and_ambiguous_paths() {
         assert!(safe_return_to("/"));
-        assert!(safe_return_to("/settings/social-links"));
+        assert!(safe_return_to("/personal/settings/social-links"));
+        assert!(safe_return_to("/tenant/settings/social-links"));
         assert!(safe_return_to("/billing/authorize?request_id=abc"));
         assert!(!safe_return_to("//attacker.example"));
         assert!(!safe_return_to("https://attacker.example"));

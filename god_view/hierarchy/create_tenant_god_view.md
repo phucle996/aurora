@@ -51,14 +51,13 @@ graph TD
     L2Check -- Allowed --> ContextResolve{5. Context Resolution}
     
     %% Context Resolution & Header Injection
-    ContextResolve --> InjectUser[Inject X-User-ID = claims.sub]
-    InjectUser --> CheckTenant{Is tenant_id claim present?}
+    ContextResolve --> CheckTenant{Is tenant_id claim present?}
     
-    CheckTenant -- Yes --> InjectTenant[Inject X-Tenant-ID = claims.tenant_id]
-    CheckTenant -- No --> NoTenant[Do not inject X-Tenant-ID]
+    CheckTenant -- Yes --> RejectTenant[❌ 403: tenant context cannot create sibling tenant]
+    CheckTenant -- No --> RewritePersonal[Rewrite to /api/v1/personal/tenants]
     
-    InjectTenant --> Forward[🚀 Envoy Forward to Controlplane Backend]
-    NoTenant --> Forward
+    RewritePersonal --> InjectUser[Inject X-User-ID = verified claims.uid]
+    InjectUser --> Forward[🚀 Envoy Forward internal route to Controlplane]
 ```
 
 ---
@@ -96,9 +95,12 @@ Hệ thống sử dụng cơ chế bảo vệ phân tầng hiệu năng cao nh�
 * **Các kịch bản ánh xạ**:
   * **Inject User Identity**: `claims.uid` (UUID của User) được gán vào
     `X-User-ID`; `claims.sub` là canonical username và không được dùng thay UUID.
-  * **Inject Tenant Context**: 
-    * Nếu JWT chứa claim `tenant_id != NULL` -> Trích xuất và gán vào header `X-Tenant-ID` (phục vụ kiểm tra chặn tạo tenant lồng nhau ở Controlplane).
-    * Nếu JWT không chứa claim `tenant_id` -> Không gán header `X-Tenant-ID` (hoặc để trống/NULL).
+  * **Owner route selection**:
+    * Client luôn gọi generic `POST /api/v1/tenants`.
+    * Nếu verified session có tenant, ACR từ chối; không forward.
+    * Nếu session là personal, ACR rewrite sang internal
+      `POST /api/v1/personal/tenants`. Direct client call tới internal prefix bị
+      từ chối.
 
 ---
 
@@ -133,7 +135,7 @@ sequenceDiagram
     participant Cost as Cost Manager
     participant BillingPG as Billing PostgreSQL
 
-    Envoy->>Handler: Forward POST /api/v1/tenants<br/>Headers: X-User-ID, X-Tenant-ID
+    Envoy->>Handler: Forward POST /api/v1/personal/tenants<br/>Header: verified X-User-ID
     
     Note over Handler: B1: Kiểm tra Tenant Context hiện tại
     alt Header X-Tenant-ID != "" (Lỗi tạo tenant lồng nhau)

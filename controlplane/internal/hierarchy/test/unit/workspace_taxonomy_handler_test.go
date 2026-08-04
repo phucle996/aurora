@@ -48,11 +48,11 @@ func TestCreatePersonalWorkspaceMapsParentPreconditionToConflict(t *testing.T) {
 		c.Set(pkgcontext.CtxUserID, uuid.MustParse("10000000-0000-4000-8000-000000000002"))
 		c.Next()
 	})
-	router.POST("/api/v1/me/hierarchy/workspace/create", handler.CreateWorkspacePersonal)
+	router.POST("/api/v1/personal/hierarchy/workspaces", handler.CreateWorkspacePersonal)
 
 	request := httptest.NewRequest(
 		http.MethodPost,
-		"/api/v1/me/hierarchy/workspace/create",
+		"/api/v1/personal/hierarchy/workspaces",
 		bytes.NewBufferString(`{"name":"Personal","code":"personal"}`),
 	)
 	request.Header.Set("Content-Type", "application/json")

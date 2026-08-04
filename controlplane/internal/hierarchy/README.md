@@ -320,9 +320,12 @@ Route shape hiện hành:
 - `/admin/hierarchy/...`: SRE read/admin surface.
 - `/admin/critical/hierarchy/...`: mutation ảnh hưởng vận hành hoặc key
   lifecycle; ACR phải consume critical proof trước khi forward.
-- `/api/v1/me/hierarchy/...`: personal scope từ verified user context.
-- `/api/v1/tenant/hierarchy/...`: tenant scope từ verified tenant/workspace
-  context và authorization middleware.
+- `/api/v1/me/hierarchy/...`: chỉ self-identity workflow không phụ thuộc owner,
+  hiện là invitation preview/join.
+- Browser/SDK gọi route trung lập `/api/v1/hierarchy/...`; ACR chọn owner từ
+  verified session rồi rewrite sang internal `/api/v1/personal/hierarchy/...`
+  hoặc `/api/v1/tenant/hierarchy/...`.
+- Client gọi trực tiếp một internal owner prefix phải bị ACR từ chối.
 
 Không nhận `owner_id`, `owner_type`, `tenant_id`, `workspace_id`, `zone_id`, role
 hay permission từ JSON khi giá trị đó đã thuộc verified request context. Envoy

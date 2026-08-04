@@ -88,7 +88,74 @@ fn authority_matches_origin(authority: &str, configured_origin: &str) -> bool {
 fn is_billing_alias_path(method: &str, path: &str, is_billing_console_authority: bool) -> bool {
     is_billing_console_authority
         && (path.starts_with("/api/v1/billing/")
-            || (method == "GET" && path == "/api/v1/me/iam/context/read"))
+            || (method == "GET" && path == "/api/v1/iam/context/read"))
+}
+
+fn is_internal_render_context_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/personal/iam/context/read" | "/api/v1/tenant/iam/context/read"
+    )
+}
+
+fn is_internal_owner_path(path: &str) -> bool {
+    path == "/api/v1/personal"
+        || path.starts_with("/api/v1/personal/")
+        || path == "/api/v1/tenant"
+        || path.starts_with("/api/v1/tenant/")
+}
+
+fn is_acr_local_owner_control_path(method: &str, path: &str) -> bool {
+    // This endpoint changes the verified session context inside ACR; it is not
+    // an owner-selected Controlplane route. Every other owner prefix remains
+    // an internal rewrite target.
+    method == "POST" && path == "/api/v1/tenant/go-to-tenant"
+}
+
+fn rewrite_render_context_path(path: &str, tenant_id: Option<&str>) -> Option<String> {
+    let (path_without_query, query) = path
+        .split_once('?')
+        .map_or((path, None), |(base, query)| (base, Some(query)));
+    if path_without_query != "/api/v1/iam/context/read" {
+        return None;
+    }
+    let owner = if tenant_id.is_some_and(|value| !value.is_empty() && value != "platform") {
+        "tenant"
+    } else {
+        "personal"
+    };
+    let mut rewritten = format!("/api/v1/{owner}/iam/context/read");
+    if let Some(query) = query {
+        rewritten.push('?');
+        rewritten.push_str(query);
+    }
+    Some(rewritten)
+}
+
+fn is_personal_only_neutral_path(method: &str, path: &str) -> bool {
+    method == "POST" && path == "/api/v1/tenants"
+}
+
+fn rewrite_neutral_owner_path(path: &str, tenant_id: Option<&str>) -> Option<String> {
+    let path_without_query = path.split('?').next().unwrap_or(path);
+    if !path_without_query.starts_with("/api/v1/")
+        || path_without_query.starts_with("/api/v1/me/")
+        || path_without_query.starts_with("/api/v1/auth/")
+        || path_without_query.starts_with("/api/v1/tenant/")
+        || path_without_query.starts_with("/api/v1/personal/")
+        || path_without_query.starts_with("/api/v1/billing/")
+    {
+        return None;
+    }
+
+    // Only the tenant binding already verified from the session may select
+    // the internal owner route. No client path/header participates here.
+    let owner = if tenant_id.is_some_and(|value| !value.is_empty() && value != "platform") {
+        "tenant"
+    } else {
+        "personal"
+    };
+    Some(format!("/api/v1/{owner}{}", &path["/api/v1".len()..]))
 }
 
 fn is_neutral_owner_billing_path(path: &str) -> bool {
@@ -341,6 +408,37 @@ impl Authorization for ExtAuthzService {
             );
             return Ok(Response::new(CheckResponse::with_status(
                 Status::permission_denied("Internal Billing route"),
+            )));
+        }
+        if is_internal_render_context_path(path_without_query) {
+            // Internal owner routes exist only as rewrite targets. Letting the
+            // browser choose one would move owner selection before auth.
+            Logger::authz_log(
+                "system",
+                method,
+                authz_log_path,
+                "DENIED",
+                "Direct internal IAM render context route",
+            );
+            return Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Internal IAM route"),
+            )));
+        }
+        if is_internal_owner_path(path_without_query)
+            && !is_acr_local_owner_control_path(method, path_without_query)
+        {
+            // All owner-prefixed business routes are upstream implementation
+            // details. Browser/SDK callers must use the neutral route so ACR
+            // remains the sole owner-branch selector.
+            Logger::authz_log(
+                "system",
+                method,
+                authz_log_path,
+                "DENIED",
+                "Direct internal owner route",
+            );
+            return Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Internal owner route"),
             )));
         }
         if path_without_query.starts_with("/api/v1/billing/")
@@ -1049,7 +1147,16 @@ impl Authorization for ExtAuthzService {
                 .as_ref()
                 .map(|alias| alias.tenant_id.as_str())
                 .or_else(|| claims.as_ref().and_then(|value| value.tenant_id.as_deref()));
-            if let Some(rewritten) = rewrite_owner_billing_path(path, verified_tenant_id) {
+            if let Some(rewritten) = rewrite_render_context_path(path, verified_tenant_id) {
+                Logger::sys_debug(
+                    "ext_authz.render_context_rewrite",
+                    &format!(
+                        "Rewriting IAM Render Context path: {} -> {}",
+                        path, rewritten
+                    ),
+                );
+                rewritten_path_opt = Some(rewritten);
+            } else if let Some(rewritten) = rewrite_owner_billing_path(path, verified_tenant_id) {
                 Logger::sys_debug(
                     "ext_authz.billing_owner_rewrite",
                     &format!("Rewriting owner Billing path: {} -> {}", path, rewritten),
@@ -1057,74 +1164,24 @@ impl Authorization for ExtAuthzService {
                 rewritten_path_opt = Some(rewritten);
             } else if !is_billing {
                 if let Some(ref c) = claims {
-                    // [COMMENT]: Chỉ áp dụng rewrite đối với các endpoint nghiệp vụ chung /api/v1/...
-                    // Loại trừ các endpoint thuộc cụm hệ thống, định danh hoặc billing
-                    if path.starts_with("/api/v1/")
-                        && !path.starts_with("/api/v1/me/")
-                        && !path.starts_with("/api/v1/auth/")
-                        && !path.starts_with("/api/v1/tenant/")
-                        && !path.starts_with("/api/v1/personal/")
-                        && !path.starts_with("/api/v1/billing/")
+                    let session_has_tenant = verified_tenant_id
+                        .is_some_and(|value| !value.is_empty() && value != "platform");
+                    if is_personal_only_neutral_path(method, path_without_query)
+                        && session_has_tenant
                     {
-                        // [COMMENT]: Trích xuất tenant_id từ phía Client (cookie hoặc header)
-                        let client_tenant_id =
-                            extract_cookie_value(&cookie_header, COOKIE_TENANT_ID)
-                                .or_else(|| client_headers.get("x-tenant-id").cloned())
-                                .or_else(|| client_headers.get("X-Tenant-ID").cloned());
+                        Logger::authz_log(
+                            &c.sub,
+                            method,
+                            authz_log_path,
+                            "DENIED",
+                            "Tenant context cannot create another tenant",
+                        );
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied("Tenant creation is personal-only"),
+                        )));
+                    }
 
-                        let client_has_tenant = client_tenant_id
-                            .as_ref()
-                            .map_or(false, |t| !t.is_empty() && t != "platform");
-                        let session_has_tenant = c
-                            .tenant_id
-                            .as_ref()
-                            .map_or(false, |t| !t.is_empty() && t != "platform");
-
-                        // [COMMENT]: Cơ chế bảo mật CHẶN CHÉO - Ngăn cản sự sai lệch giữa ngữ cảnh Client yêu cầu và Session thực tế
-                        if client_has_tenant != session_has_tenant {
-                            Logger::authz_log(
-                                &c.sub,
-                                method,
-                                authz_log_path,
-                                "DENIED",
-                                &format!(
-                                    "Routing context mismatch: client_has_tenant={}, session_has_tenant={}. Platform fallback blocked.",
-                                    client_has_tenant, session_has_tenant
-                                ),
-                            );
-                            return Ok(Response::new(CheckResponse::with_status(
-                                Status::permission_denied("Tenant context mismatch"),
-                            )));
-                        }
-
-                        // [COMMENT]: So khớp chính xác Tenant ID của client và session để tránh giả mạo
-                        if client_has_tenant {
-                            let c_tenant = client_tenant_id.as_deref().unwrap();
-                            let s_tenant = c.tenant_id.as_deref().unwrap();
-                            if c_tenant != s_tenant {
-                                Logger::authz_log(
-                                    &c.sub,
-                                    method,
-                                    authz_log_path,
-                                    "DENIED",
-                                    &format!(
-                                        "Tenant ID mismatch for routing: client='{}', session='{}'",
-                                        c_tenant, s_tenant
-                                    ),
-                                );
-                                return Ok(Response::new(CheckResponse::with_status(
-                                    Status::permission_denied("Tenant mismatch"),
-                                )));
-                            }
-                        }
-
-                        // [COMMENT]: Xác định tiền tố route group tương ứng: /api/v1/tenant hoặc /api/v1/personal
-                        let prefix = if client_has_tenant {
-                            "/api/v1/tenant"
-                        } else {
-                            "/api/v1/personal"
-                        };
-                        let new_path = format!("{}{}", prefix, &path[7..]);
+                    if let Some(new_path) = rewrite_neutral_owner_path(path, verified_tenant_id) {
                         Logger::sys_debug(
                             "ext_authz.path_rewrite",
                             &format!("Rewriting path: {} -> {}", path, new_path),
@@ -1351,8 +1408,10 @@ impl Authorization for ExtAuthzService {
 #[cfg(test)]
 mod tests {
     use super::{
-        authority_matches_origin, is_billing_alias_path, is_internal_owner_billing_path,
-        rewrite_owner_billing_path,
+        authority_matches_origin, is_acr_local_owner_control_path, is_billing_alias_path,
+        is_internal_owner_billing_path, is_internal_owner_path, is_internal_render_context_path,
+        is_personal_only_neutral_path, rewrite_neutral_owner_path, rewrite_owner_billing_path,
+        rewrite_render_context_path,
     };
 
     #[test]
@@ -1411,17 +1470,17 @@ mod tests {
     fn iam_render_context_uses_alias_only_on_cost_console_authority() {
         assert!(is_billing_alias_path(
             "GET",
-            "/api/v1/me/iam/context/read",
+            "/api/v1/iam/context/read",
             true
         ));
         assert!(!is_billing_alias_path(
             "GET",
-            "/api/v1/me/iam/context/read",
+            "/api/v1/iam/context/read",
             false
         ));
         assert!(!is_billing_alias_path(
             "POST",
-            "/api/v1/me/iam/context/read",
+            "/api/v1/iam/context/read",
             true
         ));
         assert!(!is_billing_alias_path(
@@ -1429,6 +1488,102 @@ mod tests {
             "/api/v1/me/iam/profile/read",
             true
         ));
+    }
+
+    #[test]
+    fn render_context_rewrite_uses_only_verified_owner_context() {
+        assert_eq!(
+            rewrite_render_context_path("/api/v1/iam/context/read?fresh=1", None),
+            Some("/api/v1/personal/iam/context/read?fresh=1".to_string())
+        );
+        assert_eq!(
+            rewrite_render_context_path(
+                "/api/v1/iam/context/read",
+                Some("019f3d3e-997d-7894-9236-c5122634cb4f")
+            ),
+            Some("/api/v1/tenant/iam/context/read".to_string())
+        );
+        assert_eq!(
+            rewrite_render_context_path("/api/v1/me/iam/context/read", None),
+            None
+        );
+    }
+
+    #[test]
+    fn internal_render_context_routes_are_not_public_inputs() {
+        assert!(is_internal_render_context_path(
+            "/api/v1/personal/iam/context/read"
+        ));
+        assert!(is_internal_render_context_path(
+            "/api/v1/tenant/iam/context/read"
+        ));
+        assert!(!is_internal_render_context_path("/api/v1/iam/context/read"));
+    }
+
+    #[test]
+    fn every_owner_prefixed_business_route_is_internal() {
+        assert!(is_internal_owner_path("/api/v1/personal/storage/buckets"));
+        assert!(is_internal_owner_path(
+            "/api/v1/tenant/managed-services/instances"
+        ));
+        assert!(!is_internal_owner_path("/api/v1/storage/buckets"));
+        assert!(!is_internal_owner_path("/api/v1/iam/context/read"));
+    }
+
+    #[test]
+    fn tenant_switch_is_an_acr_local_control_route_not_a_downstream_owner_route() {
+        assert!(is_acr_local_owner_control_path(
+            "POST",
+            "/api/v1/tenant/go-to-tenant"
+        ));
+        assert!(!is_acr_local_owner_control_path(
+            "GET",
+            "/api/v1/tenant/go-to-tenant"
+        ));
+        assert!(!is_acr_local_owner_control_path(
+            "POST",
+            "/api/v1/tenant/managed-services/instances"
+        ));
+    }
+
+    #[test]
+    fn tenant_creation_is_a_personal_only_neutral_workflow() {
+        assert!(is_personal_only_neutral_path("POST", "/api/v1/tenants"));
+        assert!(!is_personal_only_neutral_path("GET", "/api/v1/tenants"));
+        assert!(!is_personal_only_neutral_path(
+            "POST",
+            "/api/v1/tenants/other"
+        ));
+    }
+
+    #[test]
+    fn generic_business_path_is_rewritten_only_from_verified_owner_context() {
+        assert_eq!(
+            rewrite_neutral_owner_path("/api/v1/hierarchy/workspaces?limit=20", None),
+            Some("/api/v1/personal/hierarchy/workspaces?limit=20".to_string())
+        );
+        assert_eq!(
+            rewrite_neutral_owner_path(
+                "/api/v1/managed-services/instances",
+                Some("019f3d3e-997d-7894-9236-c5122634cb4f")
+            ),
+            Some("/api/v1/tenant/managed-services/instances".to_string())
+        );
+        assert_eq!(
+            rewrite_neutral_owner_path("/api/v1/personal/storage/buckets", None),
+            None
+        );
+        assert_eq!(
+            rewrite_neutral_owner_path("/api/v1/me/iam/profile/read", None),
+            None
+        );
+        assert_eq!(
+            rewrite_neutral_owner_path(
+                "/api/v1/me/critical/iam/social-link/github",
+                Some("019f3d3e-997d-7894-9236-c5122634cb4f")
+            ),
+            None
+        );
     }
 
     #[test]

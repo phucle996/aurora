@@ -11,6 +11,9 @@
 - Link có TTL đúng 6 giờ.
 - Token là 32 random bytes, encode base64url không padding.
 - API chỉ trả plaintext token trong `join_link` của response create.
+- `join_link` trỏ vào personal composition root
+  `/personal/settings/tenant-invitations/join`; invitation là identity-level
+  workflow, không phụ thuộc tenant UI đang được mount.
 - PostgreSQL chỉ giữ SHA-256 token hash.
 - Invitation pin đúng tenant role, role version, level và compiled five-level
   permission snapshot tại thời điểm mời.
@@ -19,11 +22,16 @@
 ## Routes
 
 ```text
-POST   /api/v1/tenant/critical/hierarchy/tenant-invitations
-DELETE /api/v1/tenant/critical/hierarchy/tenant-invitations/:invitation_id
+POST   /api/v1/critical/hierarchy/tenant-invitations
+DELETE /api/v1/critical/hierarchy/tenant-invitations/:invitation_id
 GET    /api/v1/me/hierarchy/tenant-invitations/preview?token=...
 POST   /api/v1/me/critical/hierarchy/tenant-invitations/join
 ```
+
+Hai mutation invitation đầu tiên là browser contract trung lập. Sau khi xác
+minh tenant session, ACR rewrite chúng sang internal
+`/api/v1/tenant/critical/...`; client gọi internal prefix trực tiếp bị từ chối.
+Preview/join là self-identity workflow nên giữ `/me` và không qua owner rewrite.
 
 Create và revoke cần tenant context, session proof và compiled tenant
 permission. Join đặt `/me` trước `/critical` để ACR không rewrite self route,

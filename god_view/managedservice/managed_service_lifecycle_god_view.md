@@ -213,14 +213,18 @@ audit provenance in its atomic CTE; it does not receive transport-generated audi
 
 ### 5.1 Customer catalog discovery and form contract
 
-P03 exposes read-only, separately implemented branches:
+Console/SDK only uses the neutral customer surface:
 
 ```text
-GET /api/v1/personal/managed-services/catalog
-GET /api/v1/personal/managed-services/catalog/versions/:version_id
-GET /api/v1/tenant/managed-services/catalog
-GET /api/v1/tenant/managed-services/catalog/versions/:version_id
+GET /api/v1/managed-services/catalog
+GET /api/v1/managed-services/catalog/versions/:version_id
 ```
+
+After session verification ACR rewrites those paths to the separately
+implemented `/api/v1/personal/...` or `/api/v1/tenant/...` Controlplane route.
+The verified Trinity tenant context is the only branch selector; UI code never
+constructs an owner prefix, and direct client calls to either internal prefix
+are denied.
 
 Every route requires the five-level `managed-service:catalog:read` permission.
 Owner/workspace/Zone are never accepted from path, query or body. The handler consumes

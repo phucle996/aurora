@@ -100,7 +100,7 @@ func (h *TenantInvitationHandler) CreateTenantInvitation(c *gin.Context) {
 		"expires_at":     out.ExpiresAt,
 		// [COMMENT]: This is the only response containing the bearer token; only
 		// its SHA-256 digest crosses the durable PostgreSQL boundary.
-		"join_link": "/settings/tenant-invitations/join?token=" + out.Token,
+		"join_link": "/personal/settings/tenant-invitations/join?token=" + out.Token,
 	}, "tenant invitation created")
 }
 
