@@ -746,8 +746,9 @@ services:
       - "9042:9042"
     volumes:
       - controlplane_timeline_scylla_data:/var/lib/scylla
+    # [COMMENT]: Healthcheck kiểm tra khả năng phục vụ truy vấn CQL trên Scylla DB mà không gán cứng 127.0.0.1 (tránh connection error khi Scylla bind eth0)
     healthcheck:
-      test: [ "CMD-SHELL", "cqlsh --no-color -e 'SELECT now() FROM system.local' 127.0.0.1 9042 >/dev/null 2>&1" ]
+      test: [ "CMD-SHELL", "cqlsh --no-color -e 'SELECT now() FROM system.local' >/dev/null 2>&1" ]
       interval: 10s
       timeout: 5s
       retries: 30

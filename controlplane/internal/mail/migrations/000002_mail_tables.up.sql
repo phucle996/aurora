@@ -230,6 +230,8 @@ BEGIN
 END;
 $$;
 
+-- [COMMENT]: Thêm DROP TRIGGER IF EXISTS để đảm bảo tính idempotent khi chạy migration song song nhiều replica
+DROP TRIGGER IF EXISTS trg_mail_protected_projection ON mail_outbox_records;
 CREATE TRIGGER trg_mail_protected_projection
 AFTER INSERT ON mail_outbox_records
 FOR EACH ROW EXECUTE FUNCTION project_mail_protected_payload();

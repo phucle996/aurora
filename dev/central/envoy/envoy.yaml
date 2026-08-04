@@ -1,7 +1,7 @@
-# [COMMENT]: Định danh Node và Cluster cho Envoy (bắt buộc khi dùng RDS Route Discovery Service)
+# [COMMENT]: Định danh Node và Cluster cho Envoy (bắt buộc lùi lề 2 space chuẩn YAML dưới node block)
 node:
-id: central-envoy-node
-cluster: central-envoy-cluster
+  id: central-envoy-node
+  cluster: central-envoy-cluster
 
 static_resources:
   listeners:
