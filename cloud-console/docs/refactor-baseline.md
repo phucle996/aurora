@@ -35,13 +35,19 @@ Storage object detail panel (427).
 | --- | --- | --- | --- |
 | `/signin`, `/activate` | Authentication | session/login/activation HTTP | Public boundary |
 | `/billing/authorize` | Billing handoff | verified IAM session and deployment-owned redirect | Verified session |
-| `/` | Overview | aggregate HTTP queries | verified render context |
-| `/storage`, `/storage/new`, `/storage/[id]` | Object Storage | bucket HTTP, access session, Zone Gateway; bucket-size realtime hint | `storage:*` render entries |
-| `/mail`, `/mail/templates*`, `/mail/consumers*` | Mail | durable HTTP state plus distinct notification/runtime streams | `mail:*` render entries |
-| `/users` | IAM | user list/mutations | `iam:users` |
-| `/rbac*` | RBAC | roles and permission tree | RBAC render entries |
-| `/workspaces*` | Workspaces | Zone-bound workspace catalog/mutations | personal/tenant workspace entry |
-| `/tenants*` | Tenants | tenant list/mutations | tenant render entries |
+| `/personal/*` | Personal composition root | neutral browser APIs; ACR selects personal internal routes | render context `kind=personal` |
+| `/tenant/*` | Tenant composition root | neutral browser APIs; ACR selects tenant internal routes | render context `kind=tenant` |
+| `/{personal,tenant}/storage*` | Object Storage | bucket HTTP, access session, Zone Gateway; bucket-size realtime hint | `storage:*` render entries |
+| `/{personal,tenant}/mail*` | Mail | durable HTTP state plus distinct notification/runtime streams | `mail:*` render entries |
+| `/personal/users` | IAM | platform user list/mutations | `iam:users` |
+| `/personal/rbac*` | Platform RBAC | roles and permission tree | RBAC render entries |
+| `/{personal,tenant}/workspaces*` | Workspaces | Zone-bound workspace catalog/mutations | branch-specific workspace entry |
+| `/personal/tenants*` | Tenant membership | tenant list/mutations | tenant render entries |
+
+The URL roots isolate renderers only. They are never copied into API URLs:
+browser code calls `/api/v1/<module>/...`, and ACR alone rewrites the verified
+request to an internal `/api/v1/personal/...` or `/api/v1/tenant/...` target.
+The ACR-owned tenant-switch control endpoint is not a downstream owner route.
 
 At baseline, `users`, `roles`, `permissions`, and `workspaces` use query keys
 that are not principal/context scoped. Mail keys are partially scoped. Zone
@@ -66,6 +72,9 @@ catalog and object data also have cache owners outside TanStack Query.
   backend authorize every operation.
 - A principal/context transition cancels old requests before clearing cached
   data. A generation fence prevents late responses from restoring old data.
+- Browser calls only `GET /api/v1/iam/context/read`; ACR rewrites it to an
+  internal personal/tenant route from verified session context. Invalid or
+  mismatched `kind` never defaults to personal.
 - The retired `/sts-token`, `storage.object.sts`, `ObjectStsResponse`, and
   browser S3 credential flow must be deleted. There is no compatibility
   fallback.

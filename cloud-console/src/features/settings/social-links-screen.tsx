@@ -33,7 +33,8 @@ export function SocialLinksScreen({ callbackOutcome }: SocialLinksScreenProps) {
   const router = useRouter();
   const scope = useConsoleQueryScope();
   const queryClient = useQueryClient();
-  const { profile } = useUserSession();
+  const { profile, renderContext } = useUserSession();
+  const returnTo = renderContext ? `/${renderContext.kind}/settings/social-links` : "";
   const queryKey = useMemo(() => [...scope, "settings", "social-links"] as const, [scope]);
   const [confirmProvider, setConfirmProvider] = useState<SocialProvider | null>(null);
 
@@ -51,11 +52,14 @@ export function SocialLinksScreen({ callbackOutcome }: SocialLinksScreenProps) {
     } else {
       toast.error("The social account could not be linked");
     }
-    router.replace("/settings/social-links", { scroll: false });
-  }, [callbackOutcome, queryClient, queryKey, router]);
+    if (returnTo) router.replace(returnTo, { scroll: false });
+  }, [callbackOutcome, queryClient, queryKey, returnTo, router]);
 
   const startMutation = useMutation({
-    mutationFn: startSocialLink,
+    mutationFn: (provider: SocialProvider) => {
+      if (!returnTo) throw new Error("The verified console context is unavailable");
+      return startSocialLink(provider, returnTo);
+    },
     onSuccess: (authorizationURL) => window.location.assign(authorizationURL),
     onError: (error) => toast.error(error instanceof Error ? error.message : "Social linking could not start"),
   });

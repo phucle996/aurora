@@ -33,35 +33,34 @@ export type NavigationItem = {
   anyPermission?: ReadonlyArray<{ key: string; action: string }>;
 };
 
+export type ConsoleKind = "personal" | "tenant";
+
 type PermissionCheck = (key: string, action: string) => boolean;
 
-export function consoleNavigation(
-  isPersonal: boolean,
-  checkPermission: PermissionCheck,
-): NavigationItem[] {
+export function personalConsoleNavigation(checkPermission: PermissionCheck): NavigationItem[] {
   const items: NavigationItem[] = [
     {
       id: "overview",
       label: "Overview",
-      path: "/",
+      path: "/personal",
       icon: LayoutDashboard,
       breadcrumb: ["Console", "Overview"],
     },
     {
       id: "workspaces",
-      label: isPersonal ? "My Workspaces" : "Workspaces",
-      path: "/workspaces",
+      label: "My Workspaces",
+      path: "/personal/workspaces",
       icon: LayoutGrid,
       breadcrumb: ["Console", "Workspaces"],
       permission: {
-        key: isPersonal ? "hierarchy:workspace" : "tenant:workspaces",
-        action: isPersonal ? "read" : "list",
+        key: "hierarchy:workspace",
+        action: "read",
       },
     },
     {
       id: "users",
       label: "User Directory",
-      path: "/users",
+      path: "/personal/users",
       icon: Users,
       breadcrumb: ["Console", "User Directory"],
       permission: { key: "iam:users", action: "read" },
@@ -69,7 +68,7 @@ export function consoleNavigation(
     {
       id: "rbac",
       label: "Access Control",
-      path: "/rbac",
+      path: "/personal/rbac",
       icon: Lock,
       breadcrumb: ["Console", "Access Control"],
       permission: { key: "iam:role", action: "read" },
@@ -77,7 +76,7 @@ export function consoleNavigation(
     {
       id: "compute",
       label: "Virtual Machines",
-      path: "/compute",
+      path: "/personal/compute",
       icon: Server,
       breadcrumb: ["Console", "Virtual Machines"],
       permission: { key: "hypervisor:vm", action: "read" },
@@ -85,7 +84,7 @@ export function consoleNavigation(
     {
       id: "storage",
       label: "Object Storage",
-      path: "/storage",
+      path: "/personal/storage",
       icon: HardDrive,
       breadcrumb: ["Console", "Object Storage"],
       permission: { key: "storage:bucket", action: "read" },
@@ -93,7 +92,7 @@ export function consoleNavigation(
     {
       id: "mail",
       label: "Email Delivery",
-      path: "/mail",
+      path: "/personal/mail",
       icon: Mail,
       breadcrumb: ["Console", "Email Delivery"],
       anyPermission: [
@@ -104,7 +103,7 @@ export function consoleNavigation(
     {
       id: "managed-services",
       label: "Managed Services",
-      path: "/managed-services",
+      path: "/personal/managed-services",
       icon: Boxes,
       breadcrumb: ["Console", "Managed Services"],
       permission: { key: "managed-service:instance", action: "read" },
@@ -114,6 +113,75 @@ export function consoleNavigation(
       label: "Cost Management",
       icon: Coins,
       breadcrumb: ["Console", "Cost Management"],
+      external: "billing",
+    },
+  ];
+
+  return items.filter((item) => {
+    if (item.anyPermission) {
+      return item.anyPermission.some(({ key, action }) => checkPermission(key, action));
+    }
+    return !item.permission || checkPermission(item.permission.key, item.permission.action);
+  });
+}
+
+export function tenantConsoleNavigation(checkPermission: PermissionCheck): NavigationItem[] {
+  const items: NavigationItem[] = [
+    {
+      id: "overview",
+      label: "Tenant Overview",
+      path: "/tenant",
+      icon: LayoutDashboard,
+      breadcrumb: ["Tenant Console", "Overview"],
+    },
+    {
+      id: "workspaces",
+      label: "Workspaces",
+      path: "/tenant/workspaces",
+      icon: LayoutGrid,
+      breadcrumb: ["Tenant Console", "Workspaces"],
+      permission: { key: "tenant:workspaces", action: "list" },
+    },
+    {
+      id: "compute",
+      label: "Virtual Machines",
+      path: "/tenant/compute",
+      icon: Server,
+      breadcrumb: ["Tenant Console", "Virtual Machines"],
+      permission: { key: "hypervisor:vm", action: "read" },
+    },
+    {
+      id: "storage",
+      label: "Object Storage",
+      path: "/tenant/storage",
+      icon: HardDrive,
+      breadcrumb: ["Tenant Console", "Object Storage"],
+      permission: { key: "storage:bucket", action: "read" },
+    },
+    {
+      id: "mail",
+      label: "Email Delivery",
+      path: "/tenant/mail",
+      icon: Mail,
+      breadcrumb: ["Tenant Console", "Email Delivery"],
+      anyPermission: [
+        { key: "email:consumer", action: "read" },
+        { key: "email:template", action: "read" },
+      ],
+    },
+    {
+      id: "managed-services",
+      label: "Managed Services",
+      path: "/tenant/managed-services",
+      icon: Boxes,
+      breadcrumb: ["Tenant Console", "Managed Services"],
+      permission: { key: "managed-service:instance", action: "read" },
+    },
+    {
+      id: "billing",
+      label: "Cost Management",
+      icon: Coins,
+      breadcrumb: ["Tenant Console", "Cost Management"],
       external: "billing",
     },
   ];

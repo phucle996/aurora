@@ -14,13 +14,15 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { useUserSession } from "@/session/use-session";
-import { billingStartURL, consoleNavigation, type NavigationItem } from "@/shell/navigation";
+import { billingStartURL, personalConsoleNavigation, tenantConsoleNavigation, type ConsoleKind, type NavigationItem } from "@/shell/navigation";
 
-export function ConsoleCommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function ConsoleCommandPalette({ kind, open, onOpenChange }: { kind: ConsoleKind; open: boolean; onOpenChange: (open: boolean) => void }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { checkPermission, renderContext } = useUserSession();
-  const items = consoleNavigation(renderContext?.is_personal ?? true, checkPermission);
+  const { checkPermission } = useUserSession();
+  const items = kind === "personal"
+    ? personalConsoleNavigation(checkPermission)
+    : tenantConsoleNavigation(checkPermission);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {

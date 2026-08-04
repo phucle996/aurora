@@ -10,11 +10,14 @@ import { useUserSession } from "@/session/use-session";
 import {
   activeNavigation,
   billingStartURL,
-  consoleNavigation,
+  personalConsoleNavigation,
+  tenantConsoleNavigation,
+  type ConsoleKind,
   type NavigationItem,
 } from "@/shell/navigation";
 
 type NavigationPanelProps = {
+	kind: ConsoleKind;
   collapsed?: boolean;
   onCollapseChange?: (collapsed: boolean) => void;
   onNavigate?: () => void;
@@ -60,14 +63,17 @@ function NavigationButton({
 }
 
 export function NavigationPanel({
+  kind,
   collapsed = false,
   onCollapseChange,
   onNavigate,
 }: NavigationPanelProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { checkPermission, renderContext, profile } = useUserSession();
-  const items = consoleNavigation(renderContext?.is_personal ?? true, checkPermission);
+  const { checkPermission, profile } = useUserSession();
+  const items = kind === "personal"
+    ? personalConsoleNavigation(checkPermission)
+    : tenantConsoleNavigation(checkPermission);
   const active = activeNavigation(pathname, items);
 
   const navigate = (item: NavigationItem) => {

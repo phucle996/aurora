@@ -24,12 +24,12 @@ function stateTone(value: string): string {
   return "bg-amber-500";
 }
 
-function InstanceRow({ item }: { item: ManagedServiceInstanceSummary }) {
+function InstanceRow({ item, consoleRoot }: { item: ManagedServiceInstanceSummary; consoleRoot: string }) {
   const operation = item.latest_operation;
   return (
     <tr className="border-b border-border last:border-0 hover:bg-muted/30">
       <td className="px-4 py-3">
-        <Link className="group inline-flex items-center gap-1.5" href={`/managed-services/${encodeURIComponent(item.code)}`}>
+        <Link className="group inline-flex items-center gap-1.5" href={`${consoleRoot}/managed-services/${encodeURIComponent(item.code)}`}>
           <span className="font-semibold group-hover:underline">{item.name}</span>
           <ExternalLink className="h-3 w-3 text-muted-foreground" />
         </Link>
@@ -54,12 +54,12 @@ export function ManagedServiceInstancesScreen() {
   const scope = useConsoleQueryScope();
   const { checkPermission, renderContext, profile } = useUserSession();
   const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
-  const personal = renderContext?.is_personal ?? true;
+  const consoleRoot = renderContext ? `/${renderContext.kind}` : "";
   const queryKey = useMemo(() => [...scope, "managed-services", "instances"] as const, [scope]);
   const realtimeKeys = useMemo(() => [queryKey] as const, [queryKey]);
   const instances = useInfiniteQuery({
     queryKey,
-    queryFn: ({ pageParam, signal }) => listManagedServiceInstances(personal, pageParam, signal),
+    queryFn: ({ pageParam, signal }) => listManagedServiceInstances(pageParam, signal),
     initialPageParam: "",
     getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
     enabled: Boolean(activeWorkspaceID) && !workspaceLoading && Boolean(renderContext),
@@ -68,7 +68,7 @@ export function ManagedServiceInstancesScreen() {
   });
   useManagedServiceRealtime(realtimeKeys);
   const items = instances.data?.pages.flatMap((page) => page.items) ?? [];
-  const scopeLabel = personal ? "personal" : "tenant";
+  const scopeLabel = renderContext?.kind ?? "unverified";
   const locale = profile?.locale || "en";
 
   return (
@@ -80,8 +80,8 @@ export function ManagedServiceInstancesScreen() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => void instances.refetch()} disabled={instances.isFetching}><RefreshCw className={`mr-2 h-3.5 w-3.5 ${instances.isFetching ? "animate-spin" : ""}`} />Refresh</Button>
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/managed-services/catalog">Catalog</Link>
-          {checkPermission("managed-service:instance", "write") ? <Link className={buttonVariants({ size: "sm" })} href="/managed-services/new"><Plus className="mr-2 h-3.5 w-3.5" />Create service</Link> : null}
+          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={`${consoleRoot}/managed-services/catalog`}>Catalog</Link>
+          {checkPermission("managed-service:instance", "write") ? <Link className={buttonVariants({ size: "sm" })} href={`${consoleRoot}/managed-services/new`}><Plus className="mr-2 h-3.5 w-3.5" />Create service</Link> : null}
         </div>
       </header>
 
@@ -94,7 +94,7 @@ export function ManagedServiceInstancesScreen() {
             <tbody>
               {instances.isLoading ? <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">Loading instances…</td></tr> : null}
               {!instances.isLoading && items.length === 0 ? <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No managed instance exists in this workspace.</td></tr> : null}
-              {items.map((item) => <InstanceRow key={item.id} item={item} />)}
+              {items.map((item) => <InstanceRow key={item.id} item={item} consoleRoot={consoleRoot} />)}
             </tbody>
           </table>
           {instances.hasNextPage ? <div className="border-t border-border p-3 text-center"><Button variant="outline" size="sm" disabled={instances.isFetchingNextPage} onClick={() => void instances.fetchNextPage()}>{instances.isFetchingNextPage ? "Loading…" : "Load more"}</Button></div> : null}

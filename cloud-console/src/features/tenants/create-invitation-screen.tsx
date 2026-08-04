@@ -40,13 +40,13 @@ export function CreateTenantInvitationScreen() {
 		return () => controller.abort();
 	}, []);
 
-	if (renderContext?.is_personal) {
+	if (renderContext?.kind !== "tenant") {
 		return <Card><CardHeader><CardTitle>Tenant context required</CardTitle><CardDescription>Switch to a tenant before inviting a member.</CardDescription></CardHeader></Card>;
 	}
 
 	return (
 		<div className="mx-auto max-w-2xl space-y-5">
-		<Button variant="ghost" size="sm" onClick={() => router.push("/tenants")}><ArrowLeft /> Tenants</Button>
+		<Button variant="ghost" size="sm" onClick={() => router.push("/tenant")}><ArrowLeft /> Tenant console</Button>
 		<Card>
 			<CardHeader>
 				<CardTitle>Invite a tenant member</CardTitle>

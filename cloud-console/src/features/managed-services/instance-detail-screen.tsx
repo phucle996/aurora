@@ -59,7 +59,7 @@ export function ManagedServiceInstanceDetailScreen() {
   const scope = useConsoleQueryScope();
   const { checkPermission, renderContext, profile } = useUserSession();
   const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
-  const personal = renderContext?.is_personal ?? true;
+  const consoleRoot = renderContext ? `/${renderContext.kind}` : "";
   const canWrite = checkPermission("managed-service:instance", "write");
   const locale = profile?.locale || "en";
   const code = typeof params.code === "string" ? params.code : "";
@@ -69,14 +69,14 @@ export function ManagedServiceInstanceDetailScreen() {
   const realtimeKeys = useMemo(() => [instanceKey, operationsKey, instancesKey] as const, [instanceKey, instancesKey, operationsKey]);
   const instanceQuery = useQuery({
     queryKey: instanceKey,
-    queryFn: ({ signal }) => getManagedServiceInstance(personal, code, signal),
+    queryFn: ({ signal }) => getManagedServiceInstance(code, signal),
     enabled: Boolean(activeWorkspaceID) && !workspaceLoading && Boolean(renderContext) && Boolean(code),
     staleTime: 10_000,
     retry: (failureCount, error) => isAPIError(error) && error.retryable && failureCount < 2,
   });
   const operationsQuery = useInfiniteQuery({
     queryKey: operationsKey,
-    queryFn: ({ pageParam, signal }) => listManagedServiceOperations(personal, code, pageParam, signal),
+    queryFn: ({ pageParam, signal }) => listManagedServiceOperations(code, pageParam, signal),
     initialPageParam: "",
     getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
     enabled: instanceQuery.isSuccess,
@@ -102,7 +102,7 @@ export function ManagedServiceInstanceDetailScreen() {
       if (!instance) throw new Error("Instance is not loaded.");
       const nextName = name.trim();
       if (!nextName || nextName.length > 160) throw new Error("Enter a valid display name.");
-      return renameManagedServiceInstance(personal, code, { name: nextName, expected_metadata_version: instance.metadata_version });
+      return renameManagedServiceInstance(code, { name: nextName, expected_metadata_version: instance.metadata_version });
     },
     onSuccess: () => { setName(""); invalidate(); toast.success("Instance name updated."); },
     onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Rename failed."),
@@ -137,7 +137,7 @@ export function ManagedServiceInstanceDetailScreen() {
         resources[field.key] = value;
       }
       if (Object.keys(resources).length === 0) throw new Error("No mutable resize input is available for this revision.");
-      return resizeManagedServiceInstance(personal, code, { expected_generation: instance.desired.generation, resources });
+      return resizeManagedServiceInstance(code, { expected_generation: instance.desired.generation, resources });
     },
     onSuccess: () => { setResizeValues({}); invalidate(); toast.success("Resize accepted; waiting for the durable operation result."); },
     onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Resize failed."),
@@ -146,14 +146,14 @@ export function ManagedServiceInstanceDetailScreen() {
   const deleteMutation = useMutation({
     mutationFn: () => {
       if (!instance) throw new Error("Instance is not loaded.");
-      return deleteManagedServiceInstance(personal, code, instance.desired.generation);
+      return deleteManagedServiceInstance(code, instance.desired.generation);
     },
     onSuccess: () => { invalidate(); toast.success("Delete accepted; the instance remains DELETING until Zone confirmation."); },
     onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Delete failed."),
   });
 
   const retryMutation = useMutation({
-    mutationFn: (operationID: string) => retryManagedServiceOperation(personal, code, operationID),
+    mutationFn: (operationID: string) => retryManagedServiceOperation(code, operationID),
     onSuccess: () => { invalidate(); toast.success("Retry accepted."); },
     onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Retry failed."),
   });
@@ -165,7 +165,7 @@ export function ManagedServiceInstanceDetailScreen() {
   return (
     <div className="w-full pb-10 text-foreground">
       <header className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div className="flex items-start gap-3"><Button variant="outline" size="icon" className="h-8 w-8" onClick={() => router.push("/managed-services")}><ArrowLeft className="h-4 w-4" /></Button><div><p className="font-mono text-[10px] text-muted-foreground">{instance.code}</p><h1 className="text-xl font-bold tracking-tight">{instance.name}</h1><div className="mt-1 flex flex-wrap items-center gap-3"><StatePill value={instance.desired.state} /><span className="text-xs text-muted-foreground">observed {stateLabel(instance.observed.state)}</span></div></div></div>
+        <div className="flex items-start gap-3"><Button variant="outline" size="icon" className="h-8 w-8" onClick={() => router.push(`${consoleRoot}/managed-services`)}><ArrowLeft className="h-4 w-4" /></Button><div><p className="font-mono text-[10px] text-muted-foreground">{instance.code}</p><h1 className="text-xl font-bold tracking-tight">{instance.name}</h1><div className="mt-1 flex flex-wrap items-center gap-3"><StatePill value={instance.desired.state} /><span className="text-xs text-muted-foreground">observed {stateLabel(instance.observed.state)}</span></div></div></div>
         <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => { void instanceQuery.refetch(); void operationsQuery.refetch(); }} disabled={instanceQuery.isFetching || operationsQuery.isFetching}><RefreshCw className={`mr-2 h-3.5 w-3.5 ${instanceQuery.isFetching || operationsQuery.isFetching ? "animate-spin" : ""}`} />Refresh</Button>{canWrite ? <Button variant="destructive" size="sm" disabled={deleteMutation.isPending || instance.desired.state === "deleting" || instance.desired.state === "deleted"} onClick={() => { if (window.confirm(`Delete ${instance.name}? The instance will remain DELETING until the Zone confirms removal.`)) deleteMutation.mutate(); }}><Trash2 className="mr-2 h-3.5 w-3.5" />Delete</Button> : null}</div>
       </header>
 

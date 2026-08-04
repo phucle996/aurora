@@ -16,7 +16,7 @@ function zoneHint(): string {
   }
 }
 
-export type ConsoleQueryScope = readonly ["console", string, string, string, "personal" | "tenant"];
+export type ConsoleQueryScope = readonly ["console", string, string, string, "personal" | "tenant" | "unverified", string];
 
 /**
  * Query keys carry the auth generation even when the endpoint itself derives
@@ -28,7 +28,14 @@ export function useConsoleQueryScope(): ConsoleQueryScope {
   const { activeWorkspaceID } = useWorkspace();
   const zone = zoneHint();
   return useMemo(
-    () => ["console", generation ?? "anonymous", zone, activeWorkspaceID ?? "none", renderContext?.is_personal === false ? "tenant" : "personal"] as const,
-    [activeWorkspaceID, generation, renderContext?.is_personal, zone],
+    () => [
+      "console",
+      generation ?? "anonymous",
+      zone,
+      activeWorkspaceID ?? "none",
+      renderContext?.kind ?? "unverified",
+      renderContext?.kind === "tenant" ? renderContext.tenant_id : renderContext?.kind === "personal" ? "self" : "unverified",
+    ] as const,
+    [activeWorkspaceID, generation, renderContext, zone],
   );
 }

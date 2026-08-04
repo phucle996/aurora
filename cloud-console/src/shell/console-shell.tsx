@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,7 @@ import { ContextSwitcher } from "@/shell/context-switcher";
 import { ConsoleHeader } from "@/shell/header";
 import { NavigationPanel } from "@/shell/navigation-panel";
 import { cn } from "@/lib/utils";
+import type { ConsoleKind } from "@/shell/navigation";
 
 function ConsoleSkeleton() {
   return (
@@ -51,16 +53,25 @@ function SessionUnavailable({ message, retry }: { message: string; retry: () => 
   );
 }
 
-export function ConsoleShell({ children }: { children: ReactNode }) {
-  const { status, error, refreshSession } = useUserSession();
+export function ConsoleShell({ kind, children }: { kind: ConsoleKind; children: ReactNode }) {
+  const router = useRouter();
+  const { status, error, refreshSession, renderContext } = useUserSession();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+
+  useEffect(() => {
+    if (status !== "authenticated" || !renderContext || renderContext.kind === kind) return;
+    // The URL root is a renderer boundary, while the Render Context is the
+    // verified authority. Never mount the wrong tree during a context race.
+    router.replace(renderContext.kind === "personal" ? "/personal" : "/tenant");
+  }, [kind, renderContext, router, status]);
 
   if (status === "verifying" || status === "unauthenticated") return <ConsoleSkeleton />;
   if (status === "error") {
     return <SessionUnavailable message={error} retry={() => void refreshSession()} />;
   }
+  if (!renderContext || renderContext.kind !== kind) return <ConsoleSkeleton />;
 
   return (
     <div
@@ -70,11 +81,12 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
       )}
     >
       <aside className="hidden min-h-0 border-r border-sidebar-console-border lg:block">
-        <NavigationPanel collapsed={collapsed} onCollapseChange={setCollapsed} />
+        <NavigationPanel kind={kind} collapsed={collapsed} onCollapseChange={setCollapsed} />
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-col">
         <ConsoleHeader
+          kind={kind}
           onOpenMobileNavigation={() => setMobileOpen(true)}
           onToggleDesktopNavigation={() => setCollapsed((current) => !current)}
           onOpenCommandPalette={() => setCommandOpen(true)}
@@ -98,12 +110,12 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
             <ContextSwitcher mobile />
           </div>
           <div className="min-h-0 flex-1">
-            <NavigationPanel onNavigate={() => setMobileOpen(false)} />
+            <NavigationPanel kind={kind} onNavigate={() => setMobileOpen(false)} />
           </div>
         </SheetContent>
       </Sheet>
 
-      <ConsoleCommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <ConsoleCommandPalette kind={kind} open={commandOpen} onOpenChange={setCommandOpen} />
     </div>
   );
 }

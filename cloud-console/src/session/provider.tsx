@@ -25,6 +25,7 @@ import {
 } from "@/session/context";
 
 const VERIFY_TIMEOUT_MS = 8_000;
+const CONTEXT_CHANNEL = "aurora.console.principal-context.v1";
 
 const verifyingState: UserSessionState = {
   status: "verifying",
@@ -67,6 +68,7 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
   const attemptRef = useRef(0);
   const verifyAbortRef = useRef<AbortController | null>(null);
   const teardownRef = useRef<Promise<void> | null>(null);
+  const contextChannelRef = useRef<BroadcastChannel | null>(null);
 
   const teardown = useCallback(
     (reason: "logout" | "expired" = "logout") => {
@@ -127,8 +129,16 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
 
       const previous = stateRef.current;
       const samePrincipal = previous.profile?.user_id === profile.user_id;
-      if (previous.authenticated && !samePrincipal) {
-        // A changed principal must never inherit completed queries from the old generation.
+      const previousContext = previous.renderContext?.kind === "tenant"
+        ? `tenant:${previous.renderContext.tenant_id}`
+        : previous.renderContext?.kind;
+      const nextContext = renderContext.kind === "tenant"
+        ? `tenant:${renderContext.tenant_id}`
+        : renderContext.kind;
+      const sameContext = previousContext === nextContext;
+      if (previous.authenticated && (!samePrincipal || !sameContext)) {
+        // Principal and owner context are both cache boundaries. Cancel first
+        // so a late response cannot repopulate a cleared generation.
         await queryClient.cancelQueries();
         queryClient.clear();
         if (attempt !== attemptRef.current) return stateRef.current;
@@ -138,7 +148,7 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
         status: "authenticated",
         loading: false,
         authenticated: true,
-        generation: samePrincipal && previous.generation ? previous.generation : createGeneration(),
+        generation: samePrincipal && sameContext && previous.generation ? previous.generation : createGeneration(),
         session,
         renderContext,
         profile,
@@ -146,6 +156,9 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
       };
       stateRef.current = nextState;
       setState(nextState);
+      if (previous.authenticated && (!samePrincipal || !sameContext)) {
+        contextChannelRef.current?.postMessage({ type: "principal-context-changed" });
+      }
       return nextState;
     } catch (error) {
       if (attempt !== attemptRef.current) return stateRef.current;
@@ -184,6 +197,26 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
   }, [verify]);
 
   useEffect(() => {
+    if (!("BroadcastChannel" in window)) return;
+    const channel = new BroadcastChannel(CONTEXT_CHANNEL);
+    contextChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      if (
+        typeof event.data === "object" &&
+        event.data !== null &&
+        "type" in event.data &&
+        event.data.type === "principal-context-changed"
+      ) {
+        void verify();
+      }
+    };
+    return () => {
+      if (contextChannelRef.current === channel) contextChannelRef.current = null;
+      channel.close();
+    };
+  }, [verify]);
+
+  useEffect(() => {
     const handleUnauthorized = () => teardown("expired");
     window.addEventListener("iam:unauthorized", handleUnauthorized);
     return () => window.removeEventListener("iam:unauthorized", handleUnauthorized);
@@ -191,7 +224,7 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (state.status === "unauthenticated" && !isPublicRoute(pathname)) {
-      if (pathname === "/settings/tenant-invitations/join") {
+      if (pathname === "/settings/tenant-invitations/join" || pathname === "/personal/settings/tenant-invitations/join") {
         router.replace(`/signin?return_to=${encodeURIComponent(pathname + window.location.search)}`);
       } else {
         router.replace("/signin");

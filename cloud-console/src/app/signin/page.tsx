@@ -40,11 +40,11 @@ function AuthPageContent() {
   const router = useRouter();
   const requestedReturnTo = searchParams.get("return_to") || "";
   // [COMMENT]: Chỉ chấp nhận callback nội bộ cố định; giá trị tuyệt đối/protocol-relative không thể thành open redirect.
-  const invitationReturn = requestedReturnTo.match(/^\/settings\/tenant-invitations\/join\?token=[A-Za-z0-9_-]{43}$/);
+  const invitationReturn = requestedReturnTo.match(/^\/personal\/settings\/tenant-invitations\/join\?token=[A-Za-z0-9_-]{43}$/);
   const returnTo = !requestedReturnTo.startsWith("//")
     && (requestedReturnTo.startsWith("/billing/authorize?") || invitationReturn)
     ? requestedReturnTo
-    : "/";
+    : "/personal";
   const oauthError = searchParams.get("oauth_error") || "";
   const oauthErrorShownRef = useRef<string | null>(null);
 
@@ -59,7 +59,7 @@ function AuthPageContent() {
     // enumeration through provider, account, revocation or infrastructure state.
     toast.error("OAuth sign-in failed. Please try again.");
     const cleanSigninPath =
-      returnTo === "/" ? "/signin" : `/signin?return_to=${encodeURIComponent(returnTo)}`;
+      returnTo === "/personal" ? "/signin" : `/signin?return_to=${encodeURIComponent(returnTo)}`;
     router.replace(cleanSigninPath);
   }, [oauthError, returnTo, router]);
 

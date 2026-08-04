@@ -9,11 +9,14 @@ export type NavigationItem = {
   actions: string[];
 };
 
-export type RenderContext = {
+type RenderContextBase = {
   navigation: NavigationItem[];
   capabilities: Record<string, boolean>;
-  is_personal: boolean;
 };
+
+export type RenderContext =
+  | (RenderContextBase & { kind: "personal" })
+  | (RenderContextBase & { kind: "tenant"; tenant_id: string });
 
 export type UserProfile = {
   user_id: string;
@@ -55,11 +58,19 @@ function decodeRenderContext(value: unknown): RenderContext {
     capabilities[key] = enabled;
   }
 
-  if (typeof value.is_personal !== "boolean") {
+  if (value.kind !== "personal" && value.kind !== "tenant") {
     throw new Error("Invalid principal context returned by the server.");
   }
-
-  return { navigation, capabilities, is_personal: value.is_personal };
+  if (value.kind === "personal") {
+    if ("tenant_id" in value) {
+      throw new Error("Personal render context must not carry a tenant.");
+    }
+    return { navigation, capabilities, kind: "personal" };
+  }
+  if (typeof value.tenant_id !== "string" || value.tenant_id.length === 0) {
+    throw new Error("Tenant render context is missing its verified tenant.");
+  }
+  return { navigation, capabilities, kind: "tenant", tenant_id: value.tenant_id };
 }
 
 function decodeProfile(value: unknown): UserProfile {
@@ -90,7 +101,7 @@ function decodeProfile(value: unknown): UserProfile {
 }
 
 export async function getRenderContext(signal?: AbortSignal): Promise<RenderContext> {
-  const response = await fetchJSON<{ data?: unknown }>("/api/v1/me/iam/context/read", {
+  const response = await fetchJSON<{ data?: unknown }>("/api/v1/iam/context/read", {
     method: "GET",
     signal,
   });

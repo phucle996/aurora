@@ -15,11 +15,10 @@ import type {
   ManagedServiceVersionContract,
 } from "@/features/managed-services/model";
 
-export async function listManagedServiceCatalog(personal: boolean, cursor: string, signal?: AbortSignal): Promise<ManagedServiceCatalogPage> {
-  const branch = personal ? "personal" : "tenant";
+export async function listManagedServiceCatalog(cursor: string, signal?: AbortSignal): Promise<ManagedServiceCatalogPage> {
   const query = new URLSearchParams({ limit: "100" });
   if (cursor) query.set("cursor", cursor);
-  const response = await fetchJSON<{ data?: { items?: unknown[]; next_cursor?: unknown } }>(`/api/v1/${branch}/managed-services/catalog?${query.toString()}`, {
+  const response = await fetchJSON<{ data?: { items?: unknown[]; next_cursor?: unknown } }>(`/api/v1/managed-services/catalog?${query.toString()}`, {
     method: "GET",
     signal,
     cache: "no-store",
@@ -31,26 +30,18 @@ export async function listManagedServiceCatalog(personal: boolean, cursor: strin
 }
 
 export async function getManagedServiceVersionContract(
-  personal: boolean,
   versionID: string,
   expectedRevisionID: string,
   signal?: AbortSignal,
 ): Promise<ManagedServiceVersionContract> {
-  const branch = personal ? "personal" : "tenant";
   const response = await fetchJSON<{ data?: unknown }>(
-    `/api/v1/${branch}/managed-services/catalog/versions/${encodeURIComponent(versionID)}?expected_revision_id=${encodeURIComponent(expectedRevisionID)}`,
+    `/api/v1/managed-services/catalog/versions/${encodeURIComponent(versionID)}?expected_revision_id=${encodeURIComponent(expectedRevisionID)}`,
     { method: "GET", signal, cache: "no-store" },
   );
   return decodeManagedServiceVersionContract(response.data);
 }
 
 export { localizedText };
-
-type ManagedServiceScope = "personal" | "tenant";
-
-function managedServiceScope(personal: boolean): ManagedServiceScope {
-  return personal ? "personal" : "tenant";
-}
 
 function managedRecord(value: unknown, message: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(message);
@@ -188,37 +179,37 @@ function decodeManagedServiceInstance(value: unknown): ManagedServiceInstance {
   };
 }
 
-export async function listManagedServiceInstances(personal: boolean, cursor = "", signal?: AbortSignal) {
+export async function listManagedServiceInstances(cursor = "", signal?: AbortSignal) {
   const query = new URLSearchParams({ limit: "100" });
   if (cursor) query.set("cursor", cursor);
   const response = await fetchJSON<{ data?: { items?: unknown[]; next_cursor?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances?${query.toString()}`,
+    `/api/v1/managed-services/instances?${query.toString()}`,
     { method: "GET", signal, cache: "no-store" },
   );
   if (!Array.isArray(response.data?.items) || typeof response.data.next_cursor !== "string") throw new Error("Managed Service instance list response is invalid.");
   return { items: response.data.items.map(decodeManagedServiceInstanceSummary), next_cursor: response.data.next_cursor };
 }
 
-export async function getManagedServiceInstance(personal: boolean, code: string, signal?: AbortSignal): Promise<ManagedServiceInstance> {
+export async function getManagedServiceInstance(code: string, signal?: AbortSignal): Promise<ManagedServiceInstance> {
   const response = await fetchJSON<{ data?: { instance?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances/${encodeURIComponent(code)}`,
+    `/api/v1/managed-services/instances/${encodeURIComponent(code)}`,
     { method: "GET", signal, cache: "no-store" },
   );
   return decodeManagedServiceInstance(response.data?.instance);
 }
 
-export async function listManagedServiceOperations(personal: boolean, code: string, cursor = "", signal?: AbortSignal): Promise<ManagedServiceOperationPage> {
+export async function listManagedServiceOperations(code: string, cursor = "", signal?: AbortSignal): Promise<ManagedServiceOperationPage> {
   const query = new URLSearchParams({ limit: "100" });
   if (cursor) query.set("cursor", cursor);
   const response = await fetchJSON<{ data?: { items?: unknown[]; next_cursor?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances/${encodeURIComponent(code)}/operations?${query.toString()}`,
+    `/api/v1/managed-services/instances/${encodeURIComponent(code)}/operations?${query.toString()}`,
     { method: "GET", signal, cache: "no-store" },
   );
   if (!Array.isArray(response.data?.items) || typeof response.data.next_cursor !== "string") throw new Error("Managed Service operation list response is invalid.");
   return { items: response.data.items.map(decodeManagedServiceOperation), next_cursor: response.data.next_cursor };
 }
 
-export async function createManagedServiceInstance(personal: boolean, input: {
+export async function createManagedServiceInstance(input: {
   code: string;
   name: string;
   blueprint_revision_id: string;
@@ -226,43 +217,43 @@ export async function createManagedServiceInstance(personal: boolean, input: {
   parameters: Record<string, FormDraftValue>;
 }, signal?: AbortSignal) {
   const response = await fetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances`,
+    `/api/v1/managed-services/instances`,
     { method: "POST", body: input, signal },
   );
   if (!response.data?.instance || !response.data.operation) throw new Error("Managed Service create response is invalid.");
   return { instance: decodeAcceptedInstance(response.data.instance), operation: decodeAcceptedOperation(response.data.operation) };
 }
 
-export async function renameManagedServiceInstance(personal: boolean, code: string, input: { name: string; expected_metadata_version: number }, signal?: AbortSignal) {
+export async function renameManagedServiceInstance(code: string, input: { name: string; expected_metadata_version: number }, signal?: AbortSignal) {
   const response = await fetchJSON<{ data?: unknown }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances/${encodeURIComponent(code)}/name`,
+    `/api/v1/managed-services/instances/${encodeURIComponent(code)}/name`,
     { method: "PATCH", body: input, signal },
   );
   const data = managedRecord(response.data, "Managed Service rename response is invalid.");
   return { id: managedString(data.id, "Managed Service rename response is invalid."), code: managedString(data.code, "Managed Service rename response is invalid."), name: managedString(data.name, "Managed Service rename response is invalid."), metadata_version: managedNumber(data.metadata_version, "Managed Service rename response is invalid.") };
 }
 
-export async function resizeManagedServiceInstance(personal: boolean, code: string, input: { expected_generation: number; resources: Record<string, FormDraftValue> }, signal?: AbortSignal) {
+export async function resizeManagedServiceInstance(code: string, input: { expected_generation: number; resources: Record<string, FormDraftValue> }, signal?: AbortSignal) {
   const response = await fetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances/${encodeURIComponent(code)}/resize`,
+    `/api/v1/managed-services/instances/${encodeURIComponent(code)}/resize`,
     { method: "POST", body: input, signal },
   );
   if (!response.data?.instance || !response.data.operation) throw new Error("Managed Service resize response is invalid.");
   return { instance: decodeAcceptedInstance(response.data.instance), operation: decodeAcceptedOperation(response.data.operation) };
 }
 
-export async function deleteManagedServiceInstance(personal: boolean, code: string, expected_generation: number, signal?: AbortSignal) {
+export async function deleteManagedServiceInstance(code: string, expected_generation: number, signal?: AbortSignal) {
   const response = await fetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances/${encodeURIComponent(code)}`,
+    `/api/v1/managed-services/instances/${encodeURIComponent(code)}`,
     { method: "DELETE", body: { expected_generation }, signal },
   );
   if (!response.data?.instance || !response.data.operation) throw new Error("Managed Service delete response is invalid.");
   return { instance: decodeAcceptedInstance(response.data.instance), operation: decodeAcceptedOperation(response.data.operation) };
 }
 
-export async function retryManagedServiceOperation(personal: boolean, code: string, operationID: string, signal?: AbortSignal) {
+export async function retryManagedServiceOperation(code: string, operationID: string, signal?: AbortSignal) {
   const response = await fetchJSON<{ data?: { operation?: unknown } }>(
-    `/api/v1/${managedServiceScope(personal)}/managed-services/instances/${encodeURIComponent(code)}/operations/${encodeURIComponent(operationID)}/retry`,
+    `/api/v1/managed-services/instances/${encodeURIComponent(code)}/operations/${encodeURIComponent(operationID)}/retry`,
     { method: "POST", signal },
   );
   if (!response.data?.operation) throw new Error("Managed Service retry response is invalid.");

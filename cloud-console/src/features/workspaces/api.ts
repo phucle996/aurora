@@ -7,29 +7,17 @@ export type WorkspaceCatalogItem = {
   name: string;
 };
 
-export type FetchWorkspaceCatalogOptions = {
-  tenantContext?: boolean;
-  signal?: AbortSignal;
-};
-
 // [COMMENT]: fetchWorkspaceCatalog — hot path, trả về danh sách workspace tối giản (id, code, name)
 // lọc theo zone + context (personal / tenant).
 export async function fetchWorkspaceCatalog(
-  opts: FetchWorkspaceCatalogOptions,
+  signal?: AbortSignal,
 ): Promise<WorkspaceCatalogItem[]> {
-  let path = "/api/v1/me/hierarchy/workspace/catalog";
-
-  // [COMMENT]: Tenant context — đường dẫn tenant
-  if (opts.tenantContext) {
-    path = "/api/v1/tenant/hierarchy/workspaces/catalog";
-  }
-
   // [COMMENT]: Backend trả về { data: WorkspaceCatalogItem[], message: string, ... }
   const res = await fetchJSON<{ data: WorkspaceCatalogItem[] }>(
-    path,
+    "/api/v1/hierarchy/workspaces/catalog",
     {
       method: "GET",
-      signal: opts.signal,
+      signal,
     },
   );
 
@@ -53,7 +41,7 @@ export type ListWorkspacesOptions = {
 
 // [COMMENT]: listWorkspaces fetches detailed workspaces list from hierarchy api
 export async function listWorkspaces(opts?: ListWorkspacesOptions): Promise<WorkspaceItem[]> {
-  const res = await fetchJSON<{ data: WorkspaceItem[] }>("/api/v1/me/hierarchy/workspace/read", {
+  const res = await fetchJSON<{ data: WorkspaceItem[] }>("/api/v1/hierarchy/workspaces", {
     method: "GET",
     signal: opts?.signal,
   });
@@ -68,7 +56,7 @@ export type CreateWorkspaceInput = {
 
 // [COMMENT]: createWorkspace posts to hierarchy api to create a new workspace
 export async function createWorkspace(input: CreateWorkspaceInput, signal?: AbortSignal): Promise<WorkspaceItem> {
-  const res = await fetchJSON<{ data: WorkspaceItem }>("/api/v1/me/hierarchy/workspace/create", {
+  const res = await fetchJSON<{ data: WorkspaceItem }>("/api/v1/hierarchy/workspaces", {
     method: "POST",
     body: {
       name: input.name,
@@ -82,7 +70,7 @@ export async function createWorkspace(input: CreateWorkspaceInput, signal?: Abor
 
 // [COMMENT]: deleteWorkspace sends DELETE request to hierarchy api to remove a workspace
 export async function deleteWorkspace(id: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/me/hierarchy/workspace/delete/${id}`, {
+  await fetchJSON(`/api/v1/hierarchy/workspaces/${id}`, {
     method: "DELETE",
     signal,
   });

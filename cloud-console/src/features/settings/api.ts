@@ -62,12 +62,12 @@ export async function getMySocialLinks(signal?: AbortSignal): Promise<SocialLink
   });
 }
 
-export async function startSocialLink(provider: SocialProvider): Promise<string> {
+export async function startSocialLink(provider: SocialProvider, returnTo: string): Promise<string> {
   const response = await criticalFetchJSON<{ authorization_url?: unknown }>(
-    `/api/v1/critical/me/iam/social-link/${provider}/start`,
+    `/api/v1/me/critical/iam/social-link/${provider}/start`,
     {
       method: "POST",
-      body: { return_to: "/settings/social-links" },
+      body: { return_to: returnTo },
     },
   );
   if (typeof response.authorization_url !== "string" || !response.authorization_url.startsWith("https://")) {
@@ -77,7 +77,7 @@ export async function startSocialLink(provider: SocialProvider): Promise<string>
 }
 
 export async function unlinkSocialLink(provider: SocialProvider): Promise<void> {
-  await criticalFetchJSON(`/api/v1/critical/me/iam/social-link/${provider}`, {
+  await criticalFetchJSON(`/api/v1/me/critical/iam/social-link/${provider}`, {
     method: "DELETE",
   });
 }

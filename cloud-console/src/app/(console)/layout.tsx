@@ -1,6 +1,5 @@
-import type { ReactNode } from "react";
-import { ConsoleShell } from "@/shell/console-shell";
+import { LegacyConsoleRedirect } from "@/shell/legacy-console-redirect";
 
-export default function ConsoleLayout({ children }: { children: ReactNode }) {
-  return <ConsoleShell>{children}</ConsoleShell>;
+export default function ConsoleLayout() {
+  return <LegacyConsoleRedirect />;
 }

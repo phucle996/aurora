@@ -57,10 +57,6 @@ function clearCookieWorkspaceID(): void {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type WorkspaceContextInput = {
-  tenantContext?: boolean;
-};
-
 export type WorkspaceContextValue = {
   // Trạng thái
   catalog: WorkspaceCatalogItem[];
@@ -70,7 +66,7 @@ export type WorkspaceContextValue = {
 
   // Actions
   // [COMMENT]: Gọi sau login hoặc khi context thay đổi (zone / tenant switch)
-  initWorkspaceContext: (input: WorkspaceContextInput) => Promise<void>;
+  initWorkspaceContext: () => Promise<void>;
   // [COMMENT]: Chọn workspace cụ thể từ catalog — ghi đè cookie
   selectWorkspace: (id: string) => void;
   // [COMMENT]: Clear toàn bộ workspace state khi logout
@@ -100,7 +96,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // [COMMENT]: initWorkspaceContext — gọi sau khi login thành công hoặc khi switch zone/tenant.
   // Luôn clear cookie trước để đảm bảo workspace cũ không leak sang context mới.
   const initWorkspaceContext = useCallback(
-    async (input: WorkspaceContextInput) => {
+    async () => {
       // Cancel request cũ nếu đang chạy
       abortRef.current?.abort();
       void queryClient.cancelQueries();
@@ -114,10 +110,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setError(null);
 
       try {
-        const items = await fetchWorkspaceCatalog({
-          tenantContext: input.tenantContext,
-          signal: controller.signal,
-        });
+        const items = await fetchWorkspaceCatalog(controller.signal);
 
         if (controller.signal.aborted || abortRef.current !== controller) return;
 

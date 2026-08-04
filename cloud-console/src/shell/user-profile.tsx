@@ -10,9 +10,10 @@ import type { UserProfile as SessionUserProfile } from "@/session/api";
 interface UserProfileProps {
   profile: SessionUserProfile | null;
   handleLogout: () => void;
+  settingsHref: string;
 }
 
-export function UserProfile({ profile, handleLogout }: UserProfileProps) {
+export function UserProfile({ profile, handleLogout, settingsHref }: UserProfileProps) {
   const [userOpen, setUserOpen] = useState(false);
   const userRef = useRef<HTMLDivElement>(null);
 
@@ -66,7 +67,7 @@ export function UserProfile({ profile, handleLogout }: UserProfileProps) {
           </div>
 
           <Link
-            href="/settings/personalization"
+            href={settingsHref}
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800/50"
             onClick={() => setUserOpen(false)}
           >

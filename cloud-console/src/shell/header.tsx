@@ -12,26 +12,30 @@ import { authAPI } from "@/features/auth/api";
 import { useTheme } from "@/context/ThemeContext";
 import { useUserSession } from "@/session/use-session";
 import { ContextSwitcher } from "@/shell/context-switcher";
-import { activeNavigation, consoleNavigation } from "@/shell/navigation";
+import { activeNavigation, personalConsoleNavigation, tenantConsoleNavigation, type ConsoleKind } from "@/shell/navigation";
 
 type ConsoleHeaderProps = {
+  kind: ConsoleKind;
   onOpenMobileNavigation: () => void;
   onToggleDesktopNavigation: () => void;
   onOpenCommandPalette: () => void;
 };
 
 export function ConsoleHeader({
+  kind,
   onOpenMobileNavigation,
   onToggleDesktopNavigation,
   onOpenCommandPalette,
 }: ConsoleHeaderProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { clearSession, profile, renderContext, checkPermission } = useUserSession();
+  const { clearSession, profile, checkPermission } = useUserSession();
   const { theme, setTheme } = useTheme();
-  const items = consoleNavigation(renderContext?.is_personal ?? true, checkPermission);
+  const items = kind === "personal"
+    ? personalConsoleNavigation(checkPermission)
+    : tenantConsoleNavigation(checkPermission);
   const active = activeNavigation(pathname, items);
-  const breadcrumb = pathname.startsWith("/settings") ? ["Console", "Settings"] : active.breadcrumb;
+  const breadcrumb = pathname.startsWith(`/${kind}/settings`) ? [kind === "personal" ? "Console" : "Tenant Console", "Settings"] : active.breadcrumb;
 
   const handleLogout = useCallback(async () => {
     try {
@@ -93,7 +97,7 @@ export function ConsoleHeader({
       <div className="flex shrink-0 items-center gap-1 sm:gap-2">
         <WalletBalance />
         <ThemeSwitcher theme={theme} setTheme={setTheme} />
-        <UserProfile profile={profile} handleLogout={handleLogout} />
+        <UserProfile profile={profile} handleLogout={handleLogout} settingsHref={`/${kind}/settings/personalization`} />
         <NotificationsDrawer />
       </div>
     </header>

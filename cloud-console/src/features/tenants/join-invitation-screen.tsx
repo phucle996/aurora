@@ -15,14 +15,11 @@ import {
 export function JoinTenantInvitationScreen({ token }: { token: string }) {
 	const router = useRouter();
 	const [preview, setPreview] = useState<TenantInvitationPreview | null>(null);
-	const [error, setError] = useState("");
+	const [error, setError] = useState(() => token ? "" : "This invitation link is invalid.");
 	const [joining, setJoining] = useState(false);
 
 	useEffect(() => {
-		if (!token) {
-			setError("This invitation link is invalid.");
-			return;
-		}
+		if (!token) return;
 		const controller = new AbortController();
 		void previewTenantInvitation(token, controller.signal)
 			.then(setPreview)
@@ -47,7 +44,7 @@ export function JoinTenantInvitationScreen({ token }: { token: string }) {
 					try {
 						const joined = await joinTenantInvitation(token);
 						toast.success(`Joined ${joined.tenant_name}.`);
-						router.replace("/tenants");
+						router.replace("/personal/tenants");
 					} catch (reason) {
 						toast.error(reason instanceof Error ? reason.message : "Cannot join this tenant.");
 					} finally {

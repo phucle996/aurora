@@ -25,13 +25,13 @@ export function CreateManagedServiceScreen() {
   const scopeFence = scope.join(":");
   const { renderContext, profile } = useUserSession();
   const { activeWorkspaceID } = useWorkspace();
-  const personal = renderContext?.is_personal ?? true;
+  const consoleRoot = renderContext ? `/${renderContext.kind}` : "";
   const locale = profile?.locale || "en";
   const [selectedVersionID, setSelectedVersionID] = useState("");
 
   const catalog = useInfiniteQuery({
     queryKey: [...scope, "managed-services", "catalog"],
-    queryFn: ({ pageParam, signal }) => listManagedServiceCatalog(personal, pageParam, signal),
+    queryFn: ({ pageParam, signal }) => listManagedServiceCatalog(pageParam, signal),
     initialPageParam: "",
     getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
     enabled: Boolean(activeWorkspaceID) && Boolean(renderContext),
@@ -42,7 +42,7 @@ export function CreateManagedServiceScreen() {
   const selected = items.find((item) => item.version.id === selectedVersionID) ?? items[0];
   const contract = useQuery({
     queryKey: [...scope, "managed-services", "version", selected?.version.id ?? "none", selected?.revision.id ?? "none"],
-    queryFn: ({ signal }) => getManagedServiceVersionContract(personal, selected!.version.id, selected!.revision.id, signal),
+    queryFn: ({ signal }) => getManagedServiceVersionContract(selected!.version.id, selected!.revision.id, signal),
     enabled: Boolean(selected),
     retry: (failureCount, error) => isAPIError(error) && error.retryable && failureCount < 2,
   });
@@ -76,7 +76,7 @@ export function CreateManagedServiceScreen() {
       for (const [key, value] of Object.entries(draft.values)) {
         if (value !== "") parameters[key] = value;
       }
-      return createManagedServiceInstance(personal, {
+      return createManagedServiceInstance({
         code: draft.code,
         name: draft.name.trim(),
         blueprint_revision_id: formContract.revision.id,
@@ -87,7 +87,7 @@ export function CreateManagedServiceScreen() {
     onSuccess: ({ instance, operation }) => {
       void queryClient.invalidateQueries({ queryKey: [...scope, "managed-services", "instances"] });
       toast.success(`Provisioning accepted (${operation.id.slice(0, 8)}…)`);
-      router.push(`/managed-services/${encodeURIComponent(instance.code)}`);
+      router.push(`${consoleRoot}/managed-services/${encodeURIComponent(instance.code)}`);
     },
     onError: (error: unknown) => toast.error(error instanceof Error ? error.message : "Managed Service creation failed."),
   });
@@ -99,7 +99,7 @@ export function CreateManagedServiceScreen() {
   return (
     <div className="w-full pb-10 text-foreground">
       <header className="flex items-center gap-3 border-b border-border pb-5">
-        <Link aria-label="Back to Managed Services" className={buttonVariants({ variant: "outline", size: "icon", className: "h-8 w-8" })} href="/managed-services"><ArrowLeft className="h-4 w-4" /></Link>
+        <Link aria-label="Back to Managed Services" className={buttonVariants({ variant: "outline", size: "icon", className: "h-8 w-8" })} href={`${consoleRoot}/managed-services`}><ArrowLeft className="h-4 w-4" /></Link>
         <div className="flex h-9 w-9 items-center justify-center rounded-[6px] border border-violet-500/20 bg-violet-600/10 text-violet-500"><Boxes className="h-4.5 w-4.5" /></div>
         <div><h1 className="text-xl font-bold tracking-tight">Configure Managed Service</h1><p className="mt-0.5 text-xs text-muted-foreground">Catalog → configure → review. Workspace, Zone and revision are read-only.</p></div>
       </header>
@@ -157,7 +157,7 @@ export function CreateManagedServiceScreen() {
         <aside className="self-start rounded-[6px] border border-border lg:col-span-4">
           <div className="border-b border-border px-5 py-3"><h2 className="text-sm font-semibold">Verified context</h2></div>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-3 p-5 text-[13px]">
-            <dt className="text-muted-foreground">Owner mode</dt><dd className="text-right">{personal ? "Personal" : "Tenant"}</dd>
+            <dt className="text-muted-foreground">Owner mode</dt><dd className="text-right">{renderContext?.kind ?? "Unverified"}</dd>
             <dt className="text-muted-foreground">Workspace</dt><dd className="truncate text-right font-mono text-xs">{activeWorkspaceID}</dd>
             <dt className="text-muted-foreground">Revision</dt><dd className="truncate text-right font-mono text-xs">{selected?.revision.id ?? "—"}</dd>
           </dl>
