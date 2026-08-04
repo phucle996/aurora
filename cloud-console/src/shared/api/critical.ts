@@ -19,8 +19,10 @@ async function sha256Hex(value: string): Promise<string> {
 
 export async function criticalFetchJSON<T>(path: string, options: CriticalOptions): Promise<T> {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  if (!normalizedPath.startsWith("/api/v1/critical/") || normalizedPath.includes("?")) {
-    throw new Error("Critical requests require a query-free /api/v1/critical/* path.");
+  const supportedCriticalPath = normalizedPath.startsWith("/api/v1/critical/")
+    || normalizedPath.startsWith("/api/v1/me/critical/");
+  if (!supportedCriticalPath || normalizedPath.includes("?")) {
+    throw new Error("Critical requests require a query-free user critical path.");
   }
 
   const challenge = await fetchJSON<SessionProofChallenge>(

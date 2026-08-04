@@ -1,493 +1,328 @@
-<!-- markdownlint-disable MD033 -->
-# End-User Session Lifecycle & Post-Login Management - Workflow God View
+# End-user post-login session lifecycle — God View
 
-> [!NOTE]
-> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho vòng đời phiên làm việc của End-User (Session Lifecycle), bao gồm luồng kiểm tra phiên (/session), gia hạn tự động (Sliding Trinity Session), và tự động phục hồi phiên (Opaque Recovery).
-> Mọi thay đổi về code tại Frontend Client (Console UI), Edge (ACR), hoặc Backend (Controlplane) liên quan đến quản lý phiên phải tuân thủ nghiêm ngặt đặc tả này.
+> Source of Truth for active-session verification, sliding renewal, opaque
+> user/device recovery, context recovery and durable logout. This workflow is
+> for end users in one concrete Zone; it is not the SRE authentication flow.
 
----
+## 1. Ownership and trust boundaries
 
-## 🗺️ 1. Giới Thiệu
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| Browser | Cookies and UI retry/reload behavior | User, tenant, role, Zone authority |
+| Envoy | Public routing and ACR `ext_authz` enforcement | Identity or session state |
+| ACR | JWT proof, Trinity session, recovery singleflight, cookie issuance | IAM durable identity/RBAC data |
+| Controlplane IAM | Durable user/device credential and current platform/tenant authority | Browser session or Vault signing key |
+| Auth-State Redis | Trinity sessions and bounded recovery lock/cache | Durable business identity |
+| Shared L2 Redis | Bounded ACR to Controlplane request/reply transport | Durable cross-Zone jobs or business SoT |
+| PostgreSQL | `iam.refresh_tokens`, users, devices and current RBAC assignments | Runtime session cache |
+| Vault | JWT signing key | IAM business state |
 
-### 👥 Tài Liệu Này Dành Cho Ai?
+The expired JWT is never an identity input to recovery. ACR does not decode
+unverified claims from it. Controlplane derives `user_id` and `device_id` only
+from the SHA-256 hash of the opaque refresh credential.
 
-Tài liệu dành cho đội ngũ kỹ sư phát triển Frontend phát triển HTTP Client (fetcher), Edge (ACR), và Backend IAM chịu trách nhiệm về cơ chế bảo mật phiên và tối ưu trải nghiệm người dùng (UX) không bị gián đoạn.
+## 2. Credential and context model
 
-### ❓ Vòng Đời Phiên Làm Việc (Session Lifecycle)
+### 2.1 Trinity session
 
-Hệ thống áp dụng mô hình quản lý phiên phân lớp (Multi-tier session lifecycle) được xác thực và xử lý chính tại Edge (ACR) nhằm đạt hiệu năng tối đa và tính sẵn sàng cao (HA):
+An active user session consists of:
 
-1. **Kiểm tra phiên hoạt động (Session Status Check — GET /api/v1/auth/session)**:
-   - Được gọi mỗi khi Client khởi động hoặc mount ứng dụng. Cuộc gọi này được **ACR (Edge ext_authz) chặn bắt và xác thực hoàn toàn**. Nếu hợp lệ, request mới được cho phép đi tiếp vào Controlplane (đóng vai trò stub trả về `200 OK`).
-2. **Kiểu 1 — Trinity Refresh (Sliding Session)**:
-   - Khi người dùng đang hoạt động tích cực, nếu thời gian hết hạn của phiên hoạt động còn lại $\le 900$ giây, ACR tự động thực hiện hoán đổi bộ thông tin xác thực cũ lấy bộ thông tin mới (Xoay vòng JWT, Access Key, Access Secret) để trượt cửa sổ phiên dài thêm 30 phút.
-3. **Kiểu 2 — Opaque Refresh Token (Session Recovery)**:
-   - Dành cho các thiết bị tin cậy (`TrustDevice = true`). Khi phiên hoạt động (Access Session) đã chết hoàn toàn (nhận HTTP 401), Client tự động dùng token đục dài hạn lưu trong cơ sở dữ liệu để phục hồi phiên hoạt động mới mà không buộc người dùng đăng nhập lại từ đầu.
+- `access_token`: short-lived Vault-signed JWT containing the currently active
+  user, role, tenant and Zone claims.
+- `access_key`: opaque runtime session identifier.
+- `access_secret`: secret whose hash is stored with the session in Auth-State
+  Redis.
 
-### 🌐 Sơ đồ Kiến trúc Tổng quan (System Architecture)
+Trinity state is short-lived. ACR verifies the JWT, key, secret, current Redis
+session and request context before Envoy forwards a request.
 
-Sơ đồ dưới đây mô tả cấu trúc các thành phần tham gia vào luồng Refresh và cách chúng tương tác qua các kết nối đồng bộ (đường nét liền) và bất đồng bộ/tuần tự (đường nét đứt):
+### 2.2 Opaque refresh credential
 
-```mermaid
-graph TD
-    classDef client fill:#332244,stroke:#8844ff,stroke-width:2px;
-    classDef gateway fill:#112233,stroke:#3388ff,stroke-width:2px;
-    classDef edgeService fill:#113322,stroke:#33cc88,stroke-width:2px;
-    classDef storage fill:#333311,stroke:#cccc33,stroke-width:2px;
-    classDef control fill:#331111,stroke:#ff5555,stroke-width:2px;
+`refresh_token` is a long-lived credential issued only for `trust_device=true`.
+The raw value exists only in the HttpOnly cookie. PostgreSQL stores its SHA-256
+hash in `iam.refresh_tokens`.
 
-    Client["💻 Client (Browser)"]:::client
-    Envoy["🛡️ Envoy Ingress Gateway"]:::gateway
-    acr["🦀 Rust acr (ext_authz)"]:::edgeService
-    CP["⚙️ Controlplane IAM (Go)"]:::control
-    Vault["🔑 HashiCorp Vault"]:::control
-    Redis[("⚡ Redis L2 (Runtime Sessions)")]:::storage
-    DB[("🗄️ PostgreSQL (Refresh Tokens SoT)")]:::storage
+The durable row contains only:
 
-    Client -- "1. Request bất kỳ / GET /session" --> Envoy
-    Envoy -- "2. ext_authz check" --> acr
-    acr -- "3a. Verify JWT & Session" --> Redis
-    acr -- "3b. TTL thấp → Sign JWT mới" --> Vault
-    acr -- "3c. Rotate session (SETNX lock)" --> Redis
-    acr -. "3d. Verify Opaque Token (gRPC)" .-> CP
-    acr -- "4. OK + Set-Cookie (nếu rotate/recover)" --> Envoy
-    Envoy -- "5. Forward to upstream" --> CP
-    Client -- "6. POST /api/v1/auth/refresh (khi 401)" --> Envoy
-    Envoy -- "7. Bypass ext_authz" --> CP
-    CP -- "8. Rotate Token (Mark Used & INSERT)" --> DB
-```
+| Column | Invariant |
+| --- | --- |
+| `id` | UUIDv7 generated by the service |
+| `user_id` | Active IAM user |
+| `device_id` | Active, non-revoked device owned by the same user |
+| `token_hash` | Unique SHA-256 digest of the opaque value |
+| `issued_at`, `expires_at` | Absolute credential lifetime |
 
-### 🔑 Mô hình Token (Trinity Credentials)
+`UNIQUE(user_id, device_id)` enforces one durable refresh credential per
+user/device. Issuing a new credential for the same device locks the device,
+hard-deletes the previous row and inserts the replacement in one PostgreSQL CTE.
 
-Chi tiết cấu trúc, vai trò và hành vi của các thông tin xác thực/cookies khi thực hiện quá trình gia hạn phiên:
+The row never stores `tenant_id`, `workspace_id`, `zone_id`, role, permission,
+`used_at` or `revoked_at`. The opaque credential is stable until replacement,
+expiry, logout, device revocation or user deletion; recovery does not rotate it.
 
-| Tên Token/Cookie | Loại/Định dạng | Nơi Lưu Trữ Gốc (Server) | Hành động khi Refresh | Mô tả & Vai trò |
-| :--- | :--- | :--- | :--- | :--- |
-| **`access_token`** | JWT (Vault signed) | Không lưu (Verify stateless) | **Xoay vòng** (Cấp JWT mới khi refresh thành công) | Chứa các định danh claims (`sub`, `role`, `lvl`, `tenant_id`, `zone_id`) và `access_key`. |
-| **`access_key`** | UUIDv7 (Plain) | **Redis L2** (Làm khóa phiên) | **Xoay vòng** (Thay thế khóa phiên cũ trên L2 và cập nhật cookie) | Định danh phiên làm việc, dùng để đối chiếu trực tiếp dữ liệu phiên runtime tại lớp L2 Redis. |
-| **`access_secret`** | Secure Random String (Plain) | **Redis L2** (Lưu băm `ash`) | **Xoay vòng** (Thay thế khóa bí mật cũ trên L2 và cập nhật cookie) | Khóa bí mật thô giúp client/Envoy kiểm tra tính toàn vẹn phiên làm việc nhanh chóng. |
-| **`refresh_token`** | Opaque String | **PostgreSQL** (Lưu băm SHA-256) | **Xoay vòng** (Mark used & INSERT mới với old expiry - Kiểu 2) | Token dài hạn dùng để phục hồi phiên Access Session mới khi phiên cũ đã hết hạn. |
-| **`client_device_id`** | UUID (Plain) | **PostgreSQL** | **GIỮ NGUYÊN** (Không thay đổi) | Định danh duy nhất của thiết bị phục vụ kiểm tra bảo mật và liên kết session. |
+### 2.3 Active context
 
-### 🗃️ Các Khóa Lưu Trữ & Bộ Nhớ Được Tương Tác (Storage & Cache Keys Registry)
+Tenant context is short-lived session state, not refresh-token identity:
 
-Dưới đây là toàn bộ các khóa lưu trữ tại mọi phân tầng (L1 Cookies, L2 Redis Cache, DB PostgreSQL) mà luồng Refresh này trực tiếp tương tác và xử lý:
+- missing/empty/`platform` tenant cookie requests personal context;
+- a UUID tenant cookie requests that tenant context;
+- Zone is resolved independently from the current trusted Zone flow;
+- Controlplane re-resolves the current role and membership on every cache miss.
 
-| Phân Tầng Lưu Trữ | Tên Khóa / Bảng | Kiểu Dữ Liệu | Hành Động Xử Lý | Chi Tiết & Vai Trò |
-| :--- | :--- | :--- | :--- | :--- |
-| **L1: Browser Cookies** | `access_token` | HTTP Cookie (JWT) | **Xoay vòng** (Cập nhật mới) | Xoá/Cấp mới cookie token truy cập tại client trình duyệt khi hết hạn/gia hạn. |
-| **L1: Browser Cookies** | `access_key` | HTTP Cookie (UUIDv7) | **Xoay vòng** (Cập nhật mới) | Xoá/Cấp mới cookie khóa truy cập dùng để tra cứu phiên tại L2. |
-| **L1: Browser Cookies** | `access_secret` | HTTP Cookie (String) | **Xoay vòng** (Cập nhật mới) | Xoá/Cấp mới cookie secret dùng để xác thực và mã hóa phiên. |
-| **L1: Browser Cookies** | `refresh_token` | HTTP Cookie (Opaque) | **Xoay vòng** (Chỉ ở Kiểu 2) | Xoá/Cấp mới cookie refresh_token khi xoay vòng token trên DB. |
-| **L1: Browser Cookies** | `client_device_id` | HTTP Cookie (UUID) | **GIỮ NGUYÊN** (Không thay đổi) | Giữ nguyên định danh thiết bị để phục vụ kiểm tra bảo mật và lưu vết thiết bị. |
-| **L2: Redis Cache** | `iam:user_access_session:<UserID>:<AccessKey>` | String (Protobuf) | **Gia hạn / Chuyển tiếp** | Tạo session key mới (TTL 30 phút), session key cũ giảm TTL xuống 5 giây (Grace Period - hardcoded). |
-| **L2: Redis Cache** | `iam:user_access_index:<UserID>` | Set | **Cập nhật tập hợp (SADD & SREM)** | Thêm `AccessKey` mới và loại bỏ `AccessKey` cũ khỏi danh sách quản lý phiên của người dùng. |
-| **L2: Redis Cache** | `iam:lock:refresh:<OldAccessKey>` | String | **Khóa phân tán (SET NX EX / DEL)** | Tạo khóa Mutex Lock tồn tại 5s để chống race condition khi nhiều widget gọi refresh đồng thời. |
-| **DB: PostgreSQL** | Bảng `iam.refresh_tokens` | Hàng dữ liệu (Row) | **Token Rotation (Mark used & INSERT)** | Đánh dấu token cũ là used_at = now() và tạo token mới với old_expiry kế thừa thời hạn tuyệt đối. |
+Tenant switch and recovery are separate workflows. Tenant switch starts from a
+valid Trinity session and explicitly changes context. Recovery starts from an
+expired Trinity session and never calls the tenant-switch handler, service or
+repository.
 
-### 🚧 Biên Và Ràng Buộc (Boundaries & Constraints)
-
-- **Bảo mật và Định tuyến**: Luồng Sliding Session (Kiểu 1) được xử lý transparent tại Rust acr (`ext_authz`) trên Envoy Gateway — Client không cần gọi endpoint riêng. Luồng Session Recovery (Kiểu 2) gọi trực tiếp `/api/v1/auth/refresh` qua Envoy. Envoy Gateway chuyển tiếp nguyên trạng HTTP Headers (bao gồm `Set-Cookie`) giữa client và backend.
-- **XSSI Prefix**: Mọi API trả về từ Controlplane đều đính kèm tiền tố `)]}',\n` ngăn chặn CSRF đọc trộm dữ liệu JSON. Frontend Client (fetcher) phải tự động stripping tiền tố này trước khi parse JSON.
-
----
-
-## 🏛️ 2. Chi Tiết Thực Thi Nghiệp Vụ & Sơ Đồ Trình Tự
-
-### 🔄 Luồng Kiểm Tra Phiên Làm Việc (Session Check - GET /api/v1/auth/session)
-
-Mỗi khi Client khởi động, nó thực hiện cuộc gọi `GET /api/v1/auth/session` để kiểm tra trạng thái đăng nhập. Cuộc gọi này được xử lý hoàn toàn tại **Edge (ACR ext_authz)**. 
-
-#### Sơ đồ tuần tự: Luồng Kiểm tra Session hoạt động thông qua ACR
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Client
-    participant Envoy as Envoy Ingress Gateway
-    participant acr as Rust acr (ext_authz)
-    participant CP as Controlplane (Go stub)
-    participant RDS as Redis L2 Cluster
-
-    UI->>Envoy: GET /api/v1/auth/session (Mang theo Cookies)
-    Envoy->>acr: ext_authz Check
-
-    alt Nhánh A: Trinity Cookies hợp lệ (Đã đăng nhập)
-        acr->>RDS: GET "iam:user_access_session:{UserID}:{AccessKey}"
-        RDS-->>acr: Trả về session metadata
-        acr->>acr: Xác thực thành công
-        acr-->>Envoy: OK (Cho phép request đi tiếp)
-        Envoy->>CP: Forward GET /api/v1/auth/session
-        CP-->>Envoy: 200 OK {"data": {"authenticated": true}}
-        Envoy-->>UI: 200 OK {"data": {"authenticated": true}}
-
-    else Nhánh B: Trinity Cookies hết hạn / không hợp lệ, CÓ refresh_token (Thử Recovery)
-        acr->>acr: Phát hiện Trinity lỗi, có refresh_token
-        Note over acr: Khởi động Opaque Recovery Flow
-        critical Thử phục hồi phiên (Opaque Recovery)
-            acr->>CP: gRPC VerifyOpaqueRefreshToken(refresh_token)
-            CP-->>acr: Trả về kết quả xác thực
-        end
-        alt Phục hồi THÀNH CÔNG
-            acr->>acr: Sinh bộ Trinity Cookies mới
-            acr-->>Envoy: OK + Set-Cookie Trinity mới
-            Envoy->>CP: Forward GET /api/v1/auth/session
-            CP-->>Envoy: 200 OK {"data": {"authenticated": true}}
-            Envoy-->>UI: 200 OK + Set-Cookie Trinity mới
-        else Phục hồi THẤT BẠI
-            acr->>acr: Xoá bỏ toàn bộ cookie Trinity & Refresh
-            acr-->>Envoy: DENIED 401 Unauthorized + Set-Cookie xóa
-            Envoy-->>UI: 401 Unauthorized (Báo lỗi & Xoá cookie)
-            Note over UI: Dispatch event "iam:unauthorized" -> Chuyển sang /signin
-        end
-
-    else Nhánh C: Trinity Cookies không hợp lệ, KHÔNG CÓ refresh_token
-        acr->>acr: Xác thực thất bại và không có refresh_token
-        acr-->>Envoy: DENIED 401 Unauthorized + Set-Cookie xóa
-        Envoy-->>UI: 401 Unauthorized
-        Note over UI: Dispatch event "iam:unauthorized" -> Chuyển sang /signin
-    end
-```
-
----
-
-### Sơ đồ nhánh 1 — Transparent Trinity Refresh (Sliding Session tại acr)
-
-Áp dụng tự động khi phiên làm việc hiện tại vẫn còn hiệu lực nhưng chuẩn bị hết hạn (thời gian còn lại $\le 900$ giây). Rust acr (ext_authz) tự động phát hiện JWT sắp hết hạn, xoay vòng Trinity Credentials và inject `Set-Cookie` header vào phản hồi Envoy để trình duyệt tự động cập nhật cookies mà Client hoàn toàn không cần quan tâm.
-
-**Các file mã nguồn liên quan (Code References):**
-
-- [acr/src/service/rotate.rs](../../acr/src/service/rotate.rs): Hàm `handle_session_rotation` phát hiện JWT TTL thấp, sinh bộ trinity mới và inject Set-Cookie.
-- [acr/src/service/ext_authz.rs](../../acr/src/service/ext_authz.rs): Hàm `check` gọi `handle_session_rotation` sau khi xác thực thành công.
-- [acr/src/core/session.rs](../../acr/src/core/session.rs): Hàm `try_rotate_session` thực hiện xoay vòng Redis L2 có bảo vệ bằng Distributed Lock (SETNX).
+## 3. Login issuance
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant UI as Browser Client
-    participant Envoy as Envoy Ingress Gateway
-    participant acr as Rust acr (ext_authz)
-    participant Vault as HashiCorp Vault
-    participant RDS as Redis L2 Cluster
+    participant Browser
+    participant Envoy
+    participant ACR
+    participant CP as Controlplane IAM
+    participant DB as PostgreSQL
+    participant AuthRedis as Auth-State Redis
+    participant Vault
 
-    Note over UI, acr: Luồng transparent — Client không cần gọi endpoint riêng
-    UI->>Envoy: Request API thông thường (GET /api/v1/...)
-    Envoy->>acr: ext_authz Check (Cookies: access_token, access_key, access_secret)
-    acr->>acr: Verify JWT (claims.exp - now = remaining_ttl)
-    acr->>RDS: GET "iam:user_access_session:{UserID}:{AccessKey}"
-    RDS-->>acr: Trả về session metadata (ash, tdid, lsa)
-    acr->>acr: Verify Access Secret Hash khớp
-    acr->>RDS: Update Last Seen At (Throttled ghi nếu now - lsa >= 30s)
-    
-    alt remaining_ttl <= 900s (Cần Sliding Refresh)
-        acr->>RDS: SETNX "iam:lock:refresh:{OldAccessKey}" (TTL 5s — Distributed Lock)
-        RDS-->>acr: Lock acquired (true)
-        acr->>acr: Sinh New Access Key (UUIDv7) & Access Secret
-        acr->>Vault: Sign new JWT Access Claims
-        Vault-->>acr: Trả signed JWT mới
-        acr->>RDS: Pipeline: SET New Session + EXPIRE Old Session (Grace 5s)
-        RDS-->>acr: Thành công
-        acr->>RDS: DEL lock key (giải phóng sớm)
-        acr-->>Envoy: OK + Set-Cookie headers (access_token, access_key, access_secret)
-    else remaining_ttl > 900s (Session còn đủ TTL)
-        acr-->>Envoy: OK (không rotate)
+    Browser->>Envoy: login proof + trust_device
+    Envoy->>ACR: ext_authz
+    ACR->>CP: Shared L2 request/reply login payload
+    CP->>DB: verify identity and register active device
+    alt trust_device=true
+        CP->>DB: CTE lock device + DELETE previous + INSERT user/device token hash
+        CP-->>ACR: raw refresh token + absolute expiry
     end
-    
-    Envoy-->>UI: Response + Set-Cookie (nếu có) → Trình duyệt tự cập nhật cookies
+    ACR->>Vault: sign active-context JWT
+    ACR->>AuthRedis: register Trinity session
+    ACR-->>Browser: Trinity cookies + optional HttpOnly refresh_token
 ```
 
----
+Password, MFA and OAuth login use the same `IssueDeviceRefreshToken` workflow.
+They do not pass tenant context into issuance.
 
-### Sơ đồ nhánh 2 — Opaque Refresh Token (Session Recovery tại ext_authz với Redis Distributed Lock/Cache)
+## 4. Active verification and sliding renewal
 
-Áp dụng tự động khi phiên làm việc hiện tại (Trinity Credentials) không hợp lệ hoặc đã hết hạn, nhưng Client vẫn giữ `refresh_token` cookie hợp lệ. Khi đó, Envoy chuyển tiếp yêu cầu xác thực đến Rust acr (ext_authz).
+For a valid Trinity session, ACR verifies the Vault signature and Auth-State
+Redis record. When the configured renewal threshold is reached, ACR creates a
+new JWT/key/secret set and transitions the runtime session with its existing
+distributed rotation fence. The opaque refresh credential is unchanged.
 
-Để bảo vệ hệ thống và đảm bảo ngữ cảnh nhất quán, **Client bắt buộc phải cung cấp thông tin zone_code** (qua cookie `zone_code` hoặc custom header `x-zone-code` / `X-Zone-Code`). Hệ thống chỉ phân giải từ `zone_code` ra `zone_id`, không hỗ trợ phân giải ngược từ header `x-zone-id` do client gửi lên. Nếu không cung cấp `zone_code` hợp lệ, acr từ chối ngay lập tức (400 Bad Request).
+Sliding renewal is not session recovery: it requires a still-valid active
+session and never queries `iam.refresh_tokens`.
 
-Để chống hiện tượng **Thundering Herd** (nhiều requests đồng thời từ client kích hoạt hàng loạt cuộc gọi gRPC và truy vấn DB song song gây tải cho hệ thống - Blood Request) cũng như chống spam các zone code không tồn tại, acr kết hợp cơ chế **Distributed Singleflight** qua Redis L2 và **Negative Caching (bad_codes)** tại L1:
+## 5. Opaque session recovery
 
-1. **Kiểm tra và Phân giải Zone (Fail-Fast)**: acr trích xuất `zone_code` từ request. Nếu thiếu, trả lỗi 400 Bad Request ngay.
-   - Nếu `zone_code` nằm trong danh sách đen `bad_codes` (blacklist cache trong RAM L1), từ chối ngay lập tức bằng 400 Bad Request mà không gọi gRPC/CP.
-   - Nếu miss L1 cache, acr thực hiện Single-Flight gọi gRPC `GetZoneList` sang Controlplane để cập nhật danh sách zone.
-   - Nếu sau khi gọi gRPC vẫn không tìm thấy, `zone_code` đó được đưa vào cache `bad_codes` (blacklist với TTL 5 phút) để chặn spam ở các request sau.
-   - Nếu tìm thấy, kiểm tra trạng thái hoạt động (active). Nếu status != "active", trả lỗi 403 Forbidden.
-2. **Kiểm tra Cache**: acr kiểm tra cache kết quả hồi phục `iam:recovery_cache:<token_hash>` trong Redis L2. Nếu có (cache hit), trả về ngay bộ Trinity Credentials mới đã được ký gắn liền với `zone_id` đã phân giải.
-3. **Chiếm Lock**: Nếu chưa có, acr thử chiếm lock phân tán `iam:lock:recovery:<token_hash>` (TTL 5s).
-   - **Leader (giành được lock)**: Thực hiện cuộc gọi gRPC `VerifyOpaqueRefreshToken` sang Controlplane (gRPC không còn trả về `zone_id`), kiểm tra phân quyền nâng cao (ví dụ: cấm user thường vào zone global), ký JWT mới có chứa `zone_id` đã phân giải qua Vault, đăng ký session mới trong Redis, lưu kết quả vào `iam:recovery_cache:<token_hash>` (TTL 5s) và giải phóng lock.
-   - **Follower (không giành được lock)**: Polling Redis cache `iam:recovery_cache:<token_hash>` mỗi 100ms (tối đa 3 giây) cho đến khi leader ghi kết quả thành công thì lấy ra sử dụng.
+Recovery is automatically attempted by ACR when Trinity verification fails or
+Trinity cookies are absent while `refresh_token` is present. The original request is
+intercepted while a replacement session is issued; it is not forwarded under a
+new context. The browser retries after receiving replacement cookies.
 
-**Các file mã nguồn liên quan (Code References):**
+### 5.1 Boundary validation and keying
 
-- [acr/src/service/ext_authz.rs](../../acr/src/service/ext_authz.rs): Hàm `check` bắt lỗi xác thực Trinity, gọi hoặc chuyển giao tiếp nhận cho module recovery.
-- [acr/src/service/recovery_session.rs](../../acr/src/service/recovery_session.rs): Module chính thực hiện kiểm tra sự tồn tại của `zone_code`, phân giải zone, điều phối phân tán singleflight, gRPC client và Vault signing.
-- [acr/src/core/session.rs](../../acr/src/core/session.rs): Các hàm thao tác Redis L2 (cache, try_lock_recovery, is_recovery_locked, release_recovery_lock).
-- [controlplane/internal/iam/transport/rpc/handler/auth.go](../../controlplane/internal/iam/transport/rpc/handler/auth.go): Handler gRPC tiếp nhận `VerifyOpaqueRefreshToken` và gọi Service để kiểm tra token.
-- [controlplane/internal/iam/service/session_refresh_service.go](../../controlplane/internal/iam/service/session_refresh_service.go): Hàm core `VerifyOpaqueRefreshToken` thực hiện băm và đối chiếu trạng thái token trong PostgreSQL.
+ACR validates before sending the Controlplane request:
 
-#### Sơ đồ Phase 1 — Ingress Auth Gate & Distributed Singleflight (Xử lý tại Rust acr)
+- refresh token length is `64..512` bytes;
+- requested tenant is absent/`platform` or a non-nil UUID;
+- a concrete active or draining Zone resolves successfully;
+- Protobuf request is bounded and serializable.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Client (Requests Song Song)
-    participant Envoy as Envoy Ingress Gateway
-    participant acr as Rust acr (ext_authz)
-    participant RDS as Redis L2 Cluster
-    participant CP as Controlplane (Go)
-    participant Vault as HashiCorp Vault
+The recovery cache/singleflight key is a SHA-256 digest of:
 
-    Note over UI, Envoy: 1. Các request song song từ trình duyệt gửi lên khi Trinity hết hạn
-    UI->>Envoy: Request 1 & Request 2 đồng thời (Kèm refresh_token & zone_code)
-    Envoy->>acr: ext_authz Check (Thiếu Trinity cookies, có refresh_token)
-    
-    Note over acr: 2. Kiểm tra Zone Context & Fail-Fast (Không phân giải ngược zone_id)
-    alt Khách hàng thiếu cookie zone_code hoặc x-zone-code header
-        acr-->>Envoy: DENIED 400 Bad Request (Missing zone context)
-        Envoy-->>UI: HTTP 400 Bad Request
-    else Có zone_code
-        acr->>acr: Tra cứu L1 Cache RAM (valid zones)
-        alt L1 Cache Hit (Phần lớn trường hợp)
-            Note over acr: Tìm thấy Zone -> Đi tiếp tới kiểm tra Cache & Phân bổ Lock Session
-        else L1 Cache Miss (Trường hợp hiếm)
-            alt zone_code nằm trong bad_codes (blacklist L1 cache)
-                acr-->>Envoy: DENIED 400 Bad Request (Zone code cached as invalid)
-                Envoy-->>UI: HTTP 400 Bad Request
-            else Không nằm trong blacklist L1 cache
-                acr->>CP: gRPC GetZoneList()
-                alt Vẫn không tìm thấy zone_code trong danh sách mới
-                    acr->>acr: Lưu zone_code vào bad_codes (blacklist cache, TTL 5m)
-                    acr-->>Envoy: DENIED 400 Bad Request (Requested zone code not found)
-                    Envoy-->>UI: HTTP 400 Bad Request
-                else Tìm thấy
-                    acr->>acr: Cập nhật L1 Cache
-                end
-            end
-        end
-        alt Zone status != "active"
-            acr-->>Envoy: DENIED 403 Forbidden (Zone inactive)
-            Envoy-->>UI: HTTP 403 Forbidden
-        end
-    end
-
-    Note over acr, RDS: 3. Kiểm tra Cache & Phân bổ Leader / Follower
-    acr->>RDS: GET iam:recovery_cache:<token_hash> (Không tìm thấy)
-    acr->>RDS: SET iam:lock:recovery:<token_hash> EX 5 NX
-    
-    alt Request 1: Giành được Lock (Leader)
-        RDS-->>acr: Thành công (True)
-        acr->>CP: gRPC VerifyOpaqueRefreshToken(refresh_token) (Gửi sang Phase 2)
-        CP-->>acr: VerifyOpaqueRefreshTokenResponse (Trả về kết quả kiểm tra)
-        
-        alt TH1.a: Token không hợp lệ / Hết hạn
-            acr->>RDS: DEL iam:lock:recovery:<token_hash> (Giải phóng Lock)
-            acr-->>Envoy: DENIED 401 Unauthorized + Clear Cookies
-            Envoy-->>UI: HTTP 401 Unauthorized (Clear Cookies)
-            Note over UI: UI xóa auth cache & redirect sang /signin
-        else TH1.b: Token Hợp Lệ
-            Note over acr: Thực hiện kiểm tra quyền truy cập Zone đối với User
-            alt User thường truy cập Zone Global ("global" / nil UUID)
-                acr->>RDS: DEL iam:lock:recovery:<token_hash> (Giải phóng Lock)
-                acr-->>Envoy: DENIED 403 Forbidden (Global zone restricted)
-                Envoy-->>UI: HTTP 403 Forbidden
-            else Hợp Lệ
-                acr->>acr: Sinh Trinity Credentials mới
-                acr->>Vault: Ký Access Claims mới (Chứa zone_id vừa phân giải)
-                Vault-->>acr: Trả signed JWT Access Token
-                acr->>RDS: Đăng ký session mới (register_session)
-                acr->>RDS: Ghi cache kết quả (set_recovery_cache & DEL Lock)
-                acr-->>Envoy: OK + Set-Cookie Trinity & Zone mới + Injected Headers (x-zone-id)
-                Envoy-->>UI: Trả kết quả thành công + Cookie mới cho Request 1
-            end
-        end
-    else Request 2: Không giành được Lock (Follower)
-        RDS-->>acr: Thất bại (False)
-        loop Polling (Mỗi 100ms, tối đa 3 giây)
-            acr->>RDS: GET iam:recovery_cache:<token_hash>
-            alt Tìm thấy kết quả Cache
-                RDS-->>acr: Trả về RecoverySessionCache
-                acr-->>Envoy: OK + Set-Cookie Trinity & Zone mới + Injected Headers (x-zone-id) (Bypass gRPC/Vault/Redis registration)
-                Envoy-->>UI: Trả kết quả thành công + Cookie mới cho Request 2 (Hoàn thành hồi phục transparent)
-            else Không tìm thấy
-                Note over acr, RDS: Tiếp tục chờ hoặc tự khôi phục nếu Lock bị giải phóng mà không có cache
-            end
-        end
-    end
+```text
+token_hash + resolved_zone_id + requested_context(platform|tenant_uuid)
 ```
 
-#### Sơ đồ Phase 2 — Core Opaque Verification & Token Rotation (Xử lý tại Go Controlplane)
+A token-only key is forbidden because cached Trinity credentials carry Zone and
+tenant context.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant acr as Rust acr (ext_authz)
-    participant Handler as Go RPC Handler
-    participant Service as Go Auth Service
-    participant Repo as Go Token Repo
-    participant DB as PostgreSQL Database
+### 5.2 Distributed singleflight
 
-    acr->>Handler: gRPC VerifyOpaqueRefreshToken(refresh_token)
-    Handler->>Service: VerifyOpaqueRefreshToken(ctx, refresh_token)
-    
-    Service->>Service: Băm SHA-256 Refresh Token thô
-    Service->>Repo: GetTokenByHash(ctx, hash)
-    Repo->>DB: SELECT ... FROM refresh_tokens WHERE token_hash = <hash>
-    
-    alt TH2.a: Token không tồn tại hoặc đã hết hạn
-        DB-->>Repo: Không tìm thấy / Hết hạn
-        Repo-->>Service: Trả về None / Error (Expired/Not Found)
-        Service-->>Handler: Trả về lỗi xác thực
-        Handler-->>acr: VerifyOpaqueRefreshTokenResponse (valid=false)
-    else TH2.b: Token đã được sử dụng trước đó (Replay Attack)
-        DB-->>Repo: Trả về bản ghi Token (used_at IS NOT NULL)
-        Repo-->>Service: Trả về TokenRecord
-        Service->>Service: Phát hiện used_at != null (Replay Attack)
-        Service->>Repo: RevokeRefreshTokensByDeviceIDAndUserID(user_id, device_id)
-        Repo->>DB: DELETE FROM refresh_tokens WHERE user_id = <user_id> AND device_id = <device_id>
-        DB-->>Repo: Thành công
-        Repo-->>Service: Hoàn thành thu hồi phiên
-        Service-->>Handler: Trả về lỗi xác thực (Invalid Session)
-        Handler-->>acr: VerifyOpaqueRefreshTokenResponse (valid=false)
-    else TH2.c: Token đã bị thu hồi từ trước
-        DB-->>Repo: Trả về bản ghi Token (revoked_at IS NOT NULL)
-        Repo-->>Service: Trả về TokenRecord
-        Service-->>Handler: Trả về lỗi xác thực (Invalid Session)
-        Handler-->>acr: VerifyOpaqueRefreshTokenResponse (valid=false)
-    else TH2.d: Token Hợp Lệ (used_at và revoked_at đều NULL)
-        DB-->>Repo: Trả về bản ghi Token (Hợp lệ)
-        Repo-->>Service: Trả về TokenRecord
-        
-        Service->>Service: Thực hiện Token Rotation (Phương án 2)
-        Service->>Repo: RotateRefreshToken(current, next)
-        
-        Note over Repo,DB: Bắt đầu Transaction
-        Repo->>DB: UPDATE refresh_tokens SET used_at = now() WHERE id = <id> AND used_at IS NULL AND revoked_at IS NULL
-        Repo->>DB: INSERT INTO refresh_tokens (id, user_id, device_id, token_hash, tenant_id, issued_at, expires_at) VALUES (..., <old_expiry>)
-        Note over Repo,DB: Commit Transaction
-        DB-->>Repo: Thành công
-        
-        Repo-->>Service: Trả về kết quả xoay vòng thành công
-        Service-->>Handler: Trả về dữ liệu phiên (valid=true, user_id, role, level, tenant_id)
-        Handler-->>acr: VerifyOpaqueRefreshTokenResponse (valid=true, ...)
-    end
+Auth-State Redis keys are bounded soft state:
+
+```text
+iam:lock:recovery:<recovery_key>   TTL 10 seconds
+iam:recovery_cache:<recovery_key> TTL 5 seconds
 ```
 
----
+The lock value is a unique owner UUID. Cache publication and lock deletion use
+Lua compare-by-owner. An expired leader cannot delete a newer replica's lock.
+Followers wait at most 1.2 seconds for the cache, then return retryable `503`.
 
-### 🌐 Chi tiết Phân giải & Chuyển đổi Ngữ cảnh Zone (Zone Context & Switch Workflow)
+### 5.3 Controlplane request/reply
 
-Toàn bộ quy trình phân giải Zone, các ràng buộc bảo mật đối với người dùng (không cho phép user thường truy cập zone global hay zone inactive), và cơ chế chuyển đổi ngữ cảnh Zone tường minh (Explicit Zone Switch via `/api/v1/zone/go-to-zone`) được mô tả chi tiết tại:
+The canonical payload is `contracts/proto/iam_auth.proto`:
 
-👉 [Tài liệu Thiết kế Zone Context & Switch Workflow](user_zone_context_god_view_workflow.md)
+```text
+RecoverUserSessionRequest {
+  refresh_token
+  optional requested_tenant_id
+}
 
----
-
-## 📊 3. Giám Sát Và Truy Vết (Observability & Distributed Tracing)
-
-Hệ thống hoạt động trên môi trường Cloud-Native và High Availability (HA), yêu cầu giám sát toàn diện thông qua 3 trụ cột Observability: Tracing (OpenTelemetry), Metrics (Prometheus) và Structured Logs (VictoriaLogs/Loki).
-
-### 1. Truy Vết Phân Tán (OpenTelemetry Distributed Tracing)
-
-Mọi request đi qua API Gateway đều được gắn một mã định danh duy nhất (`Trace ID`) thông qua tiêu chuẩn **W3C Trace Context** (`traceparent`). Mã này được truyền tải xuyên suốt các dịch vụ:
-`UI (Browser) -> Envoy -> Rust acr (ext_authz) -> Go Controlplane (VerifyOpaqueRefreshToken) -> CSDL (PostgreSQL/Redis)`.
-
-#### A. Thuộc tính Trace (Span Attributes) chuẩn hóa cho IAM
-
-Để phục vụ điều tra và phân tích hành vi, các Spans liên quan đến phiên làm việc bắt buộc phải được đính kèm các thuộc tính:
-
-- `iam.user.id`: UUID của người dùng.
-- `iam.device.id`: UUID của thiết bị (TDID).
-- `iam.tenant.id`: UUID của Tenant (nếu có).
-- `iam.session.access_key`: Key tra cứu session trong Redis L2.
-- `iam.token.id`: ID định danh phiên Refresh Token trong DB.
-- `iam.auth.outcome`: Kết quả xác thực (`success`, `invalid_token`, `session_expired`, `internal_error`).
-
-#### B. Ánh xạ Trace ID vào Log
-
-Trong Rust acr (`logger.rs`) và Go Controlplane, Trace ID luôn được trích xuất từ Context hiện tại và ghi trực tiếp vào cấu trúc Log JSON:
-
-```json
-{
-  "timestamp": "2026-06-23T05:12:00Z",
-  "level": "info",
-  "trace_id": "8a3f9d2c1e4b8f0a3c2d1e0f9a8b7c6d",
-  "service": "aurora-acr",
-  "message": "Transparent session recovery successful for user_id=d3b07384-d113-4c91-9e59-00f723821033",
-  "iam": {
-    "user_id": "d3b07384-d113-4c91-9e59-00f723821033",
-    "device_id": "f5a04384-213c-4a34-a4f2-10f723828941"
-  }
+RecoverUserSessionResponse {
+  credential_valid
+  context_authorized
+  user_id, username
+  client_device_id
+  resolved_tenant_id
+  role_id, role_level
+  personal_fallback_authorized
 }
 ```
 
----
+Transport is bounded Shared L2 Redis request/reply, not gRPC and not Kafka:
 
-### 2. Chỉ Số Giám Sát (OTel Metrics & Dashboard)
-
-Hệ thống theo dõi các chỉ số quan trọng (Golden Signals) để đưa ra cảnh báo sớm về hiệu năng và bảo mật.
-
-#### A. Các chỉ số Controlplane chính
-
-- `aurora_controlplane_workflow_calls_total{module="iam",op="iam.auth.verify_opaque_token",result,reason}`.
-- `aurora_controlplane_workflow_duration_seconds{module="iam",op="iam.auth.verify_opaque_token",result,reason}`.
-- `aurora_controlplane_dependency_calls_total{module="iam",op="iam.auth.verify_opaque_token",system,operation,result,reason}`.
-- `aurora_controlplane_dependency_duration_seconds` cho PostgreSQL/Redis adapter latency.
-
-ACR sở hữu session, Vault signing và client-side request metrics của ACR; không gắn chúng vào Controlplane metric namespace.
-
-#### B. PromQL Dashboard & Alerting Rules (Sử dụng cho Grafana Alert)
-
-##### 🚨 Cảnh báo Tỷ Lệ Lỗi Hệ Thống Lớn (Infrastructure Failure Rate > 1%)
-
-Cảnh báo kích hoạt nếu các lỗi hạ tầng (Vault/Redis chết) chiếm hơn 1% tổng request trong 2 phút liên tiếp:
-
-```promql
-sum(rate(aurora_controlplane_workflow_calls_total{module="iam",result="failure"}[2m]))
-/ 
-clamp_min(sum(rate(aurora_controlplane_workflow_calls_total{module="iam"}[2m])), 0.000001) * 100 > 1
+```text
+request: iam.auth.recover_user_session
+reply:   iam.auth.recover_user_session.reply.<request_id>
 ```
 
-##### 🚨 Cảnh báo Phát Hiện Tấn Công Sử Dụng Lại Token (Opaque Token Reuse Detection)
+Redis Pub/Sub delivers to all Controlplane replicas. A request-ID `SET NX` fence
+allows one replica to execute the PostgreSQL read. Dropping an overloaded
+replica is safe because another replica can acquire the same request fence; ACR
+ultimately fails closed on its two-second timeout.
 
-Replay token là security event của ACR. Controlplane không tạo metric label chi tiết token;
-alert dựa trên ACR security metric/log contract và không suy luận từ business metric.
+### 5.4 Atomic authority snapshot
 
-##### 🚨 Cảnh Báo Độ Trễ Verify Opaque Token Quá Cao (p99 > 200ms)
+`RecoverUserSession` repository performs one read-only PostgreSQL CTE snapshot:
 
-Gây nghẽn tại Gateway do Controlplane phản hồi chậm hoặc DB PostgreSQL quá tải:
+1. match token hash and unexpired credential;
+2. require active user;
+3. require matching active, non-revoked device;
+4. for personal context, resolve the current root `user_role` and matching
+   `platform_roles.version`;
+5. for tenant context, require active tenant and membership, then resolve the
+   root `membership_role` and matching tenant role/version.
 
-```promql
-histogram_quantile(0.99,
-  sum by (le) (rate(aurora_controlplane_workflow_duration_seconds_bucket{module="iam",op="iam.auth.verify_opaque_token"}[5m]))
-) > 0.200
+The same snapshot returns the canonical `COALESCE(device.client_device_id,
+device.id)` value. ACR uses that value for the new session index and overwrites
+the browser device cookie; it never trusts a client-provided device identifier
+for recovered session registration.
+
+The repository returns generic taxonomy:
+
+- `ErrInvalidCredential` when steps 1-3 fail;
+- `ErrActionNotAllowed` when the credential is valid but requested context is
+  no longer authorized;
+- wrapped infrastructure error for PostgreSQL failure.
+
+The handler publishes explicit domain outcomes. It publishes no response for
+infrastructure failure, so ACR reports retryable unavailability rather than
+misclassifying a database outage as invalid credentials.
+
+### 5.5 Successful context
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser
+    participant Envoy
+    participant ACR
+    participant AuthRedis as Auth-State Redis
+    participant Shared as Shared L2 Redis
+    participant CP as Controlplane IAM
+    participant DB as PostgreSQL
+    participant Vault
+
+    Browser->>Envoy: request + expired Trinity + refresh_token + context cookies
+    Envoy->>ACR: ext_authz check
+    ACR->>ACR: validate tenant and resolve concrete Zone
+    ACR->>AuthRedis: GET cache / acquire owner lock
+    ACR->>Shared: RecoverUserSession request
+    Shared->>CP: Pub/Sub fan-out
+    CP->>Shared: request-id SET NX fence
+    CP->>DB: one CTE credential + current authority snapshot
+    CP-->>Shared: credential_valid=true, context_authorized=true
+    Shared-->>ACR: correlated response
+    ACR->>Vault: sign new active-context JWT
+    ACR->>AuthRedis: register new Trinity session
+    ACR->>AuthRedis: owner-checked SET cache + DEL lock
+    ACR-->>Envoy: intercepted 200 + replacement cookies
+    Envoy-->>Browser: replacement cookies; original request not forwarded
+    Browser->>Envoy: retry request with valid Trinity session
 ```
 
----
+### 5.6 Stale tenant fallback
 
-### 3. Truy Vấn Nhật Ký Cấu Trúc (LogQL / VictoriaLogs Runbook)
+If the refresh credential is valid but the requested tenant is no longer
+authorized, the same PostgreSQL snapshot also resolves platform authority. It
+returns `personal_fallback_authorized=true` and the personal role without
+mutating context. This remains recovery, not tenant switch, and avoids a second
+round trip inside Envoy's three-second ext-authz budget.
 
-Dùng để truy vết sự cố nhanh khi xảy ra lỗi trên môi trường phân tán HA.
+When personal authority succeeds, ACR:
 
-##### A. Truy vết vòng đời của một Session (End-to-End Trace) qua Trace ID
+1. issues a personal Trinity session;
+2. sets `tenant_id=platform`;
+3. clears `tenant_domain` and `workspace_id`;
+4. returns `x-aurora-context-reset: personal`;
+5. intercepts the original tenant request instead of forwarding it.
 
-Khi một API của người dùng bị lỗi, copy `trace_id` nhận được từ Header response và thực hiện câu truy vấn:
+The Console HTTP client reloads `/` after the replacement cookies are applied.
+It never treats the interrupted tenant response as business success.
 
-```logsql
-trace_id: "8a3f9d2c1e4b8f0a3c2d1e0f9a8b7c6d"
+## 6. Failure semantics
+
+| Failure | HTTP behavior | Credential/cookie behavior |
+| --- | --- | --- |
+| Missing or invalid refresh credential | `401` | Clear auth/context cookies; keep device identifier |
+| Malformed requested tenant | `400` | Keep credential; require corrected context |
+| Zone unavailable | `400/403` | Keep credential; no session issued |
+| Valid credential, no personal authority | `403` | Keep credential; no session issued |
+| Lock busy or CP/Redis/PostgreSQL/Vault unavailable | `503` | Fail closed; keep refresh credential for retry |
+| Malformed CP success response | `503` | No session issued |
+
+At-least-once request delivery is safe: recovery is a read followed by
+idempotently keyed runtime session/cache writes. No code claims exactly-once
+across Redis, PostgreSQL and Vault.
+
+## 7. Logout and device revocation
+
+Logout revokes the durable credential before clearing runtime state:
+
+```text
+ACR -> Shared L2 request/reply -> Controlplane -> DELETE refresh_tokens by hash
+ACR -> Auth-State Redis runtime session cleanup -> clear browser cookies
 ```
 
-##### B. Phát hiện các cuộc gọi Opaque Refresh thất bại liên tục từ cùng 1 IP (Nguy cơ brute force / dò quét token)
+The Controlplane delete is idempotent: an absent row is already the desired
+state. If durable revocation cannot be proven, ACR returns `503` without clearing
+cookies so the user can retry. A successful logout returns `204` and keeps only
+`client_device_id`.
 
-```logsql
-"ext_authz.recovery_session" AND "invalid" | "denied"
-| stats count() by client_ip
-| filter count > 20
-```
+Device revocation hard-deletes the durable refresh credential through the
+`refresh_tokens.device_id ON DELETE CASCADE` relationship and separately sends
+the existing durable runtime-session revoke command.
 
-##### C. Thống kê lỗi hệ thống hạ tầng (Vault / Redis không phản hồi)
+## 8. Security and observability invariants
 
-```logsql
-"ext_authz.recovery_session" AND "Failed to" AND "Vault" OR "Redis"
-```
+- Never log or trace raw refresh token, token hash, access secret or recovery
+  cache payload.
+- Trace context and operation name may cross the request boundary; business
+  metrics use bounded result/reason labels only.
+- ACR and Controlplane dependencies fail fast during construction; services do
+  not perform nil dependency checks.
+- Request payload size and UUID shape are validated at the receiving handler.
+- PostgreSQL remains the only durable SoT for the opaque credential and current
+  IAM authority.
+- Redis recovery cache is rebuildable and must not be used as authorization SoT.
+- Tenant switch never mutates the refresh credential.
+- Recovery never trusts expired JWT identity and never silently forwards a
+  request under a different owner context.
 
----
-*Tài liệu kết thúc.*
-<!-- markdownlint-enable MD033 -->
+## 9. Code map
+
+- `contracts/proto/iam_auth.proto`
+- `acr/src/user/recovery.rs`
+- `acr/src/user/verify.rs`
+- `acr/src/user/rotate.rs`
+- `acr/src/user/revoke.rs`
+- `controlplane/internal/iam/domain/entity/refresh_token.go`
+- `controlplane/internal/iam/domain/service/session_refresh_service.go`
+- `controlplane/internal/iam/domain/repo/refresh_token_repo.go`
+- `controlplane/internal/iam/service/session_refresh_service.go`
+- `controlplane/internal/iam/repository/refresh_token_repo.go`
+- `controlplane/internal/iam/transport/pubsub/handler/auth.go`
+- `cloud-console/src/shared/api/http.ts`

@@ -46,7 +46,7 @@ pub fn detect_route_group(path: &str) -> RouteGroup {
         RouteGroup::SreCritical
     } else if path.starts_with("/admin") {
         RouteGroup::SreGeneral
-    } else if path.starts_with("/api/v1/critical/") {
+    } else if path.starts_with("/api/v1/critical/") || path.starts_with("/api/v1/me/critical/") {
         RouteGroup::UserCritical
     } else if path.starts_with("/api/v1/auth/") {
         RouteGroup::AuthPublic
@@ -285,6 +285,14 @@ mod tests {
         assert_eq!(
             detect_route_group("/zone-control/v1/storage/buckets/a/objects?list-type=2"),
             RouteGroup::ZoneControl
+        );
+    }
+
+    #[test]
+    fn me_critical_route_uses_user_critical_budget() {
+        assert_eq!(
+            detect_route_group("/api/v1/me/critical/hierarchy/tenant-invitations/join"),
+            RouteGroup::UserCritical
         );
     }
 }

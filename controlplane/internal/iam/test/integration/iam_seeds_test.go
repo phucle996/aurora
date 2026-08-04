@@ -2,15 +2,9 @@ package integration
 
 import (
 	"controlplane/internal/iam/migrations"
-	"encoding/hex"
-	"reflect"
 	"regexp"
 	"strings"
 	"testing"
-
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
-
-	"google.golang.org/protobuf/proto"
 )
 
 func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
@@ -19,124 +13,31 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		t.Fatalf("read IAM bootstrap seed: %v", err)
 	}
 
-	// [COMMENT]: Một RoleEntry có thể nối thêm field protobuf khi catalog quyền
-	// tăng trưởng. Test gom toàn bộ fragment của đúng user trước khi unmarshal.
-	blocks := regexp.MustCompile(`(?s)((?:decode\('[0-9a-f]+', 'hex'\)(?:\s*\|\|\s*)?)+)\s*FROM users u\s*CROSS JOIN roles r\s*WHERE u\.username = '([^']+)'`).FindAllStringSubmatch(string(sql), -1)
-	if len(blocks) != 5 {
-		t.Fatalf("expected 5 precompiled bootstrap RoleEntry expressions, got %d", len(blocks))
+	source := string(sql)
+	if !strings.HasPrefix(source, "-- IAM baseline seed.") {
+		t.Fatal("000006 must declare itself as the canonical zero-state baseline")
 	}
-
-	allPermissions := []string{
-		"iam:users:read",
-		"iam:users:manage",
-		"iam:role:read",
-		"iam:role:write",
-		"iam:role:assign",
-		"iam:role:delete",
-		"iam:permissions:read",
-		"storage:bucket:read",
-		"storage:bucket:write",
-		"storage:bucket:delete",
-		"storage:credential:read",
-		"storage:credential:write",
-		"storage:credential:delete",
-		"hierarchy:workspace:create",
-		"hierarchy:workspace:read",
-		"hierarchy:workspace:update",
-		"hierarchy:workspace:delete",
-		"iam:device:read",
-		"iam:mfa:view",
-		"email:consumer:create",
-		"email:consumer:read",
-		"email:consumer:update",
-		"email:consumer:delete",
-		"email:template:create",
-		"email:template:read",
-		"email:template:publish",
-		"email:template:delete",
-		"billing:plan:read",
-		"billing:tier:read",
-		"billing:tier:publish",
-		"billing:wallet:read",
-		"billing:ledger:read",
-		"billing:subscription:write",
-		"billing:credit:adjust",
-		"managed-service:catalog:read",
-		"managed-service:instance:read",
-		"managed-service:instance:write",
+	if strings.Contains(strings.ToUpper(source), "ON CONFLICT") {
+		t.Fatal("zero-state baseline must not merge or patch pre-existing data")
 	}
-	readOnlyPermissions := []string{
-		"iam:users:read",
-		"iam:role:read",
-		"iam:permissions:read",
-		"storage:bucket:read",
-		"storage:credential:read",
-		"hierarchy:workspace:read",
-		"iam:device:read",
-		"iam:mfa:view",
-		"email:consumer:read",
-		"email:template:read",
-		"billing:plan:read",
-		"billing:tier:read",
-		"billing:wallet:read",
-		"billing:ledger:read",
-		"managed-service:catalog:read",
-		"managed-service:instance:read",
+	if strings.Count(source, "iam_seed_role_entry(array_agg(") != 2 {
+		t.Fatal("global and workspace assignments must both compile from normalized mappings")
 	}
-	billingPermissions := []string{
-		"billing:plan:read",
-		"billing:tier:read",
-		"billing:tier:publish",
-		"billing:wallet:read",
-		"billing:ledger:read",
-		"billing:subscription:write",
-		"billing:credit:adjust",
+	if !strings.Contains(source, "u.username || ':00000000-0000-0000-0000-000000000000:'") ||
+		!strings.Contains(source, "user_account.username || ':' || workspace.id::text || ':'") {
+		t.Fatal("every seeded user_role assignment must carry the full five-level identity/workspace prefix")
 	}
-
-	tests := []struct {
-		username string
-		want     []string
-	}{
-		{username: "root", want: allPermissions},
-		{username: "billing_admin", want: billingPermissions},
-		{username: "sys_admin", want: allPermissions},
-		{username: "support_operator", want: readOnlyPermissions},
-		{username: "audit_viewer", want: readOnlyPermissions},
+	for _, roleCode := range []string{
+		"platform_root", "platform_admin", "billing_admin", "platform_support_operator", "platform_user",
+	} {
+		if !strings.Contains(source, "'"+roleCode+"'") {
+			t.Fatalf("missing canonical platform role %q", roleCode)
+		}
 	}
-
-	for i, tt := range tests {
-		t.Run(tt.username, func(t *testing.T) {
-			if blocks[i][2] != tt.username {
-				t.Fatalf("bootstrap RoleEntry order mismatch: got %q", blocks[i][2])
-			}
-			hexFragments := regexp.MustCompile(`decode\('([0-9a-f]+)', 'hex'\)`).FindAllStringSubmatch(blocks[i][1], -1)
-			var encoded strings.Builder
-			for _, fragment := range hexFragments {
-				encoded.WriteString(fragment[1])
-			}
-			binaryEntry, err := hex.DecodeString(encoded.String())
-			if err != nil {
-				t.Fatalf("decode seeded RoleEntry hex: %v", err)
-			}
-
-			var entry iamproto.RoleEntry
-			if err := proto.Unmarshal(binaryEntry, &entry); err != nil {
-				t.Fatalf("unmarshal seeded RoleEntry: %v", err)
-			}
-
-			// [COMMENT]: So sánh toàn bộ snapshot để rebuild Email không làm rơi quyền cũ hoặc cấp mutation cho support/audit.
-			got := make([]string, 0, len(entry.Permissions))
-			prefix := tt.username + ":*:"
-			for _, permission := range entry.Permissions {
-				if !strings.HasPrefix(permission, prefix) {
-					t.Fatalf("permission %q does not use bootstrap identity prefix %q", permission, prefix)
-				}
-				got = append(got, strings.TrimPrefix(permission, prefix))
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("permissions mismatch\nwant: %#v\n got: %#v", tt.want, got)
-			}
-		})
+	for _, removedTenantRole := range []string{"tenant_owner", "tenant_admin", "tenant_member", "tenant_viewer"} {
+		if strings.Contains(source, "'"+removedTenantRole+"'") {
+			t.Fatalf("baseline must not seed tenant-owned role %q", removedTenantRole)
+		}
 	}
 }
 
@@ -155,7 +56,7 @@ func TestIAMSeedRollbackCoversPermissionCatalog(t *testing.T) {
 	if !found {
 		t.Fatal("up migration does not contain permission seed statement")
 	}
-	upPermissionSQL, _, found = strings.Cut(upPermissionSQL, "-- ----------------------------------------------------------------------------\n-- 3)")
+	upPermissionSQL, _, found = strings.Cut(upPermissionSQL, "-- 3. Platform roles only")
 	if !found {
 		t.Fatal("up migration permission statement has no role-section boundary")
 	}
@@ -195,12 +96,11 @@ func TestTenantWalletTopUpIsNotAPlatformPermission(t *testing.T) {
 		t.Fatalf("read IAM bootstrap seed: %v", err)
 	}
 	source := string(sql)
-	if !strings.Contains(source, "r.code IN ('tenant_owner', 'tenant_admin')") ||
-		!strings.Contains(source, "p.behavior IN ('read', 'top_up')") {
-		t.Fatal("tenant owner/admin wallet permission mapping is missing")
+	if !strings.Contains(source, "(gen_random_uuid(), 'billing', 'wallet', 'top_up'") {
+		t.Fatal("tenant wallet top_up must remain in the normalized permission catalog")
 	}
-	if !strings.Contains(source, "AND NOT (p.module='billing' AND p.object='wallet' AND p.behavior='top_up')") ||
-		!strings.Contains(source, "AND NOT (p.object='wallet' AND p.behavior='top_up')") {
+	if !strings.Contains(source, "AND NOT (permission.module='billing' AND permission.object='wallet' AND permission.behavior='top_up')") ||
+		!strings.Contains(source, "AND NOT (permission.object='wallet' AND permission.behavior='top_up')") {
 		t.Fatal("platform bootstrap roles must not receive tenant wallet top_up")
 	}
 }
@@ -216,5 +116,42 @@ func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
 	if !strings.Contains(migration, "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_role_platform") ||
 		!strings.Contains(migration, "WHERE workspace_id = '00000000-0000-0000-0000-000000000000'") {
 		t.Fatal("IAM tables migration must enforce one nil-workspace platform role per user")
+	}
+}
+
+func TestRefreshCredentialBaselineIsUserDeviceOnly(t *testing.T) {
+	tablesSQL, err := migrations.Files.ReadFile("000002_iam_tables.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM tables migration: %v", err)
+	}
+	indexesSQL, err := migrations.Files.ReadFile("000003_iam_indexes.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM indexes migration: %v", err)
+	}
+
+	_, refreshSection, found := strings.Cut(string(tablesSQL), "CREATE TABLE IF NOT EXISTS refresh_tokens")
+	if !found {
+		t.Fatal("refresh_tokens table is missing")
+	}
+	refreshSection, _, found = strings.Cut(refreshSection, "-- [COMMENT]: Bảng lưu thiết bị")
+	if !found {
+		t.Fatal("refresh_tokens table has no device-table boundary")
+	}
+	for _, required := range []string{
+		"device_id uuid NOT NULL",
+		"CONSTRAINT refresh_tokens_user_device_uk UNIQUE (user_id, device_id)",
+		"Opaque user/device credentials",
+	} {
+		if !strings.Contains(refreshSection, required) {
+			t.Fatalf("refresh credential baseline is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"tenant_id", "workspace_id", "zone_id", "used_at", "revoked_at"} {
+		if strings.Contains(refreshSection, forbidden) {
+			t.Fatalf("refresh credential must not persist runtime context/state %q", forbidden)
+		}
+	}
+	if strings.Contains(string(indexesSQL), "refresh_tokens_tenant_id_idx") {
+		t.Fatal("refresh credential must not retain a tenant lookup index")
 	}
 }

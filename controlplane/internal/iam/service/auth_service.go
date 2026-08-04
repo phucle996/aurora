@@ -385,17 +385,8 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	var rawRefresh string
 	var refreshExpiresAt time.Time
 	if req.TrustDevice {
-		var tenantUUIDPtr *uuid.UUID
-		if tenantID != "" {
-			parsed, err := uuid.Parse(tenantID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse tenant ID: %w", err)
-			}
-			tenantUUIDPtr = &parsed
-		}
-
 		var refreshErr error
-		rawRefresh, refreshExpiresAt, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, tenantUUIDPtr)
+		rawRefresh, refreshExpiresAt, refreshErr = s.refreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}
@@ -508,16 +499,7 @@ func (s *AuthService) VerifyMfaLogin(
 	var rawRefresh string
 	var refreshExpiresAt time.Time
 	if req.TrustDevice {
-		var tenantUUIDPtr *uuid.UUID
-		if tenantID != "" {
-			parsed, parseErr := uuid.Parse(tenantID)
-			if parseErr != nil {
-				result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
-				return nil, iamTaxonomy.ErrMFAChallengeInvalid
-			}
-			tenantUUIDPtr = &parsed
-		}
-		rawRefresh, refreshExpiresAt, err = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, tenantUUIDPtr)
+		rawRefresh, refreshExpiresAt, err = s.refreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
 		if err != nil {
 			return nil, err
 		}
@@ -668,7 +650,7 @@ func (s *AuthService) VerifyExternalIdentity(
 	var rawRefresh string
 	var refreshExpiresAt time.Time
 	if req.TrustDevice {
-		rawRefresh, refreshExpiresAt, err = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, nil)
+		rawRefresh, refreshExpiresAt, err = s.refreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
 		if err != nil {
 			return nil, err
 		}

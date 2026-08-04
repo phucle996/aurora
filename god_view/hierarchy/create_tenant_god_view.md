@@ -13,8 +13,13 @@
 1. **No Tenant-in-Tenant Context**: Một tổ chức (Tenant) không được phép chứa hoặc tạo thêm tổ chức con bên trong nó. Yêu cầu tạo mới tenant chỉ hợp lệ từ ngữ cảnh cá nhân (khi header `X-Tenant-ID` trống hoặc không tồn tại).
 2. **Creator Member Binding**: Khi một người dùng (`owner_id`) tạo một tổ chức mới thành công, hệ thống phải tự động liên kết người dùng này làm thành viên đầu tiên ở trạng thái hoạt động (`active`) trong tổ chức đó.
 3. **Zone Independence**: Tổ chức (Tenant) chỉ mang tính cấu trúc logic (Logical Organization) nên độc lập hoàn toàn và không thuộc về bất kỳ phân vùng hạ tầng (`Zone`) nào ở mức vật lý.
-4. **Atomic Billing Intent**: Tenant, membership `tenant_owner`, năm role snapshot và tenant-wallet outbox phải commit
-   trong cùng PostgreSQL transaction. Shared Redis chỉ relay sau commit, không phải business SoT.
+4. **Canonical Primary Domain**: Create tenant phải persist lowercase primary
+   domain trong cùng transaction. Tenant login/switch không được tồn tại nếu
+   domain chỉ xuất hiện ở UI nhưng không có trong PostgreSQL.
+5. **Atomic Tenant Root & Billing Intent**: Tenant, owner membership, đúng một
+   `tenant_root` definition, normalized permission mappings, compiled
+   `membership_role` và tenant-wallet outbox phải commit trong cùng PostgreSQL
+   transaction. Không copy danh sách tenant role từ seed.
 
 ---
 
@@ -89,7 +94,8 @@ Hệ thống sử dụng cơ chế bảo vệ phân tầng hiệu năng cao nh�
 ##### 4. Nhánh Phân Giải Ngữ Cảnh & Gắn Header (Context Resolution & Header Mutation Branch)
 * **Mục tiêu**: Đọc các claims từ Token được giải mã để phân giải ngữ cảnh hoạt động và truyền tải an toàn vào mạng nội bộ.
 * **Các kịch bản ánh xạ**:
-  * **Inject User Identity**: `claims.sub` (UUID của User) luôn luôn được trích xuất và gán vào header `X-User-ID`.
+  * **Inject User Identity**: `claims.uid` (UUID của User) được gán vào
+    `X-User-ID`; `claims.sub` là canonical username và không được dùng thay UUID.
   * **Inject Tenant Context**: 
     * Nếu JWT chứa claim `tenant_id != NULL` -> Trích xuất và gán vào header `X-Tenant-ID` (phục vụ kiểm tra chặn tạo tenant lồng nhau ở Controlplane).
     * Nếu JWT không chứa claim `tenant_id` -> Không gán header `X-Tenant-ID` (hoặc để trống/NULL).
@@ -144,15 +150,17 @@ sequenceDiagram
 
     Handler->>Svc: CreateTenant(ctx, tenant, ownerID)
     
-    Note over Svc: B4: Sinh UUIDv7 cho Tenant mới
+    Note over Svc: B4: Sinh UUIDv7 cho tenant, membership, tenant_root và assignment
     Note over Svc: B5: Thiết lập Status (active) & Timestamps (now)
     
     Svc->>Repo: CreateTenant(ctx, *CreateTenant)
     
     Note over Repo: B6: Một PostgreSQL transaction
-    Repo->>DB: INSERT tenant
-    Repo->>DB: INSERT active membership role=tenant_owner
-    Repo->>DB: Seed five tenant_role protobuf snapshots
+    Repo->>DB: Read permission catalog in one repeatable-read snapshot
+    Repo->>DB: Compile tenant:nil-workspace five-level RoleEntry
+    Repo->>DB: INSERT tenant + lowercase primary domain + active owner membership
+    Repo->>DB: INSERT tenant_root definition level=3 + normalized mappings
+    Repo->>DB: INSERT compiled membership_role
     Repo->>DB: INSERT billing.wallet.tenant.provision.requested.v1 outbox
     
     alt DB Success (Event 2A)
@@ -216,8 +224,11 @@ Các ràng buộc chặt chẽ được thực thi tại database schema `hierar
 
 ### 3. Ràng buộc thành viên sáng lập (Atomic membership creation)
 * Việc tạo bản ghi tenant và bản ghi hội viên quản trị đầu tiên bắt buộc phải diễn ra đồng thời. Nếu một trong hai thất bại, toàn bộ hành động bị hủy bỏ (Rollback).
-* Membership sáng lập có `role='tenant_owner'`; tenant Billing authorization resolve role từ đúng membership
-  của user, không lấy một role bất kỳ bằng `LIMIT 1`.
+* Membership không chứa role string. Quyền sáng lập nằm ở một global
+  `membership_role` tham chiếu `tenant_root`, role level 3, version 1 và
+  permission snapshot năm bậc.
+* `tenant_root` được tạo riêng cho đúng tenant. Baseline seed không có tenant
+  role vì role đó chưa thể có ownership khi tenant chưa tồn tại.
 
 ### 4. Tenant wallet provisioning
 

@@ -191,7 +191,11 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (state.status === "unauthenticated" && !isPublicRoute(pathname)) {
-      router.replace("/signin");
+      if (pathname === "/settings/tenant-invitations/join") {
+        router.replace(`/signin?return_to=${encodeURIComponent(pathname + window.location.search)}`);
+      } else {
+        router.replace("/signin");
+      }
     }
   }, [pathname, router, state.status]);
 

@@ -22,71 +22,9 @@ import (
 )
 
 type AuthRepository struct {
-	db     *pgxpool.Pool
-	schema string
-}
-
-func (r *AuthRepository) insertPlatformRoleTx(
-	ctx context.Context,
-	tx pgx.Tx,
-	userID uuid.UUID,
-	username string,
-) (uuid.UUID, int32, error) {
-	query := fmt.Sprintf(`
-		SELECT r.id, r.name, r.role_level,
-		       COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
-		FROM %s.roles r
-		LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id
-		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
-		WHERE r.code = 'platform_user'
-	`, r.schema, r.schema, r.schema)
-	rows, err := tx.Query(ctx, query)
-	if err != nil {
-		return uuid.Nil, 0, fmt.Errorf("iam repo: query platform user role: %w", err)
-	}
-	defer rows.Close()
-
-	var roleID uuid.UUID
-	var roleName string
-	var roleLevel int32
-	var perms []string
-	found := false
-	for rows.Next() {
-		found = true
-		var module, object, behavior string
-		if err := rows.Scan(&roleID, &roleName, &roleLevel, &module, &object, &behavior); err != nil {
-			return uuid.Nil, 0, fmt.Errorf("iam repo: scan platform user role: %w", err)
-		}
-		if module != "" && object != "" && behavior != "" {
-			perms = append(perms, fmt.Sprintf(
-				"%s:00000000-0000-0000-0000-000000000000:%s:%s:%s",
-				username, module, object, behavior,
-			))
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return uuid.Nil, 0, fmt.Errorf("iam repo: iterate platform user role: %w", err)
-	}
-	if !found {
-		return uuid.Nil, 0, iamTaxonomy.ErrRoleNotFound
-	}
-
-	rolePayload, err := proto.Marshal(&iamproto.RoleEntry{Permissions: perms})
-	if err != nil {
-		return uuid.Nil, 0, fmt.Errorf("iam repo: marshal platform user role: %w", err)
-	}
-	_, err = tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.user_role (
-			id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-		ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING
-	`, r.schema),
-		uuid.Must(uuid.NewV7()), userID, username, uuid.Nil, roleID, roleName, roleLevel, rolePayload,
-	)
-	if err != nil {
-		return uuid.Nil, 0, fmt.Errorf("iam repo: insert external user role: %w", err)
-	}
-	return roleID, roleLevel, nil
+	db              *pgxpool.Pool
+	schema          string
+	hierarchySchema string
 }
 
 func NewAuthRepository(
@@ -94,8 +32,9 @@ func NewAuthRepository(
 	db *pgxpool.Pool,
 ) iamRepoInterface.AuthRepository {
 	return &AuthRepository{
-		db:     db,
-		schema: cfg.SchemaSQL.IAM,
+		db:              db,
+		schema:          cfg.SchemaSQL.IAM,
+		hierarchySchema: cfg.SchemaSQL.Hierarchy,
 	}
 }
 
@@ -157,8 +96,8 @@ func (r *AuthRepository) LoginUserTenant(
 	username string,
 	tenantDomain string,
 ) (*iamEntity.LoginUser, error) {
-	// [COMMENT]: Query JOIN hierarchy.tenant_memberships, tenants, tenant_domains
-	// và LEFT JOIN sang iam.user_role để lấy max role thuộc tenant đó.
+	// [COMMENT]: Tenant login resolves the actor's durable membership binding;
+	// a platform user_role must never be reused as tenant authority.
 	query := fmt.Sprintf(`
 		SELECT
 			u.id,
@@ -167,18 +106,18 @@ func (r *AuthRepository) LoginUserTenant(
 			u.password_hash,
 			u.status,
 			t.id::text   AS tenant_id,
-			COALESCE(ur.role_id::text, '') AS role_id,
-			COALESCE(ur.role_level, 99)    AS role_level
+			mr.tenant_role_id::text AS role_id,
+			mr.role_level
 		FROM %s.users u
-		JOIN hierarchy.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
-		JOIN hierarchy.tenants t             ON t.id = tm.tenant_id
-		JOIN hierarchy.tenant_domains td     ON td.tenant_id = t.id AND td.domain = $2
-		LEFT JOIN %s.user_role ur            ON ur.user_id = u.id 
-		                                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+		JOIN %s.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
+		JOIN %s.tenants t             ON t.id = tm.tenant_id AND t.status='active'
+		JOIN %s.tenant_domains td     ON td.tenant_id = t.id AND lower(td.domain) = lower($2)
+		JOIN %s.membership_role mr            ON mr.membership_id=tm.id
+		                                    AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
 		WHERE u.username = $1
-		ORDER BY ur.role_level ASC NULLS LAST
+		ORDER BY mr.role_level ASC
 		LIMIT 1
-	`, r.schema, r.schema)
+	`, r.schema, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.schema)
 
 	var (
 		userModel iamModel.User
@@ -352,9 +291,10 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 
 	// [COMMENT]: Retry của active user cũng tải role chuẩn và INSERT ON CONFLICT để self-heal dữ liệu legacy thiếu role.
 	queryRolePerms := fmt.Sprintf(`
-		SELECT r.id, r.name, r.role_level, COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
-		FROM %s.roles r
-		LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id
+		SELECT r.id, r.name, r.role_level, r.version,
+		       COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
+		FROM %s.platform_roles r
+		LEFT JOIN %s.platform_role_permissions rp ON rp.role_id = r.id
 		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
 		WHERE r.code = $1
 	`, r.schema, r.schema, r.schema)
@@ -368,13 +308,14 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 	var roleID uuid.UUID
 	var roleName string
 	var roleLevel int
+	var roleVersion int64
 	var perms []string
 	roleFound := false
 
 	for rows.Next() {
 		roleFound = true
 		var mod, obj, beh string
-		if err := rows.Scan(&roleID, &roleName, &roleLevel, &mod, &obj, &beh); err != nil {
+		if err := rows.Scan(&roleID, &roleName, &roleLevel, &roleVersion, &mod, &obj, &beh); err != nil {
 			return fmt.Errorf("iam repo: scan role permission row: %w", err)
 		}
 		if mod != "" && obj != "" && beh != "" {
@@ -406,8 +347,8 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 	// [COMMENT]: 4. Chèn mapping user_role mới vào database
 	queryInsertRole := fmt.Sprintf(`
 		INSERT INTO %s.user_role (
-			id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+			id, user_id, username, workspace_id, role_id, role_name, role_level, role_version, list_perm, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
 		ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING
 	`, r.schema)
 
@@ -419,6 +360,7 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 		roleID,
 		roleName,
 		roleLevel,
+		roleVersion,
 		binaryBytes,
 	)
 	if err != nil {

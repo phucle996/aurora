@@ -8,6 +8,7 @@ package hierarchyHandler
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+)
+
+var (
+	tenantCodePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,99}$`)
+	tenantDomainPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,253}[a-z0-9]$`)
 )
 
 // [COMMENT]: TenantHandler xử lý HTTP requests liên quan đến Tenant
@@ -85,7 +91,11 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 	}
 	tenantName := strings.TrimSpace(request.Name)
 	tenantCode := strings.ToLower(strings.TrimSpace(request.Code))
-	if tenantName == "" || tenantCode == "" || len(tenantName) > 255 || len(tenantCode) > 100 {
+	primaryDomain := strings.ToLower(strings.TrimSpace(request.PrimaryDomain))
+	if tenantName == "" || len(tenantName) > 255 || !tenantCodePattern.MatchString(tenantCode) ||
+		len(primaryDomain) < 3 || len(primaryDomain) > 255 || strings.Contains(primaryDomain, "..") ||
+		strings.Contains(primaryDomain, ".-") || strings.Contains(primaryDomain, "-.") ||
+		!tenantDomainPattern.MatchString(primaryDomain) {
 		logger.HandlerWarn(c, op, nil, "create tenant normalized input is invalid")
 		apires.RespondBadRequest(c, "invalid request")
 		return
@@ -93,9 +103,10 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 
 	// [COMMENT]: Gọi service layer tạo tenant
 	tenant, err := h.tenantSvc.CreateTenant(ctx, &hierarchyEntity.CreateTenant{
-		OwnerID: ownerID,
-		Name:    tenantName,
-		Code:    tenantCode,
+		OwnerID:       ownerID,
+		Name:          tenantName,
+		Code:          tenantCode,
+		PrimaryDomain: primaryDomain,
 	})
 	if err != nil {
 		switch {
@@ -111,10 +122,11 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 
 	// [COMMENT]: Trả về kết quả thành công
 	apires.RespondCreated(c, gin.H{
-		"id":         tenant.ID,
-		"code":       tenant.Code,
-		"name":       tenant.Name,
-		"status":     tenant.Status,
-		"created_at": tenant.CreatedAt,
+		"id":             tenant.ID,
+		"code":           tenant.Code,
+		"name":           tenant.Name,
+		"status":         tenant.Status,
+		"primary_domain": tenant.PrimaryDomain,
+		"created_at":     tenant.CreatedAt,
 	}, "tenant created")
 }

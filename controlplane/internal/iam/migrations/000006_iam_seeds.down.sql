@@ -11,19 +11,14 @@ WHERE owner_id IN (
     '00000000-0000-0000-0000-000000000005'::uuid
 );
 
--- [COMMENT]: Role deletion cascades role_permissions, user_role, and tenant_role before root user is removed.
-DELETE FROM roles
+-- [COMMENT]: Role deletion cascades platform_role_permissions and user_role before root user is removed.
+DELETE FROM platform_roles
 WHERE code IN (
     'platform_root',
     'platform_user',
     'platform_admin',
     'billing_admin',
-    'platform_support_operator',
-    'tenant_owner',
-    'tenant_admin',
-    'tenant_manager',
-    'tenant_member',
-    'tenant_viewer'
+    'platform_support_operator'
 );
 
 DELETE FROM permissions
@@ -48,6 +43,9 @@ WHERE (module, object, behavior) IN (
         ('hierarchy', 'workspace', 'read'),
         ('hierarchy', 'workspace', 'update'),
         ('hierarchy', 'workspace', 'delete'),
+        ('hierarchy', 'tenant-invitation', 'create'),
+        ('hierarchy', 'tenant-invitation', 'read'),
+        ('hierarchy', 'tenant-invitation', 'delete'),
         ('email', 'consumer', 'create'),
         ('email', 'consumer', 'read'),
         ('email', 'consumer', 'update'),

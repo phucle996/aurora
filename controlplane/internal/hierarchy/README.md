@@ -404,13 +404,16 @@ baseline trước production:
 - `000002`: table.
 - `000003`: index/uniqueness.
 - `000004`: cross-table constraint.
-- `000005` và `000006`: role/membership constraint hiện hành.
+- `000005` và `000006`: dọn trigger/role column legacy; tenant authority hiện
+  thuộc IAM `tenant_roles` và compiled `membership_role`.
 
 Feature mới phải cập nhật đúng baseline file thay vì tự động nối thêm migration
 chỉ để né chỉnh baseline. Việc chuyển sang append-only production migrations
 phải là quyết định riêng, cập nhật runner và God View trước.
 
-Mọi `.up.sql` phải idempotent vì embedded runner có thể chạy lại khi bootstrap.
+IAM migration ledger bảo đảm zero-state seed chỉ apply một lần. Hierarchy DDL
+baseline vẫn dùng defensive `IF EXISTS/IF NOT EXISTS`; data seed không được biến
+thành merge/upsert để che một database đã bẩn.
 DDL liên quan nhiều module chạy dưới transaction/advisory lock của app bootstrap.
 Schema identifier chỉ được interpolate sau khi đã validate tại bootstrap; query
 business dùng parameter binding cho value.

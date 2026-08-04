@@ -3,6 +3,7 @@ package iamSvcImpl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -14,45 +15,68 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: RbacTenantService thực thi interface quản lý vai trò trong phạm vi tenant
 type RbacTenantService struct {
 	repo    iamRepoInterface.RbacTenantRepository
 	metrics observability.WorkflowRecorder
 }
 
-// [COMMENT]: NewRbacTenantService khởi tạo một thể hiện mới của RbacTenantService
 func NewRbacTenantService(repo iamRepoInterface.RbacTenantRepository, metrics observability.WorkflowRecorder) iamSvcInterface.RbacTenantService {
-	return &RbacTenantService{
-		repo:    repo,
-		metrics: metrics,
-	}
+	return &RbacTenantService{repo: repo, metrics: metrics}
 }
 
-// [COMMENT]: ListTenantRoles lấy danh sách vai trò của một tenant
-func (s *RbacTenantService) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) (out []iamEntity.Role, err error) {
+func (s *RbacTenantService) ListTenantRoles(ctx context.Context, in *iamEntity.ListTenantRoles) (out []iamEntity.ListTenantRoles, err error) {
 	startedAt := time.Now()
 	defer func() {
 		result, reason := observability.ResultFailure, observability.ReasonInternal
 		if err == nil {
 			result, reason = observability.ResultSuccess, observability.ReasonNone
-		} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
-			result, reason = observability.ResultRejected, observability.ReasonNotFound
 		} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			result, reason = observability.ResultRejected, observability.ReasonForbidden
 		}
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
-	return s.repo.ListTenantRoles(ctx, tenantID)
+	return s.repo.ListTenantRoles(ctx, in)
 }
 
-// [COMMENT]: AssignUserRole gán vai trò trong phạm vi tenant cho user (skeleton)
-func (s *RbacTenantService) AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
-	return nil
+func (s *RbacTenantService) CreateTenantRole(ctx context.Context, in *iamEntity.CreateTenantRole) (out *iamEntity.CreateTenantRole, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		switch {
+		case err == nil:
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		case errors.Is(err, iamTaxonomy.ErrNotFound):
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		case errors.Is(err, iamTaxonomy.ErrAlreadyExists):
+			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
+		case errors.Is(err, iamTaxonomy.ErrActionNotAllowed):
+			result, reason = observability.ResultRejected, observability.ReasonForbidden
+		case errors.Is(err, iamTaxonomy.ErrPreconditionFailed):
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+
+	roleID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate tenant role id: %w", err)
+	}
+	in.ID = roleID
+	in.Version = 1
+	in.CreatedAt = time.Now().UTC()
+	return s.repo.CreateTenantRole(ctx, in)
 }
 
-// [COMMENT]: AssignTenantRole gán vai trò trong phạm vi tenant cho tenant con (skeleton)
-func (s *RbacTenantService) AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
-	return nil
+func (s *RbacTenantService) ResolveTenantAccess(ctx context.Context, in *iamEntity.ResolveTenantAccess) (out *iamEntity.ResolveTenantAccess, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			result, reason = observability.ResultRejected, observability.ReasonForbidden
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+	return s.repo.ResolveTenantAccess(ctx, in)
 }

@@ -186,9 +186,8 @@ state không bị partial.
   `cloud-console/src/features/settings`
 - UI critical base: `cloud-console/src/shared/api/critical.ts`
 - ACR OAuth/critical enforcement: `acr/src/user/oauth.rs`, `acr/src/gateway/ext_authz.rs`
-- Shared protobuf: `acr/proto/auth.proto`,
-  `controlplane/internal/iam/transport/rpc/proto/auth.proto`
+- Shared protobuf: `contracts/proto/iam_auth.proto`
 - Controlplane HTTP/PubSub: `controlplane/internal/iam/transport/http/handler/user_handler.go`,
   `controlplane/internal/iam/transport/pubsub/handler/auth.go`
 - Durable repository/migration: `controlplane/internal/iam/repository/user_repo.go`,
-  `controlplane/internal/iam/migrations/000013_user_settings.up.sql`
+  `controlplane/internal/iam/migrations/000002_iam_tables.up.sql`

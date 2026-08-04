@@ -449,7 +449,8 @@ below execute only after that verification succeeds.
 2. Device service resolve device theo user + public key; nếu không tìm thấy thì tạo ID mới.
 3. IAM tính fingerprint SHA-256 trên canonical key và register/upsert device cùng IP/UA.
 4. Device row revoked hoặc ID không hợp lệ làm login fail.
-5. Khi `trust_device=true`, IAM tạo opaque refresh token và persist hash gắn với user, tracked device và optional tenant.
+5. Khi `trust_device=true`, IAM tạo opaque refresh token và persist hash chỉ gắn
+   với user + tracked device. Tenant/Zone/workspace/role không thuộc credential này.
 6. IAM response trả `client_proof_public_key` từ tracked device đã persist; nếu remember-me được chọn thì trả raw refresh token và Unix expiry đúng một lần cho ACR.
 
 ### 3.5 Phase E — Vault JWT signing và ACR session issuance
@@ -738,16 +739,16 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | IAM JWT construction, Vault sign/verify và Moka cache | [`acr/src/user/claims.rs`](../../acr/src/user/claims.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
 | Vault AppRole, health, Transit HTTP client | [`acr/src/infra/vault.rs`](../../acr/src/infra/vault.rs) |
 | ACR Vault/TokenManager bootstrap | [`acr/src/main.rs`](../../acr/src/main.rs) |
-| Shared Redis request/reply bus + Protobuf contract | [`acr/src/infra/shared_redis.rs`](../../acr/src/infra/shared_redis.rs), [`controlplane/internal/iam/transport/rpc/proto/auth.proto`](../../controlplane/internal/iam/transport/rpc/proto/auth.proto), [`acr/proto/auth.proto`](../../acr/proto/auth.proto) |
+| Shared Redis request/reply bus + canonical Protobuf contract | [`acr/src/infra/shared_redis.rs`](../../acr/src/infra/shared_redis.rs), [`contracts/proto/iam_auth.proto`](../../contracts/proto/iam_auth.proto) |
 | IAM Shared Redis request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | Durable device eviction relay/consumer | [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/user/device.rs`](../../acr/src/user/device.rs), [`controlplane/internal/iam/transport/pubsub/handler/device.go`](../../controlplane/internal/iam/transport/pubsub/handler/device.go) |
 | IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
 | IAM MFA HTTP workflows (one handler method per flow) | [`controlplane/internal/iam/transport/http/handler/mfa_handler.go`](../../controlplane/internal/iam/transport/http/handler/mfa_handler.go), [`controlplane/internal/iam/transport/http/dto/mfa.go`](../../controlplane/internal/iam/transport/http/dto/mfa.go) |
 | IAM MFA workflow service (single constructor, no cross-flow helpers) | [`controlplane/internal/iam/service/mfa_service.go`](../../controlplane/internal/iam/service/mfa_service.go), [`controlplane/internal/iam/domain/service/mfa_service.go`](../../controlplane/internal/iam/domain/service/mfa_service.go) |
 | IAM MFA durable repository and entities | [`controlplane/internal/iam/repository/mfa_repo.go`](../../controlplane/internal/iam/repository/mfa_repo.go), [`controlplane/internal/iam/domain/repo/mfa_repo.go`](../../controlplane/internal/iam/domain/repo/mfa_repo.go), [`controlplane/internal/iam/domain/entity/mfa.go`](../../controlplane/internal/iam/domain/entity/mfa.go) |
-| IAM linked external identity lookup and provider-email/account-email separation | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go), [`controlplane/internal/iam/migrations/000011_external_identities.up.sql`](../../controlplane/internal/iam/migrations/000011_external_identities.up.sql) |
+| IAM linked external identity lookup and provider-email/account-email separation | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go), [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |
 | Device persistence | [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
-| PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql), [`controlplane/internal/iam/migrations/000012_mfa_setup.up.sql`](../../controlplane/internal/iam/migrations/000012_mfa_setup.up.sql) |
+| PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |
 
 ---
 

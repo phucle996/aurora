@@ -15,7 +15,6 @@ CREATE INDEX IF NOT EXISTS user_profiles_fullname_idx ON user_profiles(fullname)
 CREATE UNIQUE INDEX IF NOT EXISTS refresh_tokens_token_hash_uidx ON refresh_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS refresh_tokens_device_id_idx ON refresh_tokens(device_id);
-CREATE INDEX IF NOT EXISTS refresh_tokens_tenant_id_idx ON refresh_tokens(tenant_id);
 CREATE INDEX IF NOT EXISTS refresh_tokens_expires_at_idx ON refresh_tokens(expires_at);
 
 -- [COMMENT]: Xóa unique constraint để cho phép nhiều user đăng nhập chung browser/cặp khóa Ed25519
@@ -67,11 +66,11 @@ CREATE INDEX IF NOT EXISTS permissions_module_idx ON permissions(module);
 CREATE INDEX IF NOT EXISTS permissions_object_idx ON permissions(object);
 CREATE INDEX IF NOT EXISTS permissions_behavior_idx ON permissions(behavior);
 
-CREATE UNIQUE INDEX IF NOT EXISTS roles_code_uidx ON roles(code);
-CREATE UNIQUE INDEX IF NOT EXISTS roles_scope_name_uidx ON roles(scope, name);
-CREATE INDEX IF NOT EXISTS roles_scope_idx ON roles(scope);
+CREATE UNIQUE INDEX IF NOT EXISTS platform_roles_code_uidx ON platform_roles(code);
+CREATE UNIQUE INDEX IF NOT EXISTS platform_roles_name_uidx ON platform_roles(name);
 
-CREATE INDEX IF NOT EXISTS role_permissions_permission_id_idx ON role_permissions(permission_id);
+CREATE INDEX IF NOT EXISTS platform_role_permissions_permission_id_idx ON platform_role_permissions(permission_id);
+CREATE INDEX IF NOT EXISTS tenant_role_permissions_permission_id_idx ON tenant_role_permissions(permission_id);
 
 -- Admin Devices Indexes
 CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint) WHERE revoked_at IS NULL;

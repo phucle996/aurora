@@ -58,6 +58,7 @@ impl SessionManager {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecoverySessionCache {
     pub user_id: String,
+    pub client_device_id: String,
     pub role_id: String,
     pub level: i32,
     pub tenant_id: String,
@@ -66,4 +67,7 @@ pub struct RecoverySessionCache {
     pub new_access_secret: String,
     pub zone_id: String,
     pub zone_code: String,
+    // A tenant recovery may fall back to personal only after CP independently
+    // authorizes that context. Every ACR replica must then clear stale tenant state.
+    pub context_reset: bool,
 }

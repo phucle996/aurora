@@ -15,7 +15,6 @@ func TestIAMModelEntityConversionsPreserveDurableFields(t *testing.T) {
 	id := uuid.New()
 	userID := uuid.New()
 	workspaceID := uuid.New()
-	tenantID := uuid.New()
 	roleID := uuid.New()
 	phone := "+84900000000"
 	secretHint := "ABCD"
@@ -32,14 +31,6 @@ func TestIAMModelEntityConversionsPreserveDurableFields(t *testing.T) {
 	history := iamEntity.PasswordHistory{ID: id, UserID: userID, PasswordHash: "old-hash", CreatedAt: now}
 	if got := iamModel.PasswordHistoryModelToEntity(iamModel.PasswordHistoryEntityToModel(history)); got != history {
 		t.Fatalf("password history conversion lost fields: %#v", got)
-	}
-
-	refresh := iamEntity.RefreshToken{
-		ID: id, UserID: userID, DeviceID: &id, TokenHash: "token-hash", TenantID: &tenantID,
-		IssuedAt: now, ExpiresAt: now.Add(time.Hour), UsedAt: &now, RevokedAt: &now,
-	}
-	if got := iamModel.RefreshTokenModelToEntity(iamModel.RefreshTokenEntityToModel(refresh)); got != refresh {
-		t.Fatalf("refresh token conversion lost fields: %#v", got)
 	}
 
 	profile := iamEntity.UserProfile{
@@ -94,20 +85,11 @@ func TestIAMModelEntityConversionsPreserveDurableFields(t *testing.T) {
 
 	userRole := iamEntity.UserRole{
 		ID: id, UserID: userID, Username: "ada", WorkspaceID: workspaceID, RoleID: roleID,
-		RoleName: "owner", RoleLevel: 1, ListPerm: []byte{1, 2}, CreatedAt: now, UpdatedAt: now,
+		RoleName: "owner", RoleLevel: 1, RoleVersion: 2, ListPerm: []byte{1, 2}, CreatedAt: now, UpdatedAt: now,
 	}
 	if got := iamModel.UserRoleModelToEntity(iamModel.UserRoleEntityToModel(userRole)); got.RoleID != roleID ||
-		got.WorkspaceID != workspaceID {
+		got.WorkspaceID != workspaceID || got.RoleVersion != 2 {
 		t.Fatalf("user role conversion lost fields: %#v", got)
-	}
-
-	tenantRole := iamEntity.TenantRole{
-		ID: id, TenantID: tenantID, WorkspaceID: workspaceID, RoleID: roleID,
-		RoleName: "tenant_owner", RoleLevel: 2, ListPerm: []byte{3, 4}, CreatedAt: now, UpdatedAt: now,
-	}
-	if got := iamModel.TenantRoleModelToEntity(iamModel.TenantRoleEntityToModel(tenantRole)); got.TenantID != tenantID ||
-		got.RoleID != roleID {
-		t.Fatalf("tenant role conversion lost fields: %#v", got)
 	}
 
 	role := iamModel.Role{ID: id, Code: "owner", Name: "Owner", Description: "owner role", RoleLevel: 1, Scope: "platform", CreatedBy: userID, CreatedAt: now, UpdatedAt: now}

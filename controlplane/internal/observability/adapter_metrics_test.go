@@ -80,7 +80,7 @@ func TestPGXQueryTracerKeepsRejectedConstraintSpanNonError(t *testing.T) {
 func TestRedisHookTreatsNilAsBoundedEmptyResult(t *testing.T) {
 	recorder := &dependencyRecorderSpy{}
 	hook := NewRedisHook(recorder)
-	ctx := pkgcontext.WithOperation(context.Background(), "iam.auth.verify_opaque_token")
+	ctx := pkgcontext.WithOperation(context.Background(), "iam.auth.recover_user_session")
 	command := redis.NewStringCmd(ctx, "get", "secret-key-must-not-become-a-label")
 
 	err := hook.ProcessHook(func(context.Context, redis.Cmder) error { return redis.Nil })(ctx, command)

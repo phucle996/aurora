@@ -12,9 +12,11 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::token::TokenManager;
+use prost::Message;
 
 /// [COMMENT]: Giải mã yêu cầu từ bytes, thực thi quét Auth Redis để thu hồi session thuộc thiết bị được chọn.
 pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &[u8]) -> Vec<u8> {
@@ -154,6 +156,7 @@ pub async fn revoke_sessions_by_devices(
 pub async fn handle_logout(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     client_headers: &HashMap<String, String>,
     method: &str,
@@ -170,6 +173,51 @@ pub async fn handle_logout(
         crate::gateway::ext_authz::extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN);
     let access_key =
         crate::gateway::ext_authz::extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY);
+
+    if let Some(refresh_token) =
+        crate::gateway::ext_authz::extract_cookie_value(&cookie_header, COOKIE_REFRESH_TOKEN)
+    {
+        if !(64..=512).contains(&refresh_token.len()) {
+            let mut denied = DeniedHttpResponseBuilder::new();
+            denied.set_http_status(HttpStatusCode::Unauthorized);
+            let mut response = CheckResponse::new();
+            response.set_status(Status::unauthenticated("Invalid refresh credential"));
+            response.set_http_response(denied);
+            return Some(Ok(Response::new(response)));
+        }
+
+        let request =
+            crate::infra::iam_proto::auth::RevokeOpaqueRefreshTokenRequest { refresh_token };
+        let mut request_bytes = Vec::new();
+        let revoked = request.encode(&mut request_bytes).is_ok()
+            && shared_redis
+                .request(
+                    "iam.auth.revoke_opaque_token",
+                    "iam.auth.revoke_opaque_token.reply.",
+                    request_bytes,
+                    std::time::Duration::from_millis(800),
+                )
+                .await
+                .ok()
+                .and_then(|payload| {
+                    crate::infra::iam_proto::auth::RevokeOpaqueRefreshTokenResponse::decode(
+                        payload.as_slice(),
+                    )
+                    .ok()
+                })
+                .is_some();
+        if !revoked {
+            // Durable credential revocation precedes runtime cleanup. Clearing
+            // cookies first would strand a still-valid stolen refresh token and
+            // remove the user's ability to retry the logout safely.
+            let mut denied = DeniedHttpResponseBuilder::new();
+            denied.set_http_status(HttpStatusCode::ServiceUnavailable);
+            let mut response = CheckResponse::new();
+            response.set_status(Status::unavailable("Logout temporarily unavailable"));
+            response.set_http_response(denied);
+            return Some(Ok(Response::new(response)));
+        }
+    }
 
     if let (Some(jwt), Some(key)) = (jwt_token, access_key) {
         if let Ok(claims) = token_mgr.verify_token(&jwt).await {

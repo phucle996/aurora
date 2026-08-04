@@ -8,6 +8,8 @@ var (
 	ErrLockAlreadyHeld       = errors.New("iam: lock already held")
 	ErrZeroRowsAffected      = errors.New("iam: zero rows affected")
 	ErrNotFound              = errors.New("iam: not found")
+	ErrAlreadyExists         = errors.New("iam: already exists")
+	ErrConflict              = errors.New("iam: conflict")
 	ErrPreconditionFailed    = errors.New("iam: precondition failed")
 	ErrActionNotAllowed      = errors.New("iam: action not allowed")
 	ErrGenTOTPFailed         = errors.New("iam: generate totp failed")

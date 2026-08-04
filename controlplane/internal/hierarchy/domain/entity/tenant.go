@@ -15,11 +15,16 @@ const (
 )
 
 type CreateTenant struct {
-	ID        uuid.UUID
-	OwnerID   uuid.UUID
-	Code      string
-	Name      string
-	Status    TenantStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                uuid.UUID
+	OwnerID           uuid.UUID
+	OwnerMembershipID uuid.UUID
+	TenantRootRoleID  uuid.UUID
+	MembershipRoleID  uuid.UUID
+	DomainID          uuid.UUID
+	Code              string
+	Name              string
+	PrimaryDomain     string
+	Status            TenantStatus
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }

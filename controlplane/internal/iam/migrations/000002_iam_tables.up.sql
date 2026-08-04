@@ -40,18 +40,20 @@ ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS address varchar(500) NULL;
 
 COMMENT ON COLUMN user_profiles.address IS 'Optional user-managed postal or locality address. It is profile metadata and is never an authentication or recovery identifier.';
 
--- [COMMENT]: Bảng lưu vết refresh token cho xác thực JWT
+-- Long-lived opaque credential bound only to one active user/device pair.
+-- Runtime tenant, workspace, Zone and role context are resolved at recovery time.
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_id uuid NOT NULL,
     token_hash text NOT NULL,
-    tenant_id uuid NULL,
     issued_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,
-    used_at timestamptz NULL,
-    revoked_at timestamptz NULL
+    CONSTRAINT refresh_tokens_user_device_uk UNIQUE (user_id, device_id)
 );
+
+COMMENT ON TABLE refresh_tokens IS 'Opaque user/device credentials; never stores active tenant or authorization context.';
+COMMENT ON COLUMN refresh_tokens.device_id IS 'Required device binding. Device revocation invalidates and cascades the credential.';
 
 -- [COMMENT]: Bảng lưu thiết bị đăng nhập và khóa công khai xác thực thiết bị
 CREATE TABLE IF NOT EXISTS devices (
@@ -164,26 +166,53 @@ CREATE TABLE IF NOT EXISTS permissions (
     CONSTRAINT unique_module_object_behavior UNIQUE (module, object, behavior)
 );
 
--- [COMMENT]: Bảng định nghĩa vai trò người dùng trong hệ thống
-CREATE TABLE IF NOT EXISTS roles (
+-- [COMMENT]: Platform role definitions remain context-free. Tenant-owned role
+-- definitions live in tenant_roles so ownership cannot be inferred from a
+-- mutable scope column.
+CREATE TABLE IF NOT EXISTS platform_roles (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code varchar(255) NOT NULL UNIQUE,
     name varchar(255) NOT NULL,
     description text NULL,
     role_level integer NOT NULL DEFAULT 100,
-    scope varchar(32) NOT NULL DEFAULT 'platform',
+    version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
     created_by uuid NOT NULL REFERENCES users(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT roles_role_level_check CHECK (role_level >= 0)
+    CONSTRAINT platform_roles_role_level_check CHECK (role_level >= 0)
 );
 
--- [COMMENT]: Bảng ánh xạ vai trò và quyền tĩnh
-CREATE TABLE IF NOT EXISTS role_permissions (
-    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS platform_role_permissions (
+    role_id uuid NOT NULL REFERENCES platform_roles(id) ON DELETE CASCADE,
     permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (role_id, permission_id)
+);
+
+-- [COMMENT]: A tenant role is an immutable V1 definition owned by exactly one
+-- tenant. Permission rows stay normalized at three levels; only assignments
+-- below contain the compiled five-level Protobuf projection.
+CREATE TABLE IF NOT EXISTS tenant_roles (
+    id uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL REFERENCES hierarchy.tenants(id) ON DELETE CASCADE,
+    code varchar(100) NOT NULL,
+    name varchar(255) NOT NULL,
+    description text NULL,
+    role_level integer NOT NULL,
+    version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT tenant_roles_role_level_check CHECK (role_level >= 3),
+    CONSTRAINT tenant_roles_code_format CHECK (code ~ '^[a-z0-9_]+$'),
+    CONSTRAINT tenant_roles_tenant_code_uk UNIQUE (tenant_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS tenant_role_permissions (
+    tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE CASCADE,
+    permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE RESTRICT,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_role_id, permission_id)
 );
 
 -- [COMMENT]: Bảng gán vai trò người dùng theo workspace/platform kèm danh sách binary permissions đã biên dịch
@@ -192,32 +221,65 @@ CREATE TABLE IF NOT EXISTS user_role (
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     username varchar(64) NOT NULL,
     workspace_id uuid NOT NULL,
-    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    role_id uuid NOT NULL REFERENCES platform_roles(id) ON DELETE CASCADE,
     role_name varchar(255) NOT NULL,
     role_level integer NOT NULL,
+    role_version bigint NOT NULL DEFAULT 1 CHECK (role_version > 0),
     list_perm bytea NOT NULL,
+    permission_hash bytea GENERATED ALWAYS AS (digest(list_perm, 'sha256')) STORED,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT user_role_permission_hash_size CHECK (octet_length(permission_hash) = 32),
     CONSTRAINT unique_user_workspace_role UNIQUE (user_id, workspace_id, role_id)
 );
 
--- [COMMENT]: Bảng gán vai trò tổ chức (Tenant) theo workspace kèm binary permissions
-CREATE TABLE IF NOT EXISTS tenant_role (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id uuid NOT NULL,
+-- [COMMENT]: Durable tenant authorization binding. list_perm is a serialized
+-- iam.rpc.RoleEntry whose keys already contain tenant/workspace context.
+CREATE TABLE IF NOT EXISTS membership_role (
+    id uuid PRIMARY KEY,
+    membership_id uuid NOT NULL REFERENCES hierarchy.tenant_memberships(id) ON DELETE CASCADE,
+    tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE RESTRICT,
     workspace_id uuid NOT NULL,
-    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
     role_name varchar(255) NOT NULL,
     role_level integer NOT NULL,
+    role_version bigint NOT NULL CHECK (role_version > 0),
     list_perm bytea NOT NULL,
+    permission_hash bytea GENERATED ALWAYS AS (digest(list_perm, 'sha256')) STORED,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT unique_tenant_workspace_role UNIQUE (tenant_id, workspace_id, role_id)
+    CONSTRAINT membership_role_permission_hash_size CHECK (octet_length(permission_hash) = 32),
+    CONSTRAINT membership_role_scope_uk UNIQUE (membership_id, workspace_id)
 );
 
--- Index phục vụ query cực nhanh ở read-path không cần JOIN
+-- [COMMENT]: Invitation stores only the token hash and the exact compiled grant
+-- pinned at creation. Successful join hard-deletes this one-time record.
+CREATE TABLE IF NOT EXISTS tenant_invitations (
+    id uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL REFERENCES hierarchy.tenants(id) ON DELETE CASCADE,
+    inviter_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE RESTRICT,
+    workspace_id uuid NOT NULL,
+    role_version bigint NOT NULL CHECK (role_version > 0),
+    role_level integer NOT NULL,
+    list_perm bytea NOT NULL,
+    permission_hash bytea GENERATED ALWAYS AS (digest(list_perm, 'sha256')) STORED,
+    token_hash bytea NOT NULL,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT tenant_invitations_permission_hash_size CHECK (octet_length(permission_hash) = 32),
+    CONSTRAINT tenant_invitations_token_hash_size CHECK (octet_length(token_hash) = 32),
+    CONSTRAINT tenant_invitations_distinct_actor CHECK (inviter_user_id <> target_user_id),
+    CONSTRAINT tenant_invitations_token_hash_uk UNIQUE (token_hash),
+    CONSTRAINT tenant_invitations_target_uk UNIQUE (tenant_id, target_user_id)
+);
+
+-- Index phục vụ query cực nhanh ở read-path không cần JOIN.
 CREATE INDEX IF NOT EXISTS idx_user_role_lookup ON user_role (user_id, workspace_id);
-CREATE INDEX IF NOT EXISTS idx_tenant_role_lookup ON tenant_role (tenant_id, workspace_id, role_id);
+CREATE INDEX IF NOT EXISTS idx_membership_role_lookup ON membership_role (membership_id, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_roles_tenant_level ON tenant_roles (tenant_id, role_level, id);
+CREATE INDEX IF NOT EXISTS idx_tenant_invitations_expiry ON tenant_invitations (expires_at, id);
+CREATE INDEX IF NOT EXISTS idx_tenant_invitations_target ON tenant_invitations (target_user_id, expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_role_platform
     ON user_role (user_id)
     WHERE workspace_id = '00000000-0000-0000-0000-000000000000';

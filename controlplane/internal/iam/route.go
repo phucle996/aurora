@@ -199,15 +199,19 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.RbacTenantHandler.ListRolesTenant,
 		)
 
+		// [COMMENT]: Role definitions decide future tenant grants. The route is
+		// structurally critical and the repository rechecks hierarchy against the
+		// current membership in the same mutation statement.
+		tenantGroup.POST("/critical/iam/rbac/role",
+			middleware.RequireSessionProof(),
+			middleware.Authorize("iam:role:write", module.L1Registry, "*"),
+			module.RbacTenantHandler.CreateTenantRole,
+		)
+
 		// [COMMENT]: Lấy danh sách permissions khả dụng cho Tenant (yêu cầu quyền iam:permissions:read và level *) thông qua platform handler
 		tenantGroup.GET("/iam/rbac/permissions",
 			middleware.Authorize("iam:permissions:read", module.L1Registry, "*"),
 			module.RbacPlatformHandler.ListPermissions,
-		)
-
-		// [COMMENT]: Gán vai trò cho Tenant con thông qua tenant handler
-		tenantGroup.POST("/rbac/tenant-role",
-			module.RbacTenantHandler.AssignTenantRole,
 		)
 
 		// Self identity không đổi theo tenant context, nhưng ACR vẫn rewrite

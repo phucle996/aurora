@@ -16,8 +16,10 @@ import {
   Check,
   X,
   Users2,
+  UserPlus,
   FolderOpen
 } from "lucide-react";
+import { useUserSession } from "@/session/use-session";
 
 interface TenantItem {
   id: string;
@@ -40,6 +42,7 @@ interface InvitationItem {
 
 export default function TenantsPage() {
   const router = useRouter();
+  const { renderContext } = useUserSession();
 
   // [COMMENT]: Quản lý trạng thái tab hoạt động ở trang tenants (mặc định là organizations)
   const [activeTab, setActiveTab] = useState<string>("organizations");
@@ -204,7 +207,14 @@ export default function TenantsPage() {
             </div>
 
             {/* [COMMENT]: Khối bên phải gồm nút tạo tổ chức mới, căn phải trên màn hình lớn */}
-            <div className="w-full sm:w-auto flex justify-end shrink-0">
+            <div className="w-full sm:w-auto flex justify-end gap-2 shrink-0">
+              {renderContext?.is_personal === false && <button
+                onClick={() => router.push("/tenants/invitations/new")}
+                className="h-8 px-3 border border-slate-200 dark:border-slate-800 text-xs font-medium rounded-[4px] cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                Invite member
+              </button>}
               <button
                 onClick={() => router.push("/tenants/new")}
                 className="w-full sm:w-auto h-8 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-[4px] cursor-pointer flex items-center justify-center gap-1.5 transition-all"

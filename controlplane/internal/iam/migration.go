@@ -1,7 +1,10 @@
 package iam
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -67,6 +70,16 @@ func setMigrationSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath 
 }
 
 func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module string, files fs.FS) error {
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS iam_schema_migrations (
+			name text PRIMARY KEY,
+			checksum bytea NOT NULL CHECK (octet_length(checksum)=32),
+			applied_at timestamptz NOT NULL DEFAULT now()
+		)
+	`); err != nil {
+		return fmt.Errorf("iam migration: create migration ledger: %w", err)
+	}
+
 	entries, err := fs.ReadDir(files, ".")
 	if err != nil {
 		return fmt.Errorf("iam migration: read %s embedded migrations: %w", module, err)
@@ -94,8 +107,25 @@ func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module str
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
+		checksum := sha256.Sum256(queryBytes)
+		var appliedChecksum []byte
+		err = conn.QueryRow(ctx, `SELECT checksum FROM iam_schema_migrations WHERE name=$1`, name).Scan(&appliedChecksum)
+		switch {
+		case err == nil:
+			// [COMMENT]: A filename is immutable once applied. Silent replay or
+			// accepting edited SQL would make HA replicas observe different schema.
+			if !bytes.Equal(appliedChecksum, checksum[:]) {
+				return fmt.Errorf("iam migration: checksum changed for applied baseline %s", name)
+			}
+			continue
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("iam migration: read ledger for %s: %w", name, err)
+		}
 		if _, err := conn.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return fmt.Errorf("iam migration: apply %s/%s: %w", module, name, err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO iam_schema_migrations (name, checksum) VALUES ($1, $2)`, name, checksum[:]); err != nil {
+			return fmt.Errorf("iam migration: record %s/%s: %w", module, name, err)
 		}
 	}
 

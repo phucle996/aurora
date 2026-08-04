@@ -126,7 +126,7 @@ func (r *TenantWorkspaceRepoImpl) ListWorkspacesForTenant(ctx context.Context, i
 	defer rows.Close()
 	items := make([]hierarchyEntity.ListTenantWorkspaces, 0)
 	for rows.Next() {
-		item := hierarchyEntity.ListTenantWorkspaces{TenantID: in.TenantID, RoleID: in.RoleID}
+		item := hierarchyEntity.ListTenantWorkspaces{TenantID: in.TenantID, ActorUserID: in.ActorUserID}
 		if err := rows.Scan(&item.ID, &item.Name, &item.Code, &item.Description, &item.ZoneID, &item.OwnerID, &item.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -143,7 +143,7 @@ func (r *TenantWorkspaceRepoImpl) ListWorkspaceCatalogForTenant(ctx context.Cont
 	defer rows.Close()
 	items := make([]hierarchyEntity.ListTenantWorkspaceCatalog, 0)
 	for rows.Next() {
-		item := hierarchyEntity.ListTenantWorkspaceCatalog{TenantID: in.TenantID, ZoneID: in.ZoneID, RoleID: in.RoleID}
+		item := hierarchyEntity.ListTenantWorkspaceCatalog{TenantID: in.TenantID, ZoneID: in.ZoneID, ActorUserID: in.ActorUserID}
 		if err := rows.Scan(&item.ID, &item.Code, &item.Name); err != nil {
 			return nil, err
 		}

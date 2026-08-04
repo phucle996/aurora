@@ -6,6 +6,7 @@
 
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::token::TokenManager;
@@ -16,6 +17,7 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::{Response, Status};
 
 // ─── Tenant Resolution ────────────────────────────────────────────────────────
@@ -120,29 +122,24 @@ fn sha256_hash(secret: &str) -> String {
 }
 
 fn parse_tenant_domain(path: &str) -> Option<String> {
-    path.find('?').and_then(|pos| {
-        let query_str = &path[pos + 1..];
-        query_str
-            .split('&')
-            .find(|pair| pair.starts_with("tenant_domain="))
-            .map(|pair| pair["tenant_domain=".len()..].to_string())
-    })
+    let query = path.split_once('?')?.1;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "tenant_domain")
+        .map(|(_, value)| value.into_owned())
 }
 
 fn parse_tenant_id(path: &str) -> Option<String> {
-    path.find('?').and_then(|pos| {
-        let query_str = &path[pos + 1..];
-        query_str
-            .split('&')
-            .find(|pair| pair.starts_with("tenant_id="))
-            .map(|pair| pair["tenant_id=".len()..].to_string())
-    })
+    let query = path.split_once('?')?.1;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "tenant_id")
+        .map(|(_, value)| value.into_owned())
 }
 
 /// [COMMENT]: Intercept POST /api/v1/tenant/go-to-tenant — xác thực Trinity và re-issue JWT với tenant_id mới.
 pub async fn handle_tenant_switch(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
+    shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     client_headers: &HashMap<String, String>,
     method: &str,
@@ -150,8 +147,12 @@ pub async fn handle_tenant_switch(
 ) -> Option<Result<Response<CheckResponse>, Status>> {
     use crate::gateway::ext_authz::extract_cookie_value;
 
-    // [COMMENT]: Chỉ intercept POST /api/v1/tenant/go-to-tenant
-    if !(method == "POST" && path.starts_with("/api/v1/tenant/go-to-tenant")) {
+    // [COMMENT]: Match the path component exactly. A suffix must never enter
+    // the security-sensitive tenant-switch workflow just because it shares a prefix.
+    if method != "POST"
+        || path.split_once('?').map(|(value, _)| value).unwrap_or(path)
+            != "/api/v1/tenant/go-to-tenant"
+    {
         return None;
     }
 
@@ -161,7 +162,36 @@ pub async fn handle_tenant_switch(
     );
 
     let tenant_domain = match parse_tenant_domain(path) {
-        Some(d) if !d.trim().is_empty() => d.trim().to_lowercase(),
+        Some(value) => {
+            let normalized = value.trim().to_lowercase();
+            let valid_boundary = normalized
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+                && normalized
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric);
+            if normalized.len() < 3
+                || normalized.len() > 255
+                || normalized.contains("..")
+                || normalized.contains(".-")
+                || normalized.contains("-.")
+                || !valid_boundary
+                || !normalized.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'.'
+                        || byte == b'-'
+                })
+            {
+                return Some(Ok(Response::new(build_denied_json(
+                    HttpStatusCode::BadRequest,
+                    "Tenant domain is required",
+                ))));
+            }
+            normalized
+        }
         _ => {
             Logger::sys_warn(
                 "user.tenant.switch",
@@ -175,8 +205,12 @@ pub async fn handle_tenant_switch(
         }
     };
 
-    let tenant_id = match parse_tenant_id(path) {
-        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+    let tenant_uuid = match parse_tenant_id(path)
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+    {
+        Some(id) if !id.is_nil() => id,
         _ => {
             Logger::sys_warn(
                 "user.tenant.switch",
@@ -234,11 +268,11 @@ pub async fn handle_tenant_switch(
             return Err("Access Secret Mismatch");
         }
 
-        Ok((claims, access_key))
+        Ok((claims, access_key, session))
     }
     .await;
 
-    let (mut claims, _access_key) = match auth_result {
+    let (mut claims, access_key, source_session) = match auth_result {
         Ok(val) => val,
         Err(msg) => {
             Logger::sys_warn("user.tenant.switch", &format!("Auth failed: {}", msg), "");
@@ -249,8 +283,68 @@ pub async fn handle_tenant_switch(
         }
     };
 
-    // ─── Re-issue JWT với tenant_id mới ────────────────────────────────────
+    let user_uuid = match uuid::Uuid::parse_str(&claims.uid) {
+        Ok(value) if !value.is_nil() => value,
+        _ => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::Unauthorized,
+                "Unauthorized",
+            ))));
+        }
+    };
+    let mut access_request = Vec::with_capacity(32 + tenant_domain.len());
+    access_request.extend_from_slice(user_uuid.as_bytes());
+    access_request.extend_from_slice(tenant_uuid.as_bytes());
+    access_request.extend_from_slice(tenant_domain.as_bytes());
+    let access_response = match shared_redis
+        .request(
+            "iam.tenant.access.resolve",
+            "iam.tenant.access.reply.",
+            access_request,
+            Duration::from_millis(900),
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            Logger::sys_error(
+                "user.tenant.switch",
+                "Tenant membership verification unavailable",
+                &error,
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::ServiceUnavailable,
+                "Tenant unavailable",
+            ))));
+        }
+    };
+    if access_response.len() != 21 || access_response[0] != 1 {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Forbidden,
+            "Tenant unavailable",
+        ))));
+    }
+    let role_id = match uuid::Uuid::from_slice(&access_response[1..17]) {
+        Ok(value) if !value.is_nil() => value,
+        _ => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::ServiceUnavailable,
+                "Tenant unavailable",
+            ))));
+        }
+    };
+    let role_level = i32::from_be_bytes(
+        access_response[17..21]
+            .try_into()
+            .expect("tenant access level wire has fixed width"),
+    );
+
+    // [COMMENT]: ACR accepts tenant identity only from the Controlplane membership
+    // decision. Client query values never become role claims on their own.
+    let tenant_id = tenant_uuid.to_string();
     claims.tenant_id = Some(tenant_id.clone());
+    claims.role_id = role_id.to_string();
+    claims.lvl = role_level;
 
     let new_jwt = match token_mgr.generate_token(&claims).await {
         Ok(jwt) => jwt,
@@ -266,6 +360,29 @@ pub async fn handle_tenant_switch(
             ))));
         }
     };
+
+    if let Err(error) = session_mgr
+        .register_session(
+            claims.zone_id.as_deref().unwrap_or("global"),
+            &tenant_id,
+            &claims.uid,
+            &access_key,
+            &source_session.ash,
+            &source_session.tdid,
+            &source_session.client_proof_public_key,
+        )
+        .await
+    {
+        Logger::sys_error(
+            "user.tenant.switch",
+            "Failed to bind tenant session scope",
+            &error.to_string(),
+        );
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::ServiceUnavailable,
+            "Tenant unavailable",
+        ))));
+    }
 
     // ─── Set cookies và trả response ───────────────────────────────────────
     let domain_str = if config.app_public_domain.trim().is_empty() {
@@ -319,4 +436,26 @@ pub async fn handle_tenant_switch(
     );
 
     Some(Ok(Response::new(response)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_tenant_domain, parse_tenant_id};
+
+    #[test]
+    fn tenant_switch_query_is_percent_decoded_by_name() {
+        let path = "/api/v1/tenant/go-to-tenant?ignored=1&tenant_domain=acme.example&tenant_id=10000000-0000-4000-8000-000000000001";
+        assert_eq!(parse_tenant_domain(path).as_deref(), Some("acme.example"));
+        assert_eq!(
+            parse_tenant_id(path).as_deref(),
+            Some("10000000-0000-4000-8000-000000000001")
+        );
+    }
+
+    #[test]
+    fn tenant_switch_query_does_not_accept_prefix_collisions() {
+        let path = "/api/v1/tenant/go-to-tenant?tenant_domain_suffix=evil&tenant_id_suffix=bad";
+        assert_eq!(parse_tenant_domain(path), None);
+        assert_eq!(parse_tenant_id(path), None);
+    }
 }

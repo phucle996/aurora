@@ -59,7 +59,7 @@ pub async fn verify_edge_session(
     method: &str,
     path: &str,
 ) -> VerifyEdgeSessionResult {
-    use crate::gateway::ext_authz::{extract_cookie_value, parse_trinity_cookies};
+    use crate::gateway::ext_authz::extract_cookie_value;
 
     let jwt_token = extract_cookie_value(cookie_header, COOKIE_ACCESS_TOKEN).or_else(|| {
         client_headers.get("authorization").and_then(|h| {
@@ -71,68 +71,53 @@ pub async fn verify_edge_session(
         })
     });
 
-    let jwt_token = match jwt_token {
-        Some(t) => t,
-        None => {
-            return VerifyEdgeSessionResult {
-                claims: None,
-                access_key: String::new(),
-                denial_response: None,
-                cookies_to_set: Vec::new(),
-            };
-        }
+    let claims = match jwt_token {
+        Some(token) => match token_mgr.verify_token(&token).await {
+            Ok(claims) => Some(claims),
+            Err(error) => {
+                Logger::sys_debug(
+                    "user.verify",
+                    &format!("Token verification failed for path {}: {}", path, error),
+                );
+                None
+            }
+        },
+        None => None,
     };
 
-    let claims = match token_mgr.verify_token(&jwt_token).await {
-        Ok(c) => Some(c),
-        Err(e) => {
-            Logger::sys_debug(
-                "user.verify",
-                &format!("Token verification failed for path {}: {}", path, e),
-            );
-            None
-        }
-    };
-
-    // [COMMENT]: Recovery Session (Sliding Window khi JWT hết hạn nhưng access_secret còn hợp lệ)
+    // The opaque user/device credential is sufficient for recovery. Expired or
+    // missing Trinity material is never decoded to recover an identity.
     if claims.is_none() {
-        let tc = parse_trinity_cookies(cookie_header);
-        if let (Some(jwt_str), Some(key_str), Some(_secret_str)) =
-            (tc.access_token, tc.access_key, tc.access_secret)
+        if let Some(recovery_res) = try_handle_recovery_session(
+            session_mgr,
+            token_mgr,
+            shared_redis_client,
+            shared_redis,
+            config,
+            cookie_header,
+            client_headers,
+        )
+        .await
         {
-            if let Some(recovery_res) = try_handle_recovery_session(
-                session_mgr,
-                token_mgr,
-                shared_redis_client,
-                shared_redis,
-                config,
-                cookie_header,
-                jwt_str,
-                key_str,
-                client_headers,
-            )
-            .await
-            {
-                match recovery_res {
-                    Ok(resp) => {
-                        return VerifyEdgeSessionResult {
-                            claims: None,
-                            access_key: String::new(),
-                            denial_response: Some(resp),
-                            cookies_to_set: Vec::new(),
-                        };
-                    }
-                    Err(status) => {
-                        return VerifyEdgeSessionResult {
-                            claims: None,
-                            access_key: String::new(),
-                            denial_response: Some(Response::new(build_denied_json(
-                                HttpStatusCode::InternalServerError,
-                                &status.message(),
-                            ))),
-                            cookies_to_set: Vec::new(),
-                        };
-                    }
+            match recovery_res {
+                Ok(response) => {
+                    return VerifyEdgeSessionResult {
+                        claims: None,
+                        access_key: String::new(),
+                        denial_response: Some(response),
+                        cookies_to_set: Vec::new(),
+                    };
+                }
+                Err(status) => {
+                    return VerifyEdgeSessionResult {
+                        claims: None,
+                        access_key: String::new(),
+                        denial_response: Some(Response::new(build_denied_json(
+                            HttpStatusCode::InternalServerError,
+                            &status.message(),
+                        ))),
+                        cookies_to_set: Vec::new(),
+                    };
                 }
             }
         }

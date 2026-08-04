@@ -33,3 +33,11 @@ type UpdateRolePlatformReq struct {
 	Description   string   `json:"description" binding:"max=255"`
 	PermissionIDs []string `json:"permission_ids"`
 }
+
+type CreateTenantRoleRequest struct {
+	Code          string   `json:"code" binding:"required"`
+	Name          string   `json:"name" binding:"required"`
+	Description   string   `json:"description"`
+	RoleLevel     int      `json:"role_level" binding:"required,min=4,max=99"`
+	PermissionIDs []string `json:"permission_ids" binding:"required"`
+}

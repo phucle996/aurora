@@ -97,7 +97,9 @@ static_resources:
                       grpc_service:
                         envoy_grpc:
                           cluster_name: acr_cluster
-                        timeout: 2s
+                        # Session recovery may include one bounded Zone L1 refill,
+                        # one CP authority snapshot and one Vault signature.
+                        timeout: 3s
                       with_request_body:
                         # Managed Service critical draft signatures bind the
                         # exact bounded YAML+contract body. Partial bodies would

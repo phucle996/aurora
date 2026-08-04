@@ -11,7 +11,7 @@ const (
 	TestSetupID         = "22222222-2222-2222-2222-222222222222"
 )
 
-// TestTokenFixture lưu trữ thông tin token giả lập dùng kiểm thử xoay vòng refresh token
+// TestTokenFixture lưu trữ thông tin opaque credential gắn với user/device.
 type TestTokenFixture struct {
 	TokenHash string
 	IssuedAt  time.Time

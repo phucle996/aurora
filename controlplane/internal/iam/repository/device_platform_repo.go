@@ -30,7 +30,7 @@ func (r *DevicePlatformRepository) ListDevicesByUserIDWithHierarchy(ctx context.
 		WITH target_info AS (
 			SELECT r.role_level
 			FROM %s.user_roles ur
-			JOIN %s.roles r ON r.id = ur.role_id
+		JOIN %s.platform_roles r ON r.id = ur.role_id
 			WHERE ur.user_id = $1
 			LIMIT 1
 		),

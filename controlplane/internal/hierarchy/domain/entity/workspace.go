@@ -53,7 +53,7 @@ type CreateTenantWorkspace struct {
 
 type ListTenantWorkspaces struct {
 	TenantID            uuid.UUID
-	RoleID              uuid.UUID
+	ActorUserID         uuid.UUID
 	AllWorkspaces       bool
 	AllowedWorkspaceIDs []uuid.UUID
 	ID                  uuid.UUID
@@ -68,7 +68,7 @@ type ListTenantWorkspaces struct {
 type ListTenantWorkspaceCatalog struct {
 	TenantID            uuid.UUID
 	ZoneID              uuid.UUID
-	RoleID              uuid.UUID
+	ActorUserID         uuid.UUID
 	AllWorkspaces       bool
 	AllowedWorkspaceIDs []uuid.UUID
 	ID                  uuid.UUID

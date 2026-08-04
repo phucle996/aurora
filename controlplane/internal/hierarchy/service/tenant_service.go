@@ -42,6 +42,26 @@ func (s *TenantService) CreateTenant(ctx context.Context, in *hierarchyEntity.Cr
 	}
 	now := time.Now().UTC()
 	in.ID = tenantID
+	ownerMembershipID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate owner membership id: %w", err)
+	}
+	tenantRootRoleID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate tenant root role id: %w", err)
+	}
+	membershipRoleID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate owner membership role id: %w", err)
+	}
+	domainID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate tenant domain id: %w", err)
+	}
+	in.OwnerMembershipID = ownerMembershipID
+	in.TenantRootRoleID = tenantRootRoleID
+	in.MembershipRoleID = membershipRoleID
+	in.DomainID = domainID
 	in.Status = hierarchyEntity.TenantStatusActive
 	in.CreatedAt = now
 	in.UpdatedAt = now

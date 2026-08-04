@@ -131,43 +131,6 @@ pub fn sha256_hash(secret: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub struct TrinityCookies<'a> {
-    pub access_token: Option<&'a str>,
-    pub access_key: Option<&'a str>,
-    pub access_secret: Option<&'a str>,
-    pub _refresh_token: Option<&'a str>,
-    pub _tenant_id: Option<&'a str>,
-    pub _workspace_id: Option<&'a str>,
-}
-
-pub fn parse_trinity_cookies(cookie_str: &str) -> TrinityCookies<'_> {
-    let mut cookies = TrinityCookies {
-        access_token: None,
-        access_key: None,
-        access_secret: None,
-        _refresh_token: None,
-        _tenant_id: None,
-        _workspace_id: None,
-    };
-    for part in cookie_str.split(';') {
-        let part = part.trim();
-        if let Some(pos) = part.find('=') {
-            let key = &part[..pos];
-            let val = &part[pos + 1..];
-            match key {
-                COOKIE_ACCESS_TOKEN => cookies.access_token = Some(val),
-                COOKIE_ACCESS_KEY => cookies.access_key = Some(val),
-                COOKIE_ACCESS_SECRET => cookies.access_secret = Some(val),
-                COOKIE_REFRESH_TOKEN => cookies._refresh_token = Some(val),
-                COOKIE_TENANT_ID => cookies._tenant_id = Some(val),
-                COOKIE_WORKSPACE_ID => cookies._workspace_id = Some(val),
-                _ => {}
-            }
-        }
-    }
-    cookies
-}
-
 #[tonic::async_trait]
 impl Authorization for ExtAuthzService {
     async fn check(
@@ -449,6 +412,7 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = handle_logout(
             &self.session_mgr,
             &self.token_mgr,
+            &self.shared_redis,
             &self.config,
             client_headers,
             method,
@@ -594,6 +558,7 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = handle_tenant_switch(
             &self.session_mgr,
             &self.token_mgr,
+            &self.shared_redis,
             &self.config,
             client_headers,
             method,
@@ -839,7 +804,9 @@ impl Authorization for ExtAuthzService {
         // [COMMENT]: Mỗi mutation critical phải ký đúng method, original path và raw body bằng key đã bind vào session.
         let mut session_proof_challenge_id = None;
         if let Some(ref c) = claims {
-            if path_without_query.starts_with("/api/v1/critical/") {
+            if path_without_query.starts_with("/api/v1/critical/")
+                || path_without_query.starts_with("/api/v1/me/critical/")
+            {
                 let zone_id = c.zone_id.as_deref().unwrap_or("global");
                 let tenant_id = c.tenant_id.as_deref().unwrap_or("platform");
                 let session = match self

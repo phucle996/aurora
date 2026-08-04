@@ -37,8 +37,8 @@ const (
 	verifyMfaChallengeChannel         = "iam.auth.verify_mfa_challenge"
 	verifyMfaChallengeReplyPrefix     = "iam.auth.verify_mfa_challenge.reply."
 
-	verifyOpaqueTokenChannel     = "iam.auth.verify_opaque_token"
-	verifyOpaqueTokenReplyPrefix = "iam.auth.verify_opaque_token.reply."
+	recoverUserSessionChannel     = "iam.auth.recover_user_session"
+	recoverUserSessionReplyPrefix = "iam.auth.recover_user_session.reply."
 
 	revokeOpaqueTokenChannel     = "iam.auth.revoke_opaque_token"
 	revokeOpaqueTokenReplyPrefix = "iam.auth.revoke_opaque_token.reply."
@@ -94,7 +94,7 @@ func (h *AuthRedisHandler) Start() error {
 		verifyExternalIdentityChannel,
 		linkExternalIdentityChannel,
 		verifyMfaChallengeChannel,
-		verifyOpaqueTokenChannel,
+		recoverUserSessionChannel,
 		revokeOpaqueTokenChannel,
 	)
 	if _, err := pubsub.Receive(ctx); err != nil {
@@ -148,8 +148,8 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 		h.handleLinkExternalIdentity(payload)
 	case verifyMfaChallengeChannel:
 		h.handleVerifyMfaChallenge(payload)
-	case verifyOpaqueTokenChannel:
-		h.handleVerifyOpaqueToken(payload)
+	case recoverUserSessionChannel:
+		h.handleRecoverUserSession(payload)
 	case revokeOpaqueTokenChannel:
 		h.handleRevokeOpaqueToken(payload)
 	}
@@ -704,113 +704,116 @@ func validMFALoginCode(method, code string) bool {
 	}
 }
 
-// =========================================================================
-// 2. LUỒNG XÁC THỰC OPAQUE REFRESH TOKEN (VerifyOpaqueRefreshToken)
-// =========================================================================
-func (h *AuthRedisHandler) handleVerifyOpaqueToken(payload []byte) {
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_opaque_token"), 10*time.Second)
+// handleRecoverUserSession authenticates the opaque user/device credential and
+// resolves the requested runtime context in one database snapshot. It does not
+// mutate the token and is deliberately isolated from tenant switching.
+func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.recover_user_session"), 650*time.Millisecond)
 	defer cancel()
 
 	var span trace.Span
 	if h.otel != nil {
-		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.verify_opaque_token")
+		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.recover_user_session")
 		defer span.End()
 		span.SetAttributes(
 			attribute.String("messaging.system", "redis"),
-			attribute.String("messaging.destination", verifyOpaqueTokenChannel),
+			attribute.String("messaging.destination", recoverUserSessionChannel),
 		)
 	}
 
-	// [COMMENT]: Refresh rotation là side effect; khóa request ngăn nhiều CP replica cùng
-	// xác minh/rotate một opaque token khi nhận chung một Redis PubSub message.
 	if len(payload) <= 16 {
-		logger.SysWarnCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Missing request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.RecoverUserSession", "Missing request id envelope")
 		return
 	}
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
-		logger.SysWarnCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Invalid request id envelope")
+		logger.SysWarnCtx(ctx, "Redis.RecoverUserSession", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
-	replyChannel := verifyOpaqueTokenReplyPrefix + requestID.String()
-	lockKey := "iam:auth:dispatch:verify_opaque_token:" + requestID.String()
-	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
+	replyChannel := recoverUserSessionReplyPrefix + requestID.String()
+	lockKey := "iam:auth:dispatch:recover_user_session:" + requestID.String()
+	// Redis PubSub fans the request to every CP replica. The bounded lock makes
+	// exactly one replica touch PostgreSQL; callers retry safely after timeout.
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 5*time.Second).Result()
 	if err != nil || !acquired {
 		return
 	}
 
-	respond := func(resp *iamproto.VerifyOpaqueRefreshTokenResponse) {
-		if replyChannel == "" {
-			return
-		}
+	respond := func(resp *iamproto.RecoverUserSessionResponse) {
 		respData, err := proto.Marshal(resp)
 		if err != nil {
-			logger.SysErrorCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Failed to marshal response payload")
+			logger.SysErrorCtx(ctx, "Redis.RecoverUserSession", "Failed to marshal response payload")
 			return
 		}
-		if err := h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err(); err != nil {
-			logger.SysErrorCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Failed to send Redis reply")
+		if err := h.sharedRedis.Publish(ctx, replyChannel, respData).Err(); err != nil {
+			logger.SysErrorCtx(ctx, "Redis.RecoverUserSession", "Failed to send Redis reply")
 		}
 	}
 
-	var req iamproto.VerifyOpaqueRefreshTokenRequest
+	if len(reqData) > 4<<10 {
+		respond(&iamproto.RecoverUserSessionResponse{})
+		return
+	}
+	var req iamproto.RecoverUserSessionRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
-		logger.SysErrorCtx(ctx, "Redis.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
-		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
-			Valid:        false,
-			ErrorMessage: "invalid request payload",
-		})
+		logger.SysWarnCtx(ctx, "Redis.RecoverUserSession", "Invalid request payload")
+		respond(&iamproto.RecoverUserSessionResponse{})
+		return
+	}
+	rawRefreshToken := strings.TrimSpace(req.RefreshToken)
+	if len(rawRefreshToken) < 64 || len(rawRefreshToken) > 512 {
+		respond(&iamproto.RecoverUserSessionResponse{})
 		return
 	}
 
-	userUUID, err := uuid.Parse(req.UserId)
-	if err != nil {
-		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
-			Valid:        false,
-			ErrorMessage: fmt.Sprintf("invalid user id format: %v", err),
-		})
-		return
-	}
-
-	var tenantUUIDPtr *uuid.UUID
-	if req.TenantId != nil && *req.TenantId != "" {
-		if parsed, err := uuid.Parse(*req.TenantId); err == nil {
-			tenantUUIDPtr = &parsed
-		} else {
-			respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
-				Valid:        false,
-				ErrorMessage: fmt.Sprintf("invalid tenant id format: %v", err),
-			})
+	var requestedTenantID *uuid.UUID
+	if req.RequestedTenantId != nil {
+		parsedTenantID, parseErr := uuid.Parse(strings.TrimSpace(*req.RequestedTenantId))
+		if parseErr != nil || parsedTenantID == uuid.Nil {
+			respond(&iamproto.RecoverUserSessionResponse{})
 			return
 		}
+		requestedTenantID = &parsedTenantID
 	}
 
-	res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, tenantUUIDPtr, userUUID)
+	recovered, err := h.sessionRefreshService.RecoverUserSession(ctx, rawRefreshToken, requestedTenantID)
 	if err != nil {
-		respond(&iamproto.VerifyOpaqueRefreshTokenResponse{
-			Valid:        false,
-			ErrorMessage: err.Error(),
-		})
+		// Infrastructure failures have no domain response. The ACR timeout is the
+		// fail-closed availability boundary and never becomes invalid credentials.
+		logger.SysErrorCtx(ctx, "Redis.RecoverUserSession", "Session recovery unavailable")
+		return
+	}
+	if recovered == nil {
+		logger.SysErrorCtx(ctx, "Redis.RecoverUserSession", "Session recovery returned no outcome")
 		return
 	}
 
-	resp := &iamproto.VerifyOpaqueRefreshTokenResponse{
-		Valid:    res.Valid,
-		UserId:   res.UserID,
-		TenantId: res.TenantID,
-		Role:     res.RoleID,
-		Level:    res.Level,
-		Username: res.Username,
+	response := &iamproto.RecoverUserSessionResponse{
+		CredentialValid:            recovered.CredentialValid,
+		ContextAuthorized:          recovered.ContextAuthorized,
+		PersonalFallbackAuthorized: recovered.PersonalFallbackAuthorized,
 	}
-	respond(resp)
+	if recovered.CredentialValid {
+		response.UserId = recovered.UserID.String()
+		response.ClientDeviceId = recovered.ClientDeviceID
+		response.Username = recovered.Username
+	}
+	if recovered.ContextAuthorized || recovered.PersonalFallbackAuthorized {
+		response.RoleId = recovered.RoleID.String()
+		response.RoleLevel = recovered.RoleLevel
+		if recovered.ResolvedTenantID != nil {
+			response.ResolvedTenantId = recovered.ResolvedTenantID.String()
+		}
+	}
+	respond(response)
 }
 
 // =========================================================================
 // 3. LUỒNG THU HỒI REFRESH TOKEN (RevokeOpaqueRefreshToken)
 // =========================================================================
 func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.revoke_opaque_token"), 10*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.revoke_opaque_token"), 650*time.Millisecond)
 	defer cancel()
 
 	var span trace.Span
@@ -843,20 +846,34 @@ func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
 	}
 
 	var req iamproto.RevokeOpaqueRefreshTokenRequest
+	if len(reqData) > 4<<10 {
+		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Request payload exceeds limit")
+		return
+	}
 	if err := proto.Unmarshal(reqData, &req); err != nil {
-		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to unmarshal request data")
+		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Invalid request payload")
+		return
+	}
+	rawRefreshToken := strings.TrimSpace(req.RefreshToken)
+	if len(rawRefreshToken) < 64 || len(rawRefreshToken) > 512 {
+		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Invalid refresh credential shape")
 		return
 	}
 
-	err = h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)
+	err = h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, rawRefreshToken)
 	if err != nil {
-		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", fmt.Sprintf("Failed to revoke refresh token: %s", err.Error()))
+		// ACR must time out and keep cookies when durable revocation is not proven.
+		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to revoke refresh credential")
+		return
 	}
 
-	if replyChannel != "" {
-		resp := &iamproto.RevokeOpaqueRefreshTokenResponse{}
-		respData, _ := proto.Marshal(resp)
-		_ = h.sharedRedis.Publish(context.Background(), replyChannel, respData).Err()
+	respData, marshalErr := proto.Marshal(&iamproto.RevokeOpaqueRefreshTokenResponse{})
+	if marshalErr != nil {
+		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to marshal revoke response")
+		return
+	}
+	if publishErr := h.sharedRedis.Publish(ctx, replyChannel, respData).Err(); publishErr != nil {
+		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to publish revoke response")
 	}
 }
 

@@ -40,10 +40,11 @@ function AuthPageContent() {
   const router = useRouter();
   const requestedReturnTo = searchParams.get("return_to") || "";
   // [COMMENT]: Chỉ chấp nhận callback nội bộ cố định; giá trị tuyệt đối/protocol-relative không thể thành open redirect.
-  const returnTo =
-    requestedReturnTo.startsWith("/billing/authorize?") && !requestedReturnTo.startsWith("//")
-      ? requestedReturnTo
-      : "/";
+  const invitationReturn = requestedReturnTo.match(/^\/settings\/tenant-invitations\/join\?token=[A-Za-z0-9_-]{43}$/);
+  const returnTo = !requestedReturnTo.startsWith("//")
+    && (requestedReturnTo.startsWith("/billing/authorize?") || invitationReturn)
+    ? requestedReturnTo
+    : "/";
   const oauthError = searchParams.get("oauth_error") || "";
   const oauthErrorShownRef = useRef<string | null>(null);
 

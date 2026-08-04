@@ -20,17 +20,20 @@ internal/iam/
 │   ├── 000003_iam_indexes.up.sql  # Indexes tối ưu hóa truy vấn & uniqueness partial constraints
 │   ├── 000004_iam_funcs.up.sql    # Stored procedures & utility functions
 │   ├── 000005_iam_triggers.up.sql # Auto-update updated_at triggers
-│   └── 000006_iam_seeds.up.sql    # Bootstrapping System Users, Roles & Permissions
+│   └── 000006_iam_seeds.up.sql    # Zero-state users/platform roles/permissions
 ├── model/               # Internal data models & GORM/SQL scanning helpers
 ├── module.go            # Dependency Injection wiring (Chỗ khởi tạo Repo -> Svc -> Handler)
 ├── repository/          # PostgreSQL (pgx) + Redis persistence implementations
-│   ├── auth_repo.go     # Thao tác bảng users, refresh_tokens, devices
+│   ├── auth_repo.go     # Lookup identity/login transaction
+│   ├── refresh_token_repo.go # Durable user/device credential + recovery authority snapshot
 │   ├── mfa_repo.go      # Thao tác bảng mfa_settings, mfa_recovery_codes (Replay prevention)
-│   ├── rbac_repo.go     # Thao tác bảng roles, permissions, user_role (Protobuf binary list_perm)
+│   ├── rbac_platform_repo.go # platform_roles + user_role compiled grants
+│   ├── rbac_tenant_repo.go   # tenant_roles + membership_role compiled grants
 │   └── user_repo.go     # Thao tác thông tin user profiles & status
 ├── route.go             # Đăng ký HTTP Gin Routes & Middleware Authorization
 ├── service/             # Business Logic Layer
-│   ├── auth_service.go  # Xử lý đăng nhập, xoay vòng refresh token, logout, device binding
+│   ├── auth_service.go  # Xử lý đăng nhập và device binding
+│   ├── session_refresh_service.go # Issue/recover/revoke opaque user-device credential
 │   ├── mfa_service.go   # Xử lý đăng ký MFA TOTP, sinh mã QR, verify recovery codes
 │   ├── rbac_service.go  # Kiểm tra quyền 5 cấp, phân cấp role hierarchy fence
 │   └── user_service.go  # Quản lý tài khoản, thay đổi thông tin người dùng
@@ -44,7 +47,7 @@ internal/iam/
 └── transport/           # API Interface Adapters Layer
     ├── http/            # Gin HTTP Handlers & DTOs
     ├── pubsub/          # Redis / Kafka PubSub Event Handlers
-    └── rpc/             # gRPC Protobuf definitions & handlers
+    └── rpc/             # Generated Go types; canonical IAM contract ở contracts/proto
 ```
 
 Toàn bộ IAM test code nằm dưới `internal/iam/test` và được phân theo boundary:
@@ -72,7 +75,8 @@ Redis test thật; các test unit không được coi là đã cover database si
 Module IAM bao gồm 7 phân vùng nghiệp vụ chính chạy xuyên suốt qua các tầng Architecture (Repository -> Service -> Handler):
 
 1. **Authentication (`auth`)**:
-   * Quản lý đăng nhập mật khẩu (`Argon2id`), xác thực JWT, xoay vòng Refresh Token (Token Rotation), thu hồi phiên làm việc, và Logout.
+   * Quản lý đăng nhập mật khẩu (`Argon2id`), cấp opaque credential theo
+     user/device, phục hồi current context và thu hồi credential khi logout.
 2. **Multi-Factor Authentication (`mfa`)**:
    * Quản lý kích hoạt 2FA TOTP (sinh secret `AES-256-GCM`, mã QR), chống Replay Attack (`last_accepted_totp_step`), và tiêu thụ mã khôi phục khẩn cấp (Recovery Codes).
 3. **User Management (`user`)**:
@@ -94,19 +98,9 @@ Module IAM bao gồm 7 phân vùng nghiệp vụ chính chạy xuyên suốt qua
 * **Giới hạn tuyệt đối 6 bước Migration**: Thư mục `migrations/` chỉ được phép duy trì đúng **6 cặp file migration** (`000001` -> `000006_iam_seeds`).
 * **Không tạo thêm file migration mới**: Khi phát triển feature mới hoặc bổ sung DDL/Seeds, **bắt buộc phải cập nhật trực tiếp (update)** vào 6 file migration hiện có (ví dụ: bổ sung bảng/cột vào `000002_iam_tables.up.sql`, bổ sung index vào `000003_iam_indexes.up.sql`, bổ sung seed vào `000006_iam_seeds.up.sql`). **Tuyệt đối không tạo file migration thứ 7 (`000007_...`)**.
 
-### 2. Comment xen kẽ trong Code (`// [COMMENT]: ...`)
-* **Rải comment rà bắt Step**: Rải các comment dạng `// [COMMENT]: ...` xen kẽ trực tiếp bên trong thân hàm/câu SQL để đánh dấu từng bước thực thi (execution step).
-* **Mục đích**: Giúp người đọc code dễ dàng nắm bắt hàm đang thực hiện những bước gì (Validate payload -> Check Cache -> Query DB -> Transaction Commit) mà không cần sa đà vào chi tiết cú pháp phức tạp.
-```go
-// [COMMENT]: Kiểm tra tài khoản người dùng có tồn tại trong hệ thống hay không
-exists, err := s.repo.UserExists(ctx, userID)
-if err != nil {
-    return nil, err
-}
-
-// [COMMENT]: Sinh chuỗi bí mật TOTP ngẫu nhiên và mã hóa bằng Runtime Master Key
-totpResult, err := security.GenerateTOTP("Aurora", userID.String())
-```
+### 2. Comment cho invariant (`// [COMMENT]: ...`)
+* Chỉ comment tại invariant, race, security boundary hoặc quyết định khó suy ra
+  từ code. Không comment lặp lại syntax hay tuần tự hiển nhiên.
 
 ### 3. Kiểm tra Nil Strict (Fail-Fast Dependency Injection)
 * **Check nil tập trung tại `module.go`**: Mọi dependency (Repository, Service, Handler, Publisher, Cache) bắt buộc phải được kiểm tra `nil` ngay lập tức tại file `module.go` khi vừa khởi tạo để **Fail-Fast** (dừng khởi chạy app ngay lập tức nếu thiếu dependency).
@@ -121,6 +115,19 @@ totpResult, err := security.GenerateTOTP("Aurora", userID.String())
 * **Dùng CTE phòng chống truy vấn N+1**: Tầng Repository thực thi SQL phức tạp sử dụng **CTE (Common Table Expressions)** trong 1 query duy nhất để gom toàn bộ thao tác ghi/đọc dữ liệu liên quan, triệt tiêu hoàn toàn vấn đề truy vấn lặp `N+1`.
 * **Ưu tiên Cô lập Luồng hơn Trùng lặp Code (Isolation > DRY)**: Việc trùng lặp code (Duplicate code) giữa các luồng hoàn toàn được chấp nhận. **Quan trọng nhất là Luồng A không dùng chung code thi hành với Luồng B** để tránh phụ thuộc chéo (coupling), giúp thay đổi hoặc bảo trì Luồng A không bao giờ gây lỗi tác động phụ (side-effect) sang Luồng B.
 
+### 5.1 RBAC ownership và seed baseline
+
+* `permissions` là catalog ba bậc không có ownership.
+* `platform_roles`/`platform_role_permissions` và
+  `tenant_roles`/`tenant_role_permissions` là hai branch ownership riêng.
+* `user_role` và `membership_role` chỉ giữ compiled Protobuf permission key năm
+  bậc cùng role version/hash.
+* `000006_iam_seeds.up.sql` chỉ dành cho clean install từ con số 0, không dùng
+  `ON CONFLICT` để merge state cũ và không seed tenant role.
+* `iam_schema_migrations` pin SHA-256 theo filename. Pod/restart bỏ qua file đã
+  apply; checksum drift fail-close thay vì replay seed hoặc âm thầm đổi schema.
+* `tenant_root` level 3 được tạo atomically cùng tenant và owner membership.
+
 ### 6. Quy tắc Không Logging tại Tầng Service (No-Logging in Service Layer)
 * **Service Không Log**: Tầng Service tuyệt đối **không ghi log** (`logger.SysError`, `logger.Error`,...). Service chỉ tập trung xử lý Business Logic và trả lỗi (`return err` / `return fmt.Errorf(...)`) lên tầng trên.
 * **Handler chịu trách nhiệm Log**: Tầng Transport / Handler (hoặc Middleware) là nơi duy nhất thực hiện việc bắt lỗi và ghi log hệ thống (`logger.HandlerError`).
@@ -132,6 +139,3 @@ totpResult, err := security.GenerateTOTP("Aurora", userID.String())
   2. **Service (Business Layer)**: Nhận **1 Entity Nghiệp vụ** từ Handler để xử lý logic -> Nếu luồng cần ghi log/bắn sự kiện, Service tạo thêm **Outbox Entity** (Activity Event / Billing Outbox Event).
   3. **Repository (Persistence Layer)**: Tiếp nhận **duy nhất 1 Entity Nghiệp vụ** và các **Entity Outbox** đi kèm (nếu có) -> Thực thi lưu trữ PostgreSQL trong 1 câu SQL CTE / Transaction duy nhất.
 * **Nguyên tắc cốt lõi (Core Rule)**: Trong mọi workflow, **chỉ tồn tại duy nhất 1 Entity Nghiệp vụ**. Nếu xuất hiện Entity thứ 2 trong cùng 1 luồng, đó **bắt buộc phải là Outbox Entity**.
-
-
-

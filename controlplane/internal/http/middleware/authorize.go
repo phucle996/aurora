@@ -89,14 +89,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 			}
 		}
 
-		// 3. Trích xuất Role UUID từ Gin Context (nạp sẵn bởi ContextInjector)
-		roleID, ok := pkgcontext.GetUserRoleID(c, op)
-		if !ok {
-			c.Abort()
-			return
-		}
-
-		// 4. Validate format requiredPermission phải đúng 3 phần: <module>:<object>:<behavior>
+		// 3. Validate format requiredPermission phải đúng 3 phần: <module>:<object>:<behavior>
 		parts := strings.SplitN(requiredPermission, ":", 3)
 		if len(parts) != 3 {
 			logger.HandlerWarn(c, op, nil, fmt.Sprintf("invalid required permission format: %s", requiredPermission))
@@ -126,10 +119,11 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		var cacheNamespace string
 
 		if tenantID != "" {
-			// [COMMENT]: Nhánh Tenant — cache key bậc 1: tenant_role:<role_id>:<tenant_id>
+			// [COMMENT]: Nhánh Tenant — compiled grants are selected by the
+			// verified actor membership, never by a client/session role id.
 			scopeCtx = tenantID
-			cacheParam = roleID.String() + ":" + tenantID
-			cacheNamespace = "tenant_role"
+			cacheParam = userID.String() + ":" + tenantID
+			cacheNamespace = "membership_role"
 		} else {
 			// [COMMENT]: Nhánh Personal — cache key bậc 1: user_role:<userID>
 			username, ok := pkgcontext.GetUserName(c, op)

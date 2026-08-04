@@ -5,5 +5,6 @@ type CreateTenantRequest struct {
 	// Name tên hiển thị của tổ chức (bắt buộc)
 	Name string `json:"name" binding:"required"`
 	// Code mã viết tắt định danh duy nhất (bắt buộc)
-	Code string `json:"code" binding:"required"`
+	Code          string `json:"code" binding:"required"`
+	PrimaryDomain string `json:"primary_domain" binding:"required"`
 }

@@ -49,9 +49,21 @@ BEFORE UPDATE ON permissions
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
-DROP TRIGGER IF EXISTS trg_roles_updated_at ON roles;
-CREATE TRIGGER trg_roles_updated_at
-BEFORE UPDATE ON roles
+DROP TRIGGER IF EXISTS trg_platform_roles_updated_at ON platform_roles;
+CREATE TRIGGER trg_platform_roles_updated_at
+BEFORE UPDATE ON platform_roles
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tenant_roles_updated_at ON tenant_roles;
+CREATE TRIGGER trg_tenant_roles_updated_at
+BEFORE UPDATE ON tenant_roles
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_membership_role_updated_at ON membership_role;
+CREATE TRIGGER trg_membership_role_updated_at
+BEFORE UPDATE ON membership_role
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

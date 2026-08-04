@@ -24,6 +24,11 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
+	if m.tenantAccessRedisHandler != nil {
+		if err := m.tenantAccessRedisHandler.Start(); err != nil {
+			return err
+		}
+	}
 	// [COMMENT]: Khởi động Shared Redis PubSub subscriber để lắng nghe và điều phối luồng Auth
 	if m.authRedisHandler != nil {
 		if err := m.authRedisHandler.Start(); err != nil {
@@ -36,7 +41,6 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -54,6 +58,9 @@ func (m *IAMModule) Stop() {
 	}
 	if m.billingAuthorizationRedisHandler != nil {
 		m.billingAuthorizationRedisHandler.Stop()
+	}
+	if m.tenantAccessRedisHandler != nil {
+		m.tenantAccessRedisHandler.Stop()
 	}
 	if m.billingOutboxRelay != nil {
 		m.billingOutboxRelay.Stop()

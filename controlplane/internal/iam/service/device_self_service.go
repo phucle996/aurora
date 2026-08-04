@@ -25,27 +25,24 @@ import (
 
 // [COMMENT]: DeviceSelfService quản lý thiết bị cho chính user cá nhân
 type DeviceSelfService struct {
-	deviceRepo       iamRepoInterface.DeviceSelfRepository
-	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
-	registry         *cacheengine.CacheRegistry
-	sharedRedis      *goredis.Client
-	metrics          observability.WorkflowRecorder
+	deviceRepo  iamRepoInterface.DeviceSelfRepository
+	registry    *cacheengine.CacheRegistry
+	sharedRedis *goredis.Client
+	metrics     observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewDeviceSelfService khởi tạo thể hiện DeviceSelfService
 func NewDeviceSelfService(
 	deviceRepo iamRepoInterface.DeviceSelfRepository,
-	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
 	sharedRedis *goredis.Client,
 	metrics observability.WorkflowRecorder,
 ) iamSvcInterface.DeviceSelfService {
 	return &DeviceSelfService{
-		deviceRepo:       deviceRepo,
-		refreshTokenRepo: refreshTokenRepo,
-		registry:         registry,
-		sharedRedis:      sharedRedis,
-		metrics:          metrics,
+		deviceRepo:  deviceRepo,
+		registry:    registry,
+		sharedRedis: sharedRedis,
+		metrics:     metrics,
 	}
 }
 

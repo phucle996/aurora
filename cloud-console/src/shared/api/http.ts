@@ -95,6 +95,14 @@ export async function fetchJSON<T>(path: string, options: FetchJSONOptions = {})
       cache: options.cache,
     });
 
+    if (response.headers.get("x-aurora-context-reset") === "personal" && typeof window !== "undefined") {
+      // ACR recovered the durable user/device credential but the former tenant
+      // membership no longer exists. Do not parse the intercepted request as if
+      // it ran in personal scope; reload once after the replacement cookies land.
+      window.location.replace("/");
+      throw new APIError(409, "Your personal session was restored.");
+    }
+
     if (!response.ok) {
       if (response.status === 401 && typeof window !== "undefined" && !requestPath.includes("/auth/login")) {
         window.dispatchEvent(new CustomEvent("iam:unauthorized"));

@@ -96,12 +96,6 @@ func (s *RbacPlatformService) AssignUserRole(ctx context.Context, callerLevel ui
 	return invalidationErr
 }
 
-// [COMMENT]: AssignTenantRole gán vai trò platform cho tenant (skeleton)
-func (s *RbacPlatformService) AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
-	return nil
-}
-
 // [COMMENT]: ListPlatformRoles trả về danh sách vai trò hệ thống có level thấp hơn caller
 func (s *RbacPlatformService) ListPlatformRoles(ctx context.Context, callerLevel uint8) (out []iamEntity.Role, err error) {
 	startedAt := time.Now()

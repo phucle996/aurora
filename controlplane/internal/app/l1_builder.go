@@ -82,26 +82,27 @@ func RegisterL1Loaders(
 		return &roleEntry, nil
 	})
 
-	// [COMMENT]: 7. Đăng ký loader cho "tenant_role" lưu trữ toàn bộ permissions của tenant theo role
-	cacheengine.Register(registry, "tenant_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
-		parts := strings.SplitN(param, ":", 2) // <role_id>:<tenant_id>
+	// [COMMENT]: Tenant authorization is bound to the current user membership,
+	// never to a role id carried in a session header.
+	cacheengine.Register(registry, "membership_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+		parts := strings.SplitN(param, ":", 2) // <user_id>:<tenant_id>
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("tenant_role loader: invalid param format %q, expected <role_id>:<tenant_id>", param)
+			return nil, fmt.Errorf("membership_role loader: invalid param format %q, expected <user_id>:<tenant_id>", param)
 		}
 
-		roleID, parseErr := uuid.Parse(parts[0])
+		userID, parseErr := uuid.Parse(parts[0])
 		if parseErr != nil {
-			return nil, fmt.Errorf("tenant_role loader: invalid role_id %q: %w", parts[0], parseErr)
+			return nil, fmt.Errorf("membership_role loader: invalid user_id %q: %w", parts[0], parseErr)
 		}
 		tenantID, parseErr := uuid.Parse(parts[1])
 		if parseErr != nil {
-			return nil, fmt.Errorf("tenant_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
+			return nil, fmt.Errorf("membership_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
 		}
 
 		// [COMMENT]: Lấy raw binary permissions của tenant từ DB thông qua tenant repository theo tenantID và roleID
-		binaryData, err := modules.IAM.RbacTenantRepository.GetTenantRolePermissions(ctx, tenantID, roleID)
+		binaryData, err := modules.IAM.RbacTenantRepository.GetUserTenantRolePermissions(ctx, userID, tenantID)
 		if err != nil {
-			return nil, fmt.Errorf("tenant_role loader: load tenant role permissions: %w", err)
+			return nil, fmt.Errorf("membership_role loader: load tenant role permissions: %w", err)
 		}
 
 		if len(binaryData) == 0 {
@@ -110,7 +111,7 @@ func RegisterL1Loaders(
 
 		var roleEntry iamproto.RoleEntry
 		if err := proto.Unmarshal(binaryData, &roleEntry); err != nil {
-			return nil, fmt.Errorf("tenant_role loader: failed to unmarshal binary role entry: %w", err)
+			return nil, fmt.Errorf("membership_role loader: failed to unmarshal binary role entry: %w", err)
 		}
 
 		return &roleEntry, nil

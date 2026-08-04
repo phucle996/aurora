@@ -12,12 +12,9 @@ import (
 // SessionRefreshService quản lý tất cả các hoạt động làm mới/gia hạn phiên làm việc
 // của cả End-User và SRE Admin nhằm tối ưu hóa hiệu năng, giảm tải (de-bloat) cho các service khác.
 type SessionRefreshService interface {
-	// CreateRefreshToken tạo mới một session refresh token đục (opaque) khi đăng nhập thành công trên thiết bị tin cậy.
-	CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error)
+	IssueDeviceRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
 
-	// [COMMENT]: Xóa bỏ refresh token theo giá trị raw nhận được từ cookie (băm và xóa)
+	RecoverUserSession(ctx context.Context, rawRefreshToken string, requestedTenantID *uuid.UUID) (*iamEntity.RecoverUserSession, error)
+
 	RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error
-
-	// [COMMENT]: Xác thực Opaque Refresh Token dựa trên user và tenant
-	VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, tenantID *uuid.UUID, userID uuid.UUID) (*iamEntity.VerifyOpaqueRefreshTokenResult, error)
 }

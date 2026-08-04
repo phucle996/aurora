@@ -52,6 +52,15 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	// ========================================================================
 	meGroup := router.Group("/api/v1/me")
 	{
+		meGroup.GET("/hierarchy/tenant-invitations/preview",
+			module.TenantInvitationHandler.PreviewTenantInvitation,
+		)
+		// [COMMENT]: /me precedes /critical so ACR keeps this self route out of
+		// tenant/personal path rewriting while still consuming session proof.
+		meGroup.POST("/critical/hierarchy/tenant-invitations/join",
+			middleware.RequireSessionProof(),
+			module.TenantInvitationHandler.JoinTenantInvitation,
+		)
 		// [COMMENT]: Tạo workspace cá nhân mới — vẫn cần quyền hierarchy:workspace:create
 		meGroup.POST("/hierarchy/workspace/create",
 			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
@@ -77,6 +86,16 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	// ========================================================================
 	tenantGroup := router.Group("/api/v1/tenant")
 	{
+		tenantGroup.POST("/critical/hierarchy/tenant-invitations",
+			middleware.RequireSessionProof(),
+			middleware.Authorize("hierarchy:tenant-invitation:create", module.L1Registry, "*"),
+			module.TenantInvitationHandler.CreateTenantInvitation,
+		)
+		tenantGroup.DELETE("/critical/hierarchy/tenant-invitations/:invitation_id",
+			middleware.RequireSessionProof(),
+			middleware.Authorize("hierarchy:tenant-invitation:delete", module.L1Registry, "*"),
+			module.TenantInvitationHandler.RevokeTenantInvitation,
+		)
 		// [COMMENT]: Tạo workspace thuộc tenant — yêu cầu quyền hierarchy:workspace:create ở tầng *
 		tenantGroup.POST("/hierarchy/workspaces",
 			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),

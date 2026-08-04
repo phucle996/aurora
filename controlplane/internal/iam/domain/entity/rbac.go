@@ -15,22 +15,47 @@ type UserRole struct {
 	RoleID      uuid.UUID // ID role tĩnh từ Go static config
 	RoleName    string    // Tên hiển thị của role (cached)
 	RoleLevel   int       // Level phân cấp của role (cached)
+	RoleVersion int64
 	ListPerm    []byte    // Mảng binary chứa danh sách keys 5 cấp đã serialize (Protobuf RoleEntry)
 	CreatedAt   time.Time // Thời điểm tạo
 	UpdatedAt   time.Time // Thời điểm cập nhật
 }
 
-// [COMMENT]: TenantRole đại diện cho thực thể phân vai trò của Tenant trong Workspace với permissions dạng binary (bytea)
-type TenantRole struct {
-	ID          uuid.UUID // ID của mapping record
-	TenantID    uuid.UUID // ID của Tenant được gán role (FK)
-	WorkspaceID uuid.UUID // ID workspace áp dụng role (nil UUID đại diện platform scope)
-	RoleID      uuid.UUID // ID role tĩnh từ Go static config
-	RoleName    string    // Tên hiển thị của role (cached)
-	RoleLevel   int       // Level phân cấp của role (cached)
-	ListPerm    []byte    // Mảng binary chứa danh sách keys 5 cấp đã serialize (Protobuf RoleEntry)
-	CreatedAt   time.Time // Thời điểm tạo
-	UpdatedAt   time.Time // Thời điểm cập nhật
+// ListTenantRoles is isolated from platform Role so tenant ownership can never
+// be inferred from a generic scope string.
+type ListTenantRoles struct {
+	ActorUserID      uuid.UUID
+	TenantID         uuid.UUID
+	ID               uuid.UUID
+	Code             string
+	Name             string
+	Description      string
+	RoleLevel        int
+	Version          int64
+	AssignmentsCount int
+	PermissionsCount int
+	CreatedAt        time.Time
+}
+
+type CreateTenantRole struct {
+	ID            uuid.UUID
+	ActorUserID   uuid.UUID
+	TenantID      uuid.UUID
+	Code          string
+	Name          string
+	Description   string
+	RoleLevel     int
+	Version       int64
+	PermissionIDs []uuid.UUID
+	CreatedAt     time.Time
+}
+
+type ResolveTenantAccess struct {
+	UserID       uuid.UUID
+	TenantID     uuid.UUID
+	TenantDomain string
+	RoleID       uuid.UUID
+	RoleLevel    int32
 }
 
 // [COMMENT]: Role đại diện cho định nghĩa vai trò hệ thống, bổ sung các trường thống kê phục vụ hiển thị danh sách (Platform/Tenant scope)
@@ -41,8 +66,8 @@ type Role struct {
 	Description      string
 	RoleLevel        int
 	Scope            string
-	CreatedBy        uuid.UUID  // ID người dùng tạo vai trò này
-	CreatedByName    string     // Tên đầy đủ (fullname) người dùng tạo vai trò này
+	CreatedBy        uuid.UUID // ID người dùng tạo vai trò này
+	CreatedByName    string    // Tên đầy đủ (fullname) người dùng tạo vai trò này
 	AssignmentsCount int
 	PermissionsCount int
 	CreatedAt        time.Time
@@ -59,8 +84,8 @@ type UpdateRoleInput struct {
 
 // [COMMENT]: NavigationItem định nghĩa cấu trúc menu gom nhóm 2 cấp (Module:Object) kèm theo các hành động (behavior/action) được phép
 type NavigationItem struct {
-	Key     string     // format: <module>:<object>
-	Actions []string   // các action (behavior) tương ứng, ví dụ ["list", "delete"] hoặc ["*"]
+	Key     string   // format: <module>:<object>
+	Actions []string // các action (behavior) tương ứng, ví dụ ["list", "delete"] hoặc ["*"]
 }
 
 // [COMMENT]: RenderContext bọc danh sách menu và capabilities tương ứng của Actor
@@ -80,4 +105,3 @@ type Permission struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
-

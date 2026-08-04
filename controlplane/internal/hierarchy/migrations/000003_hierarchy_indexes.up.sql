@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS ix_zone_encryption_keys_zone_created
 ON zone_encryption_keys(zone_id, created_at DESC, id DESC);
 
 -- [COMMENT]: Indexes cho các trường trong phân hệ Tenant
-CREATE UNIQUE INDEX IF NOT EXISTS tenant_domains_domain_uidx ON tenant_domains(domain);
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_domains_domain_uidx ON tenant_domains(lower(domain));
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_memberships_tenant_user_uidx ON tenant_memberships(tenant_id, user_id);
 
 -- [COMMENT]: Index phục vụ tìm kiếm Workspace cá nhân

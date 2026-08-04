@@ -51,6 +51,7 @@ type IAMModule struct {
 	billingAuthorizationRedisHandler *iamPubsubHandler.BillingAuthorizationRedisHandler
 	authRedisHandler                 *iamPubsubHandler.AuthRedisHandler
 	deviceRedisHandler               *iamPubsubHandler.DeviceRedisHandler
+	tenantAccessRedisHandler         *iamPubsubHandler.TenantAccessRedisHandler
 }
 
 func (m *IAMModule) NotifyBillingOutbox() {
@@ -172,7 +173,7 @@ func NewModule(
 	// Khởi tạo các Engine xử lý Business Logic chính.
 	workflowMetrics := otel.WorkflowRecorder("iam")
 
-	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, rds, workflowMetrics)
+	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, cacheEngine, rds, workflowMetrics)
 	if deviceSelfSvc == nil {
 		return nil, errors.New("iam module: failed to construct device self service")
 	}
@@ -205,8 +206,7 @@ func NewModule(
 	// 🛡️ GIAI ĐOẠN 5: Platform & Tenant RBAC Repos Bootstrapping (giải quyết DI)
 	// ------------------------------------------------------------------------
 
-	// [COMMENT]: Khởi tạo Session Refresh Service sử dụng platform và tenant RBAC repos
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, rbacPlatformRepo, rbacTenantRepo, cacheEngine, workflowMetrics)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, workflowMetrics)
 	if refreshSvc == nil {
 		return nil, errors.New("iam module: failed to construct session refresh service")
 	}
@@ -302,6 +302,10 @@ func NewModule(
 	if rbacTenantSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC tenant service")
 	}
+	tenantAccessRedisHandler, err := iamPubsubHandler.NewTenantAccessRedisHandler(rds, rbacTenantSvc)
+	if err != nil {
+		return nil, fmt.Errorf("iam module: failed to initialize tenant access Redis handler: %w", err)
+	}
 
 	// [COMMENT]: Khởi tạo các HTTP handlers phục vụ định tuyến API platform/tenant RBAC
 	rbacPlatformHandler := iamHandler.NewRbacPlatformHandler(rbacPlatformSvc)
@@ -346,5 +350,6 @@ func NewModule(
 		billingAuthorizationRedisHandler: billingAuthorizationRedisHandler,
 		authRedisHandler:                 authRedisHandler,
 		deviceRedisHandler:               deviceRedisHandler,
+		tenantAccessRedisHandler:         tenantAccessRedisHandler,
 	}, nil
 }

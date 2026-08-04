@@ -17,6 +17,7 @@ type UserRole struct {
 	RoleID      uuid.UUID `db:"role_id"`
 	RoleName    string    `db:"role_name"`
 	RoleLevel   int       `db:"role_level"` // Level phân cấp của role
+	RoleVersion int64     `db:"role_version"`
 	ListPerm    []byte    `db:"list_perm"`
 	CreatedAt   time.Time `db:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"`
@@ -32,6 +33,7 @@ func UserRoleEntityToModel(input iamEntity.UserRole) UserRole {
 		RoleID:      input.RoleID,
 		RoleName:    input.RoleName,
 		RoleLevel:   input.RoleLevel,
+		RoleVersion: input.RoleVersion,
 		ListPerm:    input.ListPerm,
 		CreatedAt:   input.CreatedAt,
 		UpdatedAt:   input.UpdatedAt,
@@ -48,57 +50,15 @@ func UserRoleModelToEntity(input UserRole) iamEntity.UserRole {
 		RoleID:      input.RoleID,
 		RoleName:    input.RoleName,
 		RoleLevel:   input.RoleLevel,
+		RoleVersion: input.RoleVersion,
 		ListPerm:    input.ListPerm,
 		CreatedAt:   input.CreatedAt,
 		UpdatedAt:   input.UpdatedAt,
 	}
 }
 
-// [COMMENT]: TenantRole đại diện cho cấu trúc bảng tenant_role trong PostgreSQL
-type TenantRole struct {
-	ID          uuid.UUID `db:"id"`
-	TenantID    uuid.UUID `db:"tenant_id"`
-	WorkspaceID uuid.UUID `db:"workspace_id"`
-	RoleID      uuid.UUID `db:"role_id"`
-	RoleName    string    `db:"role_name"`
-	RoleLevel   int       `db:"role_level"` // Level phân cấp của role
-	ListPerm    []byte    `db:"list_perm"`
-	CreatedAt   time.Time `db:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at"`
-}
-
-// [COMMENT]: TenantRoleEntityToModel chuyển đổi thực thể domain sang DB model
-func TenantRoleEntityToModel(input iamEntity.TenantRole) TenantRole {
-	return TenantRole{
-		ID:          input.ID,
-		TenantID:    input.TenantID,
-		WorkspaceID: input.WorkspaceID,
-		RoleID:      input.RoleID,
-		RoleName:    input.RoleName,
-		RoleLevel:   input.RoleLevel,
-		ListPerm:    input.ListPerm,
-		CreatedAt:   input.CreatedAt,
-		UpdatedAt:   input.UpdatedAt,
-	}
-}
-
-// [COMMENT]: TenantRoleModelToEntity chuyển đổi DB model sang thực thể domain
-func TenantRoleModelToEntity(input TenantRole) iamEntity.TenantRole {
-	return iamEntity.TenantRole{
-		ID:          input.ID,
-		TenantID:    input.TenantID,
-		WorkspaceID: input.WorkspaceID,
-		RoleID:      input.RoleID,
-		RoleName:    input.RoleName,
-		RoleLevel:   input.RoleLevel,
-		ListPerm:    input.ListPerm,
-		CreatedAt:   input.CreatedAt,
-		UpdatedAt:   input.UpdatedAt,
-	}
-}
-
-// [COMMENT]: Role đại diện cho bảng roles trong PostgreSQL (ánh xạ đúng các cột của bảng roles)
-// [COMMENT]: Role chỉ ánh xạ các cột thực tế trong bảng roles — không thêm cột tính toán/JOIN vào đây
+// Role is the platform-role read projection. Scope is selected as a constant by
+// repository queries and is not a discriminator column in platform_roles.
 type Role struct {
 	ID          uuid.UUID `db:"id"`
 	Code        string    `db:"code"`

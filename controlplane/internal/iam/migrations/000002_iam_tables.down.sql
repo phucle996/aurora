@@ -1,10 +1,13 @@
 DROP TABLE IF EXISTS billing_outbox_records;
 DROP TABLE IF EXISTS external_identities;
 DROP TABLE IF EXISTS admin_devices;
-DROP TABLE IF EXISTS tenant_role;
+DROP TABLE IF EXISTS tenant_invitations;
+DROP TABLE IF EXISTS membership_role;
 DROP TABLE IF EXISTS user_role;
-DROP TABLE IF EXISTS role_permissions;
-DROP TABLE IF EXISTS roles;
+DROP TABLE IF EXISTS tenant_role_permissions;
+DROP TABLE IF EXISTS tenant_roles;
+DROP TABLE IF EXISTS platform_role_permissions;
+DROP TABLE IF EXISTS platform_roles;
 DROP TABLE IF EXISTS permissions;
 DROP TABLE IF EXISTS mfa_recovery_codes;
 DROP TABLE IF EXISTS mfa_settings;

@@ -62,13 +62,13 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-	value, err := s.cacheEngine.GetOrLoad(ctx, "tenant_role", in.RoleID.String()+":"+in.TenantID.String())
+	value, err := s.cacheEngine.GetOrLoad(ctx, "membership_role", in.ActorUserID.String()+":"+in.TenantID.String())
 	if err != nil {
 		return nil, err
 	}
 	roleEntry, ok := value.(*iamproto.RoleEntry)
 	if !ok {
-		return nil, errors.New("invalid cache entry type for tenant_role")
+		return nil, errors.New("invalid cache entry type for membership_role")
 	}
 
 	in.AllowedWorkspaceIDs = make([]uuid.UUID, 0)
@@ -103,13 +103,13 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.C
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-	value, err := s.cacheEngine.GetOrLoad(ctx, "tenant_role", in.RoleID.String()+":"+in.TenantID.String())
+	value, err := s.cacheEngine.GetOrLoad(ctx, "membership_role", in.ActorUserID.String()+":"+in.TenantID.String())
 	if err != nil {
 		return nil, err
 	}
 	roleEntry, ok := value.(*iamproto.RoleEntry)
 	if !ok {
-		return nil, errors.New("invalid cache entry type for tenant_role")
+		return nil, errors.New("invalid cache entry type for membership_role")
 	}
 
 	in.AllowedWorkspaceIDs = make([]uuid.UUID, 0)

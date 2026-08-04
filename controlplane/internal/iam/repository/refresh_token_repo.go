@@ -2,170 +2,173 @@ package iamRepoImpl
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type RefreshTokenRepository struct {
-	db     *pgxpool.Pool
-	schema string
+	db              *pgxpool.Pool
+	iamSchema       string
+	hierarchySchema string
 }
 
-func NewRefreshTokenRepository(
-	cfg *config.Config,
-	db *pgxpool.Pool,
-) iamRepoInterface.RefreshTokenRepository {
+func NewRefreshTokenRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.RefreshTokenRepository {
 	return &RefreshTokenRepository{
-		db:     db,
-		schema: cfg.SchemaSQL.IAM,
+		db:              db,
+		iamSchema:       cfg.SchemaSQL.IAM,
+		hierarchySchema: cfg.SchemaSQL.Hierarchy,
 	}
 }
 
-// [COMMENT]: Xóa bỏ Refresh Token session dựa trên hash để thực hiện thu hồi/logout khi nhận tín hiệu từ ACR
-func (r *RefreshTokenRepository) DeleteByHash(ctx context.Context, tokenHash string) (int64, error) {
+func (r *RefreshTokenRepository) IssueDeviceRefreshToken(ctx context.Context, in *iamEntity.IssueDeviceRefreshToken) error {
 	query := fmt.Sprintf(`
-		DELETE FROM %s.refresh_tokens
-		WHERE token_hash = $1
-	`, r.schema)
-	res, err := r.db.Exec(ctx, query, tokenHash)
-	if err != nil {
-		// [COMMENT]: Trả lỗi trực tiếp không wrap theo yêu cầu
-		return 0, err
+		WITH active_device AS MATERIALIZED (
+			SELECT device.id
+			FROM %s.devices device
+			JOIN %s.users account
+			  ON account.id=device.user_id
+			 AND account.status='active'
+			WHERE device.id=$3 AND device.user_id=$2 AND device.revoked_at IS NULL
+			FOR UPDATE OF device
+		), previous_deleted AS (
+			DELETE FROM %s.refresh_tokens token
+			USING active_device
+			WHERE token.user_id=$2 AND token.device_id=active_device.id
+			RETURNING token.id
+		), delete_fence AS MATERIALIZED (
+			SELECT count(*) AS deleted_count FROM previous_deleted
+		), inserted AS (
+			INSERT INTO %s.refresh_tokens
+				(id, user_id, device_id, token_hash, issued_at, expires_at)
+			SELECT $1, $2, active_device.id, $4, $5, $6
+			FROM active_device CROSS JOIN delete_fence
+			RETURNING id
+		)
+		SELECT EXISTS(SELECT 1 FROM active_device), EXISTS(SELECT 1 FROM inserted)
+	`, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema)
+
+	var deviceValid, inserted bool
+	if err := r.db.QueryRow(ctx, query,
+		in.ID, in.UserID, in.DeviceID, in.TokenHash, in.IssuedAt, in.ExpiresAt,
+	).Scan(&deviceValid, &inserted); err != nil {
+		return fmt.Errorf("refresh token repo: issue device credential: %w", err)
 	}
-	rowsAffected := res.RowsAffected()
+	if !deviceValid {
+		return iamTaxonomy.ErrNotFound
+	}
+	if !inserted {
+		return iamTaxonomy.ErrConflict
+	}
+	return nil
+}
+
+func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iamEntity.RecoverUserSession) (*iamEntity.RecoverUserSession, error) {
+	query := fmt.Sprintf(`
+		WITH credential AS MATERIALIZED (
+			SELECT token.user_id, token.device_id,
+			       COALESCE(NULLIF(trim(device.client_device_id), ''), device.id::text) AS client_device_id,
+			       account.username
+			FROM %s.refresh_tokens token
+			JOIN %s.users account
+			  ON account.id=token.user_id
+			 AND account.status='active'
+			JOIN %s.devices device
+			  ON device.id=token.device_id
+			 AND device.user_id=token.user_id
+			 AND device.revoked_at IS NULL
+			WHERE token.token_hash=$1 AND token.expires_at>$3
+		), platform_authority AS MATERIALIZED (
+			SELECT assignment.role_id, assignment.role_level
+			FROM credential
+			JOIN %s.user_role assignment
+			  ON assignment.user_id=credential.user_id
+			 AND assignment.workspace_id='00000000-0000-0000-0000-000000000000'
+			JOIN %s.platform_roles role
+			  ON role.id=assignment.role_id
+			 AND role.version=assignment.role_version
+			ORDER BY assignment.role_level, assignment.role_id
+			LIMIT 1
+		), tenant_authority AS MATERIALIZED (
+			SELECT assignment.tenant_role_id AS role_id, assignment.role_level
+			FROM credential
+			JOIN %s.tenant_memberships membership
+			  ON membership.user_id=credential.user_id
+			 AND membership.tenant_id=$2::uuid
+			 AND membership.status='active'
+			JOIN %s.tenants tenant
+			  ON tenant.id=membership.tenant_id
+			 AND tenant.status='active'
+			JOIN %s.membership_role assignment
+			  ON assignment.membership_id=membership.id
+			 AND assignment.workspace_id='00000000-0000-0000-0000-000000000000'
+			JOIN %s.tenant_roles role
+			  ON role.id=assignment.tenant_role_id
+			 AND role.tenant_id=membership.tenant_id
+			 AND role.version=assignment.role_version
+			WHERE $2::uuid IS NOT NULL
+			ORDER BY assignment.role_level, assignment.tenant_role_id
+			LIMIT 1
+		)
+		SELECT EXISTS(SELECT 1 FROM credential),
+		       CASE WHEN $2::uuid IS NULL
+		            THEN EXISTS(SELECT 1 FROM platform_authority)
+		            ELSE EXISTS(SELECT 1 FROM tenant_authority)
+		       END,
+		       $2::uuid IS NOT NULL
+		         AND NOT EXISTS(SELECT 1 FROM tenant_authority)
+		         AND EXISTS(SELECT 1 FROM platform_authority),
+		       COALESCE((SELECT user_id FROM credential), '00000000-0000-0000-0000-000000000000'::uuid),
+		       COALESCE((SELECT device_id FROM credential), '00000000-0000-0000-0000-000000000000'::uuid),
+		       COALESCE((SELECT client_device_id FROM credential), ''),
+		       COALESCE((SELECT username FROM credential), ''),
+		       CASE WHEN EXISTS(SELECT 1 FROM tenant_authority) THEN $2::uuid ELSE NULL::uuid END,
+		       COALESCE(
+		           (SELECT role_id FROM tenant_authority),
+		           (SELECT role_id FROM platform_authority),
+		           '00000000-0000-0000-0000-000000000000'::uuid
+		       ),
+		       COALESCE(
+		           (SELECT role_level FROM tenant_authority),
+		           (SELECT role_level FROM platform_authority),
+		           0
+		       )
+	`, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema,
+		r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema)
+
+	out := &iamEntity.RecoverUserSession{
+		TokenHash: in.TokenHash, RequestedTenantID: in.RequestedTenantID, Now: in.Now,
+	}
+	if err := r.db.QueryRow(ctx, query, in.TokenHash, in.RequestedTenantID, in.Now).Scan(
+		&out.CredentialValid, &out.ContextAuthorized, &out.PersonalFallbackAuthorized,
+		&out.UserID, &out.DeviceID,
+		&out.ClientDeviceID, &out.Username, &out.ResolvedTenantID, &out.RoleID, &out.RoleLevel,
+	); err != nil {
+		return nil, fmt.Errorf("refresh token repo: recover user session: %w", err)
+	}
+	if !out.CredentialValid {
+		return out, iamTaxonomy.ErrInvalidCredential
+	}
+	if !out.ContextAuthorized {
+		return out, iamTaxonomy.ErrActionNotAllowed
+	}
+	return out, nil
+}
+
+func (r *RefreshTokenRepository) DeleteByHash(ctx context.Context, tokenHash string) (int64, error) {
+	query := fmt.Sprintf(`DELETE FROM %s.refresh_tokens WHERE token_hash=$1`, r.iamSchema)
+	result, err := r.db.Exec(ctx, query, tokenHash)
+	if err != nil {
+		return 0, fmt.Errorf("refresh token repo: delete credential: %w", err)
+	}
+	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		// [COMMENT]: Trả lỗi ErrZeroRowsAffected đặc thù nếu không có bản ghi nào bị ảnh hưởng
-		return 0, iamTaxonomy.ErrZeroRowsAffected
+		return 0, iamTaxonomy.ErrNotFound
 	}
 	return rowsAffected, nil
-}
-
-func (r *RefreshTokenRepository) DeleteByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
-	query := fmt.Sprintf(`
-		DELETE FROM %s.refresh_tokens
-		WHERE user_id = $1 AND ($2::uuid IS NULL OR device_id <> $2)
-	`, r.schema)
-	res, err := r.db.Exec(ctx, query, userID, exceptDeviceID)
-	if err != nil {
-		return 0, fmt.Errorf("iam repo: delete refresh tokens by user id: %w", err)
-	}
-	return res.RowsAffected(), nil
-}
-
-func (r *RefreshTokenRepository) DeleteByDeviceID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error) {
-	query := fmt.Sprintf(`
-		DELETE FROM %s.refresh_tokens
-		WHERE user_id = $1 AND device_id = $2
-	`, r.schema)
-	res, err := r.db.Exec(ctx, query, userID, deviceID)
-	if err != nil {
-		return 0, fmt.Errorf("iam repo: delete refresh tokens by device and user: %w", err)
-	}
-	return res.RowsAffected(), nil
-}
-
-func (r *RefreshTokenRepository) DeleteByDeviceIDs(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) {
-	if len(deviceIDs) == 0 {
-		return 0, nil
-	}
-	query := fmt.Sprintf(`
-		DELETE FROM %s.refresh_tokens
-		WHERE user_id = $1 AND device_id = ANY($2)
-	`, r.schema)
-	res, err := r.db.Exec(ctx, query, userID, deviceIDs)
-	if err != nil {
-		return 0, fmt.Errorf("iam repo: delete refresh tokens by device ids: %w", err)
-	}
-	return res.RowsAffected(), nil
-}
-
-
-
-func (r *RefreshTokenRepository) LoadContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) {
-	query := fmt.Sprintf(`
-		SELECT
-			r.id, r.user_id, r.device_id, r.token_hash, r.tenant_id, r.expires_at,
-			r.used_at, r.revoked_at,
-			u.id, u.status, u.username,
-			d.id, d.revoked_at
-		FROM %s.refresh_tokens r
-		LEFT JOIN %s.users u ON u.id = r.user_id
-		LEFT JOIN %s.devices d ON d.id = r.device_id
-		WHERE r.token_hash = $1 AND r.device_id IS NOT NULL
-		LIMIT 1
-	`, r.schema, r.schema, r.schema)
-	var (
-		ctxOut        iamEntity.RefreshContext
-		deviceID      *uuid.UUID
-		deviceRevoked *time.Time
-	)
-	if err := r.db.QueryRow(ctx, query, tokenHash).Scan(
-		&ctxOut.Session.ID,
-		&ctxOut.Session.UserID,
-		&ctxOut.Session.DeviceID,
-		&ctxOut.Session.TokenHash,
-		&ctxOut.Session.TenantID,
-		&ctxOut.Session.ExpiresAt,
-		&ctxOut.Session.UsedAt,
-		&ctxOut.Session.RevokedAt,
-		&ctxOut.User.ID,
-		&ctxOut.User.Status,
-		&ctxOut.User.Username,
-		&deviceID,
-		&deviceRevoked,
-	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, iamTaxonomy.ErrNotFound
-		}
-		return nil, fmt.Errorf("iam repo: load refresh context: %w", err)
-	}
-	if deviceID != nil {
-		ctxOut.Device = &iamEntity.RefreshTokenDevice{ID: *deviceID, RevokedAt: deviceRevoked}
-	}
-	return &ctxOut, nil
-}
-
-// CreateSession lưu trực tiếp một thực thể RefreshToken mới vào bảng database refresh_tokens.
-// Đây là hàm hỗ trợ cho flow Login ban đầu khi chọn trust_device, giảm thiểu logic trung gian.
-func (r *RefreshTokenRepository) CreateToken(ctx context.Context, token iamEntity.RefreshToken) error {
-	// Khởi tạo câu lệnh INSERT chèn trực tiếp dòng dữ liệu phiên làm việc
-	query := fmt.Sprintf(`
-		INSERT INTO %s.refresh_tokens (
-			id,
-			user_id,
-			device_id,
-			token_hash,
-			tenant_id,
-			issued_at,
-			expires_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, r.schema)
-
-	// Thực thi câu lệnh SQL với các tham số truyền vào
-	if _, err := r.db.Exec(
-		ctx,
-		query,
-		token.ID,
-		token.UserID,
-		token.DeviceID,
-		token.TokenHash,
-		token.TenantID,
-		token.IssuedAt,
-		token.ExpiresAt,
-	); err != nil {
-		return fmt.Errorf("iam repo: create refresh token session: %w", err)
-	}
-
-	return nil
 }

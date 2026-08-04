@@ -6,53 +6,33 @@ import (
 	"github.com/google/uuid"
 )
 
-type RefreshToken struct {
-	ID            uuid.UUID
-	UserID        uuid.UUID
-	DeviceID      *uuid.UUID
-	TokenHash     string
-	TenantID      *uuid.UUID
-	IssuedAt      time.Time
-	ExpiresAt     time.Time
-	UsedAt        *time.Time
-	RevokedAt     *time.Time
-}
-
-type RefreshTokenSession struct {
-	ID            uuid.UUID
-	UserID        uuid.UUID
-	DeviceID      *uuid.UUID
-	TokenHash     string
-	TenantID      *uuid.UUID
-	ExpiresAt     time.Time
-	UsedAt        *time.Time
-	RevokedAt     *time.Time
-}
-
-type RefreshTokenUser struct {
-	ID       uuid.UUID
-	Status   UserStatus
-	Username string
-}
-
-type RefreshTokenDevice struct {
+// IssueDeviceRefreshToken is the durable credential issued to one tracked
+// device. Runtime tenant, Zone and role context never crosses this boundary.
+type IssueDeviceRefreshToken struct {
 	ID        uuid.UUID
-	RevokedAt *time.Time
+	UserID    uuid.UUID
+	DeviceID  uuid.UUID
+	TokenHash string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
 }
 
-type RefreshTokenResult struct {
-	AccessToken      string
-	RefreshToken     string
-	AccessKey        string
-	AccessSecret     string
-	TrackedDeviceID  string
-	AccessExpiresAt  time.Time
-	RefreshExpiresAt time.Time
-}
+// RecoverUserSession is isolated from tenant switching. RequestedTenantID is
+// an untrusted context request; the repository resolves current authority from
+// the refresh credential's user and device in one PostgreSQL snapshot.
+type RecoverUserSession struct {
+	TokenHash         string
+	RequestedTenantID *uuid.UUID
+	Now               time.Time
 
-// RefreshContext gói gộp dữ liệu refresh để giảm round-trip DB.
-type RefreshContext struct {
-	Session RefreshTokenSession
-	User    RefreshTokenUser
-	Device  *RefreshTokenDevice
+	CredentialValid            bool
+	ContextAuthorized          bool
+	PersonalFallbackAuthorized bool
+	UserID                     uuid.UUID
+	DeviceID                   uuid.UUID
+	ClientDeviceID             string
+	Username                   string
+	ResolvedTenantID           *uuid.UUID
+	RoleID                     uuid.UUID
+	RoleLevel                  int32
 }

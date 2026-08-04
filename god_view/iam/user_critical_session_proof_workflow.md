@@ -2,7 +2,7 @@
 
 ## 1. Contract và trust boundary
 
-Luồng này là SOT cho mọi mutation dưới namespace `/api/v1/critical/*`. Backend nghiệp vụ không tự triển khai crypto; ACR xác minh session proof trước khi rewrite route sang `/api/v1/personal/critical/*` hoặc `/api/v1/tenant/critical/*`.
+Luồng này là SOT cho mọi mutation dưới namespace `/api/v1/critical/*` và self-route `/api/v1/me/critical/*`. Backend nghiệp vụ không tự triển khai crypto; ACR xác minh session proof trước khi rewrite owner route sang `/api/v1/personal/critical/*` hoặc `/api/v1/tenant/critical/*`. `/api/v1/me/critical/*` không rewrite nhưng dùng cùng proof verification và rate-limit budget.
 
 - Login bắt buộc một Ed25519 challenge mới và lưu canonical public key vào Redis L2 session.
 - Mỗi critical call bắt buộc một challenge mới, TTL 60 giây và chỉ được consume đúng một lần.
