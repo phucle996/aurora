@@ -136,7 +136,7 @@ func NewModule(
 	}
 
 	// Refresh Token Storage (PostgreSQL)
-	refreshTokenRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
+	refreshTokenRepo := iamRepoImpl.NewRefreshTokenRepository(cfg.SchemaSQL, db)
 	if refreshTokenRepo == nil {
 		return nil, errors.New("iam module: failed to construct refresh token repository")
 	}

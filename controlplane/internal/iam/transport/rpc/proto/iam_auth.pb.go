@@ -1575,11 +1575,7 @@ const file_contracts_proto_iam_auth_proto_rawDesc = "" +
 	"setting_id\x18\x03 \x01(\tR\tsettingId\x12+\n" +
 	"\x11secret_ciphertext\x18\x04 \x01(\tR\x10secretCiphertext\x12\"\n" +
 	"\rsecret_key_id\x18\x05 \x01(\tR\vsecretKeyId\x12%\n" +
-	"\x0eschema_version\x18\x06 \x01(\rR\rschemaVersion2\xc5\x02\n" +
-	"\vAuthService\x12]\n" +
-	"\x12RecoverUserSession\x12\".iam.rpc.RecoverUserSessionRequest\x1a#.iam.rpc.RecoverUserSessionResponse\x12o\n" +
-	"\x18RevokeOpaqueRefreshToken\x12(.iam.rpc.RevokeOpaqueRefreshTokenRequest\x1a).iam.rpc.RevokeOpaqueRefreshTokenResponse\x12f\n" +
-	"\x15VerifyUserCredentials\x12%.iam.rpc.VerifyUserCredentialsRequest\x1a&.iam.rpc.VerifyUserCredentialsResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
+	"\x0eschema_version\x18\x06 \x01(\rR\rschemaVersionB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
 	file_contracts_proto_iam_auth_proto_rawDescOnce sync.Once
@@ -1611,14 +1607,8 @@ var file_contracts_proto_iam_auth_proto_goTypes = []any{
 	(*MfaSetupPending)(nil),                  // 13: iam.rpc.MfaSetupPending
 }
 var file_contracts_proto_iam_auth_proto_depIdxs = []int32{
-	0, // 0: iam.rpc.AuthService.RecoverUserSession:input_type -> iam.rpc.RecoverUserSessionRequest
-	2, // 1: iam.rpc.AuthService.RevokeOpaqueRefreshToken:input_type -> iam.rpc.RevokeOpaqueRefreshTokenRequest
-	4, // 2: iam.rpc.AuthService.VerifyUserCredentials:input_type -> iam.rpc.VerifyUserCredentialsRequest
-	1, // 3: iam.rpc.AuthService.RecoverUserSession:output_type -> iam.rpc.RecoverUserSessionResponse
-	3, // 4: iam.rpc.AuthService.RevokeOpaqueRefreshToken:output_type -> iam.rpc.RevokeOpaqueRefreshTokenResponse
-	5, // 5: iam.rpc.AuthService.VerifyUserCredentials:output_type -> iam.rpc.VerifyUserCredentialsResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -1638,7 +1628,7 @@ func file_contracts_proto_iam_auth_proto_init() {
 			NumEnums:      0,
 			NumMessages:   14,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   0,
 		},
 		GoTypes:           file_contracts_proto_iam_auth_proto_goTypes,
 		DependencyIndexes: file_contracts_proto_iam_auth_proto_depIdxs,

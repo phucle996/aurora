@@ -4,17 +4,9 @@ package iam.rpc;
 // Đường dẫn package Go khi sinh code
 option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
 
-// Shared IAM authentication contract carried over bounded Shared Redis
-// request/reply. ACR never derives an identity from an expired access token.
-service AuthService {
-  rpc RecoverUserSession (RecoverUserSessionRequest) returns (RecoverUserSessionResponse);
-
-  // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
-  rpc RevokeOpaqueRefreshToken (RevokeOpaqueRefreshTokenRequest) returns (RevokeOpaqueRefreshTokenResponse);
-
-  // [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
-  rpc VerifyUserCredentials (VerifyUserCredentialsRequest) returns (VerifyUserCredentialsResponse);
-}
+// Shared IAM authentication messages carried over bounded Shared Redis
+// request/reply. This file intentionally declares no RPC service: gRPC is not
+// part of the ACR-Controlplane topology for these workflows.
 
 // requested_tenant_id is context requested by an already authenticated device
 // credential. It is not an identity claim and Controlplane resolves current

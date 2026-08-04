@@ -13,16 +13,14 @@ import (
 )
 
 type RefreshTokenRepository struct {
-	db              *pgxpool.Pool
-	iamSchema       string
-	hierarchySchema string
+	db     *pgxpool.Pool
+	schema config.SchemaSQLCfg
 }
 
-func NewRefreshTokenRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.RefreshTokenRepository {
+func NewRefreshTokenRepository(schema config.SchemaSQLCfg, db *pgxpool.Pool) iamRepoInterface.RefreshTokenRepository {
 	return &RefreshTokenRepository{
-		db:              db,
-		iamSchema:       cfg.SchemaSQL.IAM,
-		hierarchySchema: cfg.SchemaSQL.Hierarchy,
+		db:     db,
+		schema: schema,
 	}
 }
 
@@ -51,7 +49,7 @@ func (r *RefreshTokenRepository) IssueDeviceRefreshToken(ctx context.Context, in
 			RETURNING id
 		)
 		SELECT EXISTS(SELECT 1 FROM active_device), EXISTS(SELECT 1 FROM inserted)
-	`, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema)
+	`, r.schema.IAM, r.schema.IAM, r.schema.IAM, r.schema.IAM)
 
 	var deviceValid, inserted bool
 	if err := r.db.QueryRow(ctx, query,
@@ -138,8 +136,8 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 		           (SELECT role_level FROM platform_authority),
 		           0
 		       )
-	`, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema,
-		r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema)
+	`, r.schema.IAM, r.schema.IAM, r.schema.IAM, r.schema.IAM, r.schema.IAM,
+		r.schema.Hierarchy, r.schema.Hierarchy, r.schema.IAM, r.schema.IAM)
 
 	out := &iamEntity.RecoverUserSession{
 		TokenHash: in.TokenHash, RequestedTenantID: in.RequestedTenantID, Now: in.Now,
@@ -161,7 +159,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 }
 
 func (r *RefreshTokenRepository) DeleteByHash(ctx context.Context, tokenHash string) (int64, error) {
-	query := fmt.Sprintf(`DELETE FROM %s.refresh_tokens WHERE token_hash=$1`, r.iamSchema)
+	query := fmt.Sprintf(`DELETE FROM %s.refresh_tokens WHERE token_hash=$1`, r.schema.IAM)
 	result, err := r.db.Exec(ctx, query, tokenHash)
 	if err != nil {
 		return 0, fmt.Errorf("refresh token repo: delete credential: %w", err)
