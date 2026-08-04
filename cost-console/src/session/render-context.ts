@@ -5,18 +5,21 @@ export type NavigationItem = {
   actions: string[];
 };
 
-export type RenderContext = {
+type RenderContextBase = {
   navigation: NavigationItem[];
   capabilities: Record<string, boolean>;
-  is_personal: boolean;
 };
+
+export type RenderContext =
+  | (RenderContextBase & { kind: "personal" })
+  | (RenderContextBase & { kind: "tenant"; tenant_id: string });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function getRenderContext(signal?: AbortSignal): Promise<RenderContext> {
-  const value = await request<unknown>("/me/iam/context/read", { method: "GET", signal });
+  const value = await request<unknown>("/iam/context/read", { method: "GET", signal });
   if (!isRecord(value) || !Array.isArray(value.navigation) || !isRecord(value.capabilities)) {
     throw new Error("IAM returned an invalid render context");
   }
@@ -40,9 +43,17 @@ export async function getRenderContext(signal?: AbortSignal): Promise<RenderCont
     // only a presentation projection of module:object + behavior.
     capabilities[permission] = enabled;
   }
-  if (typeof value.is_personal !== "boolean") {
+  if (value.kind !== "personal" && value.kind !== "tenant") {
     throw new Error("IAM returned an invalid principal render context");
   }
-
-  return { navigation, capabilities, is_personal: value.is_personal };
+  if (value.kind === "personal") {
+    if ("tenant_id" in value) {
+      throw new Error("IAM returned a tenant-bound personal render context");
+    }
+    return { navigation, capabilities, kind: "personal" };
+  }
+  if (typeof value.tenant_id !== "string" || value.tenant_id.length === 0) {
+    throw new Error("IAM returned a tenant render context without tenant_id");
+  }
+  return { navigation, capabilities, kind: "tenant", tenant_id: value.tenant_id };
 }

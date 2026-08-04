@@ -81,19 +81,6 @@ type UpdateRoleInput struct {
 	PermissionIDs []uuid.UUID
 }
 
-// [COMMENT]: NavigationItem định nghĩa cấu trúc menu gom nhóm 2 cấp (Module:Object) kèm theo các hành động (behavior/action) được phép
-type NavigationItem struct {
-	Key     string   // format: <module>:<object>
-	Actions []string // các action (behavior) tương ứng, ví dụ ["list", "delete"] hoặc ["*"]
-}
-
-// [COMMENT]: RenderContext bọc danh sách menu và capabilities tương ứng của Actor
-type RenderContext struct {
-	Navigation   []NavigationItem
-	Capabilities map[string]bool
-	IsPersonal   bool // [COMMENT]: Xác định Actor đang ở trong ngữ cảnh cá nhân (Personal/Platform) hay tổ chức (Tenant)
-}
-
 // [COMMENT]: Permission đại diện cho một quyền hạn hệ thống chi tiết
 type Permission struct {
 	ID          uuid.UUID

@@ -29,6 +29,7 @@ internal/iam/
 │   ├── mfa_repo.go      # Thao tác bảng mfa_settings, mfa_recovery_codes (Replay prevention)
 │   ├── rbac_platform_repo.go # platform_roles + user_role compiled grants
 │   ├── rbac_tenant_repo.go   # tenant_roles + membership_role compiled grants
+│   ├── render_context_repo.go # L1-only personal/tenant permission projections
 │   └── user_repo.go     # Thao tác thông tin user profiles & status
 ├── route.go             # Đăng ký HTTP Gin Routes & Middleware Authorization
 ├── service/             # Business Logic Layer
@@ -89,6 +90,25 @@ Module IAM bao gồm 7 phân vùng nghiệp vụ chính chạy xuyên suốt qua
    * Tích hợp đăng nhập qua OAuth 2.0 / OIDC Providers (Google, GitHub), ánh xạ duy nhất `provider_subject`, và quản lý liên kết tài khoản.
 7. **Billing Outbox Relay (`billing_outbox`)**:
    * Quản lý Transactional Outbox Pattern để đẩy các sự kiện nghiệp vụ sang domain Billing một cách tin cậy, hỗ trợ nhiều Pod Relay xử lý đồng thời với `SKIP LOCKED`.
+
+### Console Render Context route contract
+
+Console chỉ gọi `GET /api/v1/iam/context/read`. Sau xác thực, ACR rewrite sang
+đúng một internal workflow:
+
+- `/api/v1/personal/iam/context/read`;
+- `/api/v1/tenant/iam/context/read`.
+
+Hai internal path không phải public API. Personal và tenant có entity,
+handler, service và repository method riêng; compiled permission chỉ cache ở
+L1. Tenant workflow bắt buộc active membership và không fallback sang platform.
+Response dùng discriminator `kind=personal|tenant`, tenant response bắt buộc có
+`tenant_id`; không dùng `is_personal` hoặc default personal.
+
+`/api/v1/me/*` là self-user contract duy nhất, không thuộc Render Context,
+không có permission và không được ACR rewrite theo owner. Critical self
+route phải có shape `/api/v1/me/critical/*` để proof được consume mà
+không sinh personal/tenant variant.
 
 ---
 

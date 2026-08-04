@@ -238,58 +238,6 @@ func (h *RbacPlatformHandler) GetUserRolesPlatform(c *gin.Context) {
 	}, "user role fetched successfully")
 }
 
-// [COMMENT]: GetRenderContext trả về cấu hình Navigation và Capabilities cho console UI dựa theo user id
-func (h *RbacPlatformHandler) GetRenderContext(c *gin.Context) {
-	const op = "iam.rbac.get_render_context"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	userID, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
-		return
-	}
-	tenantID := uuid.Nil
-	if rawTenantID, exists := c.Get(pkgcontext.CtxTenantID); exists {
-		switch value := rawTenantID.(type) {
-		case uuid.UUID:
-			tenantID = value
-		case error:
-			logger.HandlerWarn(c, op, value, "invalid tenant render context")
-			apires.RespondBadRequest(c, "invalid tenant context")
-			return
-		default:
-			apires.RespondBadRequest(c, "invalid tenant context")
-			return
-		}
-	}
-
-	renderContext, err := h.rbacPlatformSvc.GetRenderContext(ctx, userID, tenantID)
-	if err != nil {
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal error occurred")
-		return
-	}
-
-	type navItemDTO struct {
-		Key     string   `json:"key"`
-		Actions []string `json:"actions"`
-	}
-	navDTOs := make([]navItemDTO, 0, len(renderContext.Navigation))
-	for _, nav := range renderContext.Navigation {
-		navDTOs = append(navDTOs, navItemDTO{
-			Key:     nav.Key,
-			Actions: nav.Actions,
-		})
-	}
-
-	// [COMMENT]: Trả về thông tin render context kèm cờ is_personal để frontend xác định giao diện personal/tenant
-	apires.RespondSuccess(c, gin.H{
-		"navigation":   navDTOs,
-		"capabilities": renderContext.Capabilities,
-		"is_personal":  renderContext.IsPersonal,
-	}, "success")
-}
-
 // [COMMENT]: ListPermissions trả về danh sách các permissions catalog được lọc theo quyền của caller
 func (h *RbacPlatformHandler) ListPermissions(c *gin.Context) {
 	const op = "iam.rbac.list_permissions"

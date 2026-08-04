@@ -45,6 +45,13 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.UserHandler.GetMySocialLinks,
 		)
 
+		// Self identity has no owner branch or RBAC permission. Keeping /me
+		// before /critical makes ACR consume proof without owner rewriting.
+		meGroup.DELETE("/critical/iam/social-link/:provider",
+			middleware.RequireSessionProof(),
+			module.UserHandler.UnlinkMySocialLink,
+		)
+
 		meGroup.GET("/iam/mfa",
 			module.MfaHandler.GetMyMfa,
 		)
@@ -80,10 +87,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.DeviceSelfHandler.LogoutOtherDevices,
 		)
 
-		// [COMMENT]: 1.7) Lấy cấu hình render context cho console UI
-		meGroup.GET("/iam/context/read",
-			module.RbacPlatformHandler.GetRenderContext,
-		)
 	}
 
 	// ========================================================================
@@ -97,6 +100,11 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// ------------------------------------------------------------------------
 	personalGroup := router.Group("/api/v1/personal")
 	{
+		// This is an internal owner route selected by ACR after session
+		// verification. Direct client access is denied at the edge.
+		personalGroup.GET("/iam/context/read",
+			module.RenderContextHandler.GetPersonalRenderContext,
+		)
 		// [COMMENT]: Lấy danh sách users hệ thống (yêu cầu quyền iam:users:read và level 2)
 		personalGroup.GET("/iam/users",
 			middleware.Authorize("iam:users:read", module.L1Registry, "2"),
@@ -180,12 +188,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.DevicePlatformHandler.ListUserDevicesPlatform,
 		)
 
-		// [COMMENT]: Chỉ public /api/v1/critical/* đã ký mới được ACR rewrite
-		// tới route này; middleware lặp lại marker fence tại business boundary.
-		personalGroup.DELETE("/critical/me/iam/social-link/:provider",
-			middleware.RequireSessionProof(),
-			module.UserHandler.UnlinkMySocialLink,
-		)
 	}
 
 	// ------------------------------------------------------------------------
@@ -193,6 +195,11 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// ------------------------------------------------------------------------
 	tenantGroup := router.Group("/api/v1/tenant")
 	{
+		// Tenant context is mandatory here; the workflow cannot fall back to a
+		// platform assignment when membership is absent or stale.
+		tenantGroup.GET("/iam/context/read",
+			module.RenderContextHandler.GetTenantRenderContext,
+		)
 		// [COMMENT]: Lấy toàn bộ danh sách tenant-scoped roles (yêu cầu quyền iam:role:read và level *) thông qua tenant handler
 		tenantGroup.GET("/iam/rbac/role",
 			middleware.Authorize("iam:role:read", module.L1Registry, "*"),
@@ -214,11 +221,5 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.RbacPlatformHandler.ListPermissions,
 		)
 
-		// Self identity không đổi theo tenant context, nhưng ACR vẫn rewrite
-		// critical path theo session hiện tại nên hai owner branches dùng cùng handler.
-		tenantGroup.DELETE("/critical/me/iam/social-link/:provider",
-			middleware.RequireSessionProof(),
-			module.UserHandler.UnlinkMySocialLink,
-		)
 	}
 }

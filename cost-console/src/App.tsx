@@ -39,6 +39,8 @@ function CostDashboardShell() {
     ['billing:credit', 'adjust'],
   ].some(([key, action]) => checkPermission(key, action));
 
+  if (!renderContext) return null;
+
   return (
     <div className="flex flex-col h-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-200 overflow-hidden">
       {/* Thanh Navigation Header phía trên */}
@@ -69,8 +71,8 @@ function CostDashboardShell() {
             <Route path="/plans" element={<Navigate to="/plan" replace />} />
 
             {/* Route trang chủ / và /dashboard */}
-            <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.is_personal ?? true} />} />
-            <Route path="/dashboard" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.is_personal ?? true} />} />
+            <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.kind === "personal"} />} />
+            <Route path="/dashboard" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.kind === "personal"} />} />
             <Route
               path="/invoices"
               element={

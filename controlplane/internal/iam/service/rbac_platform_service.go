@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	"controlplane/internal/cacheengine"
@@ -13,18 +11,15 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
-	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: RbacPlatformService thực thi interface quản lý vai trò và phân quyền cấp hệ thống (platform)
 type RbacPlatformService struct {
 	repo        iamRepoInterface.RbacPlatformRepository
-	tenantRepo  iamRepoInterface.RbacTenantRepository
 	cacheEngine *cacheengine.CacheRegistry
 	authRedis   *goredis.Client
 	sharedRedis *goredis.Client
@@ -34,7 +29,6 @@ type RbacPlatformService struct {
 // [COMMENT]: NewRbacPlatformService khởi tạo một thể hiện mới của RbacPlatformService
 func NewRbacPlatformService(
 	repo iamRepoInterface.RbacPlatformRepository,
-	tenantRepo iamRepoInterface.RbacTenantRepository,
 	cacheEngine *cacheengine.CacheRegistry,
 	authRedis *goredis.Client,
 	sharedRedis *goredis.Client,
@@ -42,7 +36,6 @@ func NewRbacPlatformService(
 ) iamSvcInterface.RbacPlatformService {
 	return &RbacPlatformService{
 		repo:        repo,
-		tenantRepo:  tenantRepo,
 		cacheEngine: cacheEngine,
 		authRedis:   authRedis,
 		sharedRedis: sharedRedis,
@@ -179,110 +172,6 @@ func (s *RbacPlatformService) GetUserRolePermissions(ctx context.Context, userID
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
 	return s.repo.GetUserRolePermissions(ctx, userID)
-}
-
-// [COMMENT]: GetRenderContext sinh cấu hình Navigation và Capabilities từ bytes/object RBAC L1 cache theo user id
-func (s *RbacPlatformService) GetRenderContext(
-	ctx context.Context,
-	userID uuid.UUID,
-	tenantID uuid.UUID,
-) (out *iamEntity.RenderContext, err error) {
-	startedAt := time.Now()
-	defer func() {
-		result, reason := observability.ResultFailure, observability.ReasonInternal
-		if err == nil {
-			result, reason = observability.ResultSuccess, observability.ReasonNone
-		} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) || errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrNotFound) {
-			result, reason = observability.ResultRejected, observability.ReasonNotFound
-		}
-		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
-	}()
-
-	var entry *iamproto.RoleEntry
-	if tenantID != uuid.Nil {
-		// [COMMENT]: Tenant render context is resolved from the exact active
-		// membership role; platform permissions must not leak into tenant UI.
-		binaryEntry, err := s.tenantRepo.GetUserTenantRolePermissions(ctx, userID, tenantID)
-		if err != nil {
-			return nil, fmt.Errorf("rbac platform service: get tenant render permissions: %w", err)
-		}
-		entry = &iamproto.RoleEntry{}
-		if err := proto.Unmarshal(binaryEntry, entry); err != nil {
-			return nil, fmt.Errorf("rbac platform service: decode tenant render permissions: %w", err)
-		}
-	} else {
-		// [COMMENT]: Personal/platform role keeps the existing bounded cache.
-		val, err := s.cacheEngine.GetOrLoad(ctx, "user_role", userID.String())
-		if err != nil {
-			return nil, fmt.Errorf("rbac platform service: get user render permissions: %w", err)
-		}
-		var ok bool
-		entry, ok = val.(*iamproto.RoleEntry)
-		if !ok || entry == nil {
-			return &iamEntity.RenderContext{
-				Navigation:   []iamEntity.NavigationItem{},
-				Capabilities: map[string]bool{},
-				IsPersonal:   true,
-			}, nil
-		}
-	}
-
-	// [COMMENT]: 2. Trích xuất danh sách permissions thô (permissions string)
-	rawPerms := entry.Permissions
-
-	capabilities := make(map[string]bool)
-	groupMap := make(map[string][]string)
-	isPersonal := tenantID == uuid.Nil
-
-	for _, p := range rawPerms {
-		capabilities[p] = true
-
-		parts := strings.Split(p, ":")
-		// [COMMENT]: RBAC Policy tuân thủ cấu trúc 5 bậc (Identity:Workspace:Module:Object:Behavior)
-		// định nghĩa trong rbac_god_view_workflow.md.
-		if len(parts) != 5 {
-			continue
-		}
-
-		// [COMMENT]: Key chỉ chứa Module và Object (Module:Object) để giấu sạch Identity và Workspace ID
-		// tránh rò rỉ dữ liệu nhạy cảm lên Client/Frontend.
-		key := parts[2] + ":" + parts[3]
-		behavior := parts[4]
-
-		// Đảm bảo không trùng lặp các hành vi (actions)
-		exists := false
-		for _, v := range groupMap[key] {
-			if v == behavior {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			groupMap[key] = append(groupMap[key], behavior)
-		}
-	}
-
-	keys := make([]string, 0, len(groupMap))
-	for key := range groupMap {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	navigation := make([]iamEntity.NavigationItem, 0, len(keys))
-	for _, key := range keys {
-		actions := groupMap[key]
-		sort.Strings(actions)
-		navigation = append(navigation, iamEntity.NavigationItem{
-			Key:     key,
-			Actions: actions,
-		})
-	}
-
-	return &iamEntity.RenderContext{
-		Navigation:   navigation,
-		Capabilities: capabilities,
-		IsPersonal:   isPersonal,
-	}, nil
 }
 
 // [COMMENT]: DeleteRolePlatform thực hiện xóa vai trò platform thông qua repository
