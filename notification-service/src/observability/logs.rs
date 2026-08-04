@@ -4,9 +4,6 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use tracing::Level;
 
-pub const LOG_TYPE_ACCESS: &str = "access";
-pub const LOG_TYPE_SYSTEM: &str = "system";
-
 const RATE_LIMIT_SLOTS: usize = 1024;
 const RATE_LIMIT_INDEX_MASK: u64 = (RATE_LIMIT_SLOTS as u64) - 1;
 const RATE_LIMIT_TIMESTAMP_MASK: u64 = (1_u64 << 48) - 1;
@@ -25,8 +22,7 @@ static RATE_LIMITER: [AtomicU64; RATE_LIMIT_SLOTS] =
 #[derive(Debug)]
 pub(crate) struct LogIdentity {
     pub boot_id: String,
-    pub deployment_environment: String,
-    pub node_id: String,
+    pub service_version: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -173,9 +169,10 @@ impl Logger {
         let identity = identity();
         tracing::event!(
             Level::INFO,
-            log_type = LOG_TYPE_ACCESS,
-            severity = "info",
-            operation = %bounded(operation),
+            event_code = "HTTP_ACCESS",
+            severity_text = "INFO",
+            severity_number = 9,
+            op = %bounded(operation),
             http_request_method = %bounded(method),
             url_route = %bounded(route),
             http_response_status_code = status_code,
@@ -183,11 +180,8 @@ impl Logger {
             trace_id = trace_id.as_deref().unwrap_or(""),
             span_id = span_id.as_deref().unwrap_or(""),
             service_name = super::SERVICE_NAME,
+            service_version = identity.map(|value| value.service_version.as_str()).unwrap_or(env!("CARGO_PKG_VERSION")),
             service_instance_id = identity.map(|value| value.boot_id.as_str()).unwrap_or(""),
-            deployment_environment = identity
-                .map(|value| value.deployment_environment.as_str())
-                .unwrap_or(""),
-            node_id = identity.map(|value| value.node_id.as_str()).unwrap_or(""),
         );
     }
 
@@ -196,7 +190,7 @@ impl Logger {
             return;
         }
         EVENT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-        emit_system(Level::INFO, "info", operation, message, "");
+        emit_system(Level::INFO, operation, message, "");
     }
 
     pub fn sys_warn(operation: &str, message: &str, error: &str) {
@@ -204,7 +198,7 @@ impl Logger {
             return;
         }
         EVENT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-        emit_system(Level::WARN, "warn", operation, message, error);
+        emit_system(Level::WARN, operation, message, error);
     }
 
     pub fn sys_error(operation: &str, message: &str, error: &str) {
@@ -212,63 +206,67 @@ impl Logger {
             return;
         }
         EVENT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-        emit_system(Level::ERROR, "error", operation, message, error);
+        emit_system(Level::ERROR, operation, message, error);
     }
 }
 
-fn emit_system(level: Level, severity: &str, operation: &str, message: &str, error: &str) {
+fn emit_system(level: Level, operation: &str, message: &str, error: &str) {
     let (trace_id, span_id) = super::traces::current_span_identifiers();
     let identity = identity();
     let operation = bounded(operation);
     let message = bounded(message);
     let error = bounded(error);
     let instance_id = identity.map(|value| value.boot_id.as_str()).unwrap_or("");
-    let environment = identity
-        .map(|value| value.deployment_environment.as_str())
-        .unwrap_or("");
-    let node_id = identity.map(|value| value.node_id.as_str()).unwrap_or("");
+    let service_version = identity
+        .map(|value| value.service_version.as_str())
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let (event_code, severity_text, severity_number) = match level {
+        Level::ERROR => ("SYSTEM_ERROR", "ERROR", 17),
+        Level::WARN => ("SYSTEM_WARNING", "WARN", 13),
+        _ => ("SYSTEM_INFO", "INFO", 9),
+    };
 
     match level {
         Level::ERROR => tracing::event!(
             Level::ERROR,
-            log_type = LOG_TYPE_SYSTEM,
-            severity,
-            operation = %operation,
+            event_code,
+            severity_text,
+            severity_number,
+            op = %operation,
             message = %message,
-            error = %error,
+            error_cause = %error,
             trace_id = trace_id.as_deref().unwrap_or(""),
             span_id = span_id.as_deref().unwrap_or(""),
             service_name = super::SERVICE_NAME,
+            service_version,
             service_instance_id = instance_id,
-            deployment_environment = environment,
-            node_id,
         ),
         Level::WARN => tracing::event!(
             Level::WARN,
-            log_type = LOG_TYPE_SYSTEM,
-            severity,
-            operation = %operation,
+            event_code,
+            severity_text,
+            severity_number,
+            op = %operation,
             message = %message,
-            error = %error,
+            error_cause = %error,
             trace_id = trace_id.as_deref().unwrap_or(""),
             span_id = span_id.as_deref().unwrap_or(""),
             service_name = super::SERVICE_NAME,
+            service_version,
             service_instance_id = instance_id,
-            deployment_environment = environment,
-            node_id,
         ),
         _ => tracing::event!(
             Level::INFO,
-            log_type = LOG_TYPE_SYSTEM,
-            severity,
-            operation = %operation,
+            event_code,
+            severity_text,
+            severity_number,
+            op = %operation,
             message = %message,
             trace_id = trace_id.as_deref().unwrap_or(""),
             span_id = span_id.as_deref().unwrap_or(""),
             service_name = super::SERVICE_NAME,
+            service_version,
             service_instance_id = instance_id,
-            deployment_environment = environment,
-            node_id,
         ),
     }
 }

@@ -18,7 +18,7 @@ import (
 )
 
 func TestAccessLogUsesWorkflowCorrelationForSuccessfulRequest(t *testing.T) {
-	logger.InitLogger("controlplane-test")
+	logger.InitLoggerName("controlplane-test")
 	var output bytes.Buffer
 	logger.L().SetOutput(&output)
 	t.Cleanup(func() { logger.L().SetOutput(os.Stderr) })
@@ -42,7 +42,6 @@ func TestAccessLogUsesWorkflowCorrelationForSuccessfulRequest(t *testing.T) {
 		t.Fatalf("decode access log: %v; output=%s", err, output.String())
 	}
 	for key, want := range map[string]string{
-		"module": "iam",
 		"op":     "iam.users.get_my_profile",
 		"result": "success",
 		"reason": "none",
@@ -51,5 +50,8 @@ func TestAccessLogUsesWorkflowCorrelationForSuccessfulRequest(t *testing.T) {
 		if record[key] != want {
 			t.Fatalf("field %s = %#v, want %q", key, record[key], want)
 		}
+	}
+	if _, exists := record["module"]; exists {
+		t.Fatal("module must remain a metric/trace dimension, not duplicate the bounded log operation")
 	}
 }

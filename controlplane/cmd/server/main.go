@@ -45,7 +45,10 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "controlplane configuration error: %v\n", err)
 		os.Exit(1)
 	}
-	logger.InitLogger(cfg.App.AppName)
+	logger.InitLogger(logger.AppInfo{
+		Name:    cfg.App.AppName,
+		Version: cfg.App.AppVersion,
+	})
 
 	// --------------------------------------------------------------------
 	// 🔄 Thiết lập múi giờ (Timezone) hệ thống nhất quán toàn cục.

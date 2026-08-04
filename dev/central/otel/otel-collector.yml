@@ -146,71 +146,62 @@ processors:
         - attributes["service_name"] == "aurora-dataplane"
         - IsMatch(attributes["log_type"], "^zone-")
 
-  # transform processor ánh xạ container_id sang container_name thực tế và dọn dẹp các trường log thừa
+  # Normalize application identity before export. Container IDs are deliberately
+  # not used as stream dimensions: they change on every recreate/rollout.
   transform:
     error_mode: ignore
     log_statements:
       - context: log
         statements:
-          # Controlplane writes the same bounded resource identity as its OTLP
-          # metrics/traces. Promote it to OTel resource attributes before export.
-          - set(resource.attributes["service.name"], attributes["service_name"]) where attributes["service_name"] != nil
-          - set(resource.attributes["service.instance.id"], attributes["service_instance_id"]) where attributes["service_instance_id"] != nil
-          - set(resource.attributes["aurora.component"], attributes["aurora_component"]) where attributes["aurora_component"] != nil
-          # [COMMENT]: Ánh xạ container_name trực tiếp theo tên thực tế dựa trên container_id prefix
           # JSON-looking application lines that failed parser_app remain raw in body. Preserve an
           # explicit diagnostic attribute instead of silently presenting them as structured logs.
           - set(attributes["app_json_parse_error"], true) where IsMatch(body, "^\\s*\\{") and attributes["level"] == nil
-          - set(attributes["container_name"], "central-admin-ui") where IsMatch(attributes["container_id"], "^42eca33b4987")
-          - set(attributes["container_name"], "central-acr") where IsMatch(attributes["container_id"], "^2b5f8445e46e")
-          - set(attributes["container_name"], "central-centrifugo") where IsMatch(attributes["container_id"], "^73df715e7d6c")
-          - set(attributes["container_name"], "central-job-orchestrator") where IsMatch(attributes["container_id"], "^32f7088da814")
-          - set(attributes["container_name"], "central-kafka-1") where IsMatch(attributes["container_id"], "^f66012f8d9d2")
-          - set(attributes["container_name"], "central-kafka-ui") where IsMatch(attributes["container_id"], "^9a7822958f41")
-          - set(attributes["container_name"], "central-notification-service") where IsMatch(attributes["container_id"], "^d05acd18d716")
-          - set(attributes["container_name"], "central-billing-postgres") where IsMatch(attributes["container_id"], "^bd3f7252f059")
-          - set(attributes["container_name"], "central-clickhouse") where IsMatch(attributes["container_id"], "^b649dec551d6")
-          - set(attributes["container_name"], "central-cloud-console") where IsMatch(attributes["container_id"], "^82c5fcf1393b")
-          - set(attributes["container_name"], "central-auth-redis") where IsMatch(attributes["container_id"], "^0df83601df85")
-          - set(attributes["container_name"], "central-shared-redis") where IsMatch(attributes["container_id"], "^0ed3c9a37c56")
-          - set(attributes["container_name"], "central-controlplane-1") where IsMatch(attributes["container_id"], "^3c84167b5202")
-          - set(attributes["container_name"], "central-controlplane-2") where IsMatch(attributes["container_id"], "^ae9d865ee5bf")
-          - set(attributes["container_name"], "central-controlplane-3") where IsMatch(attributes["container_id"], "^7dc4f18fd476")
-          - set(attributes["container_name"], "central-envoy") where IsMatch(attributes["container_id"], "^c661beafdbb4")
-          - set(attributes["container_name"], "central-grafana") where IsMatch(attributes["container_id"], "^0f5ec008ada4")
-          - set(attributes["container_name"], "central-nats-core") where IsMatch(attributes["container_id"], "^727bd0dce525")
-          - set(attributes["container_name"], "central-pgbouncer") where IsMatch(attributes["container_id"], "^aed6e35d9f75")
-          - set(attributes["container_name"], "central-controlplane-postgres") where IsMatch(attributes["container_id"], "^5f548d0ffbd7")
-          - set(attributes["container_name"], "central-postgres-exporter") where IsMatch(attributes["container_id"], "^c5c255cbaf57")
-          - set(attributes["container_name"], "central-redis-exporter") where IsMatch(attributes["container_id"], "^782d368ba475")
-          - set(attributes["container_name"], "central-vault") where IsMatch(attributes["container_id"], "^693c30475941")
-          - set(attributes["container_name"], "central-victorialogs") where IsMatch(attributes["container_id"], "^624d58be0e90")
-          - set(attributes["container_name"], "central-victoriametrics") where IsMatch(attributes["container_id"], "^d3fb10661abe")
-          - set(attributes["container_name"], "central-victoriatraces") where IsMatch(attributes["container_id"], "^369532ced466")
-          - set(attributes["container_name"], "central-cost-console") where IsMatch(attributes["container_id"], "^425356df2ddf")
-          - set(attributes["container_name"], "central-cost-manager") where IsMatch(attributes["container_id"], "^faa400b8472c")
-          - set(attributes["container_name"], "zone-z1-dataplane-1") where IsMatch(attributes["container_id"], "^4653fa82f037")
-          - set(attributes["container_name"], "zone-z1-dataplane-2") where IsMatch(attributes["container_id"], "^c4b1bf9f8113")
-          - set(attributes["container_name"], "zone-z1-dataplane-3") where IsMatch(attributes["container_id"], "^49ac1f110b26")
-          - set(attributes["container_name"], "zone-z1-nats-kv") where IsMatch(attributes["container_id"], "^e1660272af97")
-          - set(attributes["container_name"], "zone-z1-minio") where IsMatch(attributes["container_id"], "^613eb1bbd2c5")
-          - set(attributes["container_name"], "zone-z1-stalwart") where IsMatch(attributes["container_id"], "^227967eb4fab")
-          # [COMMENT]: Nếu container_name chưa có (fallback), gán ngắn theo short container_id (12 ký tự)
-          - set(attributes["container_name"], Substring(attributes["container_id"], 0, 12)) where attributes["container_name"] == nil and attributes["container_id"] != nil
-          # Xóa các thuộc tính siêu dữ liệu dư thừa từ filelog receiver và Docker để giữ log sạch
+          # Third-party Docker logs have no application identity. Quarantine them
+          # under one bounded stream instead of creating one stream per container.
+          - set(attributes["service_name"], "infra") where attributes["service_name"] == nil
+          # Xóa các thuộc tính siêu dữ liệu dư thừa từ filelog receiver và Docker.
           - delete_key(attributes, "log.file.name")
           - delete_key(attributes, "log.file.path")
           - delete_key(attributes, "stream")
           - delete_key(attributes, "detected_level")
-          - delete_key(attributes, "container_id")
-          # Đặt các trường hệ thống mặc định về rỗng/không xác định để tránh làm rác log
-          - set(scope.name, "")
-          - set(scope.version, "")
-          - set(severity_text, attributes["level"]) where attributes["level"] != nil
+          # Keep container_id only as a diagnostic attribute for the bounded
+          # infra quarantine stream; it is never a Victoria stream field.
+          - set(severity_text, "DEBUG") where attributes["level"] == "debug"
+          - set(severity_number, 5) where attributes["level"] == "debug"
+          - set(severity_text, "INFO") where attributes["level"] == "info"
+          - set(severity_number, 9) where attributes["level"] == "info"
+          - set(severity_text, "WARN") where attributes["level"] == "warn"
+          - set(severity_number, 13) where attributes["level"] == "warn"
+          - set(severity_text, "ERROR") where attributes["level"] == "error"
+          - set(severity_number, 17) where attributes["level"] == "error"
           - set(severity_text, "INFO") where attributes["redis_level"] == "*"
+          - set(severity_number, 9) where attributes["redis_level"] == "*"
           - set(severity_text, "WARN") where attributes["redis_level"] == "#"
+          - set(severity_number, 13) where attributes["redis_level"] == "#"
           - set(severity_text, "DEBUG") where attributes["redis_level"] == "."
+          - set(severity_number, 5) where attributes["redis_level"] == "."
           - set(severity_text, "VERBOSE") where attributes["redis_level"] == "-"
+          - set(severity_number, 1) where attributes["redis_level"] == "-"
+          - delete_key(attributes, "level") where attributes["level"] != nil
+          - delete_key(attributes, "aurora_component")
+          - delete_key(attributes, "event_id") where attributes["event_id"] == ""
+          - delete_key(attributes, "operation_id") where attributes["operation_id"] == ""
+          - delete_key(attributes, "source_domain") where attributes["source_domain"] == ""
+          - delete_key(attributes, "kafka_topic") where attributes["kafka_topic"] == ""
+          - delete_key(attributes, "kafka_partition") where attributes["kafka_partition"] == -1
+          - delete_key(attributes, "kafka_offset") where attributes["kafka_offset"] == -1
+          - delete_key(attributes, "job_version") where attributes["job_version"] == 0
+          - delete_key(attributes, "suppressed_count") where attributes["suppressed_count"] == 0
+          - delete_key(attributes, "retryable") where attributes["retryable"] == false
+          - delete_key(attributes, "duration_ms") where attributes["duration_ms"] == 0
+          - delete_key(attributes, "leader_fencing_token") where attributes["leader_fencing_token"] == 0
+          - delete_key(attributes, "fencing_token") where attributes["fencing_token"] == 0
+          - delete_key(attributes, "runtime_generation") where attributes["runtime_generation"] == 0
+          - delete_key(attributes, "slot") where attributes["slot"] == 0
+          - delete_key(attributes, "assignment_epoch") where attributes["assignment_epoch"] == 0
+          - delete_key(attributes, "trace_id") where attributes["trace_id"] == ""
+          - delete_key(attributes, "span_id") where attributes["span_id"] == ""
+          - delete_key(attributes, "error") where attributes["error"] == ""
 
   # transform/metering: Envoy đã trích access_key mà không log raw Authorization; collector chỉ parse bucket.
   transform/metering:
@@ -245,7 +236,7 @@ exporters:
   otlphttp/victorialogs:
     endpoint: "http://victorialogs:9428/insert/opentelemetry"
     headers:
-      "VL-Stream-Fields": "container_name,service_name,zone_id,node_id"
+      "VL-Stream-Fields": "service_name"
     retry_on_failure:
       enabled: true
       initial_interval: 1s

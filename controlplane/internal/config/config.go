@@ -75,9 +75,17 @@ type OTelCfg struct {
 	KeyPath    string
 }
 
+// AppInfo chứa thông tin định danh ứng dụng (Tên và Phiên bản).
+type AppInfo struct {
+	Name    string
+	Version string
+}
+
 // AppCfg lưu trữ thông tin cấu hình cơ bản của Web Application và HTTP Server.
 type AppCfg struct {
+	Info               AppInfo
 	AppName            string
+	AppVersion         string
 	TimeZone           string
 	HTTPPort           int
 	LogLV              string
@@ -211,9 +219,15 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	appVersion := getEnv("APP_VERSION", "dev")
 	cfg := &Config{
 		App: AppCfg{
+			Info: AppInfo{
+				Name:    appName,
+				Version: appVersion,
+			},
 			AppName:            appName,
+			AppVersion:         appVersion,
 			TimeZone:           getEnv("APP_TIMEZONE", "UTC"),
 			HTTPPort:           getEnvAsInt("APP_HTTP_PORT", 8080),
 			PublicDomain:       strings.TrimSpace(getEnv("APP_PUBLIC_DOMAIN", "")),

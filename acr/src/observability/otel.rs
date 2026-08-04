@@ -1,4 +1,4 @@
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{global, trace::TraceContextExt, Context, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     metrics::{PeriodicReader, SdkMeterProvider},
@@ -6,7 +6,6 @@ use opentelemetry_sdk::{
     trace::{self, Sampler},
     Resource,
 };
-use tokio::task_local;
 
 // ============================================================================
 // 📂 MODULE: observability/otel.rs - Liên Kết Vết Xử Lý Hệ Thống (OpenTelemetry)
@@ -14,14 +13,9 @@ use tokio::task_local;
 //
 // 📌 VAI TRÒ (ROLE):
 //   - Thiết lập kết nối OTLP gRPC thực tế đến Tempo (Tracing) và VictoriaMetrics (Metrics).
-//   - Quản lý trace ID bằng Task-Local Storage của Tokio để đồng bộ hóa Loki log và Tempo trace.
+//   - Đọc trace context chuẩn OTel để đồng bộ hóa log và trace.
 //   - Cung cấp cơ chế đóng gói ngữ cảnh xử lý bất đồng bộ (HA context propagation).
 //   - Đồng bộ 100% pattern với observability/otel.rs của Dataplane.
-
-task_local! {
-    /// Lưu trữ trace_id thô của async task hiện tại nhằm liên kết logs và traces.
-    pub static CURRENT_TRACE_ID: String;
-}
 
 // Cache Meter Provider toàn cục phục vụ graceful shutdown
 static METER_PROVIDER: std::sync::OnceLock<SdkMeterProvider> = std::sync::OnceLock::new();
@@ -46,7 +40,11 @@ impl OtelTracer {
         let hostname = crate::config::get_node_hostname();
         let resource = Resource::new(vec![
             KeyValue::new("hostname", hostname),
-            KeyValue::new("service.name", "aurora-acl"),
+            KeyValue::new("service.name", "aurora-acr"),
+            KeyValue::new(
+                "service.version",
+                crate::observability::logger::Logger::service_version().to_string(),
+            ),
         ]);
 
         // Xây dựng gRPC Tonic exporter kết nối tới Collector
@@ -91,7 +89,11 @@ impl OtelTracer {
         let hostname = crate::config::get_node_hostname();
         let resource = Resource::new(vec![
             KeyValue::new("hostname", hostname),
-            KeyValue::new("service.name", "aurora-acl"),
+            KeyValue::new("service.name", "aurora-acr"),
+            KeyValue::new(
+                "service.version",
+                crate::observability::logger::Logger::service_version().to_string(),
+            ),
         ]);
 
         // Khởi tạo OTLP Metric Exporter builder theo chuẩn tonic
@@ -135,8 +137,19 @@ impl OtelTracer {
         );
     }
 
-    /// Lấy trace ID hiện tại của async task phục vụ việc chèn vào logs.
-    pub fn get_current_trace_id() -> Option<String> {
-        CURRENT_TRACE_ID.try_with(|tid| tid.clone()).ok()
+    /// Read the active OTel context. This keeps log correlation aligned with
+    /// the span propagated through HTTP/Redis boundaries instead of a second
+    /// task-local trace carrier that can silently diverge.
+    pub fn current_span_ids() -> (Option<String>, Option<String>) {
+        let context = Context::current();
+        let span = context.span();
+        let span_context = span.span_context();
+        if !span_context.is_valid() {
+            return (None, None);
+        }
+        (
+            Some(span_context.trace_id().to_string()),
+            Some(span_context.span_id().to_string()),
+        )
     }
 }

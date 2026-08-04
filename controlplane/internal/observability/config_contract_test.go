@@ -18,13 +18,30 @@ func TestTelemetryBackendCorrelationConfiguration(t *testing.T) {
 		t.Fatalf("parse collector config: %v", err)
 	}
 	for _, required := range [][]byte{
-		[]byte(`resource.attributes["service.name"]`),
-		[]byte(`resource.attributes["service.instance.id"]`),
-		[]byte(`resource.attributes["aurora.component"]`),
+		[]byte(`"VL-Stream-Fields": "service_name"`),
 	} {
 		if !bytes.Contains(collector, required) {
 			t.Fatalf("collector config is missing %s", required)
 		}
+	}
+	if bytes.Contains(collector, []byte(`VL-Stream-Fields": "container_name`)) ||
+		bytes.Contains(collector, []byte(`Substring(attributes["container_id"]`)) {
+		t.Fatal("container identity must not be used as a VictoriaLogs stream dimension or fallback")
+	}
+
+	zoneCollector, err := os.ReadFile("../../../dev/zone/otel/otel-collector.yml")
+	if err != nil {
+		t.Fatalf("read zone collector config: %v", err)
+	}
+	var zoneCollectorDocument any
+	if err := yaml.Unmarshal(zoneCollector, &zoneCollectorDocument); err != nil {
+		t.Fatalf("parse zone collector config: %v", err)
+	}
+	if !bytes.Contains(zoneCollector, []byte(`"VL-Stream-Fields": "service_name"`)) {
+		t.Fatal("zone collector must keep the same bounded service_name stream contract")
+	}
+	if bytes.Contains(zoneCollector, []byte(`VL-Stream-Fields": "service_name,zone_id`)) {
+		t.Fatal("zone or customer identity must not be a VictoriaLogs stream dimension")
 	}
 
 	datasources, err := os.ReadFile("../../../dev/central/grafana/provisioning/datasources/datasources.yml")

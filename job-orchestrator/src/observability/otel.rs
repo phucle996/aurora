@@ -61,7 +61,7 @@ impl OtelTracer {
         Resource::new(vec![
             KeyValue::new("service.namespace", "aurora"),
             KeyValue::new("service.name", "aurora-job-orchestrator"),
-            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new("service.version", Logger::service_version().to_string()),
             KeyValue::new("service.instance.id", Logger::boot_id().to_string()),
             KeyValue::new(
                 "deployment.environment.name",

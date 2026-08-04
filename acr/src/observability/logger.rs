@@ -1,4 +1,6 @@
+use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
+use uuid::Uuid;
 
 /// ============================================================================
 /// 📂 MODULE: observability/logger.rs - Hệ Thống Logs Cấu Trúc JSON Phân Cấp
@@ -25,9 +27,6 @@ use std::sync::OnceLock;
 ///
 
 // Nhãn phân loại log
-pub const LOG_TYPE_SYSTEM: &str = "system";
-pub const LOG_TYPE_AUTHZ: &str = "authz";
-
 /// Phân cấp độ ưu tiên của Log Level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
@@ -53,7 +52,32 @@ static CURRENT_LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 
 pub struct Logger;
 
+struct LoggerIdentity {
+    service_name: &'static str,
+    service_version: String,
+    service_instance_id: String,
+}
+
+static IDENTITY: OnceLock<LoggerIdentity> = OnceLock::new();
+
 impl Logger {
+    fn identity() -> &'static LoggerIdentity {
+        IDENTITY.get_or_init(|| LoggerIdentity {
+            service_name: "aurora-acr",
+            service_version: std::env::var("APP_VERSION")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            // A process incarnation is stable for its lifetime and does not expose
+            // the Docker/Kubernetes container ID as a stream dimension.
+            service_instance_id: Uuid::new_v4().to_string(),
+        })
+    }
+
+    pub(crate) fn service_version() -> &'static str {
+        Self::identity().service_version.as_str()
+    }
+
     /// Lấy cấu hình log level hiện tại của ứng dụng (sử dụng cache OnceLock cực nhanh).
     fn get_level() -> LogLevel {
         *CURRENT_LOG_LEVEL.get_or_init(|| {
@@ -62,13 +86,16 @@ impl Logger {
         })
     }
 
-    /// Tạo trace segment tùy theo trace_id hiện tại có tồn tại trong async context không
-    fn trace_segment() -> String {
-        if let Some(ref tid) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-            format!(",\"trace_id\":\"{}\"", tid)
-        } else {
-            "".to_string()
+    fn current_correlation() -> Map<String, Value> {
+        let mut fields = Map::new();
+        let (trace_id, span_id) = crate::observability::otel::OtelTracer::current_span_ids();
+        if let Some(trace_id) = trace_id {
+            fields.insert("trace_id".to_string(), Value::String(trace_id));
         }
+        if let Some(span_id) = span_id {
+            fields.insert("span_id".to_string(), Value::String(span_id));
+        }
+        fields
     }
 
     // [COMMENT]: Lấy mốc thời gian hiện tại theo múi giờ local của ứng dụng (được điều khiển qua biến môi trường TZ chuẩn).
@@ -76,14 +103,79 @@ impl Logger {
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
     }
 
+    fn emit(
+        level: LogLevel,
+        op: &str,
+        event_code: &str,
+        message: &str,
+        error: Option<&str>,
+        mut fields: Map<String, Value>,
+    ) {
+        let identity = Self::identity();
+        fields.insert(
+            "timestamp".to_string(),
+            Value::String(Self::get_timestamp()),
+        );
+        fields.insert(
+            "severity_text".to_string(),
+            Value::String(
+                match level {
+                    LogLevel::Debug => "DEBUG",
+                    LogLevel::Info => "INFO",
+                    LogLevel::Warn => "WARN",
+                    LogLevel::Error => "ERROR",
+                }
+                .to_string(),
+            ),
+        );
+        fields.insert(
+            "severity_number".to_string(),
+            json!(match level {
+                LogLevel::Debug => 5,
+                LogLevel::Info => 9,
+                LogLevel::Warn => 13,
+                LogLevel::Error => 17,
+            }),
+        );
+        fields.insert(
+            "service_name".to_string(),
+            Value::String(identity.service_name.to_string()),
+        );
+        fields.insert(
+            "service_version".to_string(),
+            Value::String(identity.service_version.clone()),
+        );
+        fields.insert(
+            "service_instance_id".to_string(),
+            Value::String(identity.service_instance_id.clone()),
+        );
+        fields.insert("op".to_string(), Value::String(op.to_string()));
+        fields.insert(
+            "event_code".to_string(),
+            Value::String(event_code.to_string()),
+        );
+        fields.insert("message".to_string(), Value::String(message.to_string()));
+        if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
+            fields.insert("error_cause".to_string(), Value::String(error.to_string()));
+        }
+        fields.extend(Self::current_correlation());
+        let encoded = Value::Object(fields).to_string();
+        match level {
+            LogLevel::Error => eprintln!("{encoded}"),
+            _ => println!("{encoded}"),
+        }
+    }
+
     /// Ghi nhận nhật ký gỡ lỗi hệ thống cấp thấp (System Debug Logs).
     pub fn sys_debug(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Debug {
-            let timestamp = Self::get_timestamp();
-            let trace_seg = Self::trace_segment();
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"debug\",\"message\":\"{}\"{}}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, trace_seg
+            Self::emit(
+                LogLevel::Debug,
+                op,
+                "SYSTEM_DEBUG",
+                message,
+                None,
+                Map::new(),
             );
         }
     }
@@ -91,23 +183,20 @@ impl Logger {
     /// Ghi nhận nhật ký hệ thống cấp thông tin (System Info Logs).
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = Self::get_timestamp();
-            let trace_seg = Self::trace_segment();
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"{}}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, trace_seg
-            );
+            Self::emit(LogLevel::Info, op, "SYSTEM_INFO", message, None, Map::new());
         }
     }
 
     /// Ghi nhận nhật ký cảnh báo hệ thống (System Warn Logs).
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
-            let timestamp = Self::get_timestamp();
-            let trace_seg = Self::trace_segment();
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_seg
+            Self::emit(
+                LogLevel::Warn,
+                op,
+                "SYSTEM_WARNING",
+                message,
+                Some(err_msg),
+                Map::new(),
             );
         }
     }
@@ -115,11 +204,13 @@ impl Logger {
     /// Ghi nhận nhật ký lỗi hệ thống nghiêm trọng (System Error Logs).
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
-            let timestamp = Self::get_timestamp();
-            let trace_seg = Self::trace_segment();
-            eprintln!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_seg
+            Self::emit(
+                LogLevel::Error,
+                op,
+                "SYSTEM_ERROR",
+                message,
+                Some(err_msg),
+                Map::new(),
             );
         }
     }
@@ -127,11 +218,21 @@ impl Logger {
     /// Ghi nhận toàn bộ quyết định authorize từ ext_authz (Authz Decision Logs).
     pub fn authz_log(user_id: &str, method: &str, path: &str, decision: &str, reason: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = Self::get_timestamp();
-            let trace_seg = Self::trace_segment();
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"user_id\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"decision\":\"{}\",\"reason\":\"{}\"{}}}",
-                timestamp, LOG_TYPE_AUTHZ, user_id, method, path, decision, reason, trace_seg
+            let mut fields = Map::new();
+            fields.insert("actor_id".to_string(), Value::String(user_id.to_string()));
+            fields.insert("method".to_string(), Value::String(method.to_string()));
+            fields.insert("route".to_string(), Value::String(path.to_string()));
+            fields.insert("decision".to_string(), Value::String(decision.to_string()));
+            if !reason.trim().is_empty() {
+                fields.insert("reason".to_string(), Value::String(reason.to_string()));
+            }
+            Self::emit(
+                LogLevel::Info,
+                "authz.ext_authz.check",
+                "AUTHZ_DECISION",
+                "Authorization decision",
+                None,
+                fields,
             );
         }
     }

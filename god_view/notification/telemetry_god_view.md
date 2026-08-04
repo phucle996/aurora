@@ -19,9 +19,9 @@ flowchart LR
   nhiệm vận chuyển; ứng dụng không đồng thời export OTLP Logs để tránh duplicate.
 - Trace và metric đi OTLP gRPC. Collector chậm hoặc mất kết nối không được chặn
   request, Redis consumer hay Centrifugo publish.
-- Mỗi process boot có `service.instance.id` mới. Resource chung gồm
-  `service.namespace`, `service.name`, `service.version`,
-  `deployment.environment.name`, `host.name`, `process.pid` và Central scope.
+- Mỗi process boot có `service_instance_id` mới. Log identity gồm
+  `service_name`, `service_version` và `service_instance_id`; pod/node/container identity
+  không được dùng làm VictoriaLogs stream dimension. Stream chỉ có `service_name`.
 
 ## Performance, backpressure và failure semantics
 
@@ -41,6 +41,11 @@ flowchart LR
   thêm business ID vào metric label.
 - Metric label được normalize thành tập hữu hạn. Route động, status code chính
   xác và payload/customer/resource ID không được dùng làm metric dimension.
+
+Structured logs dùng `op`, `event_code`, `severity_text`, `severity_number`, `_msg` và
+correlation fields từ OTel. `trace_id`/`span_id` nối log với trace; actor, tenant,
+workspace và resource ID chỉ xuất hiện ở boundary cần ngữ cảnh và không trở thành stream
+dimension.
 
 ## Shutdown và HA
 

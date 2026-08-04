@@ -10,9 +10,6 @@ use opentelemetry::metrics::Counter;
 use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::EnvFilter;
 
-pub const LOG_TYPE_SYSTEM: &str = "system";
-pub const LOG_TYPE_JOB: &str = "job";
-
 const SERVICE_NAME: &str = "aurora-job-orchestrator";
 const DEFAULT_MAX_FIELD_BYTES: usize = 16 * 1024;
 const DEFAULT_BUFFERED_LINES: usize = 16 * 1024;
@@ -21,7 +18,6 @@ const MAX_RATE_LIMIT_KEYS: usize = 2_048;
 
 static SETTINGS: OnceLock<LoggerSettings> = OnceLock::new();
 static CONTEXT: OnceLock<LoggerContext> = OnceLock::new();
-static PROCESS_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static EMITTED_LINES: AtomicU64 = AtomicU64::new(0);
 static SUPPRESSED_LINES: AtomicU64 = AtomicU64::new(0);
 static RATE_LIMITER: OnceLock<Mutex<HashMap<u64, RateLimitEntry>>> = OnceLock::new();
@@ -90,16 +86,20 @@ impl LoggerSettings {
 }
 
 struct LoggerContext {
+    service_version: String,
     deployment_environment: String,
     node_id: String,
     boot_id: String,
-    pid: u32,
 }
 
 impl LoggerContext {
     fn load() -> Self {
         let node_id = crate::config::get_node_hostname();
         Self {
+            service_version: std::env::var("APP_VERSION")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             deployment_environment: std::env::var("DEPLOYMENT_ENVIRONMENT")
                 .or_else(|_| std::env::var("APP_ENV"))
                 .unwrap_or_else(|_| "unknown".to_string()),
@@ -111,7 +111,6 @@ impl LoggerContext {
             // boot_id + process_sequence identifies one physical emission. It must remain
             // separate from event_id, which is stable across replay and pod failover.
             boot_id: uuid::Uuid::new_v4().to_string(),
-            pid: std::process::id(),
         }
     }
 }
@@ -238,6 +237,10 @@ impl Logger {
         &CONTEXT.get_or_init(LoggerContext::load).boot_id
     }
 
+    pub fn service_version() -> &'static str {
+        &CONTEXT.get_or_init(LoggerContext::load).service_version
+    }
+
     pub fn node_id() -> &'static str {
         &CONTEXT.get_or_init(LoggerContext::load).node_id
     }
@@ -289,16 +292,7 @@ impl Logger {
 
     pub fn sys_info_with_fields(op: &str, event_code: &str, message: &str, fields: LogFields<'_>) {
         if Self::get_level() <= LogLevel::Info {
-            Self::emit(
-                LogLevel::Info,
-                LOG_TYPE_SYSTEM,
-                op,
-                event_code,
-                message,
-                "",
-                fields,
-                false,
-            );
+            Self::emit(LogLevel::Info, op, event_code, message, "", fields, false);
         }
     }
 
@@ -325,16 +319,7 @@ impl Logger {
         fields: LogFields<'_>,
     ) {
         if Self::get_level() <= LogLevel::Warn {
-            Self::emit(
-                LogLevel::Warn,
-                LOG_TYPE_SYSTEM,
-                op,
-                event_code,
-                message,
-                error,
-                fields,
-                true,
-            );
+            Self::emit(LogLevel::Warn, op, event_code, message, error, fields, true);
         }
     }
 
@@ -359,7 +344,6 @@ impl Logger {
         if Self::get_level() <= LogLevel::Error {
             Self::emit(
                 LogLevel::Error,
-                LOG_TYPE_SYSTEM,
                 op,
                 event_code,
                 message,
@@ -390,7 +374,6 @@ impl Logger {
     #[allow(clippy::too_many_arguments)]
     fn emit(
         level: LogLevel,
-        log_type: &str,
         op: &str,
         event_code: &str,
         message: &str,
@@ -411,7 +394,6 @@ impl Logger {
             0
         };
         let context = CONTEXT.get_or_init(LoggerContext::load);
-        let sequence = PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
         let trace_id =
             crate::observability::otel::OtelTracer::get_current_trace_id().unwrap_or_default();
         let span_id =
@@ -429,14 +411,8 @@ impl Logger {
                     $tracing_level,
                     level = level.as_str(),
                     service_name = SERVICE_NAME,
-                    service_version = env!("CARGO_PKG_VERSION"),
-                    deployment_environment = context.deployment_environment.as_str(),
-                    component_scope = "central",
-                    node_id = context.node_id.as_str(),
-                    boot_id = context.boot_id.as_str(),
-                    pid = context.pid,
-                    process_sequence = sequence,
-                    log_type,
+                    service_version = context.service_version.as_str(),
+                    service_instance_id = context.boot_id.as_str(),
                     op = op.as_ref(),
                     event_code = event_code.as_ref(),
                     event_id = event_id.as_ref(),
@@ -484,7 +460,6 @@ impl Logger {
         fields: LogFields<'_>,
     ) {
         let context = CONTEXT.get_or_init(LoggerContext::load);
-        let sequence = PROCESS_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
         let trace_id =
             crate::observability::otel::OtelTracer::get_current_trace_id().unwrap_or_default();
         let span_id =
@@ -504,14 +479,8 @@ impl Logger {
             tracing::Level::INFO,
             level = "info",
             service_name = SERVICE_NAME,
-            service_version = env!("CARGO_PKG_VERSION"),
-            deployment_environment = context.deployment_environment.as_str(),
-            component_scope = "central",
-            node_id = context.node_id.as_str(),
-            boot_id = context.boot_id.as_str(),
-            pid = context.pid,
-            process_sequence = sequence,
-            log_type = LOG_TYPE_JOB,
+            service_version = context.service_version.as_str(),
+            service_instance_id = context.boot_id.as_str(),
             op = op.as_ref(),
             event_code,
             event_id = event_id.as_ref(),

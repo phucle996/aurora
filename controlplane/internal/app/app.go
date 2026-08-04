@@ -104,14 +104,14 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	// Telemetry is initialized before business infrastructure so PostgreSQL,
 	// Redis, Kafka and migrations share the same tracer and metric recorder.
-	otelObs, err := observability.InitOTel(ctx, &cfg.OTel, cfg.App.AppName)
+	otelObs, err := observability.InitOTel(ctx, &cfg.OTel, cfg.App.Info)
 	if err != nil {
 		if cfg.OTel.FailStrategy != "fail_open" {
 			app.Stop()
 			return nil, fmt.Errorf("bootstrap: otel init failed [FAIL-CLOSE]: %w", err)
 		}
 		logger.SysWarn("bootstrap", fmt.Sprintf("otel init failed [FAIL-OPEN]: %v. Using no-op telemetry.", err))
-		otelObs = observability.NewNoopOTel(cfg.App.AppName)
+		otelObs = observability.NewNoopOTel(cfg.App.Info.Name)
 	}
 	if otelObs == nil || otelObs.Metrics() == nil {
 		app.Stop()

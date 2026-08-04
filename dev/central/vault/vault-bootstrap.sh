@@ -25,7 +25,7 @@ set -Eeuo pipefail
 ##############################################################################
 
 VAULT_ADDR="http://localhost:8200"
-VAULT_TOKEN=""
+VAULT_TOKEN="root"
 OAUTH_ONLY=false
 
 ##############################################################################
@@ -587,17 +587,21 @@ write_approle cost-manager-api cost-manager-api-connections-read
 write_approle cost-manager-engine cost-manager-engine-connections-read
 write_approle notification-service notification-service-connections-read
 
+# [COMMENT]: Tạo Static Tokens cố định cho từng Service với Policy độc lập mà không revoke token hiện tại của phiên chạy
 create_static_token() {
     local TOKEN_ID="$1"
     local POLICY="$2"
-    request POST "auth/token/revoke" "$(jq -n --arg id "$TOKEN_ID" '{token:$id}')" >/dev/null 2>&1 || true
-    request POST "auth/token/create" "$(jq -n \
+    # [COMMENT]: Bỏ qua revoke nếu TOKEN_ID trùng với VAULT_TOKEN hiện tại đang thực thi script
+    if [[ "$TOKEN_ID" != "$VAULT_TOKEN" ]]; then
+        request POST "auth/token/revoke" "$(jq -n --arg id "$TOKEN_ID" '{token:$id}')" >/dev/null 2>&1 || true
+    fi
+    # [COMMENT]: Tạo orphan token cố định ID với policy tương ứng
+    request POST "auth/token/create-orphan" "$(jq -n \
         --arg id "$TOKEN_ID" \
         --arg policy "$POLICY" \
         '{id:$id,policies:[$policy],ttl:"0s",renewable:false}')" || true
 }
 
-# [DEV-ONLY]: Tạo Static Tokens cố định cho từng Service với Policy độc lập
 create_static_token "root" "root"
 create_static_token "aurora-dev-root-token" "root"
 create_static_token "aurora-dev-controlplane-token" "controlplane-connections-read"

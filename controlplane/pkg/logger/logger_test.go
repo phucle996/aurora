@@ -18,7 +18,7 @@ import (
 func TestHandlerErrorEmitsBoundedCorrelationAndSanitizedCause(t *testing.T) {
 	previous := log
 	t.Cleanup(func() { log = previous })
-	InitLogger("controlplane-test")
+	InitLoggerName("controlplane-test")
 	var output bytes.Buffer
 	L().SetOutput(&output)
 
@@ -35,6 +35,9 @@ func TestHandlerErrorEmitsBoundedCorrelationAndSanitizedCause(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/login", nil).WithContext(ctx)
 	c.Set(KeyRequestID, "request-1")
+	c.Set(KeyActorID, "019fca73-0000-7000-8000-000000000001")
+	c.Set(KeyTenantID, "019fca74-0000-7000-8000-000000000001")
+	c.Set(KeyWorkspaceID, "019fca75-0000-7000-8000-000000000001")
 	HandlerError(c, "iam.auth.verify_credentials", apperr.Wrap(
 		errors.New("authentication unavailable"),
 		errors.New("password=must-never-be-logged"),
@@ -46,13 +49,14 @@ func TestHandlerErrorEmitsBoundedCorrelationAndSanitizedCause(t *testing.T) {
 		t.Fatalf("decode log: %v; output=%s", err, output.String())
 	}
 	for key, want := range map[string]string{
-		"module":      "iam",
-		"op":          "iam.auth.verify_credentials",
-		"result":      "failure",
-		"reason":      "unavailable",
-		"trace_id":    traceID.String(),
-		"request_id":  "request-1",
-		"error_class": "dependency_error",
+		"op":           "iam.auth.verify_credentials",
+		"result":       "failure",
+		"reason":       "unavailable",
+		"trace_id":     traceID.String(),
+		"actor_id":     "019fca73-0000-7000-8000-000000000001",
+		"tenant_id":    "019fca74-0000-7000-8000-000000000001",
+		"workspace_id": "019fca75-0000-7000-8000-000000000001",
+		"error_class":  "dependency_error",
 	} {
 		if record[key] != want {
 			t.Fatalf("field %s = %#v, want %q", key, record[key], want)
@@ -66,5 +70,8 @@ func TestHandlerErrorEmitsBoundedCorrelationAndSanitizedCause(t *testing.T) {
 	}
 	if record["service_name"] != "controlplane-test" || record["service_instance_id"] == "" {
 		t.Fatalf("resource identity missing: %#v", record)
+	}
+	if record["service_version"] == nil || record["request_id"] != nil || record["module"] != nil {
+		t.Fatalf("duplicate/legacy identity fields present: %#v", record)
 	}
 }

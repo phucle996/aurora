@@ -62,8 +62,7 @@ impl TelemetryRuntime {
         let identity = ServiceIdentity::new();
         logs::install_identity(logs::LogIdentity {
             boot_id: identity.boot_id.clone(),
-            deployment_environment: identity.deployment_environment.clone(),
-            node_id: identity.node_id.clone(),
+            service_version: identity.service_version.clone(),
         })
         .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "log identity already set"))?;
 
@@ -193,6 +192,7 @@ impl Drop for TelemetryGuard {
 #[derive(Debug)]
 struct ServiceIdentity {
     boot_id: String,
+    service_version: String,
     deployment_environment: String,
     node_id: String,
 }
@@ -201,6 +201,10 @@ impl ServiceIdentity {
     fn new() -> Self {
         Self {
             boot_id: uuid::Uuid::new_v4().to_string(),
+            service_version: std::env::var("APP_VERSION")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             deployment_environment: std::env::var("DEPLOYMENT_ENVIRONMENT")
                 .or_else(|_| std::env::var("APP_ENV"))
                 .unwrap_or_else(|_| "unknown".to_owned()),
@@ -212,7 +216,7 @@ impl ServiceIdentity {
         Resource::new(vec![
             KeyValue::new("service.namespace", SERVICE_NAMESPACE),
             KeyValue::new("service.name", SERVICE_NAME),
-            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new("service.version", self.service_version.clone()),
             KeyValue::new("service.instance.id", self.boot_id.clone()),
             KeyValue::new(
                 "deployment.environment.name",

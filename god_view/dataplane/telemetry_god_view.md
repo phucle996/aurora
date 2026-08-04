@@ -36,7 +36,8 @@ flowchart LR
 - OTel runtime metrics được ghi từ `NodeRuntimeSample` trong RAM. Admission và leader không
   đọc ngược từ Collector.
 - Docker development dùng hai Collector độc lập: Central Collector chỉ export vào
-  Central Victoria, Zone Collector chỉ export telemetry có Zone identity vào bộ
+  Central Victoria, Zone Collector chỉ export Dataplane service identity hoặc reviewed
+  Zone Edge schema vào bộ
   Victoria của Zone. Hai Collector có file-storage/checkpoint và volume backend riêng;
   customer runtime có Zone identity không fallback/cross-write sang Central Victoria.
   Việc cùng tail canonical Docker host path là giới hạn riêng của dev và được chặn
@@ -50,20 +51,20 @@ flowchart LR
 
 ## 2. Unified identity và correlation
 
-Mọi telemetry record nên mang các field chung:
+Mọi telemetry record mang process identity chung; các nhóm còn lại chỉ xuất hiện khi
+signal/event thực sự có ngữ cảnh đó:
 
 | Nhóm | Field |
 |---|---|
-| Process | `service_name`, `service_version`, `deployment_environment`, `component_scope`, `node_id`, `boot_id`, `pid` |
-| Routing | Dataplane có `zone_id`; JO chỉ gắn Zone lên event/span của workload cụ thể |
-| Ordering | `process_sequence`, `timestamp` |
-| Event | `log_type`, `level`, `op`, `event_code`, `outcome`, `message`, `error` |
+| Process | `service_name`, `service_version`, `service_instance_id` |
+| Routing | Dataplane trace/metric có `zone_id`; JO chỉ gắn Zone lên event/span của workload cụ thể |
+| Event | `op`, `event_code`, `severity_text`, `severity_number`, `message` |
 | Correlation | `trace_id`, `span_id`, `event_id`, `operation_id` |
 | Kafka | `kafka_topic`, `kafka_partition`, `kafka_offset`, `assignment_epoch` |
 | Fencing | `leader_fencing_token`, `fencing_token`, `runtime_generation`, `slot` |
 
-`boot_id + process_sequence` là physical emission identity trong một process incarnation.
-Không suy luận global ordering chỉ từ timestamp giữa các node.
+`service_instance_id` là process incarnation identity. Không tạo field sequence riêng và
+không suy luận global ordering chỉ từ timestamp giữa các node.
 
 `event_id` là logical identity ổn định qua retry/failover. DLQ event ID được derive xác định từ
 `source topic + partition + offset + error code`; publish-before-settle replay vẫn giữ cùng ID.
@@ -103,10 +104,10 @@ cùng tên do workload tự gửi. Đây là telemetry-only dimension: không ph
 traffic label, không được user payload điều khiển và không làm network policy thay đổi.
 
 `aurora_workspace_id`, `aurora_owner_id` và
-`aurora_managed_service_instance_id` có cardinality cao nên chỉ tồn tại trong customer
-Victoria read plane với series/retention budget riêng theo Zone. Chúng không được dùng
-làm metric label health/alert platform hoặc query fan-out qua nhiều instance ngoài
-scope đã verify.
+`aurora_managed_service_instance_id` có cardinality cao nên chỉ tồn tại dưới dạng
+ordinary attributes trong customer Victoria read plane với series/retention budget riêng
+theo Zone. Chúng không được dùng làm stream dimension, metric label health/alert platform
+hoặc query fan-out qua nhiều instance ngoài scope đã verify.
 
 `zone-runtime-stream` là Rust Deployment riêng trong Zone. Nó chỉ dùng
 read-only VictoriaMetrics/VictoriaLogs identity và trusted scope mà Zone Public Edge
@@ -139,7 +140,11 @@ block Dataplane executor hoặc thay đổi business lifecycle.
 
 - Log là diagnostic at-least-once, không phải business state.
 - `tracing-subscriber` serialize thành NDJSON thật; không phải JSON được nhét trong string.
-- Mọi log state transition cần `op`, `event_code`, `outcome` và correlation/fencing fields phù hợp.
+- Mọi log state transition cần `op`, `event_code` và correlation/fencing fields phù hợp.
+- `result`/`reason`, actor/ownership, retry và transport coordinates chỉ được emit khi event
+  thật sự có các giá trị đó; không điền `0`, `-1`, `false`, `unknown` hoặc chuỗi rỗng làm sentinel.
+- `service_name` là stream identity duy nhất. Pod, node, container, workspace và resource
+  identity chỉ là ordinary attributes.
 - Error raw chỉ được bounded; không ghi raw payload, encrypted envelope, credential, Authorization
   header, customer secret hoặc message body.
 - `Config` chứa secret không được derive/log `Debug`.

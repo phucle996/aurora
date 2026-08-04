@@ -19,8 +19,9 @@ func ContextInjector() gin.HandlerFunc {
 		if idStr := strings.TrimSpace(c.GetHeader("x-user-id")); idStr != "" {
 			if id, err := uuid.Parse(idStr); err == nil {
 				c.Set(pkgcontext.CtxUserID, id)
-				// [COMMENT]: Gán KeyUserID vào Gin Context để logger tự động thêm user_id vào hệ thống log
-				c.Set(logger.KeyUserID, idStr)
+				// Envoy/ACR đã xác minh identity; logger chỉ nhận actor đã parse,
+				// không đọc lại user ID từ payload của client.
+				c.Set(logger.KeyActorID, idStr)
 			} else {
 				// [COMMENT]: Lưu lại error để pkgcontext getter phát hiện format không hợp lệ
 				c.Set(pkgcontext.CtxUserID, err)
@@ -46,8 +47,10 @@ func ContextInjector() gin.HandlerFunc {
 		if tenantID := strings.TrimSpace(c.GetHeader("x-tenant-id")); tenantID != "" {
 			if tenantID == "platform" {
 				c.Set(pkgcontext.CtxTenantID, tenantID)
+				c.Set(logger.KeyTenantID, tenantID)
 			} else if id, err := uuid.Parse(tenantID); err == nil && id != uuid.Nil {
 				c.Set(pkgcontext.CtxTenantID, id)
+				c.Set(logger.KeyTenantID, id.String())
 			} else {
 				c.Set(pkgcontext.CtxTenantID, errInvalidTenantContext{})
 			}

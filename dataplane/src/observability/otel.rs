@@ -57,7 +57,10 @@ impl OtelTracer {
         Resource::new(vec![
             KeyValue::new("service.namespace", "aurora"),
             KeyValue::new("service.name", "aurora-dataplane"),
-            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new(
+                "service.version",
+                crate::observability::logger::Logger::service_version().to_string(),
+            ),
             KeyValue::new(
                 "service.instance.id",
                 crate::observability::logger::Logger::boot_id().to_string(),

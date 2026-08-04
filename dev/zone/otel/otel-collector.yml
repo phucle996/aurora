@@ -60,14 +60,35 @@ processors:
     log_statements:
       - context: log
         statements:
-          - set(resource.attributes["service.name"], attributes["service_name"]) where attributes["service_name"] != nil
-          - set(resource.attributes["service.instance.id"], attributes["service_instance_id"]) where attributes["service_instance_id"] != nil
           - set(resource.attributes["aurora.component.scope"], "zone") where attributes["zone_id"] != nil
           - set(resource.attributes["aurora.zone.id"], attributes["zone_id"]) where attributes["zone_id"] != nil
-          - set(severity_text, attributes["level"]) where attributes["level"] != nil
+          # Unknown Zone/infra records share one bounded quarantine stream. Never
+          # derive a stream label from a container, pod or customer resource ID.
+          - set(attributes["service_name"], "infra") where attributes["service_name"] == nil
+          - set(severity_text, "DEBUG") where attributes["level"] == "debug"
+          - set(severity_number, 5) where attributes["level"] == "debug"
+          - set(severity_text, "INFO") where attributes["level"] == "info"
+          - set(severity_number, 9) where attributes["level"] == "info"
+          - set(severity_text, "WARN") where attributes["level"] == "warn"
+          - set(severity_number, 13) where attributes["level"] == "warn"
+          - set(severity_text, "ERROR") where attributes["level"] == "error"
+          - set(severity_number, 17) where attributes["level"] == "error"
           - delete_key(attributes, "log.file.name")
           - delete_key(attributes, "log.file.path")
           - delete_key(attributes, "stream")
+          - delete_key(attributes, "level") where attributes["level"] != nil
+          - delete_key(attributes, "event_id") where attributes["event_id"] == ""
+          - delete_key(attributes, "operation_id") where attributes["operation_id"] == ""
+          - delete_key(attributes, "retryable") where attributes["retryable"] == false
+          - delete_key(attributes, "duration_ms") where attributes["duration_ms"] == 0
+          - delete_key(attributes, "leader_fencing_token") where attributes["leader_fencing_token"] == 0
+          - delete_key(attributes, "fencing_token") where attributes["fencing_token"] == 0
+          - delete_key(attributes, "runtime_generation") where attributes["runtime_generation"] == 0
+          - delete_key(attributes, "slot") where attributes["slot"] == 0
+          - delete_key(attributes, "assignment_epoch") where attributes["assignment_epoch"] == 0
+          - delete_key(attributes, "trace_id") where attributes["trace_id"] == ""
+          - delete_key(attributes, "span_id") where attributes["span_id"] == ""
+          - delete_key(attributes, "error") where attributes["error"] == ""
 
   filter/only_zone_runtime:
     error_mode: ignore
@@ -76,8 +97,8 @@ processors:
         # Drop a record unless it carries the Dataplane Zone identity or is a
         # reviewed Zone Edge access-log schema. This prevents the two Docker
         # collectors from duplicating Central logs into the customer store.
-        - attributes["zone_id"] == nil and attributes["log_type"] == nil
-        - attributes["zone_id"] == nil and attributes["log_type"] != nil and not IsMatch(attributes["log_type"], "^zone-")
+        - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] == nil
+        - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] != nil and not IsMatch(attributes["log_type"], "^zone-")
 
   batch:
 
@@ -92,7 +113,7 @@ exporters:
   otlphttp/victorialogs:
     endpoint: "http://zone-victorialogs:9428/insert/opentelemetry"
     headers:
-      "VL-Stream-Fields": "service_name,zone_id,node_id,aurora_module,aurora_resource_type,aurora_resource_id"
+      "VL-Stream-Fields": "service_name"
     retry_on_failure:
       enabled: true
       initial_interval: 1s

@@ -424,6 +424,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_DEFAULT_REPLICATION_FACTOR: "1"
       KAFKA_MIN_INSYNC_REPLICAS: "1"
+      # [COMMENT]: Giảm log rác của Kafka ở môi trường local dev (chuyển Log level sang WARN)
+      KAFKA_LOG4J_ROOT_LOGLEVEL: "WARN"
+      KAFKA_LOG4J_LOGGERS: "kafka=WARN,kafka.controller=WARN,kafka.log.LogCleaner=WARN,state.change.logger=WARN"
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: "/var/lib/kafka/data"
     ports:
@@ -757,20 +760,22 @@ services:
   vault:
     cpuset: "0-5"
     image: hashicorp/vault:2.0
-    user: "0:0"
-
-    entrypoint: >
-      sh -c "
-        chown -R vault:vault /vault/data &&
-        export SKIP_SETCAP=1 &&
-        exec su-exec vault vault server -config=/vault/config/vault.hcl
-      "
-    volumes:
-      - ./vault/vault.hcl:/vault/config/vault.hcl:ro
-      - controlplane_vault_data:/vault/data
+    container_name: central-vault
+    # [COMMENT]: Cấu hình Vault ở chế độ Dev Mode cho môi trường Local Dev.
+    # Tự động Unseal khi khởi động và tự động gán Root Token cố định là 'root'
+    # giúp tránh lỗi 503 Sealed và không cần thao tác init/unseal thủ công.
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "root"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    command: ["server", "-dev"]
     ports:
       - "8200:8200"
-    container_name: central-vault
+    # [COMMENT]: Healthcheck kiểm tra trạng thái hoạt động của Vault REST API
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
 volumes:

@@ -44,17 +44,27 @@ func LocalHostname() string {
 	return hostname
 }
 
-// InitOTel khởi tạo hệ thống tracing và metrics của OpenTelemetry tĩnh lúc khởi động.
-// Nhận trực tiếp cấu hình từ gói config toàn cục
-func InitOTel(ctx context.Context, cfg *config.OTelCfg, serviceName string) (*OTel, error) {
+// [COMMENT]: InitOTel khởi tạo hệ thống tracing và metrics của OpenTelemetry tĩnh lúc khởi động.
+// Nhận cấu hình OTelCfg và AppInfo (chứa Tên và Phiên bản ứng dụng) từ gói config toàn cục
+func InitOTel(ctx context.Context, cfg *config.OTelCfg, appInfo config.AppInfo) (*OTel, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	serviceName := strings.TrimSpace(appInfo.Name)
+	if serviceName == "" {
+		serviceName = "controlplane"
+	}
+	serviceVersion := strings.TrimSpace(appInfo.Version)
+	if serviceVersion == "" {
+		serviceVersion = "dev"
 	}
 
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes("",
 			attribute.String("service.name", serviceName),
+			attribute.String("service.version", serviceVersion),
 			attribute.String("service.instance.id", LocalHostname()),
 			attribute.String("aurora.component", "controlplane"),
 		),

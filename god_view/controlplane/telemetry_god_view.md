@@ -73,13 +73,13 @@ Mọi signal có resource attributes tĩnh:
 | Attribute | Contract |
 |---|---|
 | `service.name` | Tên app từ config |
+| `service.version` | Release/build immutable của app |
 | `service.instance.id` | Hostname/pod identity; `unknown` nếu OS không cung cấp |
-| `aurora.component` | Luôn là `controlplane` |
+| `aurora.component` | Chỉ dùng trong trace/metric resource nếu signal cần; không lặp vào log |
 
-Application JSON logs emit the normalized backend fields `service_name`,
-`service_instance_id` and `aurora_component`. Filelog promotes them to the same OTel
-resource attributes before export. Container name is diagnostic metadata, not the
-primary service identity.
+Application JSON logs emit one normalized backend identity: `service_name`,
+`service_version` and `service_instance_id`. Container name/pod identity is diagnostic
+metadata only and is never a VictoriaLogs stream dimension.
 
 Pod identity chỉ là resource attribute. Không nhân nó vào business metric labels.
 
@@ -240,16 +240,21 @@ metric nhưng không tự biến thành business failure nếu workflow recovery
 
 ## 10.1 Structured log contract
 
-Request log fields dùng schema ổn định: `service_name`, `service_instance_id`,
-`aurora_component`, `log_type`, `module`, `op`, `result`, `reason`, `trace_id`,
-`request_id`, `error_kind`, `error_class`, `error_cause`.
+Structured log fields dùng schema tối giản: `service_name`, `service_version`,
+`service_instance_id`, `op`, `event_code`, `_msg`, `severity_text`, `severity_number`.
+`trace_id`, `span_id`, `operation_id`, `event_id`, `actor_id`, `tenant_id`,
+`workspace_id`, `resource_id`, `target_user_id`, `result`, `reason`, retry và dependency
+fields chỉ xuất hiện khi workflow thực sự có ngữ cảnh đó; không emit empty/default sentinel.
+
+VictoriaLogs stream chỉ có `{service_name}`. `op` và ownership identity là searchable
+attributes, không phải stream dimensions.
 
 - Success HTTP workflow dùng một access log; service không emit thêm success log.
 - Runtime handler/background có context phải dùng context-aware logger để giữ trace ID.
 - `Sys*` không context chỉ dành cho bootstrap/process lifecycle.
 - `AppError` diagnostic class không thay thế result/reason và không là metric label.
 - Raw cause chỉ được log sau redaction và length bound; response không nhận cause.
-- Logs có thể chứa request/trace identity để debug nhưng các field đó không trở thành
+- Logs có thể chứa trace/operation và business identity cần thiết để debug nhưng các field đó không trở thành
   VictoriaLogs stream dimensions.
 
 ## 11. Scale-out and backpressure
@@ -276,6 +281,10 @@ Metric labels không được chứa:
 - token, secret, credential, policy hoặc ciphertext;
 - raw HTTP path, SQL text, Redis key, Kafka topic;
 - raw error hoặc provider response.
+
+User, tenant, workspace và resource ID có thể xuất hiện trong log boundary của business
+workflow sau khi đã được verified upstream. Chúng không được lặp vào mọi dependency/poll
+log và không được dùng làm metric label hoặc stream dimension.
 
 Chi tiết nhạy cảm chỉ đi vào log/traces khi đã sanitize và theo sampling policy.
 Internal header do client gửi không được dùng để tạo label; operation đến từ code

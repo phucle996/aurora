@@ -48,8 +48,9 @@ func ContextInjector() gin.HandlerFunc {
 		if idStr := strings.TrimSpace(c.GetHeader("X-User-ID")); idStr != "" {
 			if id, err := uuid.Parse(idStr); err == nil {
 				c.Set(CtxUserID, id)
-				// Đồng bộ KeyUserID cho logger log hệ thống
-				c.Set(logger.KeyUserID, idStr)
+				// The edge has already authenticated this identity. Downstream logs
+				// receive the verified actor, never a client-supplied body field.
+				c.Set(logger.KeyActorID, idStr)
 			} else {
 				c.Set(CtxUserID, err)
 			}
@@ -71,6 +72,7 @@ func ContextInjector() gin.HandlerFunc {
 				// a malformed tenant UUID. Absence in context means personal.
 			} else if id, err := uuid.Parse(idStr); err == nil {
 				c.Set(CtxTenantID, id)
+				c.Set(logger.KeyTenantID, id.String())
 			} else {
 				c.Set(CtxTenantID, err)
 			}
@@ -80,6 +82,7 @@ func ContextInjector() gin.HandlerFunc {
 		if idStr := strings.TrimSpace(c.GetHeader("X-Workspace-ID")); idStr != "" {
 			if id, err := uuid.Parse(idStr); err == nil {
 				c.Set(CtxWorkspaceID, id)
+				c.Set(logger.KeyWorkspaceID, id.String())
 			} else {
 				c.Set(CtxWorkspaceID, err)
 			}
