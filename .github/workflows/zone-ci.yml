@@ -89,6 +89,8 @@ jobs:
               tail -n 200 "$RUNNER_TEMP/clippy.log"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            diagnostics="$(rg -n -C 2 '^error' "$RUNNER_TEMP/clippy.log" | tr '\n' ' ' | cut -c1-6000)"
+            echo "::error title=Dataplane Clippy::${diagnostics:-See the job summary for diagnostics.}"
             exit "$status"
           fi
       - run: cargo test
@@ -151,6 +153,8 @@ jobs:
               tail -n 200 "$RUNNER_TEMP/clippy.log"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            diagnostics="$(rg -n -C 2 '^error' "$RUNNER_TEMP/clippy.log" | tr '\n' ' ' | cut -c1-6000)"
+            echo "::error title=Authorizer Clippy::${diagnostics:-See the job summary for diagnostics.}"
             exit "$status"
           fi
       - run: cargo test
