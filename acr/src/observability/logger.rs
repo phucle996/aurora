@@ -2,28 +2,28 @@ use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
 use uuid::Uuid;
 
-/// ============================================================================
-/// 📂 MODULE: observability/logger.rs - Hệ Thống Logs Cấu Trúc JSON Phân Cấp
-/// ============================================================================
-///
-/// 📌 VAI TRÒ (ROLE):
-///   - Xuất nhật ký hoạt động (logs) của ACL Service dưới dạng JSON cấu trúc (Structured Logging).
-///   - Đồng bộ hóa 100% phong cách log với `pkg/logger.go` của Controlplane
-///     và `observability/logger.rs` của Dataplane.
-///   - Cung cấp hai phân hệ ghi logs: SystemLog (vận hành) và AuthzLog (quyết định authorize).
-///   - Tuân thủ nghiêm ngặt cấp độ ghi log (`APP_LOG_LEVEL`) được cấu hình trong hệ thống.
-///
-/// 🎯 SOURCE OF TRUTH (SoT):
-///   - Nhật ký xuất ra trực tiếp luồng ra tiêu chuẩn lỗi `std::stderr` của container,
-///     được thu thập bởi FluentBit / Promtail để đẩy lên Grafana Loki.
-///
-/// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
-///   - TUYỆT ĐỐI CẤM ghi đè (log) toàn bộ nội dung JWT token, session secrets.
-///   - Chỉ được ghi nhận các nhãn kỹ thuật thô phục vụ gỡ lỗi.
-///
-/// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
-///   - Mọi log ghi ra bắt buộc phải mang mốc thời gian độ phân giải cao `RFC3339Nano`
-///     để phân tích chính xác thứ tự xảy ra sự kiện trên production.
+// ============================================================================
+// 📂 MODULE: observability/logger.rs - Hệ Thống Logs Cấu Trúc JSON Phân Cấp
+// ============================================================================
+//
+// 📌 VAI TRÒ (ROLE):
+//   - Xuất nhật ký hoạt động (logs) của ACL Service dưới dạng JSON cấu trúc (Structured Logging).
+//   - Đồng bộ hóa 100% phong cách log với `pkg/logger.go` của Controlplane
+//     và `observability/logger.rs` của Dataplane.
+//   - Cung cấp hai phân hệ ghi logs: SystemLog (vận hành) và AuthzLog (quyết định authorize).
+//   - Tuân thủ nghiêm ngặt cấp độ ghi log (`APP_LOG_LEVEL`) được cấu hình trong hệ thống.
+//
+// 🎯 SOURCE OF TRUTH (SoT):
+//   - Nhật ký xuất ra trực tiếp luồng ra tiêu chuẩn lỗi `std::stderr` của container,
+//     được thu thập bởi FluentBit / Promtail để đẩy lên Grafana Loki.
+//
+// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
+//   - TUYỆT ĐỐI CẤM ghi đè (log) toàn bộ nội dung JWT token, session secrets.
+//   - Chỉ được ghi nhận các nhãn kỹ thuật thô phục vụ gỡ lỗi.
+//
+// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
+//   - Mọi log ghi ra bắt buộc phải mang mốc thời gian độ phân giải cao `RFC3339Nano`
+//     để phân tích chính xác thứ tự xảy ra sự kiện trên production.
 
 // Nhãn phân loại log
 /// Phân cấp độ ưu tiên của Log Level

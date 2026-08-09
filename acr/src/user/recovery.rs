@@ -32,6 +32,9 @@ async fn release_recovery_lock(session_mgr: &SessionManager, recovery_key: &str,
     }
 }
 
+// This response is the terminal boundary of the recovery workflow. Keep its
+// identity and session outputs explicit instead of hiding them in a context.
+#[allow(clippy::too_many_arguments)]
 fn build_success_response(
     config: &Config,
     user_id: &str,
@@ -44,7 +47,7 @@ fn build_success_response(
     zone_id: &str,
     zone_code: &str,
     context_reset: bool,
-) -> Result<Response<CheckResponse>, Status> {
+) -> Response<CheckResponse> {
     let mut builder = DeniedHttpResponseBuilder::new();
     builder.set_http_status(HttpStatusCode::Ok);
     builder.add_header("content-type", "application/json", None, false);
@@ -59,7 +62,7 @@ fn build_success_response(
 
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             new_jwt, session_max_age, domain
         ),
@@ -68,7 +71,7 @@ fn build_success_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             new_access_key, session_max_age, domain
         ),
@@ -77,7 +80,7 @@ fn build_success_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             new_access_secret, session_max_age, domain
         ),
@@ -87,7 +90,7 @@ fn build_success_response(
 
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "client_device_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             client_device_id, domain
         ),
@@ -96,7 +99,7 @@ fn build_success_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             tenant_id, domain
         ),
@@ -105,7 +108,7 @@ fn build_success_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             zone_code, domain
         ),
@@ -121,7 +124,7 @@ fn build_success_response(
         for cookie_name in [COOKIE_TENANT_DOMAIN, COOKIE_WORKSPACE_ID] {
             builder.add_header(
                 "set-cookie",
-                &format!(
+                format!(
                     "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
                     cookie_name, domain
                 ),
@@ -157,7 +160,7 @@ fn build_success_response(
         }
     }
 
-    Ok(Response::new(response))
+    Response::new(response)
 }
 
 fn build_denied_json(
@@ -271,7 +274,7 @@ pub async fn try_handle_recovery_session(
     ));
 
     if let Ok(Some(cache)) = session_mgr.get_recovery_cache(&recovery_key).await {
-        return Some(build_success_response(
+        return Some(Ok(build_success_response(
             config,
             &cache.user_id,
             &cache.client_device_id,
@@ -283,14 +286,14 @@ pub async fn try_handle_recovery_session(
             &cache.zone_id,
             &cache.zone_code,
             cache.context_reset,
-        ));
+        )));
     }
 
     if let Ok(true) = session_mgr.is_recovery_locked(&recovery_key).await {
         for _ in 0..12 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Ok(Some(cache)) = session_mgr.get_recovery_cache(&recovery_key).await {
-                return Some(build_success_response(
+                return Some(Ok(build_success_response(
                     config,
                     &cache.user_id,
                     &cache.client_device_id,
@@ -302,7 +305,7 @@ pub async fn try_handle_recovery_session(
                     &cache.zone_id,
                     &cache.zone_code,
                     cache.context_reset,
-                ));
+                )));
             }
         }
         return Some(Ok(Response::new(build_denied_json(
@@ -511,7 +514,7 @@ pub async fn try_handle_recovery_session(
         release_recovery_lock(session_mgr, &recovery_key, &lock_owner).await;
     }
 
-    Some(build_success_response(
+    Some(Ok(build_success_response(
         config,
         &response.user_id,
         &response.client_device_id,
@@ -523,7 +526,7 @@ pub async fn try_handle_recovery_session(
         &resolved_zone_id,
         &resolved_zone_code,
         context_reset,
-    ))
+    )))
 }
 
 impl SessionManager {
