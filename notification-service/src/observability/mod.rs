@@ -1,4 +1,5 @@
 use crate::config::Config;
+use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
@@ -280,12 +281,15 @@ fn build_tracer(
         .with_endpoint(&config.otel.exporter_endpoint)
         .with_timeout(export_timeout);
 
-    opentelemetry_otlp::new_pipeline()
+    let provider = opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(exporter)
         .with_trace_config(trace_config)
         .with_batch_config(batch_config)
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
+        .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+    let tracer = provider.tracer(SERVICE_NAME);
+    global::set_tracer_provider(provider);
+    Ok(tracer)
 }
 
 fn build_meter_provider(

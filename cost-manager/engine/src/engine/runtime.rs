@@ -33,7 +33,6 @@ pub struct PricingRuntime {
 
 #[derive(FromRow)]
 struct PricingRow {
-    tier_id: Uuid,
     tier_version_id: Uuid,
     version_number: i32,
     code: String,
@@ -41,7 +40,6 @@ struct PricingRow {
     effective_from: DateTime<Utc>,
     effective_to: Option<DateTime<Utc>>,
     checksum: String,
-    range_id: Uuid,
     range_start: i64,
     range_end: i64,
     base_unit_price: i64,
@@ -84,12 +82,12 @@ impl PricingRuntime {
         expected: Option<(Uuid, String)>,
     ) -> Result<(), PricingError> {
         let catalog = Arc::new(load_catalog(&self.db).await?);
-        if let Some((version_id, checksum)) = expected {
-            if !catalog.contains_version(version_id, &checksum) {
-                return Err(PricingError(format!(
-                    "published pricing version {version_id} missing or checksum mismatch"
-                )));
-            }
+        if let Some((version_id, checksum)) = expected
+            && !catalog.contains_version(version_id, &checksum)
+        {
+            return Err(PricingError(format!(
+                "published pricing version {version_id} missing or checksum mismatch"
+            )));
         }
         for version in catalog.versions_by_service.values().flatten() {
             self.version_cache
@@ -235,19 +233,20 @@ impl PricingRuntime {
 
 pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, PricingError> {
     let rows = sqlx::query_as::<_, PricingRow>(
-        "SELECT t.id AS tier_id, v.id AS tier_version_id, v.version_number, t.code, t.service_type::text, \
-                v.effective_from, v.effective_to, v.checksum, r.id AS range_id, \
+        "SELECT v.id AS tier_version_id, v.version_number, t.code, t.service_type::text, \
+                v.effective_from, v.effective_to, v.checksum, \
                 r.range_start, r.range_end, r.base_unit_price \
          FROM billing.tiers t \
          JOIN billing.tier_versions v ON v.tier_id=t.id AND v.status <> 'CANCELLED' \
          JOIN billing.tier_version_ranges r ON r.tier_version_id=v.id \
-         ORDER BY t.service_type, v.version_number, r.range_start"
-    ).fetch_all(db).await?;
+         ORDER BY t.service_type, v.version_number, r.range_start",
+    )
+    .fetch_all(db)
+    .await?;
 
     let mut grouped: HashMap<Uuid, (PricingRow, Vec<TierRange>)> = HashMap::new();
     for row in rows {
         let tier_range = TierRange {
-            id: row.range_id,
             range_start: row.range_start,
             range_end: row.range_end,
             base_unit_price: row.base_unit_price,
@@ -271,10 +270,8 @@ pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, Pricing
             )));
         }
         let snapshot = Arc::new(TierPricingSnapshot {
-            tier_id: row.tier_id,
             tier_version_id: row.tier_version_id,
             version_number: row.version_number,
-            service_type: parsed_service,
             effective_from: row.effective_from,
             effective_to: row.effective_to,
             checksum: row.checksum,

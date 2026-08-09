@@ -30,9 +30,7 @@ pub async fn acquire_billing_lease(
         .await
         .ok()
         .flatten();
-    if acquired.is_none() {
-        return None;
-    }
+    acquired.as_ref()?;
 
     let (stop_tx, mut stop_rx) = watch::channel(false);
     let (lost_tx, lost_rx) = watch::channel(false);

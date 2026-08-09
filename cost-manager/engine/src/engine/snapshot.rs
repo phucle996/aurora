@@ -55,7 +55,6 @@ impl ServiceType {
 
 #[derive(Debug, Clone)]
 pub struct TierRange {
-    pub id: Uuid,
     pub range_start: i64,
     pub range_end: i64,
     pub base_unit_price: i64,
@@ -63,10 +62,8 @@ pub struct TierRange {
 
 #[derive(Debug, Clone)]
 pub struct TierPricingSnapshot {
-    pub tier_id: Uuid,
     pub tier_version_id: Uuid,
     pub version_number: i32,
-    pub service_type: ServiceType,
     pub effective_from: DateTime<Utc>,
     pub effective_to: Option<DateTime<Utc>>,
     pub checksum: String,
@@ -94,7 +91,7 @@ impl TierPricingSnapshot {
                 }
             };
             let units = upper - start;
-            if units > BigDecimal::from(0) {
+            if units > 0 {
                 total_micro_units += units * BigDecimal::from(tier_range.base_unit_price);
             }
         }

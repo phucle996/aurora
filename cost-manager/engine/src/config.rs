@@ -25,8 +25,6 @@ pub struct VaultConfig {
 /// Cấu hình hệ thống Cost Manager Engine đọc từ các biến môi trường
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// URL kết nối tới PostgreSQL (billing database)
-    pub database_url: String,
     /// URL kết nối tới ClickHouse (lưu trữ logs metering)
     pub clickhouse_url: String,
     /// URL kết nối tới Redis (cache chặn keys và quản lý locks/checkpoint)
@@ -54,19 +52,6 @@ pub struct Config {
     /// Đường dẫn tới file Client Private Key dùng cho mTLS PostgreSQL
     pub pg_ssl_client_key: Option<String>,
 
-    /// Đường dẫn tới file CA Certificate để xác thực ClickHouse Server Cert (HTTPS)
-    pub ch_ssl_root_cert: Option<String>,
-    /// Đường dẫn tới file Client Certificate dùng cho mTLS ClickHouse
-    pub ch_ssl_client_cert: Option<String>,
-    /// Đường dẫn tới file Client Private Key dùng cho mTLS ClickHouse
-    pub ch_ssl_client_key: Option<String>,
-
-    /// Đường dẫn tới file CA Certificate để xác thực Redis Server Cert (rediss://)
-    pub redis_ssl_root_cert: Option<String>,
-    /// Đường dẫn tới file Client Certificate dùng cho mTLS Redis
-    pub redis_ssl_client_cert: Option<String>,
-    /// Đường dẫn tới file Client Private Key dùng cho mTLS Redis
-    pub redis_ssl_client_key: Option<String>,
     pub vault: VaultConfig,
 }
 
@@ -110,9 +95,6 @@ impl Config {
     /// Identity-bearing endpoints and security modes are required. Only
     /// bounded performance/retention controls keep local defaults.
     pub fn from_env() -> Result<Self, String> {
-        // Connection URLs are resolved by infra connectors from Vault.
-        let database_url = String::new();
-
         let clickhouse_url = required_env("CLICKHOUSE_URL")?;
 
         // Đọc Redis URL cho control plane
@@ -169,16 +151,7 @@ impl Config {
         let pg_ssl_client_cert = env::var("PG_SSL_CLIENT_CERT").ok();
         let pg_ssl_client_key = env::var("PG_SSL_CLIENT_KEY").ok();
 
-        let ch_ssl_root_cert = env::var("CH_SSL_ROOT_CERT").ok();
-        let ch_ssl_client_cert = env::var("CH_SSL_CLIENT_CERT").ok();
-        let ch_ssl_client_key = env::var("CH_SSL_CLIENT_KEY").ok();
-
-        let redis_ssl_root_cert = env::var("REDIS_SSL_ROOT_CERT").ok();
-        let redis_ssl_client_cert = env::var("REDIS_SSL_CLIENT_CERT").ok();
-        let redis_ssl_client_key = env::var("REDIS_SSL_CLIENT_KEY").ok();
-
         Ok(Self {
-            database_url,
             clickhouse_url,
             redis_url,
             pg_max_connections,
@@ -191,12 +164,6 @@ impl Config {
             pg_ssl_root_cert,
             pg_ssl_client_cert,
             pg_ssl_client_key,
-            ch_ssl_root_cert,
-            ch_ssl_client_cert,
-            ch_ssl_client_key,
-            redis_ssl_root_cert,
-            redis_ssl_client_cert,
-            redis_ssl_client_key,
             vault: VaultConfig::from_env()?,
         })
     }

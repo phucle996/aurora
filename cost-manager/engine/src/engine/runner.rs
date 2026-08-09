@@ -115,6 +115,13 @@ pub async fn run_billing_task<T: BillingTask + 'static>(
             }
         }
 
+        // Never advance the checkpoint after lock renewal was lost. Durable
+        // fencing makes any partial ledger work safe to retry under a new lease.
+        if *redis_lease.lost_rx.borrow() {
+            eprintln!("{}: Distributed billing lease was lost", task.name());
+            run_failed = true;
+        }
+
         // 5. Hoàn tất lượt chạy hoặc đánh dấu Retry
         if !run_failed {
             // Lưu checkpoint mới lên Redis

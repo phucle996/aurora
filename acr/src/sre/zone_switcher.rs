@@ -61,6 +61,8 @@ fn sha256_hash(secret: &str) -> String {
 }
 
 /// [COMMENT]: Intercept POST /admin/zone/go-to-zone — dành riêng cho SRE Admin để chuyển vùng zone hoạt động.
+// Keep the zone-switch workflow's authority and storage capabilities visible.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_sre_zone_switch(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<SreTokenManager>,

@@ -29,9 +29,7 @@ pub struct ClickhouseMeteringRow {
     pub hour: DateTime<Utc>,
     pub access_key: String,
     pub bucket_name: String,
-    pub total_upload_bytes: u64,
     pub total_download_bytes: u64,
-    pub request_count: u64,
 }
 
 pub struct StorageEgressBillingTask {
@@ -77,7 +75,7 @@ impl BillingTask for StorageEgressBillingTask {
     ) -> Result<DateTime<Utc>, String> {
         let mut redis_conn = self.redis_conn.clone();
         let query = format!(
-            "SELECT hour, access_key, bucket_name, total_upload_bytes, total_download_bytes, request_count \
+            "SELECT hour, access_key, bucket_name, total_download_bytes \
              FROM hourly_metering_agg \
              WHERE hour > toDateTime('{}') AND hour <= toDateTime('{}') \
              ORDER BY hour ASC, access_key ASC, bucket_name ASC",

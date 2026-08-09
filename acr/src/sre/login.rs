@@ -40,6 +40,8 @@ pub struct ErrorResponse {
 
 /// [COMMENT]: Hàm xử lý đăng nhập SRE Admin cục bộ tại biên.
 /// Intercept: POST /admin/auth/login
+// Keep Envoy workflow capabilities explicit at the authorization boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_admin_login(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<SreTokenManager>,

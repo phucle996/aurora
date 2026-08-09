@@ -1237,40 +1237,44 @@ impl Authorization for ExtAuthzService {
                         ("x-aurora-control-signature", signed.signature),
                         ("x-aurora-control-key-id", signed.key_id),
                     ] {
-                        let mut header = HeaderValueOption::default();
-                        header.header =
-                            Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                        let header = HeaderValueOption {
+                            header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
                                 key: key.to_string(),
                                 value,
-                            });
-                        // OVERWRITE_IF_EXISTS prevents a client-injected copy
-                        // from surviving the Central security boundary.
-                        header.append_action = 2;
+                            }),
+                            // OVERWRITE_IF_EXISTS prevents a client-injected copy
+                            // from surviving the Central security boundary.
+                            append_action: 2,
+                            ..Default::default()
+                        };
                         ok.headers.push(header);
                     }
                 }
 
                 // [COMMENT]: Luôn overwrite marker để client không thể tự giả mạo header đã được ACR xác minh.
-                let mut proof_header = HeaderValueOption::default();
-                proof_header.header = Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                    key: "x-session-proof-verified".to_string(),
-                    value: if session_proof_challenge_id.is_some() {
-                        "true".to_string()
-                    } else {
-                        "false".to_string()
-                    },
-                });
-                proof_header.append_action = 2;
+                let proof_header = HeaderValueOption {
+                    header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                        key: "x-session-proof-verified".to_string(),
+                        value: if session_proof_challenge_id.is_some() {
+                            "true".to_string()
+                        } else {
+                            "false".to_string()
+                        },
+                    }),
+                    append_action: 2,
+                    ..Default::default()
+                };
                 ok.headers.push(proof_header);
 
                 if let Some(ref challenge_id) = session_proof_challenge_id {
-                    let mut challenge_header = HeaderValueOption::default();
-                    challenge_header.header =
-                        Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                    let challenge_header = HeaderValueOption {
+                        header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
                             key: "x-session-proof-challenge-id".to_string(),
                             value: challenge_id.clone(),
-                        });
-                    challenge_header.append_action = 2;
+                        }),
+                        append_action: 2,
+                        ..Default::default()
+                    };
                     ok.headers.push(challenge_header);
                 }
 
@@ -1284,14 +1288,17 @@ impl Authorization for ExtAuthzService {
                         ];
 
                         for (key, val) in headers_to_set {
-                            let mut h = HeaderValueOption::default();
-                            h.header =
-                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                    key: key.to_string(),
-                                    value: val,
-                                });
-                            // [COMMENT]: Identity ACR overwrite header client cũ; duplicate value không được phép tồn tại.
-                            h.append_action = 2;
+                            let h = HeaderValueOption {
+                                header: Some(
+                                    envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                        key: key.to_string(),
+                                        value: val,
+                                    },
+                                ),
+                                // [COMMENT]: Identity ACR overwrite header client cũ; duplicate value không được phép tồn tại.
+                                append_action: 2,
+                                ..Default::default()
+                            };
                             ok.headers.push(h);
                         }
                     }
@@ -1313,13 +1320,16 @@ impl Authorization for ExtAuthzService {
                         ];
 
                         for (key, val) in headers_to_set {
-                            let mut h = HeaderValueOption::default();
-                            h.header =
-                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                    key: key.to_string(),
-                                    value: val,
-                                });
-                            h.append_action = 2;
+                            let h = HeaderValueOption {
+                                header: Some(
+                                    envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                        key: key.to_string(),
+                                        value: val,
+                                    },
+                                ),
+                                append_action: 2,
+                                ..Default::default()
+                            };
                             ok.headers.push(h);
                         }
                     }
@@ -1347,22 +1357,28 @@ impl Authorization for ExtAuthzService {
                         ];
 
                         for (key, val) in headers_to_set {
-                            let mut h = HeaderValueOption::default();
-                            h.header =
-                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                    key: key.to_string(),
-                                    value: val,
-                                });
+                            let h = HeaderValueOption {
+                                header: Some(
+                                    envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                        key: key.to_string(),
+                                        value: val,
+                                    },
+                                ),
+                                ..Default::default()
+                            };
                             ok.headers.push(h);
                         }
 
                         if let Some(ws_id) = workspace_id {
-                            let mut h = HeaderValueOption::default();
-                            h.header =
-                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                    key: HEADER_X_WORKSPACE_ID.to_string(),
-                                    value: ws_id,
-                                });
+                            let h = HeaderValueOption {
+                                header: Some(
+                                    envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                        key: HEADER_X_WORKSPACE_ID.to_string(),
+                                        value: ws_id,
+                                    },
+                                ),
+                                ..Default::default()
+                            };
                             ok.headers.push(h);
                         }
                     }
@@ -1372,30 +1388,35 @@ impl Authorization for ExtAuthzService {
                 // branches so Trinity and Billing Alias follow the same
                 // neutral public contract. OVERWRITE removes client copies.
                 if let Some(ref rewritten_path) = rewritten_path_opt {
-                    let mut original = HeaderValueOption::default();
-                    original.header = Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                        key: "x-original-path".to_string(),
-                        value: path.to_string(),
-                    });
-                    original.append_action = 2;
+                    let original = HeaderValueOption {
+                        header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                            key: "x-original-path".to_string(),
+                            value: path.to_string(),
+                        }),
+                        append_action: 2,
+                        ..Default::default()
+                    };
                     ok.headers.push(original);
 
-                    let mut rewritten = HeaderValueOption::default();
-                    rewritten.header =
-                        Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                    let rewritten = HeaderValueOption {
+                        header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
                             key: ":path".to_string(),
                             value: rewritten_path.clone(),
-                        });
-                    rewritten.append_action = 2;
+                        }),
+                        append_action: 2,
+                        ..Default::default()
+                    };
                     ok.headers.push(rewritten);
                 }
 
                 for cookie_str in cookies_to_set {
-                    let mut h = HeaderValueOption::default();
-                    h.header = Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                        key: "set-cookie".to_string(),
-                        value: cookie_str,
-                    });
+                    let h = HeaderValueOption {
+                        header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                            key: "set-cookie".to_string(),
+                            value: cookie_str,
+                        }),
+                        ..Default::default()
+                    };
                     ok.response_headers_to_add.push(h);
                 }
             }

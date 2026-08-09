@@ -145,11 +145,13 @@ fn build_success_response(
                 (HEADER_X_TENANT_ID, tenant_id.to_string()),
                 (HEADER_X_ZONE_ID, zone_id.to_string()),
             ] {
-                let mut header = HeaderValueOption::default();
-                header.header = Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                    key: key.to_string(),
-                    value,
-                });
+                let header = HeaderValueOption {
+                    header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                        key: key.to_string(),
+                        value,
+                    }),
+                    ..Default::default()
+                };
                 denied.headers.push(header);
             }
         }

@@ -1,5 +1,5 @@
 use super::runtime::{checksum, validate_ranges};
-use super::snapshot::{ServiceType, TierPricingSnapshot, TierRange};
+use super::snapshot::{TierPricingSnapshot, TierRange};
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -8,13 +8,11 @@ use uuid::Uuid;
 fn validates_contiguous_ranges_and_checksum() {
     let ranges = vec![
         TierRange {
-            id: Uuid::nil(),
             range_start: 0,
             range_end: 10,
             base_unit_price: 15,
         },
         TierRange {
-            id: Uuid::nil(),
             range_start: 10,
             range_end: 0,
             base_unit_price: 12,
@@ -31,13 +29,11 @@ fn validates_contiguous_ranges_and_checksum() {
 fn rejects_gap_between_ranges() {
     let ranges = vec![
         TierRange {
-            id: Uuid::nil(),
             range_start: 0,
             range_end: 10,
             base_unit_price: 15,
         },
         TierRange {
-            id: Uuid::nil(),
             range_start: 11,
             range_end: 0,
             base_unit_price: 12,
@@ -49,22 +45,18 @@ fn rejects_gap_between_ranges() {
 #[test]
 fn progressive_charge_uses_each_range_without_float_rounding() {
     let snapshot = TierPricingSnapshot {
-        tier_id: Uuid::nil(),
         tier_version_id: Uuid::nil(),
         version_number: 1,
-        service_type: ServiceType::NetworkOut,
         effective_from: Utc::now(),
         effective_to: None,
         checksum: String::new(),
         ranges: vec![
             TierRange {
-                id: Uuid::nil(),
                 range_start: 0,
                 range_end: 10,
                 base_unit_price: 0,
             },
             TierRange {
-                id: Uuid::nil(),
                 range_start: 10,
                 range_end: 0,
                 base_unit_price: 1_000_000,
@@ -82,15 +74,12 @@ fn progressive_charge_uses_each_range_without_float_rounding() {
 #[test]
 fn positive_fractional_micro_unit_rounds_once_at_charge_boundary() {
     let snapshot = TierPricingSnapshot {
-        tier_id: Uuid::nil(),
         tier_version_id: Uuid::nil(),
         version_number: 1,
-        service_type: ServiceType::NetworkOut,
         effective_from: Utc::now(),
         effective_to: None,
         checksum: String::new(),
         ranges: vec![TierRange {
-            id: Uuid::nil(),
             range_start: 0,
             range_end: 0,
             base_unit_price: 1,
