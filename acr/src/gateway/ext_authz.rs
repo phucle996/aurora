@@ -1405,6 +1405,10 @@ impl Authorization for ExtAuthzService {
                                         value: val,
                                     },
                                 ),
+                                // [SECURITY]: These are ACR-authenticated context
+                                // headers. Replace, never append to, any value the
+                                // client supplied before the ext_authz check.
+                                append_action: 2,
                                 ..Default::default()
                             };
                             ok.headers.push(h);
@@ -1418,6 +1422,10 @@ impl Authorization for ExtAuthzService {
                                         value: ws_id,
                                     },
                                 ),
+                                // [SECURITY]: Workspace is part of the compiled
+                                // five-level authorization key, so it must have the
+                                // same overwrite boundary as identity headers.
+                                append_action: 2,
                                 ..Default::default()
                             };
                             ok.headers.push(h);
