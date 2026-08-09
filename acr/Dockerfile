@@ -14,16 +14,19 @@ RUN apt-get update && \
     protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /app/acr
 
 # [COMMENT]: Cache dependencies layer trước khi compile source chính
-COPY Cargo.toml Cargo.lock* ./
+COPY acr/Cargo.toml acr/Cargo.lock* ./
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
     cargo build --release || true && \
     rm -rf src
 
-COPY . .
+# build.rs resolves the canonical IAM proto as ../contracts/proto.  Keep that
+# sibling layout inside the builder rather than duplicating shared contracts.
+COPY acr/ ./
+COPY contracts/ /app/contracts/
 RUN cargo build --release
 
 # ============================================================================
@@ -34,7 +37,7 @@ RUN cargo build --release
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 # [COMMENT]: Sao chép binary ACR từ Stage Builder
-COPY --from=builder /app/target/release/acr /usr/local/bin/acr
+COPY --from=builder /app/acr/target/release/acr /usr/local/bin/acr
 
 # [COMMENT]: Chạy ứng dụng dưới user nonroot (UID 65532:65532)
 USER 65532:65532

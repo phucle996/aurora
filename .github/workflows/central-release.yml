@@ -53,7 +53,10 @@ jobs:
               prefix=acr
               component=acr
               image_name=aurora-acr
-              context=acr
+              # ACR's build script compiles the canonical IAM contract from
+              # ../contracts, so its Docker build must retain monorepo-root
+              # visibility instead of isolating the context to acr/.
+              context=.
               dockerfile=acr/Dockerfile
               source_paths=(acr contracts)
               ;;
