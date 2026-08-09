@@ -146,8 +146,10 @@ JO, PostgreSQL, Redis, Kafka, Zone KV, logs và traces không được chứa pr
 Managed Service inner command mang canonical `parameter_values` plaintext bên trong ciphertext toàn
 command. DP chỉ materialize sau HPKE open trong RAM rồi render YAML AST. Result, DLQ, log, trace,
 timeline và safe observed output không được mang parameter values, rendered manifest, Kubernetes
-Secret hay provider credential. Canonical Go-seal/Rust-open vector ở
-`contracts/testdata/protected_payload_v1.json` khóa wire/AAD compatibility.
+Secret hay provider credential. Canonical Go-seal/Rust-open vector được hard-code tại test owner
+`controlplane/internal/security/job_payload_test.go` và
+`dataplane/src/security/jobpayload.rs`; hai giá trị phải được cập nhật cùng nhau chỉ khi có
+compatibility evidence cho wire/AAD change.
 
 ## 4. Command path: PostgreSQL WAL → JO → Kafka
 

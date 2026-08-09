@@ -478,60 +478,48 @@ fn crypto_error() -> PayloadOpenError {
 mod tests {
     use super::*;
 
-    #[derive(Deserialize)]
-    struct ProtectedPayloadVector {
-        schema_version: u32,
-        key_id: String,
-        recipient_zone_id: String,
-        source_domain: String,
-        job_topic: String,
-        resource_id: String,
-        job_version: u32,
-        payload_schema_version: u32,
-        plaintext_base64: String,
-        protected_payload_base64: String,
-    }
-
     #[test]
     fn opens_the_canonical_go_protected_payload_vector() {
-        let vector: ProtectedPayloadVector = serde_json::from_str(include_str!(
-            "../../../contracts/testdata/protected_payload_v1.json"
-        ))
-        .expect("canonical protected-payload vector");
         // The fixed test-only recipient key lives in test code, never in a
-        // shared wire fixture that could be mistaken for deployable material.
-        assert_eq!(vector.schema_version, 1);
-        assert_eq!(vector.key_id, Uuid::from_u128(1).to_string());
+        // shared fixture that could be mistaken for deployable material.
+        let recipient_zone_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let source_domain = "STORAGE";
+        let job_topic = "storage.bucket.create";
+        let resource_id = "bucket-1";
+        let job_version = 1;
+        let payload_schema_version = 1;
+        let protected_payload_base64 = "CAESEKqqqqqqqkqqiqqqqqqqqqoaEAAAAAAAAAAAAAAAAAAAAAEgASogBLzS4NAPLM5f6PHGwvvsXAf6VuOqXIilaJl12Is/zgUyK7GMLw1w6CR7+HyXe9bjappULQjr7EbVyGKtb96k8BxWGbpkq3l6nSneaQ04Gw==";
+        let plaintext_base64 = "YXVyb3JhLXByb3RlY3RlZC1wYXlsb2FkLXYx";
 
         let keyring = PayloadKeyring::for_test();
         let wire = base64::engine::general_purpose::STANDARD
-            .decode(vector.protected_payload_base64)
+            .decode(protected_payload_base64)
             .expect("vector protected payload");
         let plaintext = keyring
             .open(
                 &wire,
-                Uuid::parse_str(&vector.recipient_zone_id).expect("vector Zone UUID"),
-                &vector.source_domain,
-                &vector.job_topic,
-                &vector.resource_id,
-                vector.job_version,
-                vector.payload_schema_version,
+                Uuid::parse_str(recipient_zone_id).expect("vector Zone UUID"),
+                source_domain,
+                job_topic,
+                resource_id,
+                job_version,
+                payload_schema_version,
             )
             .expect("Rust must open the canonical Go ciphertext");
         let expected = base64::engine::general_purpose::STANDARD
-            .decode(vector.plaintext_base64)
+            .decode(plaintext_base64)
             .expect("vector plaintext");
         assert_eq!(plaintext, expected);
 
         let tampered = keyring
             .open(
                 &wire,
-                Uuid::parse_str(&vector.recipient_zone_id).unwrap(),
-                &vector.source_domain,
-                &vector.job_topic,
+                Uuid::parse_str(recipient_zone_id).unwrap(),
+                source_domain,
+                job_topic,
                 "bucket-2",
-                vector.job_version,
-                vector.payload_schema_version,
+                job_version,
+                payload_schema_version,
             )
             .unwrap_err();
         assert_eq!(tampered.code, "JOB_PROTECTED_PAYLOAD_AUTH_FAILED");

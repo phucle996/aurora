@@ -37,8 +37,10 @@ command. Field-level or nested payload encryption is forbidden.
 versioned and contains `key_id`, recipient `zone_id`, `source_domain`, `job_topic`,
 `resource_id`, `job_version` and `payload_schema_version`. Delivery attempt, trace context,
 Kafka offset and reconcile generation are excluded so an at-least-once retry can reuse the exact
-ciphertext without weakening route authentication. The canonical Go-seal/Rust-open vector lives
-at `contracts/testdata/protected_payload_v1.json`.
+ciphertext without weakening route authentication. The canonical Go-seal/Rust-open vector is
+hard-coded in the owner tests `controlplane/internal/security/job_payload_test.go` and
+`dataplane/src/security/jobpayload.rs`; both values change together only with wire/AAD
+compatibility evidence.
 
 Private keys remain Zone-local in a read-only Dataplane mount. Controlplane stores only public
 X25519 keys in Hierarchy. A key becomes producer-ready only after the Zone report proves every

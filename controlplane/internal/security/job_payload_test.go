@@ -5,9 +5,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
@@ -27,16 +25,8 @@ func (s *zonePayloadKeyResolverStub) ResolveZonePayloadKey(_ context.Context, in
 }
 
 func TestProtectedJobPayloadV1Vector(t *testing.T) {
-	var vector struct {
-		ProtectedPayloadBase64 string `json:"protected_payload_base64"`
-	}
-	raw, err := os.ReadFile("../../../contracts/testdata/protected_payload_v1.json")
-	if err != nil {
-		t.Fatalf("read canonical protected-payload vector: %v", err)
-	}
-	if err := json.Unmarshal(raw, &vector); err != nil {
-		t.Fatalf("decode canonical protected-payload vector: %v", err)
-	}
+	const protectedPayloadBase64 = "CAESEKqqqqqqqkqqiqqqqqqqqqoaEAAAAAAAAAAAAAAAAAAAAAEgASogBLzS4NAPLM5f6PHGwvvsXAf6VuOqXIilaJl12Is/zgUyK7GMLw1w6CR7+HyXe9bjappULQjr7EbVyGKtb96k8BxWGbpkq3l6nSneaQ04Gw=="
+
 	privateKey, err := ecdh.X25519().NewPrivateKey(bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		t.Fatalf("construct recipient private key: %v", err)
@@ -59,8 +49,8 @@ func TestProtectedJobPayloadV1Vector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seal deterministic vector: %v", err)
 	}
-	if actual := base64.StdEncoding.EncodeToString(protected.Payload); actual != vector.ProtectedPayloadBase64 {
-		t.Fatalf("protected payload wire drifted:\nwant %s\n got %s", vector.ProtectedPayloadBase64, actual)
+	if actual := base64.StdEncoding.EncodeToString(protected.Payload); actual != protectedPayloadBase64 {
+		t.Fatalf("protected payload wire drifted:\nwant %s\n got %s", protectedPayloadBase64, actual)
 	}
 }
 
