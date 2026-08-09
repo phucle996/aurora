@@ -115,6 +115,7 @@ impl Authorization for ZoneControlAuthorizer {
                             header: Some(HeaderValue {
                                 key: key.to_string(),
                                 value,
+                                ..Default::default()
                             }),
                             append_action: 2,
                             ..Default::default()
