@@ -15,11 +15,11 @@ COPY . .
 RUN npm run build
 
 # ============================================================================
-# 🚀 STAGE 2: RUNNER - DISTROLESS NODEJS 22 DEBIAN 12 (NON-ROOT)
+# 🚀 STAGE 2: RUNNER - DISTROLESS NODEJS 22 DEBIAN 13 (NON-ROOT)
 # ============================================================================
-# [COMMENT]: Chuyển sang Google Distroless Node.js 22 Debian 12 Non-root
+# [COMMENT]: Chuyển sang Google Distroless Node.js 22 Debian 13 Non-root
 # Loại bỏ toàn bộ Shell, npm package manager và OS utilities khỏi runtime container để đảm bảo an toàn tuyệt đối.
-FROM gcr.io/distroless/nodejs22-debian12:nonroot AS runner
+FROM gcr.io/distroless/nodejs22-debian13:nonroot AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
