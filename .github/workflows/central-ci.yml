@@ -138,7 +138,7 @@ jobs:
               line=${line//'%'/'%25'}
               line=${line//$'\r'/'%0D'}
               echo "::error::$line"
-            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/acr-clippy.log" | tail -n 40)
+            done < <(tail -n 40 "$RUNNER_TEMP/acr-clippy.log")
           fi
           exit "$status"
       - run: cargo test
@@ -175,7 +175,7 @@ jobs:
               line=${line//'%'/'%25'}
               line=${line//$'\r'/'%0D'}
               echo "::error::$line"
-            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/job-orchestrator-clippy.log" | tail -n 40)
+            done < <(tail -n 40 "$RUNNER_TEMP/job-orchestrator-clippy.log")
           fi
           exit "$status"
       - run: cargo test
@@ -213,7 +213,7 @@ jobs:
               line=${line//'%'/'%25'}
               line=${line//$'\r'/'%0D'}
               echo "::error::$line"
-            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/notification-service-clippy.log" | tail -n 40)
+            done < <(tail -n 40 "$RUNNER_TEMP/notification-service-clippy.log")
           fi
           exit "$status"
       - run: cargo test
@@ -257,7 +257,7 @@ jobs:
               line=${line//'%'/'%25'}
               line=${line//$'\r'/'%0D'}
               echo "::error::$line"
-            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/cost-manager-clippy.log" | tail -n 40)
+            done < <(tail -n 40 "$RUNNER_TEMP/cost-manager-clippy.log")
           fi
           exit "$status"
         working-directory: cost-manager/engine
