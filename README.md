@@ -71,6 +71,7 @@ cp job-orchestrator/.env.example job-orchestrator/.env
 cp notification-service/.env.example notification-service/.env
 cp cost-manager/api/.env.example cost-manager/api/.env
 cp cloud-console/.env.example cloud-console/.env
+cp cost-console/.env.example cost-console/.env
 cp dataplane/.env.example dataplane/.env
 cp zone-runtime-stream/.env.example zone-runtime-stream/.env
 cp dev/central/.env.example dev/central/.env
@@ -157,10 +158,13 @@ khi image staging pass scan.
 | `zone-authorizer-v*` | `aurora-zone-control-authorizer` |
 
 `contracts/**` là dependency chung của Dataplane, Job Orchestrator và ACR, nên
-CI sẽ kiểm tra đúng các consumer này. Release frontend cần GitHub Environment
-Variables `NEXT_PUBLIC_ENVOY_URL`, `NEXT_PUBLIC_CENTRIFUGO_WS_URL`,
-`NEXT_PUBLIC_COST_CONSOLE_URL` và `VITE_CLOUD_CONSOLE_URL`; workflow fail-closed
-nếu URL public bị để trống.
+CI sẽ kiểm tra đúng các consumer này. Cloud Console và Cost Console tạo
+`runtime-config.js` lúc container khởi động, vì vậy release image không cần
+GitHub Variables theo môi trường. Compose/Kubernetes phải truyền URL public
+qua `cloud-console/.env` (`NEXT_PUBLIC_ENVOY_URL`, `NEXT_PUBLIC_CENTRIFUGO_WS_URL`,
+`NEXT_PUBLIC_COST_CONSOLE_URL`) và `cost-console/.env` (`VITE_CLOUD_CONSOLE_URL`).
+Entrypoint fail-closed khi giá trị thiếu hoặc không hợp lệ; không đặt secret vào
+runtime config.
 
 ### 5. Local endpoints
 

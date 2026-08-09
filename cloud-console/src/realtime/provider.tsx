@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Centrifuge } from "centrifuge";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUserSession } from "@/session/use-session";
+import { publicRuntimeConfig } from "@/runtime-config";
 import { decodeEvent, dedupeKey, type EventCallback, type EventMap, type EventType, type RealtimeStatus, type RealtimeStream } from "@/realtime/contracts";
 export type { BucketSizesPayload, JobNotificationPayload, MailRuntimePayload, RealtimeStatus, RealtimeStream } from "@/realtime/contracts";
 
@@ -73,7 +74,7 @@ export function RealtimeProvider({ children, userId, generation }: { children: R
       return;
     }
 
-    const wsUrl = process.env.NEXT_PUBLIC_CENTRIFUGO_WS_URL?.trim();
+    const wsUrl = publicRuntimeConfig()?.centrifugoWsUrl.trim();
     if (!wsUrl) {
       scheduleStatus("degraded");
       return;

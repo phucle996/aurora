@@ -164,11 +164,6 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.title=aurora-${{ env.COMPONENT }}
-          build-args: |
-            NEXT_PUBLIC_ENVOY_URL=${{ vars.NEXT_PUBLIC_ENVOY_URL }}
-            NEXT_PUBLIC_CENTRIFUGO_WS_URL=${{ vars.NEXT_PUBLIC_CENTRIFUGO_WS_URL }}
-            NEXT_PUBLIC_COST_CONSOLE_URL=${{ vars.NEXT_PUBLIC_COST_CONSOLE_URL }}
-            VITE_CLOUD_CONSOLE_URL=${{ vars.VITE_CLOUD_CONSOLE_URL }}
           cache-from: type=gha,scope=central-${{ env.COMPONENT }}
           cache-to: type=gha,mode=max,scope=central-${{ env.COMPONENT }}
           provenance: mode=max

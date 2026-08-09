@@ -4,4 +4,4 @@
 export const controlplaneBaseURL =
   typeof window !== "undefined"
     ? ""
-    : (process.env.NEXT_PUBLIC_ENVOY_URL?.trim() || "");
+    : (process.env["NEXT_PUBLIC_ENVOY_URL"]?.trim() || "");

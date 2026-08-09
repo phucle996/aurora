@@ -575,9 +575,8 @@ services:
     image: ${AURORA_CLOUD_CONSOLE_IMAGE:?AURORA_CLOUD_CONSOLE_IMAGE_must_reference_a_GHCR_digest}
     pull_policy: always
     container_name: central-cloud-console
-    # Public browser values are baked by the GHCR release workflow. Keep this
-    # runtime file aligned for server-side reads; it cannot retarget an already
-    # released static client bundle.
+    # The entrypoint validates these public URLs and writes runtime-config.js
+    # before Next starts; a GHCR digest remains reusable across environments.
     env_file:
       - ../../cloud-console/.env
     restart: unless-stopped
@@ -596,6 +595,10 @@ services:
     image: ${AURORA_COST_CONSOLE_IMAGE:?AURORA_COST_CONSOLE_IMAGE_must_reference_a_GHCR_digest}
     pull_policy: always
     container_name: central-cost-console
+    # Nginx writes runtime-config.js from this public URL before serving the
+    # SPA, so Vite does not need an environment-specific build.
+    env_file:
+      - ../../cost-console/.env
     ports:
       - "5176:5173"
     restart: unless-stopped

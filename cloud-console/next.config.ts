@@ -1,17 +1,9 @@
 import type { NextConfig } from "next";
 
-function realtimeOrigin(): string {
-  const configured = process.env.NEXT_PUBLIC_CENTRIFUGO_WS_URL?.trim();
-  if (!configured) return "";
-  try {
-    const url = new URL(configured);
-    return `${url.protocol}//${url.host}`;
-  } catch {
-    return "";
-  }
-}
-
-const connectSources = ["'self'", realtimeOrigin()].filter(Boolean).join(" ");
+// The concrete Centrifugo origin is runtime-injected, not known while Next
+// creates its immutable build manifest. Keep the CSP exception restricted to
+// WebSocket protocols; HTTP requests remain same-origin through Envoy.
+const connectSources = "'self' wss: ws:";
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",

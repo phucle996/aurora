@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { I18nProvider } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/sonner";
@@ -24,6 +25,9 @@ export default function RootLayout({
       lang="en"
       className="h-full antialiased"
     >
+      <head>
+        <Script src="/runtime-config.js" strategy="beforeInteractive" />
+      </head>
       <body className="min-h-full flex flex-col">
         <QueryProvider>
           <I18nProvider>

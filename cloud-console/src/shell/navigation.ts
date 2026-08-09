@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import { publicRuntimeConfig } from "@/runtime-config";
 import {
   Boxes,
   Coins,
@@ -206,7 +207,7 @@ export function activeNavigation(pathname: string, items: NavigationItem[]): Nav
 }
 
 export function billingStartURL(): string | null {
-  const configured = process.env.NEXT_PUBLIC_COST_CONSOLE_URL?.trim();
+  const configured = publicRuntimeConfig()?.costConsoleUrl.trim();
   if (!configured) return null;
 
   try {

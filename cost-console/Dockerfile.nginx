@@ -6,20 +6,12 @@
 # [COMMENT]: Môi trường Node 20 Alpine biên dịch tĩnh bundle React/Vite SPA cho Billing & Cost Console
 FROM node:20-alpine AS build
 WORKDIR /app
-ARG VITE_CLOUD_CONSOLE_URL
 COPY package*.json ./
 RUN npm ci
 COPY . .
-# Prefer the Cost Console-owned .env. A CI build may pass the explicit ARG,
-# but the public redirect origin is always required and never defaulted.
-RUN set -eu; \
-    if [ -f .env ]; then \
-      set -a; . ./.env; set +a; \
-    else \
-      export VITE_CLOUD_CONSOLE_URL="$VITE_CLOUD_CONSOLE_URL"; \
-    fi; \
-    : "${VITE_CLOUD_CONSOLE_URL:?VITE_CLOUD_CONSOLE_URL is required}"; \
-    npm run build
+# The Cloud Console origin is injected at container startup, so this image is
+# reusable across environments and contains no environment-specific URL.
+RUN npm run build
 
 # ============================================================================
 # 🚀 STAGE 2: PRODUCTION NGINX UNPRIVILEGED (NON-ROOT)
@@ -29,10 +21,11 @@ RUN set -eu; \
 FROM nginxinc/nginx-unprivileged:stable-alpine AS runtime
 
 # [COMMENT]: Copy các tệp tĩnh đã build từ SPA vào Nginx public root
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --chown=101:101 --from=build /app/dist /usr/share/nginx/html
 
 # [COMMENT]: Copy cấu hình Nginx custom hỗ trợ SPA routing và Envoy Gateway proxying
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chown=101:101 --chmod=755 docker-entrypoint.d/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
 
 # [COMMENT]: Expose port Cost Console Web (5173)
 EXPOSE 5173
