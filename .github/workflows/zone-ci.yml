@@ -76,7 +76,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+          status="${PIPESTATUS[0]}"
+          if [[ "$status" -ne 0 ]]; then
+            {
+              echo "## Dataplane Clippy diagnostics"
+              echo '```text'
+              tail -n 200 "$RUNNER_TEMP/clippy.log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -124,7 +138,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+          status="${PIPESTATUS[0]}"
+          if [[ "$status" -ne 0 ]]; then
+            {
+              echo "## Authorizer Clippy diagnostics"
+              echo '```text'
+              tail -n 200 "$RUNNER_TEMP/clippy.log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
