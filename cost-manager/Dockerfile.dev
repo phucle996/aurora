@@ -8,7 +8,9 @@ FROM rust:latest AS rust-builder
 WORKDIR /app/engine
 
 # [COMMENT]: Cài đặt protobuf-compiler phục vụ biên dịch Protobuf schema giữa Go và Rust Engine
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY engine/Cargo.toml engine/Cargo.lock* ./
 COPY engine/build.rs* ./

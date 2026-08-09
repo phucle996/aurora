@@ -38,4 +38,5 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 5173
 
 # [COMMENT]: Khởi chạy Nginx ở chế độ daemon off
+USER 101:101
 CMD ["nginx", "-g", "daemon off;"]

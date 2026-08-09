@@ -98,7 +98,10 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - uses: actions/setup-go@v6
-        with: { go-version: "1.26.x", check-latest: true }
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: controlplane/go.sum
       - run: go vet ./...
       - run: go test ./...
       - uses: aquasecurity/trivy-action@v0.36.0
@@ -121,7 +124,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with: { components: "rustfmt, clippy" }
       - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -146,7 +149,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with: { components: "rustfmt, clippy" }
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -170,7 +173,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with: { components: "rustfmt, clippy" }
       - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -192,9 +195,12 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - uses: actions/setup-go@v6
-        with: { go-version: "1.26.x", check-latest: true }
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: cost-manager/api/go.sum
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with: { components: "rustfmt, clippy" }
       - run: go vet ./...
         working-directory: cost-manager/api
       - run: go test ./...

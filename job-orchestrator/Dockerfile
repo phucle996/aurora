@@ -10,7 +10,9 @@ FROM rust:bookworm AS builder
 WORKDIR /workspace
 
 # [COMMENT]: Cài đặt protobuf-compiler để biên dịch schema mã hóa thông điệp CDC & Job Result
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
 
 # [COMMENT]: Sử dụng BuildKit cache mount để tách biệt CARGO_TARGET_DIR và tăng tốc thời gian biên dịch
 RUN --mount=type=cache,target=/usr/local/cargo/registry/ \
