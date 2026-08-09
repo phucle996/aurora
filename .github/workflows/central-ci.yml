@@ -127,7 +127,20 @@ jobs:
         with: { components: "rustfmt, clippy" }
       - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: Run Clippy with check annotations
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets --message-format=short -- -D warnings 2>&1 | tee "$RUNNER_TEMP/acr-clippy.log"
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              echo "::error::$line"
+            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/acr-clippy.log" | tail -n 40)
+          fi
+          exit "$status"
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -151,7 +164,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: Run Clippy with check annotations
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets --message-format=short -- -D warnings 2>&1 | tee "$RUNNER_TEMP/job-orchestrator-clippy.log"
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              echo "::error::$line"
+            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/job-orchestrator-clippy.log" | tail -n 40)
+          fi
+          exit "$status"
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -176,7 +202,20 @@ jobs:
         with: { components: "rustfmt, clippy" }
       - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: Run Clippy with check annotations
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets --message-format=short -- -D warnings 2>&1 | tee "$RUNNER_TEMP/notification-service-clippy.log"
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              echo "::error::$line"
+            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/notification-service-clippy.log" | tail -n 40)
+          fi
+          exit "$status"
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -207,7 +246,20 @@ jobs:
         working-directory: cost-manager/api
       - run: cargo fmt --check
         working-directory: cost-manager/engine
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: Run Clippy with check annotations
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets --message-format=short -- -D warnings 2>&1 | tee "$RUNNER_TEMP/cost-manager-clippy.log"
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              echo "::error::$line"
+            done < <(grep -E '(^error:|: error:)' "$RUNNER_TEMP/cost-manager-clippy.log" | tail -n 40)
+          fi
+          exit "$status"
         working-directory: cost-manager/engine
       - run: cargo test
         working-directory: cost-manager/engine
