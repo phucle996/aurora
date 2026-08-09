@@ -42,7 +42,7 @@ jobs:
               image_name=aurora-dataplane
               context=.
               dockerfile=dataplane/Dockerfile.prod
-              source_paths=(dataplane contracts .dockerignore)
+              source_paths=(dataplane proto/dataplane proto/managed_service.proto proto/platform_transport.proto proto/zone_report.proto .dockerignore)
               ;;
             zone-runtime-stream-v*)
               prefix=zone-runtime-stream

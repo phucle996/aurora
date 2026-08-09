@@ -44,7 +44,7 @@ sequenceDiagram
     ACR-->>Browser: 204 + clear cookies except client_device_id
 ```
 
-Request/reply uses the canonical `contracts/proto/iam_auth.proto` contract.
+Request/reply uses the canonical `proto/iam_auth.proto` contract.
 This is bounded Central-internal Shared Redis transport, not gRPC, Kafka or
 NATS.
 
@@ -80,7 +80,7 @@ does not preserve authentication or authorization.
 
 ## 5. Code map
 
-- `contracts/proto/iam_auth.proto`
+- `proto/iam_auth.proto`
 - `acr/src/user/revoke.rs`
 - `acr/src/gateway/ext_authz.rs`
 - `controlplane/internal/iam/transport/pubsub/handler/auth.go`

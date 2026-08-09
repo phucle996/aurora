@@ -9,7 +9,7 @@ Aurora là monorepo của một nền tảng cloud đa Zone. Central quản lý 
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Kiến trúc Central và Zone, ownership và các luồng runtime |
 | [SECURITY.md](./SECURITY.md) | Security policy, trust boundary, secret handling và báo cáo lỗ hổng |
 | [dev/README.md](./dev/README.md) | Chi tiết Docker Compose, network và volume cho local development |
-| [contracts/proto/README.md](./contracts/proto/README.md) | Canonical Protobuf contracts và quy tắc compatibility |
+| [proto/README.md](./proto/README.md) | Canonical Protobuf contracts và quy tắc compatibility |
 | [god_view/](./god_view/) | Source of Truth chi tiết theo từng workflow/domain |
 
 ## Components
@@ -46,7 +46,7 @@ Zone infrastructure local gồm NATS JetStream KV, MinIO, Stalwart, OTel Collect
 
 | Path | Nội dung |
 | --- | --- |
-| [contracts/](./contracts/) | Shared Protobuf contracts và cross-language fixtures |
+| [proto/](./proto/) | Canonical Protobuf source registry và cross-language fixtures |
 | [dev/](./dev/) | Central/Zone Docker Compose và local infrastructure config |
 | [k8s/](./k8s/) | Kubernetes, Argo CD, HPA/PDB, operator và NetworkPolicy manifests |
 | [god_view/](./god_view/) | Workflow-level design documents |
@@ -157,8 +157,8 @@ khi image staging pass scan.
 | `zone-runtime-stream-v*` | `aurora-zone-runtime-stream` |
 | `zone-authorizer-v*` | `aurora-zone-control-authorizer` |
 
-`contracts/**` là dependency chung của Dataplane, Job Orchestrator và ACR, nên
-CI sẽ kiểm tra đúng các consumer này. Cloud Console và Cost Console tạo
+`proto/**` chỉ trigger đúng consumer của contract đã đổi; CI không fan-out sang
+workflow không sở hữu contract đó. Cloud Console và Cost Console tạo
 `runtime-config.js` lúc container khởi động, vì vậy release image không cần
 GitHub Variables theo môi trường. Compose/Kubernetes phải truyền URL public
 qua `cloud-console/.env` (`NEXT_PUBLIC_ENVOY_URL`, `NEXT_PUBLIC_CENTRIFUGO_WS_URL`,

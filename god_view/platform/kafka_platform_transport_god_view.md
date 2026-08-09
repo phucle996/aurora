@@ -70,7 +70,7 @@ Per-Zone metadata topic dùng một partition vì record là full aggregate snap
 
 ## 3. Wire contracts
 
-`contracts/proto/platform_transport.proto` và `contracts/proto/zone_report.proto` là canonical
+`proto/platform_transport.proto` và `proto/zone_report.proto` là canonical
 source chung; service-local copy bị cấm:
 
 - `ProtectedPayloadV1`
@@ -354,6 +354,6 @@ Production:
 | DP transport/settlement | `dataplane/src/infra/kafka.rs` |
 | DP command intake | `dataplane/src/job_runtime/intake.rs` |
 | DP result/retry | `dataplane/src/job_runtime/{execution,completion}.rs` |
-| Shared contracts | `contracts/proto/platform_transport.proto`, `contracts/proto/zone_report.proto`, `contracts/proto/managed_service.proto` |
+| Shared contracts | `proto/platform_transport.proto`, `proto/zone_report.proto`, `proto/managed_service.proto` |
 | Dev Central topology | `dev/central/compose.yml` |
 | Dev Zone topology | `dev/zone/compose.yml` |

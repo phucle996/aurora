@@ -19,7 +19,7 @@
 | Delivery | At-least-once; ordering chỉ theo `instance_id`; external fence là `instance_id + operation_id + generation` |
 | Customer completion | Durable Controlplane operation/API và một Notification timeline row; không dùng NATS runtime hay apply ACK |
 | Telemetry | Zone OTel → VictoriaMetrics/VictoriaLogs → generic `zone-runtime-stream` → Zone Public Edge; read-only, eventual; Managed Service adapter first |
-| Canonical inner protobuf | `contracts/proto/managed_service.proto` được freeze ở P00 và generate từ root này tại P01 |
+| Canonical inner protobuf | `proto/managed_service.proto` được freeze ở P00 và generate từ root này tại P01 |
 | Related SoT | [Kafka transport](../platform/kafka_platform_transport_god_view.md), [Notification timeline](../notification/user_timeline_god_view.md), [Dataplane telemetry](../dataplane/telemetry_god_view.md), [Zone Public Edge](../platform/zone_edge_gateway_god_view.md) |
 
 ## 1. Scope và boundary không được vượt qua
@@ -420,7 +420,7 @@ result_payload_schema_version = 1
 `RETRYABLE_FAILURE` versus `TERMINAL_FAILURE` belongs to the inner result; both map to
 outer `FAILED`. V1 emits terminal results only; it does not emit outer `PROCESSING`.
 The canonical inner wire registry, fixed field numbers, reserved ranges and P01
-generation rule live in [contracts/proto/README.md](../../contracts/proto/README.md).
+generation rule live in [proto/README.md](../../proto/README.md).
 
 Producer, broker and consumer enforce a 1,000,000-byte total record/payload ceiling.
 Every UUID is 16 raw bytes; schema version, route, Zone, source event, all revision/hash

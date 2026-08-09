@@ -1,7 +1,7 @@
 syntax = "proto3";
 package activity;
 
-// Byte-identical with notification-service/proto/user_activity.proto.
+// Byte-identical with proto/notification-service/user_activity.proto.
 message UserActivityEvent {
   string event_id = 1;
   string user_id = 2;

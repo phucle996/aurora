@@ -70,7 +70,7 @@ Zone Edge path enter aggregates. MinIO direct data-plane ports remain private.
 | Storage ownership SoT | `controlplane/internal/storage/migrations/000001_storage_tables.up.sql` |
 | Minimal ownership marker | `controlplane/internal/storage/migrations/000006_ownership_delivery.up.sql` |
 | Shared Redis publisher | `job-orchestrator/src/outbox/ownership.rs` |
-| Proto contract | `job-orchestrator/proto/resource_ownership.proto` |
+| Proto contract | `proto/job-orchestrator/resource_ownership.proto` |
 | Billing inbox schema | `cost-manager/api/migrations/000002_tables.up.sql` |
 | Ownership consumer | `cost-manager/api/internal/transport/redis/handler/resource_ownership_handler.go` |
 | Billing projection schema | `cost-manager/api/migrations/000002_tables.up.sql` |

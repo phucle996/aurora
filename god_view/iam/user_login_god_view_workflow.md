@@ -739,7 +739,7 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | IAM JWT construction, Vault sign/verify và Moka cache | [`acr/src/user/claims.rs`](../../acr/src/user/claims.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
 | Vault AppRole, health, Transit HTTP client | [`acr/src/infra/vault.rs`](../../acr/src/infra/vault.rs) |
 | ACR Vault/TokenManager bootstrap | [`acr/src/main.rs`](../../acr/src/main.rs) |
-| Shared Redis request/reply bus + canonical Protobuf contract | [`acr/src/infra/shared_redis.rs`](../../acr/src/infra/shared_redis.rs), [`contracts/proto/iam_auth.proto`](../../contracts/proto/iam_auth.proto) |
+| Shared Redis request/reply bus + canonical Protobuf contract | [`acr/src/infra/shared_redis.rs`](../../acr/src/infra/shared_redis.rs), [`proto/iam_auth.proto`](../../proto/iam_auth.proto) |
 | IAM Shared Redis request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | Durable device eviction relay/consumer | [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/user/device.rs`](../../acr/src/user/device.rs), [`controlplane/internal/iam/transport/pubsub/handler/device.go`](../../controlplane/internal/iam/transport/pubsub/handler/device.go) |
 | IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |

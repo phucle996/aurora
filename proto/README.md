@@ -1,32 +1,50 @@
 # Aurora Proto Contracts — Platform Transport Registry
 
 > **Status:** `platform_transport.proto`, `managed_service.proto` and `zone_report.proto` are canonical root
-> sources. Controlplane, JO and Dataplane must generate bindings from this directory;
-> service-local copies are forbidden.
+> sources. Mọi service phải generate binding từ registry này; không đặt `.proto`
+> source trong subproject.
 >
 > This document is the canonical registry for the future inner Managed Service protobuf.
 > It prevents JO/Dataplane copies from independently choosing package, field number or
 > evolution policy.
 
+## 0. Source layout and generated bindings
+
+All `.proto` source belongs under this root registry. The first directory is the
+workflow owner, not a generated-language target:
+
+| Path | Source owner |
+| --- | --- |
+| `proto/{platform_transport,managed_service,zone_report,iam_auth}.proto` | Cross-service contracts |
+| `proto/acr/` | ACR edge contracts |
+| `proto/controlplane/` | Controlplane-owned contracts |
+| `proto/dataplane/`, `proto/job-orchestrator/` | Zone durable transport owners |
+| `proto/notification-service/`, `proto/cost-manager/` | Their respective Central workflow owners |
+
+Rust consumers compile these sources to Cargo `OUT_DIR`; generated Rust bindings
+are not committed. Generated Go `.pb.go` bindings remain in their import package,
+but no `.proto` source is kept beside them. Moving a source file must preserve its
+`package`, field numbers, reserved fields and wire-compatibility policy.
+
 ## 1. Canonical source ownership
 
 | Concern | Decision |
 | --- | --- |
-| Canonical source path | `contracts/proto/platform_transport.proto`, `contracts/proto/managed_service.proto`, `contracts/proto/zone_report.proto` |
+| Canonical source path | `proto/platform_transport.proto`, `proto/managed_service.proto`, `proto/zone_report.proto` |
 | Proto packages | `aurora.transport.v1`, `aurora.managedservice.v1`, `zone` |
 | Canonical owners | Job Orchestrator + Dataplane transport owners; Controlplane owns business field semantics |
 | Consumers | JO and Dataplane generate from the exact root source; Controlplane serializes/deserializes through the same generated contract binding |
-| Local copies | Forbidden in `job-orchestrator/proto/`, `dataplane/proto/` or any service-local `proto/` directory |
+| Source layout | Root registry nhóm theo workflow owner; subproject chỉ giữ generated binding cần cho ngôn ngữ của nó |
 | Change control | Append-only field evolution; changes require CP + JO + DP review and descriptor compatibility evidence |
 
 The platform outer command is now canonical too:
 
 | Contract | Canonical source | Use |
 | --- | --- | --- |
-| `aurora.transport.v1.JobCommandV1` | `contracts/proto/platform_transport.proto` | JO → DP outer command envelope |
-| `aurora.transport.v1.ProtectedPayloadV1` | `contracts/proto/platform_transport.proto` | Opaque CP outbox payload and byte-identical JO relay |
-| `zone.ZoneReport` | `contracts/proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
-| `job_lifecycle.JobExecutionResultProto` | `job-orchestrator/proto/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |
+| `aurora.transport.v1.JobCommandV1` | `proto/platform_transport.proto` | JO → DP outer command envelope |
+| `aurora.transport.v1.ProtectedPayloadV1` | `proto/platform_transport.proto` | Opaque CP outbox payload and byte-identical JO relay |
+| `zone.ZoneReport` | `proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
+| `job_lifecycle.JobExecutionResultProto` | `proto/job-orchestrator/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |
 
 Every Zone-bound `JobCommandV1.payload` is serialized `ProtectedPayloadV1`. Controlplane
 serializes one complete domain command then seals that complete byte slice. JO validates only
@@ -225,8 +243,7 @@ budget remains; at attempt 4 Controlplane settles terminal failure.
 
 This P01 change-set implements the following local gates:
 
-1. Keep `managed_service.proto`, `platform_transport.proto` and `zone_report.proto` only under `contracts/proto/`;
-   do not add service-local copies.
+1. Keep every `.proto` source under this root registry; generated bindings belong to their language consumer.
 2. Make JO and Dataplane `build.rs` compile those root sources with the root include path.
 3. Add Controlplane binding from the same canonical contract rather than a
    handwritten protobuf byte layout.

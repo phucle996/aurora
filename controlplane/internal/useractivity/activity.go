@@ -13,7 +13,7 @@ import (
 const Stream = "stream:{user_activity}"
 
 // Event is intentionally a small producer-side DTO. The wire encoder stays
-// byte-compatible with notification-service/proto/user_activity.proto without
+// byte-compatible with proto/notification-service/user_activity.proto without
 // forcing every Central package to carry generated code for this projection.
 type Event struct {
 	EventID      string

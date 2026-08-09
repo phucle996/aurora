@@ -4,7 +4,7 @@
 # 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST AURORA-JOB-ORCHESTRATOR
 # ============================================================================
 # [COMMENT]: Build context phải là monorepo root để build.rs đọc canonical
-# contracts/proto mà không cần service-local proto copy.
+# proto/ mà không cần service-local proto copy.
 # [COMMENT]: Môi trường biên dịch Rust chính thức dựa trên Debian Bookworm
 FROM rust:bookworm AS builder
 WORKDIR /workspace

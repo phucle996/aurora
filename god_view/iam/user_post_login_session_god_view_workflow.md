@@ -153,7 +153,7 @@ Followers wait at most 1.2 seconds for the cache, then return retryable `503`.
 
 ### 5.3 Controlplane request/reply
 
-The canonical payload is `contracts/proto/iam_auth.proto`:
+The canonical payload is `proto/iam_auth.proto`:
 
 ```text
 RecoverUserSessionRequest {
@@ -321,7 +321,7 @@ the existing durable runtime-session revoke command.
 
 ## 9. Code map
 
-- `contracts/proto/iam_auth.proto`
+- `proto/iam_auth.proto`
 - `acr/src/user/recovery.rs`
 - `acr/src/user/verify.rs`
 - `acr/src/user/rotate.rs`

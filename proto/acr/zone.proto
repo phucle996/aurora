@@ -1,4 +1,4 @@
-// [COMMENT]: File proto này phải đồng bộ với controlplane/internal/hierarchy/transport/proto/zone.proto
+// [COMMENT]: File proto này phải đồng bộ với proto/controlplane/hierarchy/zone.proto.
 
 syntax = "proto3";
 

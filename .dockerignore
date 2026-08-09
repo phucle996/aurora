@@ -1,5 +1,5 @@
 # Shared Rust images use the monorepo root as build context so canonical
-# contracts remain available without creating service-local proto copies.
+# proto sources remain available without creating service-local proto copies.
 .git
 .gitignore
 **/target

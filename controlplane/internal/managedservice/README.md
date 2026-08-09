@@ -29,7 +29,7 @@ Kế hoạch triển khai theo phase, dependency, owner và acceptance evidence 
 Source of Truth end-to-end của lifecycle nằm trong
 [Managed Service Lifecycle God View](../../../god_view/managedservice/managed_service_lifecycle_god_view.md).
 Registry ownership cho protobuf inner contract nằm tại
-[contracts/proto/README.md](../../../contracts/proto/README.md); fixture vocabulary
+[proto/README.md](../../../proto/README.md); fixture vocabulary
 P00 nằm tại [test/fixtures/CONTRACT.md](./test/fixtures/CONTRACT.md).
 
 ---
@@ -66,7 +66,7 @@ internal/managedservice/
     ├── http/
     │   ├── dto/           # Request-only JSON structs
     │   └── handler/        # Gin handlers và inline gin.H responses
-    └── proto/              # Generated binding from contracts/proto/managed_service.proto
+    └── proto/              # Generated binding from proto/managed_service.proto
 ```
 
 Các thư mục layer giữ cùng convention với IAM/Storage. Một file branch sở hữu

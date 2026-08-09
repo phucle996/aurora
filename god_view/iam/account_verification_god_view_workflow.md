@@ -465,7 +465,7 @@ Trace correlation dùng trace ID và event ID trong structured logs, không ghi 
 | Billing outbox schema | `controlplane/internal/iam/migrations/000007_billing_outbox.up.sql` |
 | Billing relay/repository | `controlplane/internal/iam/service/billing_outbox_relay.go`, `repository/billing_outbox_repo.go` |
 | Billing outbox retention | `k8s/outbox-retention-cronjob.yaml` |
-| Billing protobuf producer | `controlplane/internal/iam/transport/rpc/proto/personal_wallet_provision.proto` |
+| Billing protobuf producer | `proto/controlplane/iam/personal_wallet_provision.proto` |
 | Cost Manager consumer | `cost-manager/api/internal/transport/redis/handler/personal_wallet_provision_handler.go` |
 | Billing inbox/wallet transaction | `cost-manager/api/internal/repository/personal_account_repo.go` |
 | Billing schema | `cost-manager/api/migrations/000002_tables.up.sql` |

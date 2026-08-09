@@ -88,4 +88,4 @@ usage event sang Cost. Cost Manager projects ownership riêng và tính usage t�
 - `job-orchestrator/src/storage_usage/worker.rs`: validate/update/notify/commit.
 - `job-orchestrator/src/storage_usage/store.rs`: idempotent Personal/Tenant size update.
 - `controlplane/internal/storage/`: authorized list API.
-- `contracts/proto/platform_transport.proto`: `StorageBucketSizesSnapshotV1`.
+- `proto/platform_transport.proto`: `StorageBucketSizesSnapshotV1`.

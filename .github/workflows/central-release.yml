@@ -47,18 +47,18 @@ jobs:
               image_name=aurora-controlplane
               context=controlplane
               dockerfile=controlplane/Dockerfile.prod
-              source_paths=(controlplane .github/workflows/central-release.yml)
+              source_paths=(controlplane proto/controlplane proto/iam_auth.proto proto/managed_service.proto proto/platform_transport.proto proto/zone_report.proto .github/workflows/central-release.yml)
               ;;
             acr-v*)
               prefix=acr
               component=acr
               image_name=aurora-acr
               # ACR's build script compiles the canonical IAM contract from
-              # ../contracts, so its Docker build must retain monorepo-root
+              # ../proto, so its Docker build must retain monorepo-root
               # visibility instead of isolating the context to acr/.
               context=.
               dockerfile=acr/Dockerfile
-              source_paths=(acr contracts .github/workflows/central-release.yml)
+              source_paths=(acr proto/acr proto/iam_auth.proto .github/workflows/central-release.yml)
               ;;
             jo-v*)
               prefix=jo
@@ -66,7 +66,7 @@ jobs:
               image_name=aurora-job-orchestrator
               context=.
               dockerfile=job-orchestrator/Dockerfile
-              source_paths=(job-orchestrator contracts .dockerignore .github/workflows/central-release.yml)
+              source_paths=(job-orchestrator proto/job-orchestrator proto/managed_service.proto proto/platform_transport.proto proto/zone_report.proto .dockerignore .github/workflows/central-release.yml)
               ;;
             notification-service-v*)
               prefix=notification-service
@@ -74,15 +74,15 @@ jobs:
               image_name=aurora-notification-service
               context=notification-service
               dockerfile=notification-service/Dockerfile
-              source_paths=(notification-service .github/workflows/central-release.yml)
+              source_paths=(notification-service proto/notification-service .github/workflows/central-release.yml)
               ;;
             cost-manager-v*)
               prefix=cost-manager
               component=cost-manager
               image_name=aurora-cost-manager
-              context=cost-manager
+              context=.
               dockerfile=cost-manager/Dockerfile.dev
-              source_paths=(cost-manager .github/workflows/central-release.yml)
+              source_paths=(cost-manager proto/cost-manager .github/workflows/central-release.yml)
               ;;
             cloud-console-v*)
               prefix=cloud-console

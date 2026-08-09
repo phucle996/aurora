@@ -48,7 +48,7 @@ internal/iam/
 └── transport/           # API Interface Adapters Layer
     ├── http/            # Gin HTTP Handlers & DTOs
     ├── pubsub/          # Redis / Kafka PubSub Event Handlers
-    └── rpc/             # Generated Go types; canonical IAM contract ở contracts/proto
+    └── rpc/             # Generated Go types; canonical IAM contract ở proto
 ```
 
 Toàn bộ IAM test code nằm dưới `internal/iam/test` và được phân theo boundary:

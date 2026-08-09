@@ -8,7 +8,7 @@ on:
       - "dataplane/**"
       - "zone-runtime-stream/**"
       - "zone-control-edge-gateway/authorizer/**"
-      - "contracts/**"
+      - "proto/**"
       - ".github/workflows/zone-ci.yml"
   push:
     branches: [main]
@@ -16,7 +16,7 @@ on:
       - "dataplane/**"
       - "zone-runtime-stream/**"
       - "zone-control-edge-gateway/authorizer/**"
-      - "contracts/**"
+      - "proto/**"
       - ".github/workflows/zone-ci.yml"
 
 permissions:
@@ -59,7 +59,7 @@ jobs:
           git diff --name-only "$base_sha" "$head_sha" > "$RUNNER_TEMP/changed-files"
           all=false
           if grep -Eq '^\.github/workflows/zone-ci\.yml$' "$RUNNER_TEMP/changed-files"; then all=true; fi
-          if $all || grep -Eq '^(dataplane/|contracts/)' "$RUNNER_TEMP/changed-files"; then echo "dataplane=true" >> "$GITHUB_OUTPUT"; else echo "dataplane=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(dataplane/|proto/dataplane/|proto/(managed_service|platform_transport|zone_report)\.proto$)' "$RUNNER_TEMP/changed-files"; then echo "dataplane=true" >> "$GITHUB_OUTPUT"; else echo "dataplane=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^zone-runtime-stream/' "$RUNNER_TEMP/changed-files"; then echo "runtime_stream=true" >> "$GITHUB_OUTPUT"; else echo "runtime_stream=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^zone-control-edge-gateway/authorizer/' "$RUNNER_TEMP/changed-files"; then echo "authorizer=true" >> "$GITHUB_OUTPUT"; else echo "authorizer=false" >> "$GITHUB_OUTPUT"; fi
 

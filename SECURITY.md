@@ -146,7 +146,7 @@ Các giá trị cố định trong Docker Compose/Vault bootstrap là developmen
 ### Cryptography
 
 - Không tự thiết kế primitive hoặc downgrade algorithm/TLS.
-- Dùng canonical shared contract và cross-language fixture trong [`contracts/`](./contracts/).
+- Dùng canonical shared contract và cross-language fixture trong [`proto/`](./proto/).
 - Key ID, algorithm suite, AAD và rotation state phải versioned.
 - Constant-time/verified library API được ưu tiên cho secret comparison và signature validation.
 

@@ -14,7 +14,7 @@
 | Dataplane owns | Broker connection, consume, fixed-envelope decode, render, offset, JMAP delivery |
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
 | Placement | Consumer row không lưu Zone; outbox snapshot `zone_id UUID` từ authorized request context sau DB cross-check Workspace |
-| Contract | `controlplane/internal/mail/transport/rpc/proto/mail_runtime.proto` |
+| Contract | `proto/controlplane/mail/mail_runtime.proto` |
 | Schema | `controlplane/internal/mail/migrations/000001..000008` |
 | Related SoT | `mail_configuration_projection_god_view.md`, `dataplane_broker_mail_execution_god_view.md` |
 | Verified against | Working tree, 2026-07-22 |

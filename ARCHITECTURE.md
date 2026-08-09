@@ -2,7 +2,7 @@
 
 Aurora tách runtime thành một Central cluster và một hoặc nhiều Zone. Central giữ business authority và điều phối; Zone chỉ thực thi workload thuộc đúng Zone, lưu runtime projection và phục vụ data/read plane tại biên.
 
-Các contract chi tiết theo workflow nằm trong [`god_view/`](./god_view/). Shared wire contract nằm tại [`contracts/proto/`](./contracts/proto/); tài liệu này mô tả topology và ownership ở cấp hệ thống.
+Các contract chi tiết theo workflow nằm trong [`god_view/`](./god_view/). Shared wire contract nằm tại [`proto/`](./proto/); tài liệu này mô tả topology và ownership ở cấp hệ thống.
 
 ## 1. Central
 

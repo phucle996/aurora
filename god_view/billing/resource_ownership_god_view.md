@@ -170,7 +170,7 @@ Không có PostgreSQL notification outbox.
 | JO publisher/recovery | `job-orchestrator/src/outbox/ownership.rs` |
 | Shared Redis durability fence | `job-orchestrator/src/outbox/redis.rs` |
 | Result apply | `job-orchestrator/src/results/apply.rs` |
-| Ownership protobuf | `job-orchestrator/proto/resource_ownership.proto` |
+| Ownership protobuf | `proto/job-orchestrator/resource_ownership.proto` |
 | Cost Redis consumer | `cost-manager/api/internal/transport/redis/handler/resource_ownership_handler.go` |
 | Billing inbox/projection transaction | `cost-manager/api/internal/repository/resource_ownership_repo.go` |
 | Ownership version uniqueness | `cost-manager/api/migrations/000003_indexes.up.sql` |

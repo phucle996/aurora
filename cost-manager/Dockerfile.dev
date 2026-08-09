@@ -5,20 +5,20 @@
 # ============================================================================
 # [COMMENT]: Môi trường biên dịch Rust Engine chuyên tính toán chi phí và định giá
 FROM rust:latest AS rust-builder
-WORKDIR /app/engine
+WORKDIR /app/cost-manager/engine
 
 # [COMMENT]: Cài đặt protobuf-compiler phục vụ biên dịch Protobuf schema giữa Go và Rust Engine
 RUN apt-get update && \
     apt-get install -y --no-install-recommends protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
 
-COPY engine/Cargo.toml engine/Cargo.lock* ./
-COPY engine/build.rs* ./
-COPY engine/proto* ./proto/
+COPY cost-manager/engine/Cargo.toml cost-manager/engine/Cargo.lock* ./
+COPY cost-manager/engine/build.rs* ./
+COPY proto/cost-manager/engine/ /app/proto/cost-manager/engine/
 
 # [COMMENT]: Tạo src giả lập để Cargo compile cached dependencies trước
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release
-COPY engine/src ./src
+COPY cost-manager/engine/src ./src
 RUN touch src/main.rs && cargo build --release
 
 # ============================================================================
@@ -26,12 +26,12 @@ RUN touch src/main.rs && cargo build --release
 # ============================================================================
 # [COMMENT]: Biên dịch tĩnh Go REST/gRPC API wrapper với CGO_ENABLED=0
 FROM golang:1.26-bookworm AS go-builder
-WORKDIR /app/api
+WORKDIR /app/cost-manager/api
 
-COPY api/go.mod api/go.sum ./
+COPY cost-manager/api/go.mod cost-manager/api/go.sum ./
 RUN go mod download
 
-COPY api/ .
+COPY cost-manager/api/ .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags='-s -w' -o /out/cost-manager-api ./main.go
 

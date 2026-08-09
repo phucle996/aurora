@@ -19,7 +19,7 @@ RUN git clone --branch "$MC_VERSION" --depth 1 https://github.com/minio/mc.git .
 # 🏗️ STAGE 1: BUILDER - BIÊN DỊCH BẢN RUST AURORA-DATAPLANE
 # ============================================================================
 # [COMMENT]: Build context phải là monorepo root để build.rs đọc canonical
-# contracts/proto mà không cần service-local proto copy.
+# proto/ mà không cần service-local proto copy.
 # [COMMENT]: Sử dụng rust:bookworm chính thức làm môi trường builder có đầy đủ công cụ biên dịch C/C++ và Protobuf
 FROM rust:bookworm AS builder
 
@@ -39,7 +39,7 @@ RUN mkdir -p src \
     target/release/.fingerprint/aurora-dataplane-*
 
 # [COMMENT]: Copy toàn bộ source code thực tế và tiến hành biên dịch bản release
-COPY contracts /src/contracts
+COPY proto /src/proto
 COPY dataplane /src/dataplane
 
 # [COMMENT]: Force-touch các file .rs để ép Cargo rebuild crate chính với code mới

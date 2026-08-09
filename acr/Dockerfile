@@ -23,10 +23,10 @@ RUN mkdir src && \
     cargo build --release || true && \
     rm -rf src
 
-# build.rs resolves the canonical IAM proto as ../contracts/proto.  Keep that
-# sibling layout inside the builder rather than duplicating shared contracts.
+# build.rs resolves the canonical IAM proto from the root proto registry. Keep
+# that sibling layout inside the builder rather than duplicating contracts.
 COPY acr/ ./
-COPY contracts/ /app/contracts/
+COPY proto/ /app/proto/
 RUN cargo build --release
 
 # ============================================================================

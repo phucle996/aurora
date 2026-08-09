@@ -1,17 +1,17 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Compile service-local contracts and the canonical cross-service IAM
-    // contract together so tonic emits one coherent descriptor set.
+    // Compile ACR-owned contracts and the canonical cross-service IAM contract
+    // from the root proto registry so tonic emits one coherent descriptor set.
     tonic_build::configure().compile(
         &[
-            "proto/device.proto",
-            "../contracts/proto/iam_auth.proto",
-            "proto/zone.proto",
-            "proto/trinity.proto",
-            "proto/device_presence.proto",
-            "proto/user_activity.proto",
-            "proto/storage_access.proto",
+            "../proto/acr/device.proto",
+            "../proto/iam_auth.proto",
+            "../proto/acr/zone.proto",
+            "../proto/acr/trinity.proto",
+            "../proto/acr/device_presence.proto",
+            "../proto/acr/user_activity.proto",
+            "../proto/acr/storage_access.proto",
         ],
-        &["proto", "../contracts/proto"],
+        &["../proto/acr", "../proto"],
     )?;
     Ok(())
 }
