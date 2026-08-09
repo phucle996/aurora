@@ -9,7 +9,7 @@
 FROM rust:bookworm AS builder
 
 # [COMMENT]: Cài đặt protobuf-compiler phục vụ biên dịch gRPC/Protobuf schemas trong Dataplane
-RUN apt-get update && apt-get install -y protobuf-compiler curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/dataplane
 
 # [COMMENT]: Pre-warm dependency cache bằng dummy main.rs để tối ưu layer caching của Docker
