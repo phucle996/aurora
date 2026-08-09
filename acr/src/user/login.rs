@@ -113,6 +113,9 @@ pub async fn issue_mfa_challenge(
     Ok((challenge_id, MFA_CHALLENGE_TTL_SECONDS))
 }
 
+// Envoy entrypoints keep workflow-owned capabilities explicit so their
+// authority and failure boundaries remain visible.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_mfa_verify(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
@@ -464,6 +467,7 @@ fn canonicalize_login_identity(
 }
 
 /// [COMMENT]: Khởi tạo Trinity Session riêng cho User (dùng cho cả HTTP Login và gRPC Release)
+#[allow(clippy::too_many_arguments)]
 pub async fn release_user_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
@@ -560,6 +564,7 @@ pub async fn release_user_session(
 }
 
 /// [COMMENT]: Intercept POST /api/v1/auth/login tại Edge.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_login(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
@@ -1075,7 +1080,7 @@ fn build_mfa_session_response(
     builder.set_http_status(HttpStatusCode::NoContent);
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             session.access_token, config.session_ttl_secs, domain_str
         ),
@@ -1084,7 +1089,7 @@ fn build_mfa_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             session.access_key, config.session_ttl_secs, domain_str
         ),
@@ -1144,6 +1149,13 @@ fn build_mfa_session_response(
     response
 }
 
+fn sha256_hash(secret: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(secret.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::canonicalize_login_identity;
@@ -1164,11 +1176,4 @@ mod tests {
             Err("Username must not contain tenant domain")
         );
     }
-}
-
-fn sha256_hash(secret: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    format!("{:x}", hasher.finalize())
 }

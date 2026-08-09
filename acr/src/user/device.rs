@@ -90,19 +90,17 @@ pub async fn start_presence_flush_worker(
 
             let updates: Vec<_> = raw
                 .into_iter()
-                .filter_map(|(device_id, value)| {
+                .map(|(device_id, value)| {
                     let parts: Vec<&str> = value.splitn(3, '|').collect();
                     let last_seen_at: i64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
                     let last_seen_ip = parts.get(1).unwrap_or(&"").to_string();
                     let last_seen_user_agent = parts.get(2).unwrap_or(&"").to_string();
-                    Some(
-                        crate::infra::iam_proto::auth::bulk_touch_devices_request::DeviceUpdate {
-                            device_id,
-                            last_seen_at,
-                            last_seen_ip,
-                            last_seen_user_agent,
-                        },
-                    )
+                    crate::infra::iam_proto::auth::bulk_touch_devices_request::DeviceUpdate {
+                        device_id,
+                        last_seen_at,
+                        last_seen_ip,
+                        last_seen_user_agent,
+                    }
                 })
                 .collect();
 
@@ -256,7 +254,7 @@ async fn relay_eviction_entries(
     for key in reply.keys {
         for entry in key.ids {
             let lock_key = format!("iam:device:dispatch:eviction-outbox:{}", entry.id);
-            let acquired: bool = match redis::cmd("SET")
+            let acquired: bool = redis::cmd("SET")
                 .arg(&lock_key)
                 .arg("1")
                 .arg("NX")
@@ -264,10 +262,7 @@ async fn relay_eviction_entries(
                 .arg(10_000)
                 .query_async(auth_connection)
                 .await
-            {
-                Ok(value) => value,
-                Err(_) => false,
-            };
+                .unwrap_or_default();
             if !acquired {
                 time::sleep(Duration::from_millis(250)).await;
                 continue;

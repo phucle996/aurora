@@ -51,6 +51,9 @@ pub struct SignedControlHeaders {
     pub key_id: String,
 }
 
+// Keep each signed assertion input explicit at this security boundary. A generic
+// context would make authority and canonicalization inputs easier to mix up.
+#[allow(clippy::too_many_arguments)]
 pub async fn authorize_storage_and_sign(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,

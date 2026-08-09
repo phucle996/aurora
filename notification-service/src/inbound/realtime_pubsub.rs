@@ -56,10 +56,8 @@ impl RealtimePubSubConsumer {
     }
 
     async fn listen_once(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let connection =
-            tokio::time::timeout(self.connect_timeout, self.client.get_async_connection())
-                .await??;
-        let mut subscriber = connection.into_pubsub();
+        let mut subscriber =
+            tokio::time::timeout(self.connect_timeout, self.client.get_async_pubsub()).await??;
         subscriber.subscribe(REALTIME_CHANNEL).await?;
         Logger::sys_info(
             "redis.realtime_pubsub",

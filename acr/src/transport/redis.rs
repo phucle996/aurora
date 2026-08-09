@@ -376,7 +376,7 @@ async fn process_revoke_entries(
             // [COMMENT]: Shared consumer identity cho phép takeover pending entry nhưng có
             // thể làm nhiều replica nhìn cùng ID; short lock chặn duplicate Auth Redis work.
             let lock_key = format!("iam:device:dispatch:revoke-stream:{}", entry.id);
-            let acquired: bool = match redis::cmd("SET")
+            let acquired: bool = redis::cmd("SET")
                 .arg(&lock_key)
                 .arg("1")
                 .arg("NX")
@@ -384,10 +384,7 @@ async fn process_revoke_entries(
                 .arg(10_000)
                 .query_async(connection)
                 .await
-            {
-                Ok(value) => value,
-                Err(_) => false,
-            };
+                .unwrap_or_default();
             if !acquired {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 continue;

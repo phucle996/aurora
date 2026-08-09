@@ -63,9 +63,8 @@ impl RedisAuthBus {
 
         // Fail fast on a missing Redis ACL/network route. The runtime still
         // reconnects the reply socket after a later failover.
-        let connection =
-            tokio::time::timeout(config.connect_timeout, client.get_async_connection()).await??;
-        let mut subscriber = connection.into_pubsub();
+        let mut subscriber =
+            tokio::time::timeout(config.connect_timeout, client.get_async_pubsub()).await??;
         subscriber.psubscribe("*.reply.*").await?;
         drop(subscriber);
 
@@ -289,9 +288,8 @@ async fn run_reply_router(
             return;
         }
 
-        match tokio::time::timeout(connect_timeout, client.get_async_connection()).await {
-            Ok(Ok(connection)) => {
-                let mut subscriber = connection.into_pubsub();
+        match tokio::time::timeout(connect_timeout, client.get_async_pubsub()).await {
+            Ok(Ok(mut subscriber)) => {
                 if subscriber.psubscribe("*.reply.*").await.is_ok() {
                     Logger::sys_info(
                         "redis.auth_reply",

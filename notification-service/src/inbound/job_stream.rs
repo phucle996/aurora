@@ -75,9 +75,11 @@ impl JobStreamConsumer {
     }
 
     async fn listen_loop(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut connection =
-            tokio::time::timeout(self.connect_timeout, self.client.get_async_connection())
-                .await??;
+        let mut connection = tokio::time::timeout(
+            self.connect_timeout,
+            self.client.get_multiplexed_async_connection(),
+        )
+        .await??;
         ensure_consumer_group(&mut connection).await?;
         Logger::sys_info(
             "redis.job_stream",
@@ -156,7 +158,7 @@ impl JobStreamConsumer {
 
     async fn process_entry(
         &self,
-        connection: &mut redis::aio::Connection,
+        connection: &mut redis::aio::MultiplexedConnection,
         entry: StreamId,
     ) -> Result<EntryOutcome, Box<dyn std::error::Error + Send + Sync>> {
         let payload = match entry.map.get("payload") {
@@ -232,7 +234,9 @@ impl JobStreamConsumer {
     }
 }
 
-async fn ensure_consumer_group(connection: &mut redis::aio::Connection) -> redis::RedisResult<()> {
+async fn ensure_consumer_group(
+    connection: &mut redis::aio::MultiplexedConnection,
+) -> redis::RedisResult<()> {
     let result: redis::RedisResult<()> = redis::cmd("XGROUP")
         .arg("CREATE")
         .arg(JOB_NOTIFICATION_STREAM)
@@ -249,7 +253,7 @@ async fn ensure_consumer_group(connection: &mut redis::aio::Connection) -> redis
 }
 
 async fn read_new_entries(
-    connection: &mut redis::aio::Connection,
+    connection: &mut redis::aio::MultiplexedConnection,
     consumer_name: &str,
     batch_size: usize,
 ) -> redis::RedisResult<Vec<StreamId>> {
@@ -268,7 +272,7 @@ async fn read_new_entries(
 }
 
 async fn ack_and_delete(
-    connection: &mut redis::aio::Connection,
+    connection: &mut redis::aio::MultiplexedConnection,
     entry_id: &str,
 ) -> redis::RedisResult<()> {
     let _: i64 = redis::Script::new(
@@ -289,7 +293,7 @@ async fn ack_and_delete(
 }
 
 async fn quarantine_and_ack(
-    connection: &mut redis::aio::Connection,
+    connection: &mut redis::aio::MultiplexedConnection,
     entry_id: &str,
     reason: &str,
     payload_len: usize,

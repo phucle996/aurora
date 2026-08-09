@@ -240,6 +240,10 @@ jobs:
           cache-dependency-path: cost-manager/api/go.sum
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
+      - name: Install Protocol Buffers compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
       - run: go vet ./...
         working-directory: cost-manager/api
       - run: go test ./...

@@ -1,4 +1,3 @@
-use opentelemetry::metrics::Unit;
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{global, KeyValue};
 use std::sync::OnceLock;
@@ -47,7 +46,7 @@ impl MetricsManager {
             Self::meter()
                 .f64_histogram("notification_http_request_duration_seconds")
                 .with_description("Centrifugo connect proxy latency")
-                .with_unit(Unit::new("s"))
+                .with_unit("s")
                 .init()
         })
     }
@@ -75,7 +74,7 @@ impl MetricsManager {
             Self::meter()
                 .f64_histogram("notification_shared_redis_call_duration_seconds")
                 .with_description("Shared Redis auth request-reply latency")
-                .with_unit(Unit::new("s"))
+                .with_unit("s")
                 .init()
         })
     }
@@ -105,7 +104,7 @@ impl MetricsManager {
                 .with_description(
                     "Event age when Centrifugo acknowledges publish; not browser delivery latency",
                 )
-                .with_unit(Unit::new("s"))
+                .with_unit("s")
                 .init()
         })
     }

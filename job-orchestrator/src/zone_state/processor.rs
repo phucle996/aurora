@@ -35,7 +35,7 @@ pub async fn process_report(
         return Err("zone report scope or timestamp is invalid".to_string());
     }
 
-    let cluster = payload.dataplane_cluster.clone().unwrap_or_default();
+    let cluster = payload.dataplane_cluster.unwrap_or_default();
     let avg_cpu = cluster.avg_cpu_usage;
     let avg_ram = cluster.avg_ram_usage;
 
