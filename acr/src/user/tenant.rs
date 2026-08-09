@@ -60,22 +60,23 @@ pub async fn resolve_and_verify_tenant(
         }
 
         // [COMMENT]: 3. Nếu có tenant_id không phải "platform", validate UUID format
-        if !req_tenant_id.is_empty() && req_tenant_id != "platform" {
-            if uuid::Uuid::parse_str(req_tenant_id).is_err() {
-                Logger::authz_log(
-                    &c.sub,
-                    method,
-                    path,
-                    "DENIED",
-                    &format!(
-                        "Invalid UUID format for requested tenant: {}",
-                        req_tenant_id
-                    ),
-                );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Tenant unavailable"),
-                ))));
-            }
+        if !req_tenant_id.is_empty()
+            && req_tenant_id != "platform"
+            && uuid::Uuid::parse_str(req_tenant_id).is_err()
+        {
+            Logger::authz_log(
+                &c.sub,
+                method,
+                path,
+                "DENIED",
+                &format!(
+                    "Invalid UUID format for requested tenant: {}",
+                    req_tenant_id
+                ),
+            );
+            return Err(Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Tenant unavailable"),
+            ))));
         }
     }
 

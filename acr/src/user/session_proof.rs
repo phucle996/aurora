@@ -178,6 +178,8 @@ async fn consume_challenge(
     }
 }
 
+// Login proof canonicalization keeps each signed input explicit.
+#[allow(clippy::too_many_arguments)]
 pub async fn verify_login_proof(
     session_mgr: &SessionManager,
     challenge_id: &str,

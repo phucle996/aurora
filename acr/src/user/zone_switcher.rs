@@ -64,6 +64,8 @@ fn sha256_hash(secret: &str) -> String {
 }
 
 /// [COMMENT]: Intercept POST /api/v1/zone/go-to-zone — xác thực Trinity và re-issue JWT với zone mới.
+// Keep the user zone-switch workflow capabilities explicit at the edge.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_user_zone_switch(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,

@@ -118,6 +118,7 @@ fn sha256_hash(secret: &str) -> String {
 
 impl SessionManager {
     /// [COMMENT]: Trinity Rotation User — SETNX Lock chống Race Condition, Grace Period 5s
+    #[allow(clippy::too_many_arguments)]
     pub async fn try_rotate_session(
         &self,
         zone_id: &str,

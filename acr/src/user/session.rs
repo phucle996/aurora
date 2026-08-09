@@ -66,6 +66,7 @@ impl SessionManager {
 
     /// [COMMENT]: Đăng ký User Session mới, kèm index user và device.
     /// Trả về danh sách client_device_ids bị evict khi vượt quá USER_DEVICE_CAP=50.
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_session(
         &self,
         zone_id: &str,
@@ -170,7 +171,7 @@ impl SessionManager {
         }
 
         let mut sessions: Vec<(String, String, i64)> = Vec::with_capacity(all_keys.len());
-        for (key, data) in all_keys.into_iter().zip(datas.into_iter()) {
+        for (key, data) in all_keys.into_iter().zip(datas) {
             let bytes = data.ok_or_else(|| {
                 AcrError::RedisError(format!("Session key disappeared during eviction: {key}"))
             })?;

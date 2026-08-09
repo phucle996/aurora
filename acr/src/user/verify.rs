@@ -48,6 +48,7 @@ pub struct VerifyEdgeSessionResult {
 
 /// [COMMENT]: Edge session verifier — kiểm tra Trinity credentials (JWT + access_key + access_secret)
 /// Tự động xử lý Cookie Extraction, Token Recovery (sliding window khi JWT hết hạn), và Session Rotation nội bộ.
+#[allow(clippy::too_many_arguments)]
 pub async fn verify_edge_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
@@ -114,7 +115,7 @@ pub async fn verify_edge_session(
                         access_key: String::new(),
                         denial_response: Some(Response::new(build_denied_json(
                             HttpStatusCode::InternalServerError,
-                            &status.message(),
+                            status.message(),
                         ))),
                         cookies_to_set: Vec::new(),
                     };
@@ -301,6 +302,7 @@ pub async fn verify_edge_session(
 }
 
 /// [COMMENT]: Intercept GET /api/v1/me/session — trả về 200 OK với body {"data":{"authenticated":true/false}}
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_user_session_check(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
