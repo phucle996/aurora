@@ -304,7 +304,7 @@ pub async fn run(
                                                 redis::cmd("XCLAIM")
                                                     .arg(&stream_key).arg(&consumer_group).arg(&redis_consumer_name)
                                                     .arg(0_u64).arg(&work.entry_id).arg("JUSTID")
-                                                    .query_async::<_, Vec<String>>(&mut work_manager),
+                                                    .query_async::<Vec<String>>(&mut work_manager),
                                             ).await;
                                             if !matches!(touched, Ok(Ok(ref ids)) if ids.iter().any(|id| id == &work.entry_id)) {
                                                 return Err("MAIL_REDIS_STREAM_CLAIM_HEARTBEAT_FAILED");
@@ -400,7 +400,7 @@ pub async fn run(
                                                         redis::cmd("XCLAIM")
                                                             .arg(&stream_key).arg(&consumer_group).arg(&redis_consumer_name)
                                                             .arg(0_u64).arg(&work.entry_id).arg("JUSTID")
-                                                            .query_async::<_, Vec<String>>(&mut work_manager),
+                                                            .query_async::<Vec<String>>(&mut work_manager),
                                                     ).await;
                                                     if !matches!(touched, Ok(Ok(ref ids)) if ids.iter().any(|id| id == &work.entry_id)) {
                                                         return Err("MAIL_REDIS_STREAM_CLAIM_HEARTBEAT_FAILED");
