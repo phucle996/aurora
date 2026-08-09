@@ -1,7 +1,7 @@
 use crate::config::{SharedRedisConfig, TlsTrustSource};
 use crate::infra::vault::VaultClient;
-use redis::aio::{ConnectionManager, MultiplexedConnection};
-use redis::{Client, ClientTlsConfig, TlsCertificates};
+use redis::aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnection};
+use redis::{AsyncConnectionConfig, Client, ClientTlsConfig, TlsCertificates};
 use std::fs;
 use std::io;
 use std::time::Duration;
@@ -73,11 +73,11 @@ pub async fn multiplexed(
     client: &Client,
     config: &SharedRedisConfig,
 ) -> redis::RedisResult<MultiplexedConnection> {
+    let connection_config = AsyncConnectionConfig::new()
+        .set_response_timeout(Duration::from_millis(config.response_timeout_ms))
+        .set_connection_timeout(Duration::from_millis(config.connect_timeout_ms));
     client
-        .get_multiplexed_async_connection_with_timeouts(
-            Duration::from_millis(config.response_timeout_ms),
-            Duration::from_millis(config.connect_timeout_ms),
-        )
+        .get_multiplexed_async_connection_with_config(&connection_config)
         .await
 }
 
@@ -85,13 +85,11 @@ pub async fn manager(
     client: &Client,
     config: &SharedRedisConfig,
 ) -> redis::RedisResult<ConnectionManager> {
-    ConnectionManager::new_with_backoff_and_timeouts(
-        client.clone(),
-        config.reconnect_base,
-        config.reconnect_factor_ms,
-        config.reconnect_retries,
-        Duration::from_millis(config.response_timeout_ms),
-        Duration::from_millis(config.connect_timeout_ms),
-    )
-    .await
+    let manager_config = ConnectionManagerConfig::new()
+        .set_exponent_base(config.reconnect_base)
+        .set_factor(config.reconnect_factor_ms)
+        .set_number_of_retries(config.reconnect_retries)
+        .set_response_timeout(Duration::from_millis(config.response_timeout_ms))
+        .set_connection_timeout(Duration::from_millis(config.connect_timeout_ms));
+    ConnectionManager::new_with_config(client.clone(), manager_config).await
 }

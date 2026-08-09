@@ -43,11 +43,11 @@ pub async fn run_runtime_watch_bridge(
             .arg(100)
             .query_async(&mut redis_conn)
             .await?;
-        let reply = if let redis::Value::Bulk(parts) = claimed {
-            if let Some(redis::Value::Data(next)) = parts.first() {
+        let reply = if let redis::Value::Array(parts) = claimed {
+            if let Some(redis::Value::BulkString(next)) = parts.first() {
                 claim_cursor = String::from_utf8_lossy(next).into_owned();
             }
-            if let Some(redis::Value::Bulk(entries)) = parts.get(1) {
+            if let Some(redis::Value::Array(entries)) = parts.get(1) {
                 if entries.is_empty() {
                     redis::cmd("XREADGROUP")
                         .arg("GROUP")
@@ -63,9 +63,9 @@ pub async fn run_runtime_watch_bridge(
                         .query_async(&mut redis_conn)
                         .await?
                 } else {
-                    redis::Value::Bulk(vec![redis::Value::Bulk(vec![
-                        redis::Value::Data(WATCH_STREAM.as_bytes().to_vec()),
-                        redis::Value::Bulk(entries.clone()),
+                    redis::Value::Array(vec![redis::Value::Array(vec![
+                        redis::Value::BulkString(WATCH_STREAM.as_bytes().to_vec()),
+                        redis::Value::Array(entries.clone()),
                     ])])
                 }
             } else {
@@ -75,34 +75,34 @@ pub async fn run_runtime_watch_bridge(
             redis::Value::Nil
         };
 
-        let redis::Value::Bulk(streams) = reply else {
+        let redis::Value::Array(streams) = reply else {
             continue;
         };
-        let Some(redis::Value::Bulk(stream_data)) = streams.first() else {
+        let Some(redis::Value::Array(stream_data)) = streams.first() else {
             continue;
         };
-        let Some(redis::Value::Bulk(entries)) = stream_data.get(1) else {
+        let Some(redis::Value::Array(entries)) = stream_data.get(1) else {
             continue;
         };
 
         for entry in entries {
-            let redis::Value::Bulk(parts) = entry else {
+            let redis::Value::Array(parts) = entry else {
                 continue;
             };
-            let Some(redis::Value::Data(entry_id)) = parts.first() else {
+            let Some(redis::Value::BulkString(entry_id)) = parts.first() else {
                 continue;
             };
             let entry_id = String::from_utf8_lossy(entry_id).into_owned();
             let fields = match parts.get(1) {
-                Some(redis::Value::Bulk(fields)) => fields.as_slice(),
+                Some(redis::Value::Array(fields)) => fields.as_slice(),
                 _ => &[],
             };
             let mut payload = None;
             for field in fields.chunks(2) {
                 if field.len() == 2
-                    && matches!(&field[0], redis::Value::Data(name) if name == b"payload")
+                    && matches!(&field[0], redis::Value::BulkString(name) if name == b"payload")
                 {
-                    if let redis::Value::Data(value) = &field[1] {
+                    if let redis::Value::BulkString(value) = &field[1] {
                         payload = Some(value.as_slice());
                     }
                 }

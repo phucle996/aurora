@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use opentelemetry::metrics::{Counter, Histogram, Unit};
+use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{global, KeyValue};
 
 use crate::observability::logger::{LogFields, Logger};
@@ -112,7 +112,7 @@ impl MetricsManager {
         KAFKA_OPERATION_DURATION.get_or_init(|| {
             global::meter(METER_NAME)
                 .f64_histogram("job_orchestrator_kafka_operation_duration_seconds")
-                .with_unit(Unit::new("s"))
+                .with_unit("s")
                 .with_description("End-to-end latency of logical Kafka transport operations")
                 .init()
         })
@@ -131,7 +131,7 @@ impl MetricsManager {
         MANAGED_SERVICE_OUTBOX_AGE.get_or_init(|| {
             global::meter(METER_NAME)
                 .f64_histogram("job_orchestrator_managed_service_outbox_age_seconds")
-                .with_unit(Unit::new("s"))
+                .with_unit("s")
                 .with_description("Age of Managed Service durable outbox intent at dispatch")
                 .init()
         })
@@ -141,7 +141,7 @@ impl MetricsManager {
         CHANGEFEED_LAG_BYTES.get_or_init(|| {
             global::meter(METER_NAME)
                 .f64_histogram("job_orchestrator_changefeed_lag_bytes")
-                .with_unit(Unit::new("By"))
+                .with_unit("By")
                 .with_description(
                     "PostgreSQL WAL bytes between a Managed Service record and current WAL head",
                 )

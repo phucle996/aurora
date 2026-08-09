@@ -1103,7 +1103,7 @@ fn build_mfa_session_response(
     if let Some(max_age) = refresh_cookie_max_age {
         builder.add_header(
             "set-cookie",
-            &format!(
+            format!(
                 "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
                 COOKIE_REFRESH_TOKEN, refresh_token, max_age, domain_str
             ),
@@ -1113,7 +1113,7 @@ fn build_mfa_session_response(
     }
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "client_device_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             session.client_device_id, domain_str
         ),
@@ -1122,7 +1122,7 @@ fn build_mfa_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             session.tenant_id_val, domain_str
         ),
@@ -1131,7 +1131,7 @@ fn build_mfa_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             zone_code, domain_str
         ),

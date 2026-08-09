@@ -402,6 +402,9 @@ impl OAuthProviderService {
         Ok(key)
     }
 
+    // OAuth entry points keep workflow-owned capabilities explicit. Bundling
+    // them into a generic context would hide authority and failure boundaries.
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle(
         &self,
         session_mgr: &Arc<SessionManager>,
@@ -500,6 +503,7 @@ impl OAuthProviderService {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_social_link_start(
         &self,
         session_mgr: &Arc<SessionManager>,
@@ -661,6 +665,7 @@ impl OAuthProviderService {
         ))))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn validate_social_link_callback_session(
         &self,
         session_mgr: &Arc<SessionManager>,
@@ -709,6 +714,7 @@ impl OAuthProviderService {
         Ok(verification.cookies_to_set)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn complete_social_link(
         &self,
         session_mgr: &Arc<SessionManager>,
@@ -857,6 +863,7 @@ impl OAuthProviderService {
         )))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_start(
         &self,
         session_mgr: &Arc<SessionManager>,
@@ -1004,6 +1011,7 @@ impl OAuthProviderService {
         Ok(Response::new(local_json(HttpStatusCode::Ok, body)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_callback(
         &self,
         session_mgr: &Arc<SessionManager>,

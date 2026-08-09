@@ -160,7 +160,7 @@ impl JobStreamConsumer {
         entry: StreamId,
     ) -> Result<EntryOutcome, Box<dyn std::error::Error + Send + Sync>> {
         let payload = match entry.map.get("payload") {
-            Some(Value::Data(payload)) => payload,
+            Some(Value::BulkString(payload)) => payload,
             _ => {
                 MetricsManager::record_redis_stream_event("job_notification", "invalid_envelope");
                 quarantine_and_ack(

@@ -151,7 +151,7 @@ impl ActivityStreamConsumer {
         entry: StreamId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let payload = match entry.map.get("payload") {
-            Some(Value::Data(payload)) => payload,
+            Some(Value::BulkString(payload)) => payload,
             _ => {
                 quarantine_and_ack(connection, &entry.id, "ACTIVITY_ENVELOPE_INVALID", 0).await?;
                 MetricsManager::record_redis_stream_event("user_activity", "invalid_envelope");

@@ -106,11 +106,11 @@ pub async fn run_consumer_report_listener(
             .arg(50)
             .query_async(&mut redis_conn)
             .await?;
-        let reply = if let redis::Value::Bulk(parts) = claimed {
-            if let Some(redis::Value::Data(next)) = parts.first() {
+        let reply = if let redis::Value::Array(parts) = claimed {
+            if let Some(redis::Value::BulkString(next)) = parts.first() {
                 claim_cursor = String::from_utf8_lossy(next).into_owned();
             }
-            if let Some(redis::Value::Bulk(entries)) = parts.get(1) {
+            if let Some(redis::Value::Array(entries)) = parts.get(1) {
                 if entries.is_empty() {
                     redis::cmd("XREADGROUP")
                         .arg("GROUP")
@@ -126,9 +126,9 @@ pub async fn run_consumer_report_listener(
                         .query_async(&mut redis_conn)
                         .await?
                 } else {
-                    redis::Value::Bulk(vec![redis::Value::Bulk(vec![
-                        redis::Value::Data(CONSUMER_REPORT_STREAM.as_bytes().to_vec()),
-                        redis::Value::Bulk(entries.clone()),
+                    redis::Value::Array(vec![redis::Value::Array(vec![
+                        redis::Value::BulkString(CONSUMER_REPORT_STREAM.as_bytes().to_vec()),
+                        redis::Value::Array(entries.clone()),
                     ])])
                 }
             } else {
@@ -138,26 +138,26 @@ pub async fn run_consumer_report_listener(
             redis::Value::Nil
         };
 
-        let redis::Value::Bulk(streams) = reply else {
+        let redis::Value::Array(streams) = reply else {
             continue;
         };
-        let Some(redis::Value::Bulk(stream_data)) = streams.first() else {
+        let Some(redis::Value::Array(stream_data)) = streams.first() else {
             continue;
         };
-        let Some(redis::Value::Bulk(entries)) = stream_data.get(1) else {
+        let Some(redis::Value::Array(entries)) = stream_data.get(1) else {
             continue;
         };
 
         for entry in entries {
-            let redis::Value::Bulk(entry_parts) = entry else {
+            let redis::Value::Array(entry_parts) = entry else {
                 continue;
             };
-            let Some(redis::Value::Data(entry_id_bytes)) = entry_parts.first() else {
+            let Some(redis::Value::BulkString(entry_id_bytes)) = entry_parts.first() else {
                 continue;
             };
             let entry_id = String::from_utf8_lossy(entry_id_bytes).into_owned();
             let fields = match entry_parts.get(1) {
-                Some(redis::Value::Bulk(fields)) => fields.as_slice(),
+                Some(redis::Value::Array(fields)) => fields.as_slice(),
                 _ => &[],
             };
             let mut zone_id_bytes = None;
@@ -166,15 +166,15 @@ pub async fn run_consumer_report_listener(
                 if field.len() != 2 {
                     continue;
                 }
-                let redis::Value::Data(name) = &field[0] else {
+                let redis::Value::BulkString(name) = &field[0] else {
                     continue;
                 };
                 if name.as_slice() == b"zone_id" {
-                    if let redis::Value::Data(value) = &field[1] {
+                    if let redis::Value::BulkString(value) = &field[1] {
                         zone_id_bytes = Some(value.as_slice());
                     }
                 } else if name.as_slice() == b"payload" {
-                    if let redis::Value::Data(value) = &field[1] {
+                    if let redis::Value::BulkString(value) = &field[1] {
                         payload_bytes = Some(value.as_slice());
                     }
                 }
