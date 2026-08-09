@@ -26,28 +26,32 @@ help:
 # [COMMENT]: Khởi tạo hoàn chỉnh môi trường Central (Vault Dev Mode + Bootstrap Secrets + Microservices)
 init-central:
 	@echo "🚀 [1/4] Khởi động Vault container..."
-	docker compose -f dev/central/compose.yml up -d vault
+	docker compose -f dev/central/compose.yml up -d --no-build vault
 	@echo "⏳ [2/4] Chờ Vault REST API sẵn sàng..."
 	@until curl -s http://localhost:8200/v1/sys/health >/dev/null; do sleep 1; done
 	@echo "🔒 [3/4] Chạy Bootstrap Script nạp Static Tokens & Connections..."
 	dev/central/vault/vault-bootstrap.sh -t root
 	@echo "📦 [4/4] Khởi động toàn bộ Central Stack..."
-	docker compose -f dev/central/compose.yml up -d
+	docker compose -f dev/central/compose.yml pull
+	docker compose -f dev/central/compose.yml up -d --no-build
 
 # [COMMENT]: Khởi tạo hoàn chỉnh môi trường Zone Edge (Sinh Keyring X25519 + Up Zone Services)
 init-zone:
 	@echo "🔑 [1/2] Kiểm tra/Sinh Keyring X25519 cho Zone Dataplane..."
 	python3 scripts/gen-zone-keyring.py
 	@echo "📦 [2/2] Khởi động toàn bộ Zone Stack..."
-	docker compose -f dev/zone/compose.yml up -d
+	docker compose -f dev/zone/compose.yml pull
+	docker compose -f dev/zone/compose.yml up -d --no-build
 
 # [COMMENT]: Khởi động nhanh Central (không qua bước bootstrap)
 up-central:
-	docker compose -f dev/central/compose.yml up -d
+	docker compose -f dev/central/compose.yml pull
+	docker compose -f dev/central/compose.yml up -d --no-build
 
 # [COMMENT]: Khởi động nhanh Zone
 up-zone:
-	docker compose -f dev/zone/compose.yml up -d
+	docker compose -f dev/zone/compose.yml pull
+	docker compose -f dev/zone/compose.yml up -d --no-build
 
 # [COMMENT]: Dừng môi trường Central
 down-central:

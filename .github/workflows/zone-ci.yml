@@ -1,0 +1,169 @@
+name: Zone CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "dataplane/**"
+      - "zone-runtime-stream/**"
+      - "zone-control-edge-gateway/**"
+      - "zone-public-edge-gateway/**"
+      - "contracts/**"
+      - ".dockerignore"
+      - "dev/zone/**"
+      - "k8s/zone-control-authorizer.yaml"
+      - "k8s/zone-control-edge-gateway.yaml"
+      - "k8s/zone-public-edge-gateway.yaml"
+      - "k8s/zone-runtime-stream.yaml"
+      - ".github/workflows/zone-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "dataplane/**"
+      - "zone-runtime-stream/**"
+      - "zone-control-edge-gateway/**"
+      - "zone-public-edge-gateway/**"
+      - "contracts/**"
+      - ".dockerignore"
+      - "dev/zone/**"
+      - "k8s/zone-control-authorizer.yaml"
+      - "k8s/zone-control-edge-gateway.yaml"
+      - "k8s/zone-public-edge-gateway.yaml"
+      - "k8s/zone-runtime-stream.yaml"
+      - ".github/workflows/zone-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zone-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      dataplane: ${{ steps.scope.outputs.dataplane }}
+      runtime_stream: ${{ steps.scope.outputs.runtime_stream }}
+      authorizer: ${{ steps.scope.outputs.authorizer }}
+      zone_config: ${{ steps.scope.outputs.zone_config }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+            head_sha="${{ github.sha }}"
+          fi
+          if [[ "$base_sha" == "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+          fi
+          git diff --name-only "$base_sha" "$head_sha" > "$RUNNER_TEMP/changed-files"
+          all=false
+          if grep -Eq '^\.github/workflows/zone-ci\.yml$' "$RUNNER_TEMP/changed-files"; then all=true; fi
+          if $all || grep -Eq '^(dataplane/|contracts/|\.dockerignore$)' "$RUNNER_TEMP/changed-files"; then echo "dataplane=true" >> "$GITHUB_OUTPUT"; else echo "dataplane=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^zone-runtime-stream/' "$RUNNER_TEMP/changed-files"; then echo "runtime_stream=true" >> "$GITHUB_OUTPUT"; else echo "runtime_stream=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^zone-control-edge-gateway/authorizer/' "$RUNNER_TEMP/changed-files"; then echo "authorizer=true" >> "$GITHUB_OUTPUT"; else echo "authorizer=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(dev/zone/|zone-public-edge-gateway/|zone-control-edge-gateway/envoy\.yaml|k8s/zone-(control-authorizer|control-edge-gateway|public-edge-gateway|runtime-stream)\.yaml)' "$RUNNER_TEMP/changed-files"; then echo "zone_config=true" >> "$GITHUB_OUTPUT"; else echo "zone_config=false" >> "$GITHUB_OUTPUT"; fi
+
+  dataplane:
+    needs: changes
+    if: needs.changes.outputs.dataplane == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: dataplane
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: dataplane
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  runtime-stream:
+    needs: changes
+    if: needs.changes.outputs.runtime_stream == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: zone-runtime-stream
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: zone-runtime-stream
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  authorizer:
+    needs: changes
+    if: needs.changes.outputs.authorizer == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: zone-control-edge-gateway/authorizer
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: zone-control-edge-gateway/authorizer
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  zone-config:
+    needs: changes
+    if: needs.changes.outputs.zone_config == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      AURORA_DATAPLANE_IMAGE: ghcr.io/phucle996/aurora-dataplane@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_ZONE_RUNTIME_STREAM_IMAGE: ghcr.io/phucle996/aurora-zone-runtime-stream@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: dev/zone
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: k8s
+          severity: HIGH,CRITICAL
+          exit-code: "1"

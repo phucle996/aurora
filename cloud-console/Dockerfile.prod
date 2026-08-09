@@ -13,7 +13,7 @@ ARG NEXT_PUBLIC_CENTRIFUGO_WS_URL
 ARG NEXT_PUBLIC_COST_CONSOLE_URL
 
 COPY package*.json ./
-RUN npm install --legacy-peer-deps
+RUN npm ci --legacy-peer-deps
 COPY . .
 # The app-owned .env is the local source of truth. CI may provide explicit
 # build args instead, but every public URL remains required; an empty identity

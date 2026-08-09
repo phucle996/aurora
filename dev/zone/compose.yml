@@ -24,13 +24,8 @@ services:
 
   dataplane-vn-n1:
     cpuset: "0-5"
-    build:
-      context: ../..
-      dockerfile: dataplane/Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_DATAPLANE_IMAGE:?AURORA_DATAPLANE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: zone-z1-dataplane-1
     init: true
     env_file:
@@ -60,13 +55,8 @@ services:
 
   dataplane-vn-n2:
     cpuset: "0-5"
-    build:
-      context: ../..
-      dockerfile: dataplane/Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_DATAPLANE_IMAGE:?AURORA_DATAPLANE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: zone-z1-dataplane-2
     init: true
     env_file:
@@ -93,13 +83,8 @@ services:
 
   dataplane-vn-n3:
     cpuset: "0-5"
-    build:
-      context: ../..
-      dockerfile: dataplane/Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_DATAPLANE_IMAGE:?AURORA_DATAPLANE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: zone-z1-dataplane-3
     init: true
     env_file:
@@ -204,9 +189,8 @@ services:
 
   zone-runtime-stream:
     cpuset: "0-5"
-    build:
-      context: ../../zone-runtime-stream
-      dockerfile: Dockerfile
+    image: ${AURORA_ZONE_RUNTIME_STREAM_IMAGE:?AURORA_ZONE_RUNTIME_STREAM_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: zone-z1-runtime-stream
     init: true
     env_file:

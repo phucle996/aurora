@@ -4,16 +4,8 @@ services:
 
   controlplane1:
     cpuset: "0-5"
-    build:
-      context: ../../controlplane
-      # Chạy Dockerfile.prod: biên dịch Go binary tĩnh (CGO_ENABLED=0), image runtime chỉ ~30MB.
-      # Không có hot-reload. Khi cần rebuild dùng đúng Central file:
-      # `docker compose -f dev/central/compose.yml up -d --build` từ repo root.
-      dockerfile: Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_CONTROLPANE_IMAGE:?AURORA_CONTROLPANE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-controlplane-1
     init: true
     env_file:
@@ -49,13 +41,8 @@ services:
 
   controlplane2:
     cpuset: "0-5"
-    build:
-      context: ../../controlplane
-      dockerfile: Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_CONTROLPANE_IMAGE:?AURORA_CONTROLPANE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-controlplane-2
     init: true
     env_file:
@@ -89,13 +76,8 @@ services:
 
   controlplane3:
     cpuset: "0-5"
-    build:
-      context: ../../controlplane
-      dockerfile: Dockerfile.prod
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_CONTROLPANE_IMAGE:?AURORA_CONTROLPANE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-controlplane-3
     init: true
     env_file:
@@ -240,9 +222,8 @@ services:
 
   cost-manager:
     cpuset: "0-5"
-    build:
-      context: ../../cost-manager
-      dockerfile: Dockerfile.dev
+    image: ${AURORA_COST_MANAGER_IMAGE:?AURORA_COST_MANAGER_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-cost-manager
     ports:
       - "8084:8084" # REST API port
@@ -251,8 +232,6 @@ services:
     # remaps VAULT_ENGINE_TOKEN only for the Engine child process.
     env_file:
       - ../../cost-manager/api/.env
-    volumes:
-      - ../../cost-manager/api:/app/api
     depends_on:
       billing-psql:
         condition: service_healthy
@@ -593,22 +572,20 @@ services:
 
   cloud-console:
     cpuset: "0-5"
-    build:
-      context: ../../cloud-console
-      dockerfile: Dockerfile.prod
+    image: ${AURORA_CLOUD_CONSOLE_IMAGE:?AURORA_CLOUD_CONSOLE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-cloud-console
-    # Runtime browser configuration is owned by Cloud Console. The public
-    # values are loaded from its own .env and are also consumed by its Docker
-    # build stage because Next.js bakes them into the static client bundle.
+    # Public browser values are baked by the GHCR release workflow. Keep this
+    # runtime file aligned for server-side reads; it cannot retarget an already
+    # released static client bundle.
     env_file:
       - ../../cloud-console/.env
     restart: unless-stopped
 
   admin-ui-nginx:
     cpuset: "0-5"
-    build:
-      context: ../../admin-ui
-      dockerfile: Dockerfile.nginx
+    image: ${AURORA_ADMIN_UI_IMAGE:?AURORA_ADMIN_UI_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-admin-ui
     ports:
       - "5175:5173"
@@ -616,13 +593,8 @@ services:
 
   cost-console-nginx:
     cpuset: "0-5"
-    build:
-      context: ../../cost-console
-      dockerfile: Dockerfile.nginx
-      args:
-        # [DEV-ONLY]: Starting Billing from Cost Console must return to the
-        # same localhost Cloud Console origin used by OAuth.
-        VITE_CLOUD_CONSOLE_URL: https://localhost
+    image: ${AURORA_COST_CONSOLE_IMAGE:?AURORA_COST_CONSOLE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-cost-console
     ports:
       - "5176:5173"
@@ -630,13 +602,8 @@ services:
 
   job-orchestrator:
     cpuset: "0-5"
-    build:
-      context: ../..
-      dockerfile: job-orchestrator/Dockerfile
-      args:
-        LOCAL_USER: phucle
-        LOCAL_UID: 1000
-        LOCAL_GID: 1000
+    image: ${AURORA_JOB_ORCHESTRATOR_IMAGE:?AURORA_JOB_ORCHESTRATOR_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-job-orchestrator
     init: true
     volumes:
@@ -688,9 +655,8 @@ services:
 
   acr:
     cpuset: "0-5"
-    build:
-      context: ../../acr
-      dockerfile: Dockerfile
+    image: ${AURORA_ACR_IMAGE:?AURORA_ACR_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-acr
     init: true
     # [COMMENT]: Mount chứng chỉ TLS để thiết lập kết nối mTLS bảo mật đến các node Controlplane
@@ -711,9 +677,8 @@ services:
 
   notification-service:
     cpuset: "0-5"
-    build:
-      context: ../../notification-service
-      dockerfile: Dockerfile
+    image: ${AURORA_NOTIFICATION_SERVICE_IMAGE:?AURORA_NOTIFICATION_SERVICE_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
     container_name: central-notification-service
     ports:
       - "8083:8083"

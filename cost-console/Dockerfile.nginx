@@ -8,7 +8,7 @@ FROM node:20-alpine AS build
 WORKDIR /app
 ARG VITE_CLOUD_CONSOLE_URL
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 # Prefer the Cost Console-owned .env. A CI build may pass the explicit ARG,
 # but the public redirect origin is always required and never defaulted.

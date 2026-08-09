@@ -1,0 +1,315 @@
+name: Central CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "controlplane/**"
+      - "acr/**"
+      - "job-orchestrator/**"
+      - "notification-service/**"
+      - "cost-manager/**"
+      - "cloud-console/**"
+      - "admin-ui/**"
+      - "cost-console/**"
+      - "contracts/**"
+      - "dev/central/**"
+      - "k8s/controlplane-deployment.yaml"
+      - "k8s/acr-deployment.yaml"
+      - "k8s/cost-manager-deployment.yaml"
+      - ".github/workflows/central-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "controlplane/**"
+      - "acr/**"
+      - "job-orchestrator/**"
+      - "notification-service/**"
+      - "cost-manager/**"
+      - "cloud-console/**"
+      - "admin-ui/**"
+      - "cost-console/**"
+      - "contracts/**"
+      - "dev/central/**"
+      - "k8s/controlplane-deployment.yaml"
+      - "k8s/acr-deployment.yaml"
+      - "k8s/cost-manager-deployment.yaml"
+      - ".github/workflows/central-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: central-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      controlplane: ${{ steps.scope.outputs.controlplane }}
+      acr: ${{ steps.scope.outputs.acr }}
+      job_orchestrator: ${{ steps.scope.outputs.job_orchestrator }}
+      notification_service: ${{ steps.scope.outputs.notification_service }}
+      cost_manager: ${{ steps.scope.outputs.cost_manager }}
+      cloud_console: ${{ steps.scope.outputs.cloud_console }}
+      admin_ui: ${{ steps.scope.outputs.admin_ui }}
+      cost_console: ${{ steps.scope.outputs.cost_console }}
+      central_config: ${{ steps.scope.outputs.central_config }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+            head_sha="${{ github.sha }}"
+          fi
+          if [[ "$base_sha" == "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+          fi
+          git diff --name-only "$base_sha" "$head_sha" > "$RUNNER_TEMP/changed-files"
+          all=false
+          if grep -Eq '^\.github/workflows/central-ci\.yml$' "$RUNNER_TEMP/changed-files"; then all=true; fi
+          if $all || grep -Eq '^(controlplane/|contracts/)' "$RUNNER_TEMP/changed-files"; then echo "controlplane=true" >> "$GITHUB_OUTPUT"; else echo "controlplane=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(acr/|contracts/)' "$RUNNER_TEMP/changed-files"; then echo "acr=true" >> "$GITHUB_OUTPUT"; else echo "acr=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(job-orchestrator/|contracts/|\.dockerignore$)' "$RUNNER_TEMP/changed-files"; then echo "job_orchestrator=true" >> "$GITHUB_OUTPUT"; else echo "job_orchestrator=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^notification-service/' "$RUNNER_TEMP/changed-files"; then echo "notification_service=true" >> "$GITHUB_OUTPUT"; else echo "notification_service=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^cost-manager/' "$RUNNER_TEMP/changed-files"; then echo "cost_manager=true" >> "$GITHUB_OUTPUT"; else echo "cost_manager=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^cloud-console/' "$RUNNER_TEMP/changed-files"; then echo "cloud_console=true" >> "$GITHUB_OUTPUT"; else echo "cloud_console=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^admin-ui/' "$RUNNER_TEMP/changed-files"; then echo "admin_ui=true" >> "$GITHUB_OUTPUT"; else echo "admin_ui=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^cost-console/' "$RUNNER_TEMP/changed-files"; then echo "cost_console=true" >> "$GITHUB_OUTPUT"; else echo "cost_console=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(dev/central/|k8s/(controlplane-deployment|acr-deployment|cost-manager-deployment)\.yaml)' "$RUNNER_TEMP/changed-files"; then echo "central_config=true" >> "$GITHUB_OUTPUT"; else echo "central_config=false" >> "$GITHUB_OUTPUT"; fi
+
+  controlplane:
+    needs: changes
+    if: needs.changes.outputs.controlplane == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: controlplane
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v6
+        with: { go-version: "1.26.x", check-latest: true }
+      - run: go vet ./...
+      - run: go test ./...
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: controlplane
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  acr:
+    needs: changes
+    if: needs.changes.outputs.acr == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: acr
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: acr
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  job-orchestrator:
+    needs: changes
+    if: needs.changes.outputs.job_orchestrator == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: job-orchestrator
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: job-orchestrator
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  notification-service:
+    needs: changes
+    if: needs.changes.outputs.notification_service == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: notification-service
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: notification-service
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  cost-manager:
+    needs: changes
+    if: needs.changes.outputs.cost_manager == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v6
+        with: { go-version: "1.26.x", check-latest: true }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: go vet ./...
+        working-directory: cost-manager/api
+      - run: go test ./...
+        working-directory: cost-manager/api
+      - run: cargo fmt --check
+        working-directory: cost-manager/engine
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: cost-manager/engine
+      - run: cargo test
+        working-directory: cost-manager/engine
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: cost-manager
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  cloud-console:
+    needs: changes
+    if: needs.changes.outputs.cloud_console == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: cloud-console
+    env:
+      NEXT_PUBLIC_ENVOY_URL: https://cloud.aurora.local
+      NEXT_PUBLIC_CENTRIFUGO_WS_URL: wss://cloud.aurora.local/connection/websocket
+      NEXT_PUBLIC_COST_CONSOLE_URL: https://cost-manager.aurora.local
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: 20, cache: npm, cache-dependency-path: cloud-console/package-lock.json }
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: cloud-console
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  admin-ui:
+    needs: changes
+    if: needs.changes.outputs.admin_ui == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: admin-ui
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: 20, cache: npm, cache-dependency-path: admin-ui/package-lock.json }
+      - run: npm ci
+      - run: npm run build
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: admin-ui
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  cost-console:
+    needs: changes
+    if: needs.changes.outputs.cost_console == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: cost-console
+    env:
+      VITE_CLOUD_CONSOLE_URL: https://cloud.aurora.local
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: 20, cache: npm, cache-dependency-path: cost-console/package-lock.json }
+      - run: npm ci
+      - run: npm run build
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: cost-console
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  central-config:
+    needs: changes
+    if: needs.changes.outputs.central_config == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      AURORA_CONTROLPANE_IMAGE: ghcr.io/phucle996/aurora-controlplane@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_COST_MANAGER_IMAGE: ghcr.io/phucle996/aurora-cost-manager@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_CLOUD_CONSOLE_IMAGE: ghcr.io/phucle996/aurora-cloud-console@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_ADMIN_UI_IMAGE: ghcr.io/phucle996/aurora-admin-ui@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_COST_CONSOLE_IMAGE: ghcr.io/phucle996/aurora-cost-console@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_JOB_ORCHESTRATOR_IMAGE: ghcr.io/phucle996/aurora-job-orchestrator@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_ACR_IMAGE: ghcr.io/phucle996/aurora-acr@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      AURORA_NOTIFICATION_SERVICE_IMAGE: ghcr.io/phucle996/aurora-notification-service@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: dev/central
+          severity: HIGH,CRITICAL
+          exit-code: "1"

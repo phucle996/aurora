@@ -1,0 +1,136 @@
+name: Zone Release
+
+on:
+  push:
+    tags:
+      - "dataplane-v*"
+      - "zone-runtime-stream-v*"
+      - "zone-authorizer-v*"
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: zone-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.component.outputs.image }}
+      context: ${{ steps.component.outputs.context }}
+      dockerfile: ${{ steps.component.outputs.dockerfile }}
+      version: ${{ steps.component.outputs.version }}
+      component: ${{ steps.component.outputs.component }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: component
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          case "$tag" in
+            dataplane-v*)
+              prefix=dataplane
+              component=dataplane
+              image_name=aurora-dataplane
+              context=.
+              dockerfile=dataplane/Dockerfile.prod
+              source_paths=(dataplane contracts .dockerignore)
+              ;;
+            zone-runtime-stream-v*)
+              prefix=zone-runtime-stream
+              component=zone-runtime-stream
+              image_name=aurora-zone-runtime-stream
+              context=zone-runtime-stream
+              dockerfile=zone-runtime-stream/Dockerfile
+              source_paths=(zone-runtime-stream)
+              ;;
+            zone-authorizer-v*)
+              prefix=zone-authorizer
+              component=zone-authorizer
+              image_name=aurora-zone-control-authorizer
+              context=zone-control-edge-gateway/authorizer
+              dockerfile=zone-control-edge-gateway/authorizer/Dockerfile
+              source_paths=(zone-control-edge-gateway/authorizer)
+              ;;
+            *)
+              echo "Unsupported Zone release tag: $tag" >&2
+              exit 1
+              ;;
+          esac
+          previous_tag=""
+          if git rev-parse "$GITHUB_SHA^" >/dev/null 2>&1; then
+            previous_tag="$(git tag --merged "$GITHUB_SHA^" --list "${prefix}-v*" --sort=-version:refname | head -n 1)"
+          fi
+          if [[ -n "$previous_tag" ]] && git diff --quiet "$previous_tag" "$GITHUB_SHA" -- "${source_paths[@]}"; then
+            echo "Tag $tag has no source change since $previous_tag for $component" >&2
+            exit 1
+          fi
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/$owner/$image_name" >> "$GITHUB_OUTPUT"
+          echo "context=$context" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=$dockerfile" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#${prefix}-}" >> "$GITHUB_OUTPUT"
+          echo "component=$component" >> "$GITHUB_OUTPUT"
+
+  build-scan-promote:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE: ${{ needs.resolve.outputs.image }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      COMPONENT: ${{ needs.resolve.outputs.component }}
+      STAGING_TAG: sha-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Refuse to overwrite an existing release tag
+        shell: bash
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "Release tag already exists: $IMAGE:$VERSION" >&2
+            exit 1
+          fi
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ needs.resolve.outputs.context }}
+          file: ${{ needs.resolve.outputs.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.STAGING_TAG }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.title=aurora-${{ env.COMPONENT }}
+          cache-from: type=gha,scope=zone-${{ env.COMPONENT }}
+          cache-to: type=gha,mode=max,scope=zone-${{ env.COMPONENT }}
+          provenance: mode=max
+          sbom: true
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ env.STAGING_TAG }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Promote scanned image to immutable release tag
+        shell: bash
+        run: docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE:$STAGING_TAG"
+      - name: Record deployable digest
+        shell: bash
+        run: |
+          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}')"
+          printf 'AURORA_%s_IMAGE=%s@%s\n' "$(printf '%s' "$COMPONENT" | tr '[:lower:]-' '[:upper:]_')" "$IMAGE" "$digest" >> "$GITHUB_STEP_SUMMARY"
