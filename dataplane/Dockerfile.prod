@@ -23,8 +23,20 @@ RUN mkdir -p src \
     target/release/deps/aurora_dataplane* \
     target/release/.fingerprint/aurora-dataplane-*
 
-# [COMMENT]: Lấy MinIO Client (mc) tĩnh từ official image minio/mc để thực hiện các thao tác MinIO Admin
-COPY --from=minio/mc:latest /usr/bin/mc /usr/local/bin/mc
+# [COMMENT]: Build mc từ exact upstream release trên Go toolchain đã vá. Không copy image `latest`:
+# binary published ở đó mang Go dependency graph riêng và không thể được Rust lockfile kiểm soát.
+FROM golang:1.26.5-trixie AS mc-builder
+ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
+WORKDIR /src/mc
+RUN git clone --branch "$MC_VERSION" --depth 1 https://github.com/minio/mc.git . \
+    && go get github.com/prometheus/prometheus@v0.311.3 \
+        golang.org/x/crypto@v0.52.0 \
+        golang.org/x/net@v0.55.0 \
+        golang.org/x/text@v0.39.0 \
+        google.golang.org/grpc@v1.82.1 \
+    && go mod tidy \
+    && go mod verify \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/mc .
 
 # [COMMENT]: Copy toàn bộ source code thực tế và tiến hành biên dịch bản release
 COPY contracts /src/contracts
@@ -47,7 +59,7 @@ FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 COPY --from=builder /src/dataplane/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
 
 # [COMMENT]: Copy MinIO Client (mc) binary sang runtime distroless
-COPY --from=builder /usr/local/bin/mc /usr/local/bin/mc
+COPY --from=mc-builder /out/mc /usr/local/bin/mc
 
 # [COMMENT]: Đặt thư mục làm việc mặc định cho Dataplane service
 WORKDIR /var/lib/dataplane
