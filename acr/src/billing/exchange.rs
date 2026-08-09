@@ -2,7 +2,7 @@
 // 📂 billing/exchange.rs — One-time handoff tạo host-only alias cho Cost Console
 // ======================================================================================================
 
-use crate::billing::session::release_billing_alias;
+use crate::billing::session::{release_billing_alias, ReleaseBillingAliasCommand};
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::pkg::cookie::{COOKIE_BILLING_SESSION_ID, COOKIE_BILLING_SESSION_SECRET};
@@ -85,18 +85,37 @@ fn denied(status: HttpStatusCode, message: &str) -> Response<CheckResponse> {
     ))
 }
 
+pub struct BillingHandoffWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub config: &'a Config,
+}
+
+pub struct BillingHandoffIssueRequest<'a> {
+    pub claims: &'a Claims,
+    pub access_key: &'a str,
+    pub source_session: &'a UserAccessSession,
+    pub request: &'a CheckRequest,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
 /// [COMMENT]: Source Cloud Console xin opaque handoff code sau khi IAM Trinity, CSRF, zone và tenant đã verify.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_billing_handoff_issue(
-    session_mgr: &Arc<SessionManager>,
-    config: &Config,
-    claims: &Claims,
-    access_key: &str,
-    source_session: &UserAccessSession,
-    req: &CheckRequest,
-    method: &str,
-    path: &str,
+    workflow: BillingHandoffWorkflowContext<'_>,
+    request: BillingHandoffIssueRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let BillingHandoffWorkflowContext {
+        session_mgr,
+        config,
+    } = workflow;
+    let BillingHandoffIssueRequest {
+        claims,
+        access_key,
+        source_session,
+        request: req,
+        method,
+        path,
+    } = request;
     if !(method == "POST" && path == "/api/v1/auth/domain-sessions/billing") {
         return None;
     }
@@ -295,13 +314,15 @@ pub async fn handle_billing_handoff_exchange(
 
     let released = match release_billing_alias(
         session_mgr,
-        &record.user_id,
-        &record.username,
-        &record.zone_id,
-        &record.tenant_id,
-        &record.source_access_key,
-        &record.client_proof_public_key,
-        &device_public_key,
+        ReleaseBillingAliasCommand {
+            user_id: &record.user_id,
+            username: &record.username,
+            zone_id: &record.zone_id,
+            tenant_id: &record.tenant_id,
+            source_access_key: &record.source_access_key,
+            source_proof_public_key: &record.client_proof_public_key,
+            client_proof_public_key: &device_public_key,
+        },
     )
     .await
     {

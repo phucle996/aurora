@@ -6,7 +6,9 @@ use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
 use crate::token::TokenManager;
-use crate::user::login::release_user_session;
+use crate::user::login::{
+    release_user_session, ReleaseUserSessionCommand, UserSessionIssueContext,
+};
 use crate::user::zone_resolution::resolve_zone_context;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,22 +34,34 @@ async fn release_recovery_lock(session_mgr: &SessionManager, recovery_key: &str,
     }
 }
 
-// This response is the terminal boundary of the recovery workflow. Keep its
-// identity and session outputs explicit instead of hiding them in a context.
-#[allow(clippy::too_many_arguments)]
-fn build_success_response(
-    config: &Config,
-    user_id: &str,
-    client_device_id: &str,
+struct RecoverySuccessResponse<'a> {
+    config: &'a Config,
+    user_id: &'a str,
+    client_device_id: &'a str,
     level: i32,
-    tenant_id: &str,
-    new_jwt: &str,
-    new_access_key: &str,
-    new_access_secret: &str,
-    zone_id: &str,
-    zone_code: &str,
+    tenant_id: &'a str,
+    new_jwt: &'a str,
+    new_access_key: &'a str,
+    new_access_secret: &'a str,
+    zone_id: &'a str,
+    zone_code: &'a str,
     context_reset: bool,
-) -> Response<CheckResponse> {
+}
+
+fn build_success_response(input: RecoverySuccessResponse<'_>) -> Response<CheckResponse> {
+    let RecoverySuccessResponse {
+        config,
+        user_id,
+        client_device_id,
+        level,
+        tenant_id,
+        new_jwt,
+        new_access_key,
+        new_access_secret,
+        zone_id,
+        zone_code,
+        context_reset,
+    } = input;
     let mut builder = DeniedHttpResponseBuilder::new();
     builder.set_http_status(HttpStatusCode::Ok);
     builder.add_header("content-type", "application/json", None, false);
@@ -274,38 +288,38 @@ pub async fn try_handle_recovery_session(
     ));
 
     if let Ok(Some(cache)) = session_mgr.get_recovery_cache(&recovery_key).await {
-        return Some(Ok(build_success_response(
+        return Some(Ok(build_success_response(RecoverySuccessResponse {
             config,
-            &cache.user_id,
-            &cache.client_device_id,
-            cache.level,
-            &cache.tenant_id,
-            &cache.new_jwt,
-            &cache.new_access_key,
-            &cache.new_access_secret,
-            &cache.zone_id,
-            &cache.zone_code,
-            cache.context_reset,
-        )));
+            user_id: &cache.user_id,
+            client_device_id: &cache.client_device_id,
+            level: cache.level,
+            tenant_id: &cache.tenant_id,
+            new_jwt: &cache.new_jwt,
+            new_access_key: &cache.new_access_key,
+            new_access_secret: &cache.new_access_secret,
+            zone_id: &cache.zone_id,
+            zone_code: &cache.zone_code,
+            context_reset: cache.context_reset,
+        })));
     }
 
     if let Ok(true) = session_mgr.is_recovery_locked(&recovery_key).await {
         for _ in 0..12 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Ok(Some(cache)) = session_mgr.get_recovery_cache(&recovery_key).await {
-                return Some(Ok(build_success_response(
+                return Some(Ok(build_success_response(RecoverySuccessResponse {
                     config,
-                    &cache.user_id,
-                    &cache.client_device_id,
-                    cache.level,
-                    &cache.tenant_id,
-                    &cache.new_jwt,
-                    &cache.new_access_key,
-                    &cache.new_access_secret,
-                    &cache.zone_id,
-                    &cache.zone_code,
-                    cache.context_reset,
-                )));
+                    user_id: &cache.user_id,
+                    client_device_id: &cache.client_device_id,
+                    level: cache.level,
+                    tenant_id: &cache.tenant_id,
+                    new_jwt: &cache.new_jwt,
+                    new_access_key: &cache.new_access_key,
+                    new_access_secret: &cache.new_access_secret,
+                    zone_id: &cache.zone_id,
+                    zone_code: &cache.zone_code,
+                    context_reset: cache.context_reset,
+                })));
             }
         }
         return Some(Ok(Response::new(build_denied_json(
@@ -459,17 +473,21 @@ pub async fn try_handle_recovery_session(
         tenant_id.as_str()
     };
     let released = match release_user_session(
-        session_mgr,
-        token_mgr,
-        config,
-        &response.user_id,
-        &response.username,
-        response.role_level,
-        release_tenant_id,
-        &resolved_zone_id,
-        &response.client_device_id,
-        &response.client_device_id,
-        "",
+        UserSessionIssueContext {
+            session_mgr: session_mgr.as_ref(),
+            token_mgr: token_mgr.as_ref(),
+            config,
+        },
+        ReleaseUserSessionCommand {
+            user_id: &response.user_id,
+            username: &response.username,
+            level: response.role_level,
+            tenant_id: release_tenant_id,
+            zone_id: &resolved_zone_id,
+            device_id: &response.client_device_id,
+            client_device_id: &response.client_device_id,
+            client_proof_public_key: "",
+        },
     )
     .await
     {
@@ -514,19 +532,19 @@ pub async fn try_handle_recovery_session(
         release_recovery_lock(session_mgr, &recovery_key, &lock_owner).await;
     }
 
-    Some(Ok(build_success_response(
+    Some(Ok(build_success_response(RecoverySuccessResponse {
         config,
-        &response.user_id,
-        &response.client_device_id,
-        response.role_level,
-        &tenant_id,
-        &released.access_token,
-        &released.access_key,
-        &released.access_secret,
-        &resolved_zone_id,
-        &resolved_zone_code,
+        user_id: &response.user_id,
+        client_device_id: &response.client_device_id,
+        level: response.role_level,
+        tenant_id: &tenant_id,
+        new_jwt: &released.access_token,
+        new_access_key: &released.access_key,
+        new_access_secret: &released.access_secret,
+        zone_id: &resolved_zone_id,
+        zone_code: &resolved_zone_code,
         context_reset,
-    )))
+    })))
 }
 
 impl SessionManager {

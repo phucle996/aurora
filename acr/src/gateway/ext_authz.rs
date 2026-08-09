@@ -326,15 +326,19 @@ impl Authorization for ExtAuthzService {
         }
 
         if let Some(res) = crate::user::login::handle_mfa_verify(
-            &self.session_mgr,
-            &self.token_mgr,
-            redis_client.as_ref(),
-            &self.shared_redis,
-            &self.config,
-            client_headers,
-            &req,
-            method,
-            path,
+            crate::user::login::LoginWorkflowContext {
+                session_mgr: &self.session_mgr,
+                token_mgr: &self.token_mgr,
+                redis_client: redis_client.as_ref(),
+                shared_redis: &self.shared_redis,
+                config: &self.config,
+            },
+            crate::user::login::LoginWorkflowRequest {
+                client_headers,
+                request: &req,
+                method,
+                path,
+            },
         )
         .await
         {
@@ -344,15 +348,19 @@ impl Authorization for ExtAuthzService {
         if let Some(res) = self
             .oauth
             .handle(
-                &self.session_mgr,
-                &self.token_mgr,
-                redis_client.as_ref(),
-                &self.shared_redis,
-                &self.config,
-                client_headers,
-                &req,
-                method,
-                path,
+                crate::user::oauth::OAuthWorkflowContext {
+                    session_mgr: &self.session_mgr,
+                    token_mgr: &self.token_mgr,
+                    shared_redis_client: redis_client.as_ref(),
+                    shared_redis: &self.shared_redis,
+                    config: &self.config,
+                },
+                crate::user::oauth::OAuthEdgeRequest {
+                    client_headers,
+                    request: &req,
+                    method,
+                    path,
+                },
             )
             .await
         {
@@ -461,15 +469,19 @@ impl Authorization for ExtAuthzService {
 
         // 1. User Login: POST /api/v1/auth/login
         if let Some(res) = crate::user::login::handle_login(
-            &self.session_mgr,
-            &self.token_mgr,
-            redis_client.as_ref(),
-            &self.shared_redis,
-            &self.config,
-            client_headers,
-            &req,
-            method,
-            path,
+            crate::user::login::LoginWorkflowContext {
+                session_mgr: &self.session_mgr,
+                token_mgr: &self.token_mgr,
+                redis_client: redis_client.as_ref(),
+                shared_redis: &self.shared_redis,
+                config: &self.config,
+            },
+            crate::user::login::LoginWorkflowRequest {
+                client_headers,
+                request: &req,
+                method,
+                path,
+            },
         )
         .await
         {
@@ -478,14 +490,18 @@ impl Authorization for ExtAuthzService {
 
         // 1b. User Session Check: GET /api/v1/me/session
         if let Some(res) = crate::user::verify::handle_user_session_check(
-            &self.session_mgr,
-            &self.token_mgr,
-            redis_client.as_ref(),
-            &self.shared_redis,
-            &self.config,
-            client_headers,
-            method,
-            path,
+            crate::user::verify::SessionVerificationContext {
+                session_mgr: &self.session_mgr,
+                token_mgr: &self.token_mgr,
+                shared_redis_client: redis_client.as_ref(),
+                shared_redis: &self.shared_redis,
+                config: &self.config,
+            },
+            crate::user::verify::SessionCheckRequest {
+                client_headers,
+                method,
+                path,
+            },
         )
         .await
         {
@@ -576,14 +592,16 @@ impl Authorization for ExtAuthzService {
 
         // 3. SRE Admin Login: POST /admin/auth/login
         if let Some(res) = crate::sre::login::handle_admin_login(
-            &self.session_mgr,
-            &self.sre_token_mgr,
-            redis_client.as_ref(),
-            &self.config,
-            client_headers,
-            &req,
-            method,
-            path,
+            crate::sre::login::AdminLoginWorkflowContext {
+                session_mgr: &self.session_mgr,
+                token_mgr: &self.sre_token_mgr,
+                config: &self.config,
+            },
+            crate::sre::login::AdminLoginRequest {
+                request: &req,
+                method,
+                path,
+            },
         )
         .await
         {
@@ -621,15 +639,18 @@ impl Authorization for ExtAuthzService {
 
         // 6. User Zone Switch: POST /api/v1/zone/go-to-zone
         if let Some(res) = crate::user::zone_switcher::handle_user_zone_switch(
-            &self.session_mgr,
-            &self.token_mgr,
-            &self.shared_redis,
-            redis_client.as_ref(),
-            &self.config,
-            client_headers,
-            &req,
-            method,
-            path,
+            crate::user::zone_switcher::UserZoneSwitchWorkflowContext {
+                session_mgr: &self.session_mgr,
+                token_mgr: &self.token_mgr,
+                shared_redis: &self.shared_redis,
+                redis_client: redis_client.as_ref(),
+                config: &self.config,
+            },
+            crate::user::zone_switcher::UserZoneSwitchRequest {
+                client_headers,
+                method,
+                path,
+            },
         )
         .await
         {
@@ -638,14 +659,18 @@ impl Authorization for ExtAuthzService {
 
         // 6b. SRE Zone Switch: POST /admin/zone/go-to-zone
         if let Some(res) = crate::sre::zone_switcher::handle_sre_zone_switch(
-            &self.session_mgr,
-            &self.sre_token_mgr,
-            &self.shared_redis,
-            redis_client.as_ref(),
-            &self.config,
-            client_headers,
-            method,
-            path,
+            crate::sre::zone_switcher::SreZoneSwitchWorkflowContext {
+                session_mgr: &self.session_mgr,
+                token_mgr: &self.sre_token_mgr,
+                shared_redis: &self.shared_redis,
+                redis_client: redis_client.as_ref(),
+                config: &self.config,
+            },
+            crate::sre::zone_switcher::SreZoneSwitchRequest {
+                client_headers,
+                method,
+                path,
+            },
         )
         .await
         {
@@ -717,15 +742,19 @@ impl Authorization for ExtAuthzService {
                 cookies_to_set.extend(verify_res.cookies_to_set);
             } else {
                 let verify_res = verify_edge_session(
-                    &self.session_mgr,
-                    &self.token_mgr,
-                    redis_client.as_ref(),
-                    &self.shared_redis,
-                    &self.config,
-                    &cookie_header,
-                    client_headers,
-                    method,
-                    path,
+                    crate::user::verify::SessionVerificationContext {
+                        session_mgr: &self.session_mgr,
+                        token_mgr: &self.token_mgr,
+                        shared_redis_client: redis_client.as_ref(),
+                        shared_redis: &self.shared_redis,
+                        config: &self.config,
+                    },
+                    crate::user::verify::EdgeSessionVerificationRequest {
+                        cookie_header: &cookie_header,
+                        client_headers,
+                        method,
+                        path,
+                    },
                 )
                 .await;
                 if let Some(denial) = verify_res.denial_response {
@@ -845,14 +874,18 @@ impl Authorization for ExtAuthzService {
                     }
                 };
                 if let Some(response) = crate::billing::exchange::handle_billing_handoff_issue(
-                    &self.session_mgr,
-                    &self.config,
-                    source_claims,
-                    &access_key,
-                    &source_session,
-                    &req,
-                    method,
-                    path_without_query,
+                    crate::billing::exchange::BillingHandoffWorkflowContext {
+                        session_mgr: &self.session_mgr,
+                        config: &self.config,
+                    },
+                    crate::billing::exchange::BillingHandoffIssueRequest {
+                        claims: source_claims,
+                        access_key: &access_key,
+                        source_session: &source_session,
+                        request: &req,
+                        method,
+                        path: path_without_query,
+                    },
                 )
                 .await
                 {
@@ -962,13 +995,17 @@ impl Authorization for ExtAuthzService {
                 if let Some(response) = self
                     .oauth
                     .handle_social_link_start(
-                        &self.session_mgr,
-                        user_claims,
-                        &access_key,
-                        &req,
-                        method,
-                        path,
-                        &cookies_to_set,
+                        crate::user::oauth::SocialLinkStartWorkflowContext {
+                            session_mgr: &self.session_mgr,
+                        },
+                        crate::user::oauth::SocialLinkStartRequest {
+                            claims: user_claims,
+                            access_key: &access_key,
+                            request: &req,
+                            method,
+                            path,
+                            cookies_to_set: &cookies_to_set,
+                        },
                     )
                     .await
                 {
@@ -1101,14 +1138,18 @@ impl Authorization for ExtAuthzService {
                     })
                     .unwrap_or_default();
                 match crate::storage::control_assertion::authorize_storage_and_sign(
-                    &self.session_mgr,
-                    &self.token_mgr,
-                    &self.config,
-                    storage_claims,
-                    client_headers,
-                    method,
-                    path,
-                    &raw_body,
+                    crate::storage::control_assertion::StorageControlWorkflowContext {
+                        session_mgr: &self.session_mgr,
+                        token_mgr: &self.token_mgr,
+                        config: &self.config,
+                    },
+                    crate::storage::control_assertion::StorageControlRequest {
+                        claims: storage_claims,
+                        headers: client_headers,
+                        method,
+                        path,
+                        body: &raw_body,
+                    },
                 )
                 .await
                 {

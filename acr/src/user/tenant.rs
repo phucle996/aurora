@@ -11,6 +11,7 @@ use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::token::TokenManager;
 use crate::user::claims::Claims;
+use crate::user::session::RegisterSessionCommand;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
@@ -367,15 +368,15 @@ pub async fn handle_tenant_switch(
     };
 
     if let Err(error) = session_mgr
-        .register_session(
-            claims.zone_id.as_deref().unwrap_or("global"),
-            &tenant_id,
-            &claims.uid,
-            &access_key,
-            &source_session.ash,
-            &source_session.tdid,
-            &source_session.client_proof_public_key,
-        )
+        .register_session(RegisterSessionCommand {
+            zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+            tenant_id: &tenant_id,
+            user_id: &claims.uid,
+            access_key: &access_key,
+            access_secret_hash: &source_session.ash,
+            device_id: &source_session.tdid,
+            client_proof_public_key: &source_session.client_proof_public_key,
+        })
         .await
     {
         Logger::sys_error(

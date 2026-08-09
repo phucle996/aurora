@@ -30,6 +30,16 @@ pub struct UserAccessSession {
     pub client_proof_public_key: ::prost::alloc::string::String,
 }
 
+pub struct RegisterSessionCommand<'a> {
+    pub zone_id: &'a str,
+    pub tenant_id: &'a str,
+    pub user_id: &'a str,
+    pub access_key: &'a str,
+    pub access_secret_hash: &'a str,
+    pub device_id: &'a str,
+    pub client_proof_public_key: &'a str,
+}
+
 // ─── SessionManager impl for User Sessions ────────────────────────────────────
 
 impl SessionManager {
@@ -66,17 +76,19 @@ impl SessionManager {
 
     /// [COMMENT]: Đăng ký User Session mới, kèm index user và device.
     /// Trả về danh sách client_device_ids bị evict khi vượt quá USER_DEVICE_CAP=50.
-    #[allow(clippy::too_many_arguments)]
     pub async fn register_session(
         &self,
-        zone_id: &str,
-        tenant_id: &str,
-        user_id: &str,
-        access_key: &str,
-        ash: &str,
-        device_id: &str,
-        client_proof_public_key: &str,
+        command: RegisterSessionCommand<'_>,
     ) -> Result<Vec<String>, AcrError> {
+        let RegisterSessionCommand {
+            zone_id,
+            tenant_id,
+            user_id,
+            access_key,
+            access_secret_hash,
+            device_id,
+            client_proof_public_key,
+        } = command;
         const USER_DEVICE_CAP: usize = 50;
 
         let mut conn = self.get_connection().await?;
@@ -87,7 +99,7 @@ impl SessionManager {
 
         let now = chrono::Utc::now().timestamp();
         let session = UserAccessSession {
-            ash: ash.to_string(),
+            ash: access_secret_hash.to_string(),
             tdid: device_id.to_string(),
             lsa: now,
             client_proof_public_key: client_proof_public_key.to_string(),

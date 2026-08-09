@@ -60,19 +60,37 @@ fn sha256_hash(secret: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+pub struct SreZoneSwitchWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<SreTokenManager>,
+    pub shared_redis: &'a Arc<SharedRedisBus>,
+    pub redis_client: &'a redis::Client,
+    pub config: &'a Config,
+}
+
+pub struct SreZoneSwitchRequest<'a> {
+    pub client_headers: &'a HashMap<String, String>,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
 /// [COMMENT]: Intercept POST /admin/zone/go-to-zone — dành riêng cho SRE Admin để chuyển vùng zone hoạt động.
-// Keep the zone-switch workflow's authority and storage capabilities visible.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_sre_zone_switch(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<SreTokenManager>,
-    shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
-    config: &Config,
-    client_headers: &HashMap<String, String>,
-    method: &str,
-    path: &str,
+    workflow: SreZoneSwitchWorkflowContext<'_>,
+    request: SreZoneSwitchRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let SreZoneSwitchWorkflowContext {
+        session_mgr,
+        token_mgr,
+        shared_redis,
+        redis_client,
+        config,
+    } = workflow;
+    let SreZoneSwitchRequest {
+        client_headers,
+        method,
+        path,
+    } = request;
     use crate::gateway::ext_authz::extract_cookie_value;
     use crate::pkg::cookie::{
         COOKIE_ACCESS_KEY, COOKIE_ACCESS_SECRET, COOKIE_ACCESS_TOKEN, COOKIE_ZONE_CODE,

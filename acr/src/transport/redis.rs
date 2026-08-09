@@ -180,15 +180,19 @@ impl SharedRedisRouter {
                                         request.access_secret
                                     );
                                     let verification = crate::user::verify::verify_edge_session(
-                                        &session_mgr,
-                                        &token_mgr,
-                                        client.as_ref(),
-                                        &shared_bus,
-                                        &config,
-                                        &cookie_header,
-                                        &std::collections::HashMap::new(),
-                                        "POST",
-                                        "/api/v1/auth/verify",
+                                        crate::user::verify::SessionVerificationContext {
+                                            session_mgr: &session_mgr,
+                                            token_mgr: &token_mgr,
+                                            shared_redis_client: client.as_ref(),
+                                            shared_redis: &shared_bus,
+                                            config: &config,
+                                        },
+                                        crate::user::verify::EdgeSessionVerificationRequest {
+                                            cookie_header: &cookie_header,
+                                            client_headers: &std::collections::HashMap::new(),
+                                            method: "POST",
+                                            path: "/api/v1/auth/verify",
+                                        },
                                     )
                                     .await;
                                     let response = crate::infra::iam_proto::trinity::VerifyUserTrinityTokenResponse {

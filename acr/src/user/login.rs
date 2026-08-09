@@ -17,6 +17,7 @@ use crate::observability::logger::Logger;
 use crate::pkg::cookie::COOKIE_REFRESH_TOKEN;
 use crate::token::TokenManager;
 use crate::user::claims::Claims;
+use crate::user::session::RegisterSessionCommand;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
@@ -44,6 +45,21 @@ pub struct LoginPayload {
     pub zone_code: Option<String>,
     // [COMMENT]: Wire contract canonical luôn tách tenant domain khỏi username; UI có thể giữ cú pháp nhập user@domain.
     pub tenant_domain: Option<String>,
+}
+
+pub struct LoginWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<TokenManager>,
+    pub redis_client: &'a redis::Client,
+    pub shared_redis: &'a Arc<SharedRedisBus>,
+    pub config: &'a Config,
+}
+
+pub struct LoginWorkflowRequest<'a> {
+    pub client_headers: &'a HashMap<String, String>,
+    pub request: &'a envoy_types::pb::envoy::service::auth::v3::CheckRequest,
+    pub method: &'a str,
+    pub path: &'a str,
 }
 
 // [COMMENT]: Login challenge là public nhưng vẫn đi qua CORS + pre-auth rate limit của ExtAuthz.
@@ -113,20 +129,23 @@ pub async fn issue_mfa_challenge(
     Ok((challenge_id, MFA_CHALLENGE_TTL_SECONDS))
 }
 
-// Envoy entrypoints keep workflow-owned capabilities explicit so their
-// authority and failure boundaries remain visible.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_mfa_verify(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    redis_client: &redis::Client,
-    shared_redis: &Arc<SharedRedisBus>,
-    config: &Config,
-    client_headers: &HashMap<String, String>,
-    req: &envoy_types::pb::envoy::service::auth::v3::CheckRequest,
-    method: &str,
-    path: &str,
+    workflow: LoginWorkflowContext<'_>,
+    request: LoginWorkflowRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let LoginWorkflowContext {
+        session_mgr,
+        token_mgr,
+        redis_client,
+        shared_redis,
+        config,
+    } = workflow;
+    let LoginWorkflowRequest {
+        client_headers,
+        request: req,
+        method,
+        path,
+    } = request;
     if !(method == "POST" && path.split('?').next().unwrap_or(path) == "/api/v1/auth/mfa/verify") {
         return None;
     }
@@ -362,17 +381,21 @@ pub async fn handle_mfa_verify(
         None
     };
     let session = match release_user_session(
-        session_mgr,
-        token_mgr,
-        config,
-        &response.user_id,
-        &response.username,
-        response.level,
-        &response.tenant_id,
-        &context.zone_id,
-        &response.client_device_id,
-        &response.client_device_id,
-        &response.client_proof_public_key,
+        UserSessionIssueContext {
+            session_mgr: session_mgr.as_ref(),
+            token_mgr: token_mgr.as_ref(),
+            config,
+        },
+        ReleaseUserSessionCommand {
+            user_id: &response.user_id,
+            username: &response.username,
+            level: response.level,
+            tenant_id: &response.tenant_id,
+            zone_id: &context.zone_id,
+            device_id: &response.client_device_id,
+            client_device_id: &response.client_device_id,
+            client_proof_public_key: &response.client_proof_public_key,
+        },
     )
     .await
     {
@@ -447,6 +470,23 @@ pub struct ReleaseUserSessionResult {
     pub tenant_id_val: String,
 }
 
+pub struct UserSessionIssueContext<'a> {
+    pub session_mgr: &'a SessionManager,
+    pub token_mgr: &'a TokenManager,
+    pub config: &'a Config,
+}
+
+pub struct ReleaseUserSessionCommand<'a> {
+    pub user_id: &'a str,
+    pub username: &'a str,
+    pub level: i32,
+    pub tenant_id: &'a str,
+    pub zone_id: &'a str,
+    pub device_id: &'a str,
+    pub client_device_id: &'a str,
+    pub client_proof_public_key: &'a str,
+}
+
 // [COMMENT]: Chuẩn hóa identity tại biên và loại bỏ hoàn toàn contract legacy username@tenant_domain trên wire.
 fn canonicalize_login_identity(
     username: Option<&str>,
@@ -467,20 +507,25 @@ fn canonicalize_login_identity(
 }
 
 /// [COMMENT]: Khởi tạo Trinity Session riêng cho User (dùng cho cả HTTP Login và gRPC Release)
-#[allow(clippy::too_many_arguments)]
 pub async fn release_user_session(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    config: &Config,
-    user_id: &str,
-    username: &str,
-    level: i32,
-    tenant_id: &str,
-    zone_id: &str,
-    device_id: &str,
-    client_device_id: &str,
-    client_proof_public_key: &str,
+    context: UserSessionIssueContext<'_>,
+    command: ReleaseUserSessionCommand<'_>,
 ) -> Result<ReleaseUserSessionResult, Status> {
+    let UserSessionIssueContext {
+        session_mgr,
+        token_mgr,
+        config,
+    } = context;
+    let ReleaseUserSessionCommand {
+        user_id,
+        username,
+        level,
+        tenant_id,
+        zone_id,
+        device_id,
+        client_device_id,
+        client_proof_public_key,
+    } = command;
     Logger::sys_info(
         "user.login.release",
         &format!("Releasing new user trinity session for user_id={}", user_id),
@@ -532,18 +577,18 @@ pub async fn release_user_session(
     };
 
     if let Err(e) = session_mgr
-        .register_session(
-            claims
+        .register_session(RegisterSessionCommand {
+            zone_id: claims
                 .zone_id
                 .as_deref()
                 .expect("validated user zone must be present"),
-            claims.tenant_id.as_deref().unwrap_or("platform"),
+            tenant_id: claims.tenant_id.as_deref().unwrap_or("platform"),
             user_id,
-            &access_key,
-            &ash,
+            access_key: &access_key,
+            access_secret_hash: &ash,
             device_id,
             client_proof_public_key,
-        )
+        })
         .await
     {
         Logger::sys_error(
@@ -564,18 +609,23 @@ pub async fn release_user_session(
 }
 
 /// [COMMENT]: Intercept POST /api/v1/auth/login tại Edge.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_login(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    redis_client: &redis::Client,
-    shared_redis: &Arc<SharedRedisBus>,
-    config: &Config,
-    _client_headers: &std::collections::HashMap<String, String>,
-    req: &envoy_types::pb::envoy::service::auth::v3::CheckRequest,
-    method: &str,
-    path: &str,
+    workflow: LoginWorkflowContext<'_>,
+    request: LoginWorkflowRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let LoginWorkflowContext {
+        session_mgr,
+        token_mgr,
+        redis_client,
+        shared_redis,
+        config,
+    } = workflow;
+    let LoginWorkflowRequest {
+        client_headers: _client_headers,
+        request: req,
+        method,
+        path,
+    } = request;
     if !(method == "POST" && path == "/api/v1/auth/login") {
         return None;
     }
@@ -681,21 +731,23 @@ pub async fn handle_login(
     }
     let public_key = payload.device_public_key.as_deref().unwrap_or_default();
     if let Err(error) = crate::user::session_proof::verify_login_proof(
-        session_mgr,
-        payload
-            .session_proof_challenge_id
-            .as_deref()
-            .unwrap_or_default(),
-        payload.session_proof_timestamp.unwrap_or_default(),
-        &username,
-        &tenant_domain,
-        &zone_code,
-        payload.trust_device.unwrap_or(false),
-        public_key,
-        payload
-            .session_proof_signature
-            .as_deref()
-            .unwrap_or_default(),
+        session_mgr.as_ref(),
+        crate::user::session_proof::LoginProofInput {
+            challenge_id: payload
+                .session_proof_challenge_id
+                .as_deref()
+                .unwrap_or_default(),
+            timestamp: payload.session_proof_timestamp.unwrap_or_default(),
+            username: &username,
+            tenant_domain: &tenant_domain,
+            zone_code: &zone_code,
+            remember_me: payload.trust_device.unwrap_or(false),
+            public_key_b64: public_key,
+            signature_b64: payload
+                .session_proof_signature
+                .as_deref()
+                .unwrap_or_default(),
+        },
     )
     .await
     {
@@ -872,17 +924,21 @@ pub async fn handle_login(
     };
 
     let res_val = match release_user_session(
-        session_mgr,
-        token_mgr,
-        config,
-        &cp_res.user_id,
-        &username,
-        cp_res.level,
-        &cp_res.tenant_id,
-        &resolved_zone_id,
-        &cp_res.client_device_id,
-        &cp_res.client_device_id,
-        &cp_res.client_proof_public_key,
+        UserSessionIssueContext {
+            session_mgr: session_mgr.as_ref(),
+            token_mgr: token_mgr.as_ref(),
+            config,
+        },
+        ReleaseUserSessionCommand {
+            user_id: &cp_res.user_id,
+            username: &username,
+            level: cp_res.level,
+            tenant_id: &cp_res.tenant_id,
+            zone_id: &resolved_zone_id,
+            device_id: &cp_res.client_device_id,
+            client_device_id: &cp_res.client_device_id,
+            client_proof_public_key: &cp_res.client_proof_public_key,
+        },
     )
     .await
     {

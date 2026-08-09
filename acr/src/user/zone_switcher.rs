@@ -63,20 +63,37 @@ fn sha256_hash(secret: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+pub struct UserZoneSwitchWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<TokenManager>,
+    pub shared_redis: &'a Arc<SharedRedisBus>,
+    pub redis_client: &'a redis::Client,
+    pub config: &'a Config,
+}
+
+pub struct UserZoneSwitchRequest<'a> {
+    pub client_headers: &'a HashMap<String, String>,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
 /// [COMMENT]: Intercept POST /api/v1/zone/go-to-zone — xác thực Trinity và re-issue JWT với zone mới.
-// Keep the user zone-switch workflow capabilities explicit at the edge.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_user_zone_switch(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
-    config: &Config,
-    client_headers: &HashMap<String, String>,
-    _req: &envoy_types::pb::envoy::service::auth::v3::CheckRequest,
-    method: &str,
-    path: &str,
+    workflow: UserZoneSwitchWorkflowContext<'_>,
+    request: UserZoneSwitchRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let UserZoneSwitchWorkflowContext {
+        session_mgr,
+        token_mgr,
+        shared_redis,
+        redis_client,
+        config,
+    } = workflow;
+    let UserZoneSwitchRequest {
+        client_headers,
+        method,
+        path,
+    } = request;
     use crate::gateway::ext_authz::extract_cookie_value;
     use crate::pkg::cookie::{
         COOKIE_ACCESS_KEY, COOKIE_ACCESS_SECRET, COOKIE_ACCESS_TOKEN, COOKIE_ZONE_CODE,

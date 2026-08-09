@@ -38,20 +38,34 @@ pub struct ErrorResponse {
     pub error_message: String,
 }
 
+pub struct AdminLoginWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<SreTokenManager>,
+    pub config: &'a Config,
+}
+
+pub struct AdminLoginRequest<'a> {
+    pub request: &'a envoy_types::pb::envoy::service::auth::v3::CheckRequest,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
 /// [COMMENT]: Hàm xử lý đăng nhập SRE Admin cục bộ tại biên.
 /// Intercept: POST /admin/auth/login
-// Keep Envoy workflow capabilities explicit at the authorization boundary.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_admin_login(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<SreTokenManager>,
-    _redis_client: &redis::Client,
-    config: &Config,
-    _client_headers: &std::collections::HashMap<String, String>,
-    req: &envoy_types::pb::envoy::service::auth::v3::CheckRequest,
-    method: &str,
-    path: &str,
+    workflow: AdminLoginWorkflowContext<'_>,
+    request: AdminLoginRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let AdminLoginWorkflowContext {
+        session_mgr,
+        token_mgr,
+        config,
+    } = workflow;
+    let AdminLoginRequest {
+        request: req,
+        method,
+        path,
+    } = request;
     // [COMMENT]: Chỉ intercept HTTP POST /admin/auth/login
     if !(method == "POST" && path == "/admin/auth/login") {
         return None;

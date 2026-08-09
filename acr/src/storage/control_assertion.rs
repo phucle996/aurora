@@ -51,19 +51,36 @@ pub struct SignedControlHeaders {
     pub key_id: String,
 }
 
-// Keep each signed assertion input explicit at this security boundary. A generic
-// context would make authority and canonicalization inputs easier to mix up.
-#[allow(clippy::too_many_arguments)]
+pub struct StorageControlWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<TokenManager>,
+    pub config: &'a Config,
+}
+
+pub struct StorageControlRequest<'a> {
+    pub claims: &'a Claims,
+    pub headers: &'a HashMap<String, String>,
+    pub method: &'a str,
+    pub path: &'a str,
+    pub body: &'a [u8],
+}
+
 pub async fn authorize_storage_and_sign(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    config: &Config,
-    claims: &Claims,
-    headers: &HashMap<String, String>,
-    method: &str,
-    path: &str,
-    body: &[u8],
+    workflow: StorageControlWorkflowContext<'_>,
+    request: StorageControlRequest<'_>,
 ) -> Result<SignedControlHeaders, &'static str> {
+    let StorageControlWorkflowContext {
+        session_mgr,
+        token_mgr,
+        config,
+    } = workflow;
+    let StorageControlRequest {
+        claims,
+        headers,
+        method,
+        path,
+        body,
+    } = request;
     if body.len() > MAX_CONTROL_BODY_BYTES {
         return Err("Zone control request body exceeds 64 KiB");
     }

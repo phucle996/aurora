@@ -178,19 +178,31 @@ async fn consume_challenge(
     }
 }
 
-// Login proof canonicalization keeps each signed input explicit.
-#[allow(clippy::too_many_arguments)]
+pub struct LoginProofInput<'a> {
+    pub challenge_id: &'a str,
+    pub timestamp: i64,
+    pub username: &'a str,
+    pub tenant_domain: &'a str,
+    pub zone_code: &'a str,
+    pub remember_me: bool,
+    pub public_key_b64: &'a str,
+    pub signature_b64: &'a str,
+}
+
 pub async fn verify_login_proof(
     session_mgr: &SessionManager,
-    challenge_id: &str,
-    timestamp: i64,
-    username: &str,
-    tenant_domain: &str,
-    zone_code: &str,
-    remember_me: bool,
-    public_key_b64: &str,
-    signature_b64: &str,
+    input: LoginProofInput<'_>,
 ) -> Result<(), String> {
+    let LoginProofInput {
+        challenge_id,
+        timestamp,
+        username,
+        tenant_domain,
+        zone_code,
+        remember_me,
+        public_key_b64,
+        signature_b64,
+    } = input;
     if challenge_id.is_empty() || signature_b64.is_empty() {
         return Err("login session proof is required".to_string());
     }

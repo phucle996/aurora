@@ -46,20 +46,47 @@ pub struct VerifyEdgeSessionResult {
     pub cookies_to_set: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+pub struct SessionVerificationContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<TokenManager>,
+    pub shared_redis_client: &'a redis::Client,
+    pub shared_redis: &'a Arc<SharedRedisBus>,
+    pub config: &'a Config,
+}
+
+pub struct EdgeSessionVerificationRequest<'a> {
+    pub cookie_header: &'a str,
+    pub client_headers: &'a HashMap<String, String>,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
+pub struct SessionCheckRequest<'a> {
+    pub client_headers: &'a HashMap<String, String>,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
 /// [COMMENT]: Edge session verifier — kiểm tra Trinity credentials (JWT + access_key + access_secret)
 /// Tự động xử lý Cookie Extraction, Token Recovery (sliding window khi JWT hết hạn), và Session Rotation nội bộ.
-#[allow(clippy::too_many_arguments)]
 pub async fn verify_edge_session(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    shared_redis_client: &redis::Client,
-    shared_redis: &Arc<SharedRedisBus>,
-    config: &Config,
-    cookie_header: &str,
-    client_headers: &HashMap<String, String>,
-    method: &str,
-    path: &str,
+    context: SessionVerificationContext<'_>,
+    request: EdgeSessionVerificationRequest<'_>,
 ) -> VerifyEdgeSessionResult {
+    let SessionVerificationContext {
+        session_mgr,
+        token_mgr,
+        shared_redis_client,
+        shared_redis,
+        config,
+    } = context;
+    let EdgeSessionVerificationRequest {
+        cookie_header,
+        client_headers,
+        method,
+        path,
+    } = request;
     use crate::gateway::ext_authz::extract_cookie_value;
 
     let jwt_token = extract_cookie_value(cookie_header, COOKIE_ACCESS_TOKEN).or_else(|| {
@@ -302,17 +329,15 @@ pub async fn verify_edge_session(
 }
 
 /// [COMMENT]: Intercept GET /api/v1/me/session — trả về 200 OK với body {"data":{"authenticated":true/false}}
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_user_session_check(
-    session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
-    shared_redis_client: &redis::Client,
-    shared_redis: &Arc<SharedRedisBus>,
-    config: &Config,
-    client_headers: &HashMap<String, String>,
-    method: &str,
-    path: &str,
+    context: SessionVerificationContext<'_>,
+    request: SessionCheckRequest<'_>,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
+    let SessionCheckRequest {
+        client_headers,
+        method,
+        path,
+    } = request;
     // [COMMENT]: Chỉ bắt GET request đến đúng /api/v1/me/session
     if !(method == "GET" && path == "/api/v1/me/session") {
         return None;
@@ -327,15 +352,13 @@ pub async fn handle_user_session_check(
 
     // [COMMENT]: Gọi verify_edge_session dùng chung để tái sử dụng toàn bộ logic kiểm tra JWT, Redis Session, Recovery Sliding Window và Session Rotation
     let verify_res = verify_edge_session(
-        session_mgr,
-        token_mgr,
-        shared_redis_client,
-        shared_redis,
-        config,
-        &cookie_header,
-        client_headers,
-        method,
-        path,
+        context,
+        EdgeSessionVerificationRequest {
+            cookie_header: &cookie_header,
+            client_headers,
+            method,
+            path,
+        },
     )
     .await;
 

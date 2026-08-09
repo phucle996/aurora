@@ -29,6 +29,14 @@
 - Không refactor code hiện có thành helper chỉ vì trùng cú pháp trong khi semantics, authority hoặc failure behavior thuộc các workflow khác nhau.
 - Nếu buộc phải thêm helper, change description phải giải thích vì sao inline/workflow-local implementation không đủ và helper đó bảo toàn isolation như thế nào.
 
+## Workflow contexts, never God Contexts
+
+- Không dùng `#[allow(clippy::too_many_arguments)]` để unblock build hoặc che nợ thiết kế. Ngoại lệ phải được user phê duyệt tường minh trước khi commit.
+- Khi workflow cần nhiều capability, tạo context riêng ngay trong module owner. Context chỉ được chứa capability mà workflow đó thật sự sử dụng.
+- Dữ liệu nghiệp vụ, signed input và transport input phải đi qua command/request type có tên theo workflow; không trộn chúng vào capability context.
+- Cấm `AppContext`, `ServiceContext`, dependency bag hoặc context dùng chung cho các workflow không cùng authority/failure boundary.
+- Không di chuyển dependency vào context chỉ để giảm số argument. Mỗi field phải phản ánh capability, input hoặc invariant cụ thể của workflow owner.
+
 ## Required working order
 
 1. Tìm và đọc God View liên quan.

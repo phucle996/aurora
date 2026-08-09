@@ -13,6 +13,16 @@ use crate::user::session::UserAccessSession;
 use prost::Message;
 use std::sync::Arc;
 
+pub struct RotateSessionCommand<'a> {
+    pub zone_id: &'a str,
+    pub tenant_id: &'a str,
+    pub user_id: &'a str,
+    pub old_access_key: &'a str,
+    pub new_access_key: &'a str,
+    pub new_access_secret_hash: &'a str,
+    pub device_id: &'a str,
+}
+
 /// [COMMENT]: Xử lý Sliding Session (Trinity Refresh) cho User thường khi TTL còn thấp
 pub async fn handle_user_session_rotation(
     session_mgr: &Arc<SessionManager>,
@@ -61,15 +71,15 @@ pub async fn handle_user_session_rotation(
 
         if let Ok(new_jwt) = token_mgr.generate_token(&new_claims).await {
             match session_mgr
-                .try_rotate_session(
-                    claims.zone_id.as_deref().unwrap_or("global"),
-                    claims.tenant_id.as_deref().unwrap_or("platform"),
-                    &claims.uid,
-                    access_key,
-                    &new_access_key,
-                    &new_ash,
-                    &device_id,
-                )
+                .try_rotate_session(RotateSessionCommand {
+                    zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+                    tenant_id: claims.tenant_id.as_deref().unwrap_or("platform"),
+                    user_id: &claims.uid,
+                    old_access_key: access_key,
+                    new_access_key: &new_access_key,
+                    new_access_secret_hash: &new_ash,
+                    device_id: &device_id,
+                })
                 .await
             {
                 Ok(true) => {
@@ -118,17 +128,19 @@ fn sha256_hash(secret: &str) -> String {
 
 impl SessionManager {
     /// [COMMENT]: Trinity Rotation User — SETNX Lock chống Race Condition, Grace Period 5s
-    #[allow(clippy::too_many_arguments)]
     pub async fn try_rotate_session(
         &self,
-        zone_id: &str,
-        tenant_id: &str,
-        user_id: &str,
-        old_access_key: &str,
-        new_access_key: &str,
-        new_ash: &str,
-        device_id: &str,
+        command: RotateSessionCommand<'_>,
     ) -> Result<bool, AcrError> {
+        let RotateSessionCommand {
+            zone_id,
+            tenant_id,
+            user_id,
+            old_access_key,
+            new_access_key,
+            new_access_secret_hash,
+            device_id,
+        } = command;
         let mut conn = self.get_connection().await?;
         let lock_key = format!("iam:lock:refresh:{}", old_access_key);
 
@@ -175,7 +187,7 @@ impl SessionManager {
 
         let now = chrono::Utc::now().timestamp();
         let new_session = UserAccessSession {
-            ash: new_ash.to_string(),
+            ash: new_access_secret_hash.to_string(),
             tdid: device_id.to_string(),
             lsa: now,
             client_proof_public_key: old_session.client_proof_public_key,

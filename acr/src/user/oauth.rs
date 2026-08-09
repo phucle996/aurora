@@ -12,7 +12,10 @@ use crate::pkg::cookie::{
     COOKIE_REFRESH_TOKEN, COOKIE_TENANT_ID, COOKIE_ZONE_CODE,
 };
 use crate::token::TokenManager;
-use crate::user::login::{issue_mfa_challenge, release_user_session, MfaChallengeContext};
+use crate::user::login::{
+    issue_mfa_challenge, release_user_session, MfaChallengeContext, ReleaseUserSessionCommand,
+    UserSessionIssueContext,
+};
 use crate::user::session_proof::canonicalize_public_key;
 use base64::Engine;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
@@ -91,6 +94,74 @@ struct CanonicalIdentity {
     display_name: String,
     avatar_url: Option<String>,
     email_verified_at: i64,
+}
+
+#[derive(Clone, Copy)]
+pub struct OAuthWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+    pub token_mgr: &'a Arc<TokenManager>,
+    pub shared_redis_client: &'a redis::Client,
+    pub shared_redis: &'a Arc<SharedRedisBus>,
+    pub config: &'a Config,
+}
+
+pub struct OAuthEdgeRequest<'a> {
+    pub client_headers: &'a HashMap<String, String>,
+    pub request: &'a CheckRequest,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
+pub struct SocialLinkStartWorkflowContext<'a> {
+    pub session_mgr: &'a Arc<SessionManager>,
+}
+
+pub struct SocialLinkStartRequest<'a> {
+    pub claims: &'a crate::user::claims::Claims,
+    pub access_key: &'a str,
+    pub request: &'a CheckRequest,
+    pub method: &'a str,
+    pub path: &'a str,
+    pub cookies_to_set: &'a [String],
+}
+
+struct OAuthStartWorkflowContext<'a> {
+    session_mgr: &'a Arc<SessionManager>,
+    shared_redis: &'a Arc<SharedRedisBus>,
+    shared_redis_client: &'a redis::Client,
+}
+
+struct OAuthStartRequest<'a> {
+    runtime: &'a ProviderRuntime,
+    provider: &'a str,
+    request: &'a CheckRequest,
+    client_headers: &'a HashMap<String, String>,
+}
+
+struct OAuthCallbackRequest<'a> {
+    client_headers: &'a HashMap<String, String>,
+    runtime: &'a ProviderRuntime,
+    provider: &'a str,
+    path: &'a str,
+}
+
+struct SocialLinkCallbackValidation<'a> {
+    client_headers: &'a HashMap<String, String>,
+    path: &'a str,
+    state: &'a OAuthState,
+}
+
+struct CompleteSocialLinkWorkflowContext<'a> {
+    session_mgr: &'a Arc<SessionManager>,
+    shared_redis: &'a Arc<SharedRedisBus>,
+}
+
+struct CompleteSocialLinkRequest<'a> {
+    provider: &'a str,
+    state_token: &'a str,
+    state: &'a OAuthState,
+    identity: CanonicalIdentity,
+    cookies_to_set: &'a [String],
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,21 +473,17 @@ impl OAuthProviderService {
         Ok(key)
     }
 
-    // OAuth entry points keep workflow-owned capabilities explicit. Bundling
-    // them into a generic context would hide authority and failure boundaries.
-    #[allow(clippy::too_many_arguments)]
     pub async fn handle(
         &self,
-        session_mgr: &Arc<SessionManager>,
-        token_mgr: &Arc<TokenManager>,
-        redis_client: &redis::Client,
-        shared_redis: &Arc<SharedRedisBus>,
-        config: &Config,
-        client_headers: &HashMap<String, String>,
-        req: &CheckRequest,
-        method: &str,
-        path: &str,
+        workflow: OAuthWorkflowContext<'_>,
+        request: OAuthEdgeRequest<'_>,
     ) -> Option<Result<Response<CheckResponse>, Status>> {
+        let OAuthEdgeRequest {
+            client_headers,
+            request: req,
+            method,
+            path,
+        } = request;
         let path_without_query = path.split('?').next().unwrap_or(path);
         let rest = path_without_query.strip_prefix("/api/v1/auth/oauth/")?;
         let (provider, action) = rest.split_once('/')?;
@@ -449,13 +516,17 @@ impl OAuthProviderService {
             }
             return Some(
                 self.handle_start(
-                    session_mgr,
-                    shared_redis,
-                    redis_client,
-                    runtime,
-                    provider,
-                    req,
-                    client_headers,
+                    OAuthStartWorkflowContext {
+                        session_mgr: workflow.session_mgr,
+                        shared_redis: workflow.shared_redis,
+                        shared_redis_client: workflow.shared_redis_client,
+                    },
+                    OAuthStartRequest {
+                        runtime,
+                        provider,
+                        request: req,
+                        client_headers,
+                    },
                 )
                 .await,
             );
@@ -478,15 +549,13 @@ impl OAuthProviderService {
             }
         };
         let callback = self.handle_callback(
-            session_mgr,
-            token_mgr,
-            redis_client,
-            shared_redis,
-            config,
-            client_headers,
-            runtime,
-            provider,
-            path,
+            workflow,
+            OAuthCallbackRequest {
+                client_headers,
+                runtime,
+                provider,
+                path,
+            },
         );
         Some(
             match tokio::time::timeout(Duration::from_secs(13), callback).await {
@@ -503,17 +572,20 @@ impl OAuthProviderService {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn handle_social_link_start(
         &self,
-        session_mgr: &Arc<SessionManager>,
-        claims: &crate::user::claims::Claims,
-        access_key: &str,
-        req: &CheckRequest,
-        method: &str,
-        path: &str,
-        cookies_to_set: &[String],
+        workflow: SocialLinkStartWorkflowContext<'_>,
+        request: SocialLinkStartRequest<'_>,
     ) -> Option<Result<Response<CheckResponse>, Status>> {
+        let SocialLinkStartWorkflowContext { session_mgr } = workflow;
+        let SocialLinkStartRequest {
+            claims,
+            access_key,
+            request: req,
+            method,
+            path,
+            cookies_to_set,
+        } = request;
         let path_without_query = path.split('?').next().unwrap_or(path);
         let rest = path_without_query.strip_prefix("/api/v1/me/critical/iam/social-link/")?;
         let provider = rest.strip_suffix("/start")?;
@@ -665,29 +737,25 @@ impl OAuthProviderService {
         ))))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn validate_social_link_callback_session(
         &self,
-        session_mgr: &Arc<SessionManager>,
-        token_mgr: &Arc<TokenManager>,
-        shared_redis_client: &redis::Client,
-        shared_redis: &Arc<SharedRedisBus>,
-        config: &Config,
-        client_headers: &HashMap<String, String>,
-        path: &str,
-        state: &OAuthState,
+        workflow: crate::user::verify::SessionVerificationContext<'_>,
+        request: SocialLinkCallbackValidation<'_>,
     ) -> Result<Vec<String>, String> {
+        let SocialLinkCallbackValidation {
+            client_headers,
+            path,
+            state,
+        } = request;
         let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
         let verification = crate::user::verify::verify_edge_session(
-            session_mgr,
-            token_mgr,
-            shared_redis_client,
-            shared_redis,
-            config,
-            &cookie_header,
-            client_headers,
-            "GET",
-            path,
+            workflow,
+            crate::user::verify::EdgeSessionVerificationRequest {
+                cookie_header: &cookie_header,
+                client_headers,
+                method: "GET",
+                path,
+            },
         )
         .await;
         if verification.denial_response.is_some() {
@@ -701,7 +769,8 @@ impl OAuthProviderService {
         if claims.uid != state.user_id || zone_id != state.zone_id || tenant_id != state.tenant_id {
             return Err("link callback session binding mismatch".to_string());
         }
-        let session = session_mgr
+        let session = workflow
+            .session_mgr
             .get_session(zone_id, tenant_id, &claims.uid, &verification.access_key)
             .await
             .map_err(|_| "link callback session unavailable".to_string())?
@@ -714,17 +783,22 @@ impl OAuthProviderService {
         Ok(verification.cookies_to_set)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn complete_social_link(
         &self,
-        session_mgr: &Arc<SessionManager>,
-        shared_redis: &Arc<SharedRedisBus>,
-        provider: &str,
-        state_token: &str,
-        state: &OAuthState,
-        identity: CanonicalIdentity,
-        cookies_to_set: &[String],
+        workflow: CompleteSocialLinkWorkflowContext<'_>,
+        request: CompleteSocialLinkRequest<'_>,
     ) -> Result<Response<CheckResponse>, Status> {
+        let CompleteSocialLinkWorkflowContext {
+            session_mgr,
+            shared_redis,
+        } = workflow;
+        let CompleteSocialLinkRequest {
+            provider,
+            state_token,
+            state,
+            identity,
+            cookies_to_set,
+        } = request;
         let state_redis_key = state_key(provider, state_token);
         let index_key = link_index_key(&state.user_id, provider);
         let lock_key = format!("{index_key}:lock");
@@ -863,17 +937,22 @@ impl OAuthProviderService {
         )))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_start(
         &self,
-        session_mgr: &Arc<SessionManager>,
-        shared_redis: &Arc<SharedRedisBus>,
-        redis_client: &redis::Client,
-        runtime: &ProviderRuntime,
-        provider: &str,
-        req: &CheckRequest,
-        client_headers: &HashMap<String, String>,
+        workflow: OAuthStartWorkflowContext<'_>,
+        request: OAuthStartRequest<'_>,
     ) -> Result<Response<CheckResponse>, Status> {
+        let OAuthStartWorkflowContext {
+            session_mgr,
+            shared_redis,
+            shared_redis_client: redis_client,
+        } = workflow;
+        let OAuthStartRequest {
+            runtime,
+            provider,
+            request: req,
+            client_headers,
+        } = request;
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct StartPayload {
@@ -1011,19 +1090,17 @@ impl OAuthProviderService {
         Ok(Response::new(local_json(HttpStatusCode::Ok, body)))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_callback(
         &self,
-        session_mgr: &Arc<SessionManager>,
-        token_mgr: &Arc<TokenManager>,
-        shared_redis_client: &redis::Client,
-        shared_redis: &Arc<SharedRedisBus>,
-        config: &Config,
-        client_headers: &HashMap<String, String>,
-        runtime: &ProviderRuntime,
-        provider: &str,
-        path: &str,
+        workflow: OAuthWorkflowContext<'_>,
+        request: OAuthCallbackRequest<'_>,
     ) -> Result<Response<CheckResponse>, Status> {
+        let OAuthCallbackRequest {
+            client_headers,
+            runtime,
+            provider,
+            path,
+        } = request;
         let query = path
             .split_once('?')
             .map(|(_, query)| query)
@@ -1057,7 +1134,7 @@ impl OAuthProviderService {
             );
             return Ok(Response::new(oauth_failure_redirect("/")));
         }
-        let state_json = match consume_state(session_mgr, provider, &state_token).await {
+        let state_json = match consume_state(workflow.session_mgr, provider, &state_token).await {
             Ok(Some(state_json)) => state_json,
             // A missing value is a replay or expiry, not an infrastructure outage. Redirect
             // without revealing whether a valid state existed.
@@ -1108,14 +1185,18 @@ impl OAuthProviderService {
         let link_session_cookies = if state.flow == "link" {
             match self
                 .validate_social_link_callback_session(
-                    session_mgr,
-                    token_mgr,
-                    shared_redis_client,
-                    shared_redis,
-                    config,
-                    client_headers,
-                    path,
-                    &state,
+                    crate::user::verify::SessionVerificationContext {
+                        session_mgr: workflow.session_mgr,
+                        token_mgr: workflow.token_mgr,
+                        shared_redis_client: workflow.shared_redis_client,
+                        shared_redis: workflow.shared_redis,
+                        config: workflow.config,
+                    },
+                    SocialLinkCallbackValidation {
+                        client_headers,
+                        path,
+                        state: &state,
+                    },
                 )
                 .await
             {
@@ -1167,13 +1248,17 @@ impl OAuthProviderService {
         if state.flow == "link" {
             return self
                 .complete_social_link(
-                    session_mgr,
-                    shared_redis,
-                    provider,
-                    &state_token,
-                    &state,
-                    identity,
-                    &link_session_cookies,
+                    CompleteSocialLinkWorkflowContext {
+                        session_mgr: workflow.session_mgr,
+                        shared_redis: workflow.shared_redis,
+                    },
+                    CompleteSocialLinkRequest {
+                        provider,
+                        state_token: &state_token,
+                        state: &state,
+                        identity,
+                        cookies_to_set: &link_session_cookies,
+                    },
                 )
                 .await;
         }
@@ -1210,7 +1295,8 @@ impl OAuthProviderService {
             );
             return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
         }
-        let response_payload = match shared_redis
+        let response_payload = match workflow
+            .shared_redis
             .request(
                 "iam.auth.verify_external_identity",
                 "iam.auth.verify_external_identity.reply.",
@@ -1294,12 +1380,13 @@ impl OAuthProviderService {
                     .cloned()
                     .unwrap_or_default(),
             };
-            let (challenge_id, expires_in) = match issue_mfa_challenge(session_mgr, context).await {
-                Ok(value) => value,
-                Err(_) => {
-                    return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
-                }
-            };
+            let (challenge_id, expires_in) =
+                match issue_mfa_challenge(workflow.session_mgr, context).await {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                    }
+                };
             return Ok(Response::new(oauth_mfa_redirect(
                 &state.return_to,
                 &challenge_id,
@@ -1321,17 +1408,21 @@ impl OAuthProviderService {
             None
         };
         let session = release_user_session(
-            session_mgr,
-            token_mgr,
-            config,
-            &response.user_id,
-            &response.username,
-            response.level,
-            &response.tenant_id,
-            &state.zone_id,
-            &response.client_device_id,
-            &response.client_device_id,
-            &response.client_proof_public_key,
+            UserSessionIssueContext {
+                session_mgr: workflow.session_mgr.as_ref(),
+                token_mgr: workflow.token_mgr.as_ref(),
+                config: workflow.config,
+            },
+            ReleaseUserSessionCommand {
+                user_id: &response.user_id,
+                username: &response.username,
+                level: response.level,
+                tenant_id: &response.tenant_id,
+                zone_id: &state.zone_id,
+                device_id: &response.client_device_id,
+                client_device_id: &response.client_device_id,
+                client_proof_public_key: &response.client_proof_public_key,
+            },
         )
         .await;
         let session = match session {
@@ -1346,7 +1437,7 @@ impl OAuthProviderService {
             }
         };
         Ok(oauth_session_response(
-            config,
+            workflow.config,
             session,
             &response.refresh_token,
             refresh_max_age,

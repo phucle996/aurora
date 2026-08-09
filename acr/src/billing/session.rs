@@ -36,6 +36,16 @@ pub struct ReleaseBillingAliasResult {
     pub alias_secret: String,
 }
 
+pub struct ReleaseBillingAliasCommand<'a> {
+    pub user_id: &'a str,
+    pub username: &'a str,
+    pub zone_id: &'a str,
+    pub tenant_id: &'a str,
+    pub source_access_key: &'a str,
+    pub source_proof_public_key: &'a str,
+    pub client_proof_public_key: &'a str,
+}
+
 fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(secret.as_bytes()))
@@ -152,17 +162,19 @@ impl SessionManager {
 }
 
 /// [COMMENT]: Cost chỉ nhận opaque alias; identity và authorization không được copy vào JWT/domain snapshot.
-#[allow(clippy::too_many_arguments)]
 pub async fn release_billing_alias(
     session_mgr: &std::sync::Arc<SessionManager>,
-    user_id: &str,
-    username: &str,
-    zone_id: &str,
-    tenant_id: &str,
-    source_access_key: &str,
-    source_proof_public_key: &str,
-    client_proof_public_key: &str,
+    command: ReleaseBillingAliasCommand<'_>,
 ) -> Result<ReleaseBillingAliasResult, Status> {
+    let ReleaseBillingAliasCommand {
+        user_id,
+        username,
+        zone_id,
+        tenant_id,
+        source_access_key,
+        source_proof_public_key,
+        client_proof_public_key,
+    } = command;
     let alias_id = Uuid::now_v7().to_string();
     let alias_secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let alias = BillingSessionAlias {
