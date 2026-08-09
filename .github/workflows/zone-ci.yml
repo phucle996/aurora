@@ -75,6 +75,10 @@ jobs:
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "dataplane -> target"
+          shared-key: zone-dataplane
       - run: cargo fmt --check
       - name: cargo clippy
         shell: bash
@@ -115,6 +119,10 @@ jobs:
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "zone-runtime-stream -> target"
+          shared-key: zone-runtime-stream
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -139,6 +147,10 @@ jobs:
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "zone-control-edge-gateway/authorizer -> target"
+          shared-key: zone-authorizer
       - run: cargo fmt --check
       - name: cargo clippy
         shell: bash
