@@ -115,6 +115,7 @@ impl Authorization for ZoneControlAuthorizer {
                             header: Some(HeaderValue {
                                 key: key.to_string(),
                                 value,
+                                // ExtAuthz receives the textual representation; the binary form is empty.
                                 ..Default::default()
                             }),
                             append_action: 2,
