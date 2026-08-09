@@ -47,7 +47,7 @@ jobs:
               image_name=aurora-controlplane
               context=controlplane
               dockerfile=controlplane/Dockerfile.prod
-              source_paths=(controlplane)
+              source_paths=(controlplane .github/workflows/central-release.yml)
               ;;
             acr-v*)
               prefix=acr
@@ -58,7 +58,7 @@ jobs:
               # visibility instead of isolating the context to acr/.
               context=.
               dockerfile=acr/Dockerfile
-              source_paths=(acr contracts)
+              source_paths=(acr contracts .github/workflows/central-release.yml)
               ;;
             jo-v*)
               prefix=jo
@@ -66,7 +66,7 @@ jobs:
               image_name=aurora-job-orchestrator
               context=.
               dockerfile=job-orchestrator/Dockerfile
-              source_paths=(job-orchestrator contracts .dockerignore)
+              source_paths=(job-orchestrator contracts .dockerignore .github/workflows/central-release.yml)
               ;;
             notification-service-v*)
               prefix=notification-service
@@ -74,7 +74,7 @@ jobs:
               image_name=aurora-notification-service
               context=notification-service
               dockerfile=notification-service/Dockerfile
-              source_paths=(notification-service)
+              source_paths=(notification-service .github/workflows/central-release.yml)
               ;;
             cost-manager-v*)
               prefix=cost-manager
@@ -82,7 +82,7 @@ jobs:
               image_name=aurora-cost-manager
               context=cost-manager
               dockerfile=cost-manager/Dockerfile.dev
-              source_paths=(cost-manager)
+              source_paths=(cost-manager .github/workflows/central-release.yml)
               ;;
             cloud-console-v*)
               prefix=cloud-console
@@ -90,7 +90,7 @@ jobs:
               image_name=aurora-cloud-console
               context=cloud-console
               dockerfile=cloud-console/Dockerfile.prod
-              source_paths=(cloud-console)
+              source_paths=(cloud-console .github/workflows/central-release.yml)
               ;;
             admin-ui-v*)
               prefix=admin-ui
@@ -98,7 +98,7 @@ jobs:
               image_name=aurora-admin-ui
               context=admin-ui
               dockerfile=admin-ui/Dockerfile.nginx
-              source_paths=(admin-ui)
+              source_paths=(admin-ui .github/workflows/central-release.yml)
               ;;
             cost-console-v*)
               prefix=cost-console
@@ -106,7 +106,7 @@ jobs:
               image_name=aurora-cost-console
               context=cost-console
               dockerfile=cost-console/Dockerfile.nginx
-              source_paths=(cost-console)
+              source_paths=(cost-console .github/workflows/central-release.yml)
               ;;
             *)
               echo "Unsupported Central release tag: $tag" >&2
