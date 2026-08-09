@@ -1132,7 +1132,7 @@ impl OAuthProviderService {
         } else {
             Vec::new()
         };
-        if params.get("error").is_some() {
+        if params.contains_key("error") {
             Logger::sys_warn(
                 "user.oauth",
                 "OAuth provider denied callback",
@@ -1763,7 +1763,7 @@ fn oauth_session_response(
     builder.add_header("location", return_to, None, false);
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             COOKIE_ACCESS_TOKEN, session.access_token, config.session_ttl_secs, domain
         ),
@@ -1772,7 +1772,7 @@ fn oauth_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             COOKIE_ACCESS_KEY, session.access_key, config.session_ttl_secs, domain
         ),
@@ -1781,7 +1781,7 @@ fn oauth_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             COOKIE_ACCESS_SECRET, session.access_secret, config.session_ttl_secs, domain
         ),
@@ -1791,7 +1791,7 @@ fn oauth_session_response(
     if let Some(max_age) = refresh_max_age {
         builder.add_header(
             "set-cookie",
-            &format!(
+            format!(
                 "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
                 COOKIE_REFRESH_TOKEN, refresh_token, max_age, domain
             ),
@@ -1801,7 +1801,7 @@ fn oauth_session_response(
     }
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             COOKIE_CLIENT_DEVICE_ID, session.client_device_id, domain
         ),
@@ -1810,7 +1810,7 @@ fn oauth_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             COOKIE_TENANT_ID, session.tenant_id_val, domain
         ),
@@ -1819,7 +1819,7 @@ fn oauth_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
             COOKIE_ZONE_CODE, zone_code, domain
         ),

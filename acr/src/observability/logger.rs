@@ -24,7 +24,6 @@ use uuid::Uuid;
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
 ///   - Mọi log ghi ra bắt buộc phải mang mốc thời gian độ phân giải cao `RFC3339Nano`
 ///     để phân tích chính xác thứ tự xảy ra sự kiện trên production.
-///
 
 // Nhãn phân loại log
 /// Phân cấp độ ưu tiên của Log Level

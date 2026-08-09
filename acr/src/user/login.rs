@@ -1098,7 +1098,7 @@ fn build_mfa_session_response(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             session.access_secret, config.session_ttl_secs, domain_str
         ),
