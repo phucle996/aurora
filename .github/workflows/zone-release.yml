@@ -125,7 +125,19 @@ jobs:
           image-ref: ${{ env.IMAGE }}:${{ env.STAGING_TAG }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
+          exit-code: "0"
+          format: json
+          output: trivy-image.json
+      - name: Enforce image vulnerability policy
+        shell: bash
+        run: |
+          findings="$(jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL") | "\(.Severity) \(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fixed version")"' trivy-image.json)"
+          if [[ -n "$findings" ]]; then
+            while IFS= read -r finding; do
+              echo "::error title=${COMPONENT} image vulnerability::$finding"
+            done <<< "$findings"
+            exit 1
+          fi
       - name: Promote scanned image to immutable release tag
         shell: bash
         run: docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE:$STAGING_TAG"

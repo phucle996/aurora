@@ -36,12 +36,12 @@ RUN find src -name "*.rs" -exec touch {} + \
     && test -s target/release/aurora-dataplane
 
 # ============================================================================
-# 🚀 STAGE 2: RUNNER - CONTAINER DISTROLESS CC DEBIAN 12 (NON-ROOT)
+# 🚀 STAGE 2: RUNNER - CONTAINER DISTROLESS CC DEBIAN 13 (NON-ROOT)
 # ============================================================================
-# [COMMENT]: Chuyển sang gcr.io/distroless/cc-debian12:nonroot
+# [COMMENT]: Chuyển sang gcr.io/distroless/cc-debian13:nonroot
 # Image này chứa sẵn C runtime library (glibc, libgcc_s1, libssl3, ca-certificates) cần cho Rust & MinIO Client
 # đồng thời triệt tiêu hoàn toàn Shell (/bin/sh) và package manager để tăng cường an ninh bảo mật Cloud-Native.
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 
 # [COMMENT]: Copy Rust release binary vào thư mục thực thi tiêu chuẩn
 COPY --from=builder /src/dataplane/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
