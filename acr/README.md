@@ -69,3 +69,10 @@ source of truth của catalog.
 | L1/L2 cache và single-flight | [`src/infra/zone.rs`](src/infra/zone.rs) |
 | Zone protobuf contract | [`../proto/zone.proto`](../proto/zone.proto) |
 
+## Test topology
+
+Unit tests nằm trong `tests/unit/{gateway,storage,user}/`, phân theo workflow
+owner. Mỗi source module chỉ nạp file test tương ứng dưới `cfg(test)`; cách này
+giữ test truy cập được private security boundary mà không public hóa module hay
+tạo shared test helper. Test integration, khi cần edge contract thật, thuộc
+`tests/integration/` và không được phụ thuộc private implementation.
