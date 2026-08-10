@@ -79,9 +79,10 @@ struct OAuthState {
     device_name: String,
     device_type: String,
     trust_device: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
     zone_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     zone_code: String,
-    tenant_id: String,
     user_id: String,
     return_to: String,
 }
@@ -676,9 +677,11 @@ impl OAuthProviderService {
             device_name: String::new(),
             device_type: String::new(),
             trust_device: false,
-            zone_id: zone_id.to_string(),
+            // Social links are owned by /me. The active Zone/tenant is used
+            // only to read this browser's current session proof and must not
+            // become OAuth state or identity ownership.
+            zone_id: String::new(),
             zone_code: String::new(),
-            tenant_id: tenant_id.to_string(),
             user_id: claims.uid.clone(),
             return_to,
         };
@@ -766,7 +769,7 @@ impl OAuthProviderService {
             .ok_or_else(|| "link callback session missing".to_string())?;
         let zone_id = claims.zone_id.as_deref().unwrap_or("global");
         let tenant_id = claims.tenant_id.as_deref().unwrap_or("platform");
-        if claims.uid != state.user_id || zone_id != state.zone_id || tenant_id != state.tenant_id {
+        if claims.uid != state.user_id {
             return Err("link callback session binding mismatch".to_string());
         }
         let session = workflow
@@ -1015,8 +1018,8 @@ impl OAuthProviderService {
                     )))
                 }
             };
-        let return_to = payload.return_to.unwrap_or_else(|| "/".to_string());
-        if return_to.len() > 2048 || !safe_return_to(&return_to) {
+        let return_to = payload.return_to.unwrap_or_else(|| "/personal".to_string());
+        if return_to.len() > 2048 || !social_login_return_to(&return_to) {
             return Ok(Response::new(error_json(
                 HttpStatusCode::BadRequest,
                 "Invalid return path",
@@ -1056,7 +1059,6 @@ impl OAuthProviderService {
             trust_device: payload.trust_device.unwrap_or(false),
             zone_id,
             zone_code,
-            tenant_id: String::new(),
             user_id: String::new(),
             return_to,
         };
@@ -1729,11 +1731,21 @@ fn pkce_challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-fn safe_return_to(value: &str) -> bool {
-    value == "/"
-        || value == "/personal/settings/social-links"
-        || value == "/tenant/settings/social-links"
+fn social_login_return_to(value: &str) -> bool {
+    if value == "/personal"
         || (value.starts_with("/billing/authorize?") && !value.starts_with("//"))
+    {
+        return true;
+    }
+
+    let Some(token) = value.strip_prefix("/personal/settings/tenant-invitations/join?token=")
+    else {
+        return false;
+    };
+    token.len() == 43
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn local_json(status: HttpStatusCode, body: serde_json::Value) -> CheckResponse {
@@ -1804,7 +1816,7 @@ fn error_json(status: HttpStatusCode, message: &str) -> CheckResponse {
 fn oauth_failure_redirect(return_to: &str) -> CheckResponse {
     let mut query = form_urlencoded::Serializer::new(String::new());
     query.append_pair("oauth_error", "OAUTH_SIGN_IN_FAILED");
-    if safe_return_to(return_to) && return_to != "/" {
+    if social_login_return_to(return_to) && return_to != "/personal" {
         query.append_pair("return_to", return_to);
     }
     let destination = format!("/signin?{}", query.finish());
@@ -1823,7 +1835,7 @@ fn oauth_mfa_redirect(return_to: &str, challenge_id: &str, expires_in: u64) -> C
     query.append_pair("mfa_required", "1");
     query.append_pair("challenge_id", challenge_id);
     query.append_pair("expires_in", &expires_in.to_string());
-    if safe_return_to(return_to) && return_to != "/" {
+    if social_login_return_to(return_to) && return_to != "/personal" {
         query.append_pair("return_to", return_to);
     }
     let destination = format!("/signin?{}", query.finish());
@@ -1928,14 +1940,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn return_path_allowlist_rejects_external_and_ambiguous_paths() {
-        assert!(safe_return_to("/"));
-        assert!(safe_return_to("/personal/settings/social-links"));
-        assert!(safe_return_to("/tenant/settings/social-links"));
-        assert!(safe_return_to("/billing/authorize?request_id=abc"));
-        assert!(!safe_return_to("//attacker.example"));
-        assert!(!safe_return_to("https://attacker.example"));
-        assert!(!safe_return_to("/billing/authorize/other"));
+    fn social_login_return_path_allowlist_keeps_only_self_continuations() {
+        assert!(social_login_return_to("/personal"));
+        assert!(social_login_return_to("/billing/authorize?request_id=abc"));
+        assert!(social_login_return_to(
+            "/personal/settings/tenant-invitations/join?token=0123456789abcdefghijklmnopqrstuvwxyzABCDE-_"
+        ));
+        assert!(!social_login_return_to("/"));
+        assert!(!social_login_return_to("/personal/settings/social-links"));
+        assert!(!social_login_return_to("/tenant/settings/social-links"));
+        assert!(!social_login_return_to("//attacker.example"));
+        assert!(!social_login_return_to("https://attacker.example"));
+        assert!(!social_login_return_to("/billing/authorize/other"));
+    }
+
+    #[test]
+    fn social_link_state_omits_zone_and_tenant_context() {
+        let state = OAuthState {
+            flow: "link".to_string(),
+            provider: "github".to_string(),
+            operation_id: "operation".to_string(),
+            code_verifier: "verifier".to_string(),
+            nonce: "nonce".to_string(),
+            device_public_key: "proof".to_string(),
+            client_device_id: "device".to_string(),
+            device_name: String::new(),
+            device_type: String::new(),
+            trust_device: false,
+            zone_id: String::new(),
+            zone_code: String::new(),
+            user_id: "user".to_string(),
+            return_to: "/tenant/settings/social-links".to_string(),
+        };
+
+        let serialized = serde_json::to_string(&state).expect("state must serialize");
+        assert!(!serialized.contains("zone_id"));
+        assert!(!serialized.contains("zone_code"));
+        assert!(!serialized.contains("tenant_id"));
     }
 
     #[test]

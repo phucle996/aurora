@@ -66,7 +66,7 @@ Zone hay redirect đích.
 | `zone_code` | Bắt buộc, trim/lowercase, dài tối đa 64, không được `global`; Zone phải `active` hoặc `draining` |
 | `device_name` | Optional, tối đa 120, không control character |
 | `device_type` | Optional, tối đa 64, không control character |
-| `return_to` | Chỉ `/`, `/personal/settings/social-links`, `/tenant/settings/social-links` hoặc billing path đã allowlist |
+| `return_to` | Mặc định `/personal` (UI shell của `/me`). Chỉ chấp nhận `/personal`, billing authorization path, hoặc personal tenant-invitation path đã validate; không nhận social-link hay tenant UI path |
 
 ### ACR processing and REST output
 
@@ -104,7 +104,7 @@ không ghi raw token trong key. `{normalized_zone_code}` là
 | Key / transport name | Store | Type/operation | TTL / timeout | Owner / purpose |
 |---|---|---|---|---|
 | `secret/data/acr/oauth/{provider}` | Vault KV | Provider client id, secret, callback URL, scope; read at startup | Runtime config lifetime | ACR; client secret không đi qua request hoặc CP |
-| `iam:oauth:state:{provider}:{sha256(provider:state_token)}` | Auth-State Redis | JSON `OAuthState`; `SET NX` | `EX 300s` | ACR; bind flow/provider/PKCE/nonce/device/Zone/return path |
+| `iam:oauth:state:{provider}:{sha256(provider:state_token)}` | Auth-State Redis | JSON `OAuthState`; `SET NX` | `EX 300s` | ACR; bind login flow/provider/PKCE/nonce/device/concrete Zone/return path. Không chứa tenant authority |
 | `pre:ip:{client_ip}:auth_public` → `ratelimit:pre:ip:{client_ip}:auth_public` | ACR Moka L1 → Auth-State Redis L2 | L1 block marker; L2 `INCR` + `EXPIRE` | L1 block `30s`; L2 window `60s`, tối đa `30` request/IP | Edge pre-auth limiter |
 | `pre:device:{device_id}:auth_public` → `ratelimit:pre:device:{device_id}:auth_public` | ACR Moka L1 → Auth-State Redis L2 | L1 block marker; L2 `INCR` + `EXPIRE` | L1 block `30s`; L2 window `60s`, tối đa `8` request/device | Edge limiter; chỉ khi cookie có device id |
 | `code_to_id[{normalized_zone_code}]` | ACR process-local L1 | Zone found/negative snapshot | Found `30s`; negative `180s` | ACR zone resolver |
@@ -180,7 +180,7 @@ sang Phase 3. Provider không được gọi trực tiếp Controlplane và call
 |---|---|
 | Provider/state/identity/CP failure | `Location: /signin?oauth_error=OAUTH_SIGN_IN_FAILED` và optional safe `return_to` |
 | MFA required | `Location: /signin?mfa_required=1&challenge_id=...&expires_in=...` |
-| Success | `Location: {safe return_to}`; `Set-Cookie` cho `access_token`, `access_key`, `access_secret`, `client_device_id`, `tenant_id`, `zone_code`; optional `refresh_token` |
+| Success | `Location: /personal` hoặc personal continuation đã validate; `Set-Cookie` cho `access_token`, `access_key`, `access_secret`, `client_device_id`, `tenant_id=platform`, `zone_code`; optional `refresh_token` |
 
 #### Response payload
 
@@ -360,7 +360,9 @@ sequenceDiagram
   provider JSON remain inside ACR/provider boundary and never enter CP logs,
   protobuf or PostgreSQL.
 - ACR rejects any CP response whose `zone_code` differs from state; every
-  issued session has one concrete non-nil Zone UUID.
+  issued session has one concrete non-nil Zone UUID. Social login always issues
+  the user’s personal/platform session; `/personal` is the Console UI shell of
+  the self identity `/me`, not a tenant selection.
 - MFA primary success creates only a short-lived continuation. No device,
   refresh token, runtime session or login cookie is issued before MFA success.
 - `trust_device=false` never receives a refresh cookie. `trust_device=true`

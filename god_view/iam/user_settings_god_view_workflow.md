@@ -105,10 +105,14 @@ sequenceDiagram
     E-->>UI: 303 /{personal|tenant}/settings/social-links?social_link=linked|failed
 ```
 
-Link state binds `user_id`, `zone_id`, `tenant_id`, `client_device_id` và session proof public
-key. Callback phải còn chính browser session; cookie/session replacement, Zone/tenant switch,
-state replay hoặc unlink fence đều fail. Login và link dùng cùng provider verification nhưng là
-hai workflow độc lập: public login không tạo/link user; authenticated link không cấp session mới.
+Link state binds `user_id`, `client_device_id` và session proof public key. `zone_id` và
+`tenant_id` không được serialize vào link state, không đi xuống IAM và không phải identity
+ownership. ACR chỉ đọc Zone/tenant của session hiện tại để tìm proof runtime, rồi callback
+so khớp user và device proof; user có thể đổi Console context giữa start và callback mà link
+vẫn thuộc đúng `/me`. `return_to` chỉ là destination UI
+`/{personal|tenant}/settings/social-links`, không phải workflow context. State replay, user/device
+replacement hoặc unlink fence đều fail. Login và link dùng cùng provider verification nhưng là hai
+workflow độc lập: public login không tạo/link user; authenticated link không cấp session mới.
 
 ACR gửi IAM chỉ canonical identity đã verify:
 
