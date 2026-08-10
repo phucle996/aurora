@@ -37,6 +37,23 @@ Create và revoke cần tenant context, session proof và compiled tenant
 permission. Join đặt `/me` trước `/critical` để ACR không rewrite self route,
 nhưng ACR vẫn phải consume proof bound với exact method/path/body.
 
+### Critical proof boundary
+
+Browser lấy one-time nonce bằng `POST /api/v1/auth/session-proof/challenge` rồi
+ký từng create, revoke hoặc join request qua `criticalFetchJSON`. Header contract:
+`x-session-proof-challenge-id`, `x-session-proof-timestamp`,
+`x-session-proof-signature`; canonical bytes là
+`aurora.session-proof.v1\nchallenge_id\nnonce\nMETHOD\nPATH\nSHA256(raw body)\ntimestamp`.
+ACR giữ nonce tại
+`iam:session_proof:critical:{access_key}:{challenge_id}` TTL 60 giây, verify key
+Ed25519 của session và atomically consume nonce chỉ sau signature hợp lệ.
+
+Create/revoke dùng public neutral path, sau proof ACR derive verified tenant và
+rewrite internal `/api/v1/tenant/critical/...`; join giữ `/me` and no owner
+rewrite. Query, replay, session/device mismatch, body mismatch hoặc stale timestamp
+đều không đến Hierarchy. Envoy strip marker do client gửi và ACR inject
+`x-session-proof-verified: true`; CP middleware yêu cầu marker trước handler.
+
 ## Create
 
 ```mermaid

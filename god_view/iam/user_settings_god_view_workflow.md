@@ -58,6 +58,40 @@ Public `/api/v1/critical/*` không đi thẳng tới Controlplane. ACR verify pr
 session hiện tại thành `/api/v1/personal/critical/*` hoặc `/api/v1/tenant/critical/*`. Backend
 chỉ nhận marker đã được Envoy/ACR strip-and-inject lại.
 
+### Critical proof for social-link mutations
+
+Social-link là self workflow nên chỉ hai mutation dưới đây dùng proof; không có
+tenant/personal rewrite cho `/me`:
+
+```text
+POST /api/v1/auth/session-proof/challenge
+POST /api/v1/me/critical/iam/social-link/:provider/start
+DELETE /api/v1/me/critical/iam/social-link/:provider
+```
+
+`criticalFetchJSON` lấy one-time `{challenge_id, nonce, expires_in=60}` rồi ký
+exact method, query-free public path và SHA-256 exact serialized body bằng private
+Ed25519 key đã bind session. Headers duy nhất của proof là
+`x-session-proof-challenge-id`, `x-session-proof-timestamp`,
+`x-session-proof-signature`. Canonical message là:
+
+```text
+aurora.session-proof.v1
+challenge_id
+nonce
+HTTP_METHOD
+/api/v1/me/critical/iam/social-link/...
+sha256_hex_of_exact_wire_body
+unix_timestamp_seconds
+```
+
+ACR xác minh session/CSRF trước khi phát nonce, load current session proof key,
+verify signature rồi Lua compare-and-delete
+`iam:session_proof:critical:{access_key}:{challenge_id}`. Replay, expired nonce,
+query parameter, timestamp lệch hoặc body/path/method khác chữ ký đều fail-closed.
+Sau consume, ACR xử lý link-start local hoặc inject
+`x-session-proof-verified: true` cho unlink; client-supplied marker luôn bị strip.
+
 ## 3. Profile contract
 
 `users.username`, `users.email` và `users.password_hash` là immutable trong workflow này.

@@ -216,6 +216,24 @@ At-least-once delivery is expected. No component claims exactly-once across paym
 
 Money values are integer strings in JSON to prevent JavaScript rounding.
 
+### Critical referral proof boundary
+
+The two operator mutations use the Cost origin's independent non-extractable
+Ed25519 key. For each request, `criticalFetcher` obtains a fresh nonce from
+`POST /api/v1/billing/auth/session-proof/challenge` and signs the exact
+query-free method, public path, raw serialized body hash and Unix timestamp with
+the `aurora.session-proof.v1` canonical format. It sends only
+`x-session-proof-challenge-id`, `x-session-proof-timestamp` and
+`x-session-proof-signature` as proof headers.
+
+ACR resolves the Billing alias back to the current source session, verifies the
+session-bound public key and Lua-consumes
+`iam:session_proof:critical:{access_key}:{challenge_id}` within 60 seconds.
+Only then does it inject `x-session-proof-verified: true`; direct client markers
+are stripped. A replay, stale timestamp, changed body/method/path, session loss
+or Auth-State Redis outage fails before the referral handler and no mutation is
+retried automatically by the browser.
+
 ## 9. Source map
 
 | Concern | Source |

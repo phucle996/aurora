@@ -384,7 +384,6 @@ sequenceDiagram
 | CP Redis handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | CP service | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
 | CP repository/device/refresh | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
-| Related session proof | [`user_critical_session_proof_workflow.md`](user_critical_session_proof_workflow.md) |
 
 ## Change rule
 

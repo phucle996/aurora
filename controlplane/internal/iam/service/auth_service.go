@@ -19,6 +19,7 @@ import (
 	"controlplane/internal/observability"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/logger"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
@@ -114,7 +115,10 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	publishErr := s.publishAccountVerification(publishCtx, user.ID, user.Username, user.Email)
 	publishCancel()
 	if publishErr != nil {
-		return fmt.Errorf("registration committed but verification message publish failed for user_id=%s: %w", user.ID, publishErr)
+		// User/profile are already durable. Returning an error here would invite a
+		// duplicate registration request although pending login can issue a fresh
+		// verification dispatch through its own cooldown-controlled recovery path.
+		logger.SysErrorCtx(ctx, "iam.auth.register.verification_dispatch", "verification dispatch unavailable after identity commit")
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil

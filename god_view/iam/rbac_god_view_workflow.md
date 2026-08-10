@@ -214,13 +214,23 @@ verified session and rejects direct client access to that target.
 
 Security chain:
 
-1. ACR verifies exact-request session proof.
-2. Middleware checks the compiled `iam:role:write` grant.
-3. Handler validates canonical code/name/level and permission UUID list.
-4. Service generates UUIDv7 and version 1.
-5. Repository CTE rechecks active tenant, active membership, normalized write
+1. Cloud Console obtains `challenge_id`/`nonce` from
+   `POST /api/v1/auth/session-proof/challenge`, serializes the JSON exactly and
+   signs `aurora.session-proof.v1\nchallenge_id\nnonce\nPOST\n/api/v1/critical/iam/rbac/role\nSHA256(body)\ntimestamp`.
+2. ACR verifies the current session's Ed25519 key and atomically consumes
+   `iam:session_proof:critical:{access_key}:{challenge_id}` (TTL 60 seconds).
+   Required headers are `x-session-proof-challenge-id`,
+   `x-session-proof-timestamp`, `x-session-proof-signature`; query/replay,
+   stale timestamp or a changed path/body fail before authorization.
+3. ACR rewrites only after proof to
+   `/api/v1/tenant/critical/iam/rbac/role`, strips any client marker and injects
+   `x-session-proof-verified: true`.
+4. Middleware checks the compiled `iam:role:write` grant.
+5. Handler validates canonical code/name/level and permission UUID list.
+6. Service generates UUIDv7 and version 1.
+7. Repository CTE rechecks active tenant, active membership, normalized write
    permission, hierarchy and complete permission-ID validity.
-6. Definition and mappings become visible atomically.
+8. Definition and mappings become visible atomically.
 
 The handler validation is not repeated in service. Repository checks durable
 facts and races, not JSON syntax.

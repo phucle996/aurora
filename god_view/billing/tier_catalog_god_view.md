@@ -76,6 +76,31 @@ Envoy và ACR giữ nguyên path. `/api/v1/tiers` và legacy mutation routes kh�
 
 `service_type` được trim rồi allowlist: `STORAGE`, `NETWORK_IN`, `NETWORK_OUT`, `VM`. `code` phải match `^[A-Z][A-Z0-9_]{0,63}$`.
 
+### Critical proof boundary
+
+Mỗi Tier write là một complete Cost workflow, không tái sử dụng nonce. Cost
+`criticalFetcher` lấy `{challenge_id, nonce}` từ
+`POST /api/v1/billing/auth/session-proof/challenge`, serialize request body một
+lần và ký:
+
+```text
+aurora.session-proof.v1
+challenge_id
+nonce
+HTTP_METHOD
+/api/v1/billing/critical/tiers/...
+sha256_hex_of_exact_wire_body
+unix_timestamp_seconds
+```
+
+Headers required là `x-session-proof-challenge-id`,
+`x-session-proof-timestamp`, `x-session-proof-signature`. ACR resolves the
+Billing alias to its source session, verifies its Ed25519 public key and atomically
+consumes `iam:session_proof:critical:{access_key}:{challenge_id}` (TTL 60s)
+before forwarding `x-session-proof-verified: true`. Any client marker is stripped;
+query, replay, timestamp/body/path/method mismatch, alias/session loss or Redis
+failure fail closed before Cost Manager's permission middleware.
+
 ## 4. Durable data model
 
 ```mermaid
