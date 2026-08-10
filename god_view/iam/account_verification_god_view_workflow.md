@@ -59,6 +59,34 @@ logs. The landing page clears it before an explicit user confirmation.
 | `iam:ott:account_verify:{user_id}:{event_id}` | Security Redis | Hash comparison before DB transaction; compare-and-delete only after commit | Event replay/expiry fence |
 | `iam.users.status` | PostgreSQL | Read before OTT validation and in activation transaction | Durable idempotency authority |
 
+```mermaid
+sequenceDiagram
+    participant UI as Cloud Console
+    participant H as IAM handler
+    participant S as AuthService
+    participant DB as PostgreSQL
+    participant R as Security Redis
+
+    UI->>UI: Read fragment then clear browser history
+    UI->>H: POST /api/v1/auth/verify
+    H->>S: VerifyAccount(user_id, event_id, token)
+    S->>DB: Read account activation state
+    alt account is already active
+        DB-->>S: Active
+        S-->>H: Continue idempotent activation ensure
+    else account is pending-active
+        S->>R: Read and compare OTT SHA-256 hash
+        alt proof is invalid or expired
+            R-->>S: No matching proof
+            S-->>H: Invalid proof
+            H-->>UI: 400
+        else proof is valid
+            R-->>S: Matching proof retained until commit
+            S-->>H: Continue Phase 2
+        end
+    end
+```
+
 ## Phase 2 — Commit activation, baseline role and outbox together
 
 The durable boundary is one IAM PostgreSQL transaction. No active user can
@@ -102,14 +130,14 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Relay as Billing outbox relay
 
-    UI->>UI: Read and clear fragment; user confirms
+    UI->>UI: Read and clear fragment, then user confirms
     UI->>H: POST /api/v1/auth/verify
     H->>S: VerifyAccount(user_id, event_id, token)
     S->>DB: Read active state
     alt pending account
         S->>R: Validate OTT hash
     end
-    S->>DB: Lock user; activate + platform_user + outbox; COMMIT
+    S->>DB: Lock user, activate, ensure role and outbox, commit
     S->>R: Compare-and-delete OTT best effort
     S->>Relay: Notify after commit
     S-->>UI: 200 account activated

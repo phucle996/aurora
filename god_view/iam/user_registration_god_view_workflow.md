@@ -92,8 +92,8 @@ sequenceDiagram
     E->>H: Public route after CORS/rate limit
     H->>H: Canonicalize and validate JSON
     H->>S: RegisterAccount
-    S->>S: Hash password; UUIDv7; pending-active
-    S->>DB: BEGIN; INSERT users + user_profiles; COMMIT
+    S->>S: Hash password, create UUIDv7, mark pending-active
+    S->>DB: Begin, insert users and profile, commit
     alt validation, hash, UUID or DB failure
         H-->>UI: 400/409/500
     else identity committed
@@ -139,7 +139,7 @@ sequenceDiagram
     S->>R: Store hashed OTT with TTL and replication gate
     alt OTT or publish unavailable
         S->>S: Log sanitized delivery failure
-        Note over S: Pending identity remains; registration response is 201
+        Note over S: Pending identity remains and registration response is 201
     else dispatch ready
         S->>K: Publish verification envelope keyed by event_id
         K->>M: Root-owned consumer
