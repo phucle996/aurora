@@ -15,12 +15,11 @@ export type SocialProvider = "google" | "github";
 
 export type SocialLink = {
   provider: SocialProvider;
-  state: "not_linked" | "linked" | "revoked";
+  state: "not_linked" | "linked";
   provider_email?: string;
   email_verified_at?: string;
   last_login_at?: string;
   linked_at?: string;
-  revoked_at?: string;
 };
 
 export async function updateMyProfile(input: UpdateProfileInput): Promise<void> {
@@ -46,7 +45,7 @@ export async function getMySocialLinks(signal?: AbortSignal): Promise<SocialLink
     const item = value as Record<string, unknown>;
     if (
       (item.provider !== "google" && item.provider !== "github") ||
-      (item.state !== "not_linked" && item.state !== "linked" && item.state !== "revoked")
+      (item.state !== "not_linked" && item.state !== "linked")
     ) {
       throw new Error("The social-link response is invalid.");
     }
@@ -57,7 +56,6 @@ export async function getMySocialLinks(signal?: AbortSignal): Promise<SocialLink
       email_verified_at: typeof item.email_verified_at === "string" ? item.email_verified_at : undefined,
       last_login_at: typeof item.last_login_at === "string" ? item.last_login_at : undefined,
       linked_at: typeof item.linked_at === "string" ? item.linked_at : undefined,
-      revoked_at: typeof item.revoked_at === "string" ? item.revoked_at : undefined,
     };
   });
 }

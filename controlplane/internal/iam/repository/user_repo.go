@@ -256,32 +256,28 @@ func (r *UserRepository) GetMySocialLinks(
 		googleVerifiedAt  *time.Time
 		googleLastLoginAt *time.Time
 		googleLinkedAt    *time.Time
-		googleRevokedAt   *time.Time
 		githubProvider    *string
 		githubEmail       *string
 		githubVerifiedAt  *time.Time
 		githubLastLoginAt *time.Time
 		githubLinkedAt    *time.Time
-		githubRevokedAt   *time.Time
 	)
 	query := fmt.Sprintf(`
 		SELECT
 			(u.id IS NOT NULL),
-			g.provider, g.provider_email, g.email_verified_at, g.last_login_at, g.linked_at, g.revoked_at,
-			h.provider, h.provider_email, h.email_verified_at, h.last_login_at, h.linked_at, h.revoked_at
+			g.provider, g.provider_email, g.email_verified_at, g.last_login_at, g.linked_at,
+			h.provider, h.provider_email, h.email_verified_at, h.last_login_at, h.linked_at
 		FROM (SELECT id FROM %s.users WHERE id = $1) u
 		LEFT JOIN LATERAL (
-			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at, revoked_at
+			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at
 			FROM %s.external_identities
 			WHERE user_id = u.id AND provider = 'google'
-			ORDER BY (revoked_at IS NULL) DESC, updated_at DESC
 			LIMIT 1
 		) g ON true
 		LEFT JOIN LATERAL (
-			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at, revoked_at
+			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at
 			FROM %s.external_identities
 			WHERE user_id = u.id AND provider = 'github'
-			ORDER BY (revoked_at IS NULL) DESC, updated_at DESC
 			LIMIT 1
 		) h ON true
 	`, r.schema, r.schema, r.schema)
@@ -292,13 +288,11 @@ func (r *UserRepository) GetMySocialLinks(
 		&googleVerifiedAt,
 		&googleLastLoginAt,
 		&googleLinkedAt,
-		&googleRevokedAt,
 		&githubProvider,
 		&githubEmail,
 		&githubVerifiedAt,
 		&githubLastLoginAt,
 		&githubLinkedAt,
-		&githubRevokedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -313,7 +307,7 @@ func (r *UserRepository) GetMySocialLinks(
 	summary := func(
 		provider *string,
 		email *string,
-		verifiedAt, lastLoginAt, linkedAt, revokedAt *time.Time,
+		verifiedAt, lastLoginAt, linkedAt *time.Time,
 		expected string,
 	) iamEntity.GetMySocialLinks {
 		result := iamEntity.GetMySocialLinks{
@@ -328,12 +322,7 @@ func (r *UserRepository) GetMySocialLinks(
 		result.EmailVerifiedAt = verifiedAt
 		result.LastLoginAt = lastLoginAt
 		result.LinkedAt = linkedAt
-		result.RevokedAt = revokedAt
-		if revokedAt == nil {
-			result.State = "linked"
-		} else {
-			result.State = "revoked"
-		}
+		result.State = "linked"
 		return result
 	}
 	links := []iamEntity.GetMySocialLinks{
@@ -343,7 +332,6 @@ func (r *UserRepository) GetMySocialLinks(
 			googleVerifiedAt,
 			googleLastLoginAt,
 			googleLinkedAt,
-			googleRevokedAt,
 			"google",
 		),
 		summary(
@@ -352,7 +340,6 @@ func (r *UserRepository) GetMySocialLinks(
 			githubVerifiedAt,
 			githubLastLoginAt,
 			githubLinkedAt,
-			githubRevokedAt,
 			"github",
 		),
 	}
@@ -381,7 +368,7 @@ func (r *UserRepository) LinkExternalIdentity(
 		active_provider AS MATERIALIZED (
 			SELECT id
 			FROM %s.external_identities
-			WHERE user_id = $1 AND provider = $2 AND revoked_at IS NULL
+			WHERE user_id = $1 AND provider = $2
 			FOR UPDATE
 		),
 		updated_identity AS (
@@ -390,7 +377,6 @@ func (r *UserRepository) LinkExternalIdentity(
 			    email_verified_at = $5,
 			    display_name = $6,
 			    avatar_url = NULLIF($7, ''),
-			    revoked_at = NULL,
 			    linked_at = NOW(),
 			    updated_at = NOW()
 			WHERE e.id = (SELECT id FROM subject_identity)
@@ -468,9 +454,8 @@ func (r *UserRepository) UnlinkMySocialLink(
 			SELECT id FROM %s.users WHERE id = $1
 		),
 		unlinked AS (
-			UPDATE %s.external_identities
-			SET revoked_at = NOW(), updated_at = NOW()
-			WHERE user_id = $1 AND provider = $2 AND revoked_at IS NULL
+			DELETE FROM %s.external_identities
+			WHERE user_id = $1 AND provider = $2
 			  AND EXISTS (SELECT 1 FROM target_user)
 			RETURNING id
 		)
@@ -505,13 +490,11 @@ func (r *UserRepository) GetUserAuthMethods(
 		googleVerifiedAt  *time.Time
 		googleLastLoginAt *time.Time
 		googleLinkedAt    *time.Time
-		googleRevokedAt   *time.Time
 		githubProvider    *string
 		githubEmail       *string
 		githubVerifiedAt  *time.Time
 		githubLastLoginAt *time.Time
 		githubLinkedAt    *time.Time
-		githubRevokedAt   *time.Time
 	)
 	query := fmt.Sprintf(`
 		WITH effective_role AS (
@@ -525,22 +508,20 @@ func (r *UserRepository) GetUserAuthMethods(
 			(er.user_id IS NOT NULL AND er.role_level > $1),
 			u.email,
 			(u.password_hash IS NOT NULL),
-			g.provider, g.provider_email, g.email_verified_at, g.last_login_at, g.linked_at, g.revoked_at,
-			h.provider, h.provider_email, h.email_verified_at, h.last_login_at, h.linked_at, h.revoked_at
+			g.provider, g.provider_email, g.email_verified_at, g.last_login_at, g.linked_at,
+			h.provider, h.provider_email, h.email_verified_at, h.last_login_at, h.linked_at
 		FROM %s.users u
 		LEFT JOIN effective_role er ON er.user_id = u.id
 		LEFT JOIN LATERAL (
-			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at, revoked_at
+			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at
 			FROM %s.external_identities
 			WHERE user_id = u.id AND provider = 'google'
-			ORDER BY (revoked_at IS NULL) DESC, updated_at DESC
 			LIMIT 1
 		) g ON true
 		LEFT JOIN LATERAL (
-			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at, revoked_at
+			SELECT provider, provider_email, email_verified_at, last_login_at, linked_at
 			FROM %s.external_identities
 			WHERE user_id = u.id AND provider = 'github'
-			ORDER BY (revoked_at IS NULL) DESC, updated_at DESC
 			LIMIT 1
 		) h ON true
 		WHERE u.id = $2
@@ -555,13 +536,11 @@ func (r *UserRepository) GetUserAuthMethods(
 		&googleVerifiedAt,
 		&googleLastLoginAt,
 		&googleLinkedAt,
-		&googleRevokedAt,
 		&githubProvider,
 		&githubEmail,
 		&githubVerifiedAt,
 		&githubLastLoginAt,
 		&githubLinkedAt,
-		&githubRevokedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -576,7 +555,7 @@ func (r *UserRepository) GetUserAuthMethods(
 		return nil, iamTaxonomy.ErrActionNotAllowed
 	}
 
-	summary := func(provider *string, email *string, verifiedAt, lastLoginAt, linkedAt, revokedAt *time.Time, expected string) iamEntity.GetUserAuthMethods {
+	summary := func(provider *string, email *string, verifiedAt, lastLoginAt, linkedAt *time.Time, expected string) iamEntity.GetUserAuthMethods {
 		result := iamEntity.GetUserAuthMethods{
 			CallerLevel:  queryEntity.CallerLevel,
 			UserID:       queryEntity.UserID,
@@ -592,17 +571,12 @@ func (r *UserRepository) GetUserAuthMethods(
 		result.EmailVerifiedAt = verifiedAt
 		result.LastLoginAt = lastLoginAt
 		result.LinkedAt = linkedAt
-		result.RevokedAt = revokedAt
-		if revokedAt != nil {
-			result.State = "revoked"
-		} else {
-			result.State = "linked"
-		}
+		result.State = "linked"
 		return result
 	}
 	return []iamEntity.GetUserAuthMethods{
-		summary(googleProvider, googleEmail, googleVerifiedAt, googleLastLoginAt, googleLinkedAt, googleRevokedAt, "google"),
-		summary(githubProvider, githubEmail, githubVerifiedAt, githubLastLoginAt, githubLinkedAt, githubRevokedAt, "github"),
+		summary(googleProvider, googleEmail, googleVerifiedAt, googleLastLoginAt, googleLinkedAt, "google"),
+		summary(githubProvider, githubEmail, githubVerifiedAt, githubLastLoginAt, githubLinkedAt, "github"),
 	}, nil
 }
 

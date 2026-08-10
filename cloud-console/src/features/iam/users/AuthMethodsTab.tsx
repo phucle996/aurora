@@ -35,14 +35,13 @@ export function AuthMethodsTab({ selectedUser }: AuthMethodsTabProps) {
 
   const renderExternalIdentity = (summary: ExternalIdentitySummary) => {
     const linked = summary.state === "linked";
-    const revoked = summary.state === "revoked";
     return (
       <div className="rounded-md border border-border/40 px-3 py-2.5">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Link2 className={cn(
               "h-3.5 w-3.5 shrink-0",
-              linked ? "text-emerald-600" : revoked ? "text-amber-600" : "text-muted-foreground"
+              linked ? "text-emerald-600" : "text-muted-foreground"
             )} />
             <div className="min-w-0">
               <div className="font-semibold capitalize text-foreground">{summary.provider}</div>
@@ -57,9 +56,7 @@ export function AuthMethodsTab({ selectedUser }: AuthMethodsTabProps) {
               "shrink-0 text-[9px] uppercase tracking-wider",
               linked
                 ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600"
-                : revoked
-                  ? "border-amber-500/20 bg-amber-500/10 text-amber-600"
-                  : "border-border/60 text-muted-foreground"
+                : "border-border/60 text-muted-foreground"
             )}
           >
             {summary.state.replace("_", " ")}

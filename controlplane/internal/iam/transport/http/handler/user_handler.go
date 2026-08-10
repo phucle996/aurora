@@ -128,7 +128,6 @@ func (h *UserHandler) GetUserAuthMethodsPlatform(c *gin.Context) {
 			"email_verified_at": method.EmailVerifiedAt,
 			"last_login_at":     method.LastLoginAt,
 			"linked_at":         method.LinkedAt,
-			"revoked_at":        method.RevokedAt,
 		}
 	}
 	response := gin.H{
@@ -469,7 +468,6 @@ func (h *UserHandler) GetMySocialLinks(c *gin.Context) {
 			"email_verified_at": link.EmailVerifiedAt,
 			"last_login_at":     link.LastLoginAt,
 			"linked_at":         link.LinkedAt,
-			"revoked_at":        link.RevokedAt,
 		})
 	}
 	apires.RespondSuccess(c, gin.H{"items": items}, "success")

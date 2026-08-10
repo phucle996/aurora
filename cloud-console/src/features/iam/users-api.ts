@@ -18,7 +18,7 @@ export type PlatformUserItem = {
 
 export type ExternalIdentitySummary = {
   provider: "google" | "github";
-  state: "not_linked" | "linked" | "revoked";
+  state: "not_linked" | "linked";
   provider_email?: string;
   email_verified_at?: string | null;
   last_login_at?: string | null;

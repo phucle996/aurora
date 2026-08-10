@@ -14,6 +14,7 @@ import (
 	"controlplane/internal/observability"
 	"controlplane/internal/security"
 	"controlplane/internal/useractivity"
+	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -154,7 +155,7 @@ func (s *UserService) LinkExternalIdentity(
 		OccurredAt:  time.Now().UTC(),
 		Metadata:    map[string]any{"provider": workflow.Provider},
 	}); activityErr != nil {
-		return fmt.Errorf("iam.user_activity.social_link: %w", activityErr)
+		logger.SysErrorCtx(ctx, "iam.user_activity.social_link", activityErr.Error())
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
@@ -211,7 +212,7 @@ func (s *UserService) UnlinkMySocialLink(
 		OccurredAt:  time.Now().UTC(),
 		Metadata:    map[string]any{"provider": workflow.Provider},
 	}); activityErr != nil {
-		return fmt.Errorf("iam.user_activity.social_unlink: %w", activityErr)
+		logger.SysErrorCtx(ctx, "iam.user_activity.social_unlink", activityErr.Error())
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil

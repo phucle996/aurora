@@ -111,7 +111,6 @@ type ExternalIdentity struct {
 	DisplayName     string
 	AvatarURL       *string
 	LastLoginAt     *time.Time
-	RevokedAt       *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

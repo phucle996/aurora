@@ -398,7 +398,7 @@ func (r *AuthRepository) VerifyExternalIdentity(
 	identityQuery := fmt.Sprintf(`
 		SELECT id, user_id, provider, provider_subject, provider_email,
 		       email_verified_at, display_name, avatar_url, last_login_at,
-		       revoked_at, created_at, updated_at
+		       created_at, updated_at
 		FROM %s.external_identities
 		WHERE provider = $1 AND provider_subject = $2
 		FOR UPDATE
@@ -416,7 +416,6 @@ func (r *AuthRepository) VerifyExternalIdentity(
 		&displayName,
 		&avatarURL,
 		&identity.LastLoginAt,
-		&identity.RevokedAt,
 		&identity.CreatedAt,
 		&identity.UpdatedAt,
 	); err == nil {
@@ -432,11 +431,6 @@ func (r *AuthRepository) VerifyExternalIdentity(
 	var username, email, status string
 	var userPasswordHash *string
 	if identityFound {
-		// Revocation can only be reversed by a future authenticated link flow; a
-		// provider callback must never silently reactivate a detached identity.
-		if identity.RevokedAt != nil {
-			return nil, nil, iamTaxonomy.ErrInvalidCredentials
-		}
 		userID = identity.UserID
 		if err := tx.QueryRow(ctx, fmt.Sprintf(`
 			SELECT id, username, email, password_hash, status

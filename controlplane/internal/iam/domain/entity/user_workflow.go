@@ -79,7 +79,6 @@ type GetMySocialLinks struct {
 	EmailVerifiedAt *time.Time
 	LastLoginAt     *time.Time
 	LinkedAt        *time.Time
-	RevokedAt       *time.Time
 }
 
 // LinkExternalIdentity is the flat, already-verified identity contract
@@ -115,7 +114,6 @@ type GetUserAuthMethods struct {
 	EmailVerifiedAt *time.Time
 	LastLoginAt     *time.Time
 	LinkedAt        *time.Time
-	RevokedAt       *time.Time
 }
 
 // ResetUserPassword is the flat contract for the administrator password

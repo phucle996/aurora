@@ -2,9 +2,10 @@
 
 SoT cho đăng nhập bằng identity đã liên kết từ Google hoặc GitHub. Tài liệu
 trace ba boundary: tạo OAuth state ở ACR, provider callback và verification ở
-ACR, rồi canonical identity handoff sang Controlplane. Social-link
-(authenticated link/unlink) là workflow riêng trong
-[`user_settings_god_view_workflow.md`](user_settings_god_view_workflow.md).
+ACR, rồi canonical identity handoff sang Controlplane. Social link và unlink
+là workflow riêng trong
+[`user_social_link_god_view_workflow.md`](user_social_link_god_view_workflow.md)
+và [`user_social_unlink_god_view_workflow.md`](user_social_unlink_god_view_workflow.md).
 
 ## Contract at a glance
 
@@ -15,7 +16,7 @@ ACR, rồi canonical identity handoff sang Controlplane. Social-link
 | 3. Controlplane IAM | ACR → Shared L2 Redis → CP | `request_id[16] || VerifyExternalIdentityRequest` | `VerifyExternalIdentityResponse` trên reply channel |
 
 **Identity authority:** PostgreSQL chỉ cho phép login bằng
-`external_identities(provider, provider_subject)` đang active và thuộc user
+`external_identities(provider, provider_subject)` còn tồn tại và thuộc user
 active. Provider email chỉ là verified metadata snapshot; không auto-link, không
 tạo account mới.
 
@@ -289,7 +290,7 @@ Response fields consumed by ACR: `valid`, `user_id`, `username`, `level`,
    identity and active password-backed user, check MFA before device/refresh
    side effects, then register device and optionally issue refresh token.
 3. **Repository transaction** — lock `(provider, provider_subject)` and user,
-   reject missing/revoked identity, refresh provider metadata and `last_login_at`,
+   reject missing identity, refresh provider metadata and `last_login_at`,
    require an active global role, then commit. Provider email never auto-links.
 4. **Reply adapter** — map domain errors to generic response taxonomy and publish
    one `VerifyExternalIdentityResponse`; raw provider material never leaves ACR.
@@ -305,7 +306,7 @@ không có workflow-specific L1 cache cho external identity login.
 | `iam.auth.verify_external_identity.reply.{request_id}` | Shared L2 Redis Pub/Sub | Reply channel; publish protobuf response | ACR waiter `10s` | CP winner trả đúng request |
 | `iam:auth:dispatch:verify_external_identity:{request_id}` | Shared L2 Redis | String dispatch fence; `SETNX` value `1` | `30s` | CP handler; chỉ winner chạm DB/phát refresh side effect |
 | `(provider, provider_subject)` | PostgreSQL `external_identities` | Unique durable identity ownership; `SELECT FOR UPDATE` | Theo DB retention | Không một provider identity nào thuộc hai users |
-| `external_identities.revoked_at` | PostgreSQL | Revocation fence; login chỉ đọc row active | Durable | Unlink không được callback login tự reactivate |
+| `(user_id, provider)` | PostgreSQL `external_identities` | Unique live provider slot | Durable | Một user chỉ có một Google và một GitHub identity |
 | `users`, `user_role`, `devices`, `refresh_tokens` | Controlplane PostgreSQL | Durable account/role/device/refresh state | Theo domain retention | CP IAM source of truth |
 | Không có workflow-specific L1 key | CP process-local L1 | Không cache credential hoặc provider identity cho login | — | Không thay authority PostgreSQL bằng local state |
 
