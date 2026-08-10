@@ -740,7 +740,9 @@ services:
       - "8200:8200"
     # [COMMENT]: Healthcheck kiểm tra trạng thái hoạt động của Vault REST API
     healthcheck:
-      test: ["CMD", "vault", "status"]
+      # Dev mode serves plain HTTP; Vault CLI otherwise defaults to HTTPS and
+      # reports a false unhealthy state even while /v1/sys/health is ready.
+      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -9,7 +9,7 @@ import (
 	"controlplane/internal/iam/test/mocks"
 )
 
-// [COMMENT]: End-to-End Test quy trình Đăng nhập kèm Device-Bound & MFA Gate (Ref: user_login_god_view_workflow.md)
+// [COMMENT]: End-to-End Test quy trình Đăng nhập kèm Device-Bound & MFA Gate (Ref: username_login_god_view_workflow.md)
 func TestUserLoginMFAGateWorkflowE2E(t *testing.T) {
 	ctx := context.Background()
 	cache := mocks.NewMockCacheEngine()

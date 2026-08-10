@@ -149,7 +149,8 @@ browser đang giữ private Ed25519 key bind với session và chống replay ch
 ## 5. MFA và recovery-code presentation
 
 MFA durability và login gate thuộc
-[User Login](user_login_god_view_workflow.md). Settings áp dụng thêm UI invariants:
+[Username Login](username_login_god_view_workflow.md) và
+[Social Login](social_login_god_view_workflow.md). Settings áp dụng thêm UI invariants:
 
 - pending setup/step replay ở Auth-State Redis; active encrypted secret/recovery hashes ở PostgreSQL;
 - raw setup secret và raw recovery codes chỉ tồn tại trong response và React component memory;

@@ -106,7 +106,9 @@ Các token trên chỉ dành cho Vault dev local. Đồng bộ `CENTRIFUGO_API_K
 make init-central
 ```
 
-Lệnh này start Vault dev, bootstrap Transit/KV/policy/connection records rồi start toàn bộ Central stack. Central phải lên trước vì nó tạo network `aurora-dev-transport`.
+Lệnh này start Central infrastructure trước, chờ Vault readiness, bootstrap
+Transit/KV/policy/connection records rồi mới pull/start các Central app image.
+Central phải lên trước vì nó tạo network `aurora-dev-transport`.
 
 ### 3. Khởi động Zone
 
@@ -127,16 +129,16 @@ docker compose -f dev/central/compose.yml logs -f job-orchestrator
 docker compose -f dev/zone/compose.yml logs -f dataplane-vn-n1
 ```
 
-Sau lần bootstrap đầu, có thể start nhanh mà không bootstrap lại:
+Có thể chạy lại các target này an toàn; Vault bootstrap dùng các request
+idempotent và Compose luôn dùng image GHCR với `--no-build`:
 
 ```bash
 make up-central
 make up-zone
 ```
 
-Các target trên luôn `pull` rồi chạy Compose với `--no-build`. Docker vẫn cache
-layer của image đã pull, nhưng Rust/Go/Node build cache và source build context
-không được tạo trên máy local.
+Docker chỉ cache layer của image đã pull; Rust/Go/Node build cache và source
+build context không được tạo trên máy local.
 
 ## Component releases
 

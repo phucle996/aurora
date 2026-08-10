@@ -17,20 +17,29 @@ configuration không phụ thuộc tên container vật lý.
 
 ## Start order
 
-Từ repository root:
+Từ repository root, dùng Make để giữ đúng các phase và không build Docker local:
 
 ```bash
-docker compose -f dev/central/compose.yml config -q
-docker compose -f dev/central/compose.yml up -d
-
-docker compose -f dev/zone/compose.yml config -q
-docker compose -f dev/zone/compose.yml up -d
+make init-central   # Central infra -> Vault seed -> Central apps
+make init-zone      # Zone infra -> keyring -> Zone apps
 ```
 
-Central phải start trước vì nó tạo external network `aurora-dev-transport`.
-Zone chỉ attach Dataplane vào network này để dùng Kafka và NATS Core. Bên trong
-Zone còn tách `zone-infra`, `zone-telemetry-ingest`, `zone-runtime-read`,
-`zone-edge-storage` và `zone-edge-runtime`; không dùng một default network rộng.
+Các phase có thể chạy riêng khi cần:
+
+```bash
+make central-infra
+make central-bootstrap
+make central-app
+make zone-infra
+make zone-app
+```
+
+Central phải start infrastructure trước vì nó tạo external network
+`aurora-dev-transport`; Vault chỉ được seed sau khi Central infrastructure đã
+được khởi động, rồi mới pull/start các app image từ GHCR. Zone chỉ attach
+Dataplane vào network này để dùng Kafka và NATS Core. Bên trong Zone còn tách
+`zone-infra`, `zone-telemetry-ingest`, `zone-runtime-read`, `zone-edge-storage`
+và `zone-edge-runtime`; không dùng một default network rộng.
 Vì vậy runtime stream không có DNS/network path tới MinIO, Zone KV, Dataplane
 hay Central transport dù các service cùng nằm trong một Compose project.
 

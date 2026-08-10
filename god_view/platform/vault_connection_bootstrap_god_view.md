@@ -197,3 +197,22 @@ API/Engine, Job Orchestrator and Notification Service. ACR remains a Vault
 consumer. Dataplane services do not gain access to Central PostgreSQL, Redis or
 Vault. Deployment manifests and the conceptual connection matrix must enforce
 this allow-list; no generic Central Vault credential may be shared across apps.
+
+## Local Compose orchestration
+
+The local runtime keeps the bootstrap boundary explicit:
+
+```text
+Central infrastructure
+  -> Vault readiness
+  -> vault-bootstrap.sh (connection records, policies, dev workload tokens)
+  -> Central application images from GHCR
+  -> Zone infrastructure
+  -> Zone keyring generation
+  -> Zone application images from GHCR
+```
+
+`Makefile` owns this order. It never invokes `docker compose build`; deployable
+images are pulled by immutable GHCR digest from the environment files. The
+Zone phase follows Central infrastructure because Central creates the external
+`aurora-dev-transport` network used by the Zone dataplane.
