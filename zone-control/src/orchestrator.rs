@@ -399,7 +399,9 @@ struct WorkflowTask {
 /// the same weighted assignment, and CAS-writes only the work units it owns.
 pub fn start(config: Config, shutdown: CancellationToken) {
     tokio::spawn(async move {
-        let owner_id = format!("zone-control:{}", uuid::Uuid::new_v4());
+        // NATS KV keys reject `:`; keep the member identifier key-safe while
+        // retaining a per-process UUID for assignment fencing.
+        let owner_id = format!("zone-control-{}", uuid::Uuid::new_v4());
         let coordinator = match WorkAssignmentCoordinator::connect(&config).await {
             Ok(coordinator) => coordinator,
             Err(error) => {
