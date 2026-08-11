@@ -9,6 +9,22 @@ pub struct Config {
     pub public_base_url: String,
     pub ticket_ttl: Duration,
     pub nats_zone_url: String,
+    pub kafka_bootstrap_servers: String,
+    pub kafka_security_protocol: String,
+    pub kafka_username: Option<String>,
+    pub kafka_password: Option<String>,
+    pub kafka_ca_cert: Option<String>,
+    pub kafka_topic_prefix: String,
+    pub minio_host: Option<String>,
+    pub minio_port: Option<u16>,
+    pub minio_access_key: Option<String>,
+    pub minio_secret_key: Option<String>,
+    pub proxmox_api_url: String,
+    pub proxmox_api_token: String,
+    pub proxmox_tls_insecure: bool,
+    pub stalwart_jmap_url: String,
+    pub stalwart_reporter_bearer_token: String,
+    pub mail_health_observe_interval_ms: u64,
     pub nats_ca: PathBuf,
     pub nats_cert: PathBuf,
     pub nats_key: PathBuf,
@@ -18,6 +34,8 @@ pub struct Config {
     pub control_assignment_shards: usize,
     pub control_max_concurrency: u32,
     pub control_capacity_weight: u32,
+    pub min_workers: usize,
+    pub max_workers: usize,
 }
 
 impl Config {
@@ -57,18 +75,40 @@ impl Config {
         if !(1..=100).contains(&control_capacity_weight) {
             return Err("ZONE_CONTROL_CAPACITY_WEIGHT must be 1..100".to_string());
         }
+        let min_workers = parsed("MIN_WORKERS", 1_usize)?.clamp(1, 512);
+        let max_workers = parsed("MAX_WORKERS", 32_usize)?.clamp(min_workers, 2_048);
         Ok(Self {
             listen_addr,
-            // The existing Dataplane still owns the legacy Zone-wide leader
-            // session until its duties are migrated. Keeping this opt-in
-            // prevents two writers from acquiring `lease.zone.leader` during
-            // the controlled extraction window.
-            orchestrator_enabled: parsed_bool("ZONE_CONTROL_ORCHESTRATOR_ENABLED", false)?,
+            // Gate B is complete: Zone Control must own every Zone-wide control
+            // workflow. An explicit switch lets a deployment fail fast instead
+            // of silently reintroducing a legacy owner.
+            orchestrator_enabled: parsed_bool("ZONE_CONTROL_ORCHESTRATOR_ENABLED", true)?,
             metering_enabled: parsed_bool("ZONE_CONTROL_METERING_ENABLED", false)?,
             zone_id,
             public_base_url,
             ticket_ttl: Duration::from_secs(ticket_ttl_seconds),
             nats_zone_url: required("NATS_ZONE_URL")?,
+            kafka_bootstrap_servers: required("KAFKA_BOOTSTRAP_SERVERS")?,
+            kafka_security_protocol: required("KAFKA_SECURITY_PROTOCOL")?.to_ascii_lowercase(),
+            kafka_username: optional("KAFKA_USERNAME"),
+            kafka_password: optional("KAFKA_PASSWORD"),
+            kafka_ca_cert: optional("KAFKA_CA_CERT"),
+            kafka_topic_prefix: required("KAFKA_TOPIC_PREFIX")?,
+            minio_host: optional("MINIO_HOST"),
+            minio_port: optional("MINIO_PORT")
+                .map(|value| value.parse())
+                .transpose()
+                .map_err(|_| "MINIO_PORT is invalid".to_string())?,
+            minio_access_key: optional("MINIO_ACCESS_KEY"),
+            minio_secret_key: optional("MINIO_SECRET_KEY"),
+            proxmox_api_url: optional("PROXMOX_API_URL").unwrap_or_default(),
+            proxmox_api_token: optional("PROXMOX_API_TOKEN").unwrap_or_default(),
+            proxmox_tls_insecure: parsed_bool("PROXMOX_TLS_INSECURE", false)?,
+            stalwart_jmap_url: optional("STALWART_JMAP_URL").unwrap_or_default(),
+            stalwart_reporter_bearer_token: optional("STALWART_REPORTER_BEARER_TOKEN")
+                .unwrap_or_default(),
+            mail_health_observe_interval_ms: parsed("MAIL_HEALTH_OBSERVE_INTERVAL_MS", 10_000_u64)?
+                .clamp(5_000, 120_000),
             nats_ca: PathBuf::from(required("NATS_ZONE_TLS_CA")?),
             nats_cert: PathBuf::from(required("NATS_ZONE_TLS_CERT")?),
             nats_key: PathBuf::from(required("NATS_ZONE_TLS_KEY")?),
@@ -78,6 +118,8 @@ impl Config {
             control_assignment_shards,
             control_max_concurrency,
             control_capacity_weight,
+            min_workers,
+            max_workers,
         })
     }
 }
@@ -102,4 +144,8 @@ fn parsed_bool(name: &str, default: bool) -> Result<bool, String> {
         },
         Err(_) => Ok(default),
     }
+}
+
+fn optional(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
 }

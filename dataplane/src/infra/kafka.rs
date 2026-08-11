@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+#[allow(dead_code)]
 pub mod transport_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.transport.v1.rs"));
 }
@@ -375,22 +376,6 @@ impl KafkaTransport {
 
     pub fn dead_letter_topic(&self) -> String {
         format!("{}.jobs.dlq.v1", self.topic_prefix)
-    }
-
-    pub fn metadata_topic(&self, zone_id: &str) -> String {
-        format!("{}.zone.metadata.{}.v1", self.topic_prefix, zone_id)
-    }
-
-    pub fn metadata_query_topic(&self) -> String {
-        format!("{}.zone.metadata.queries.v1", self.topic_prefix)
-    }
-
-    pub fn zone_report_topic(&self) -> String {
-        format!("{}.zone.reports.v1", self.topic_prefix)
-    }
-
-    pub fn storage_sizes_topic(&self) -> String {
-        format!("{}.storage.sizes.v1", self.topic_prefix)
     }
 
     pub async fn publish(&self, topic: &str, key: &[u8], payload: &[u8]) -> Result<(), String> {

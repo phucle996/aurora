@@ -149,12 +149,12 @@ sequenceDiagram
     participant PG as PostgreSQL WAL
     participant J as JO ChangefeedWorker
     participant K as Kafka metadata topic
-    participant L as running Dataplane leader
+    participant ZC as running Zone Control assignment worker
     participant KV as Zone Config KV
     PG-->>J: DELETE Zone WAL record
     J->>J: current dispatcher ignores DELETE tags
     Note over J,K: no tombstone and no metadata publish
-    L->>KV: retains last projected metadata
+    ZC->>KV: retains last projected metadata
 ```
 
 There is deliberately no claimed detach/recovery behavior. A terminal metadata contract must be implemented, tested and documented as a new workflow before hard delete can safely own Dataplane cleanup.

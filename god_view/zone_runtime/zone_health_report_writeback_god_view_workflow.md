@@ -10,14 +10,14 @@ The report has two consumers of its evidence:
 1. JO may move an already operational Zone between `active` and `draining`
    under its SQL state-machine guard, and writes observed mail/storage health.
 2. JO records which registered Zone payload-encryption keys are loaded on every
-   fresh Dataplane replica, using report time plus leader fencing as the
+   fresh Dataplane replica, using report time plus assignment fencing as the
    readiness fence.
 
 ## Scope, authority, and durable boundaries
 
 | Concern | Contract |
 | --- | --- |
-| Producer | One current Dataplane leader aggregates Zone health and publishes `ZoneReport`. |
+| Producer | Assigned Zone Control probe/report work units aggregate Zone health and publish `ZoneReport`. |
 | Authoritative operational target | PostgreSQL `hierarchy.zones.status`, `hierarchy.zone_services.actual_state`, and `hierarchy.zone_encryption_keys` readiness columns. |
 | SRE-owned facts | `zone_services.desired_state`, planned lifecycle, and service provisioning are not writable by this workflow. |
 | Durable transport | Kafka `aurora.zone.reports.v1`, keyed by textual Zone UUID. Producer is idempotent with `acks=all`. |
@@ -29,15 +29,15 @@ The report has two consumers of its evidence:
 
 | Store or topic | Key / table | Writer | Reader | Meaning |
 | --- | --- | --- | --- | --- |
-| Zone health KV | `AURORA_ZONE_HEALTH/zone.node.<sanitized_node_id>` | every Dataplane `NodeRuntimeSampler`, every five seconds | current leader report publisher | resource sample, queue-lag cache state, active workers, and loaded public payload-key fingerprints. |
-| Zone health KV | `zone.service.mail` | leader mail infrastructure probe | report publisher | mail status/capacity aggregate, carrying the leader fencing token in JSON. |
-| Zone health KV | `zone.service.storage` | leader storage liveness probe | report publisher | storage status/capacity snapshot, carrying fencing token. |
-| Zone health KV | `zone.service.hypervisor` | leader Proxmox probe | report publisher | per-node hypervisor inventory. It travels in the report but is not written by JO as hierarchy state. |
-| Coordination KV | `AURORA_ZONE_COORDINATION/lease.zone.leader` | leader election | all leader duties | 15-second lease, five-second renewal, monotonic fencing token. |
-| Kafka | `aurora.zone.reports.v1` | current Zone leader | JO report worker | binary `zone.ZoneReport`; record key and embedded `zone_id` must agree at JO. |
+| Zone health KV | `AURORA_ZONE_HEALTH/zone.node.<sanitized_node_id>` | every Dataplane `NodeRuntimeSampler`, every five seconds | Zone Control report worker | resource sample, queue-lag cache state, active workers, and loaded public payload-key fingerprints. |
+| Zone health KV | `zone.service.mail` | assigned mail probe | report worker | mail status/capacity aggregate, carrying the assignment epoch in JSON. |
+| Zone health KV | `zone.service.storage` | assigned storage probe | report worker | storage status/capacity snapshot, carrying assignment epoch. |
+| Zone health KV | `zone.service.hypervisor` | assigned Proxmox probe | report worker | per-node hypervisor inventory. It travels in the report but is not written by JO as hierarchy state. |
+| Assignment KV | `AURORA_ZONE_CONTROL_ASSIGNMENTS/assignment.*.0` | assignment coordinator | probe/report workers | owner ID, assignment epoch, and expiry. |
+| Kafka | `aurora.zone.reports.v1` | assigned Zone Control report worker | JO report worker | binary `zone.ZoneReport`; record key and embedded `zone_id` must agree at JO. |
 | PostgreSQL | `hierarchy.zones` | guarded JO report worker | Controlplane/changefeed | current operational `status`, not a desired state. |
 | PostgreSQL | `hierarchy.zone_services` | guarded JO report worker | Controlplane/watchdog | enabled-only `actual_state` and `actual_observed_at`. |
-| PostgreSQL | `hierarchy.zone_encryption_keys` | guarded JO report worker | Controlplane key activation flow | per-key loaded timestamp plus observed timestamp and leader fence. |
+| PostgreSQL | `hierarchy.zone_encryption_keys` | guarded JO report worker | Controlplane key activation flow | per-key loaded timestamp plus observed timestamp and assignment fence. |
 
 ### `ZoneReport` contract
 
@@ -48,14 +48,14 @@ The report has two consumers of its evidence:
 | cluster active nodes | count of `zone.node.*` entries whose `updated_at` is at most 15 seconds old | nonnegative. |
 | CPU and RAM | arithmetic average over those fresh node entries | finite values in `[0, 1]`. |
 | queue lag | saturating sum of fresh node cached lag | nonnegative. `job_queue_lag_stale` is ORed across samples or set true with zero alive nodes. |
-| mail / storage | leader health snapshot status and capacity | both must exist and be `healthy`, `degraded`, or `down`; capacity must be 0–100. |
+| mail / storage | Zone Control probe snapshot status and capacity | both must exist and be `healthy`, `degraded`, or `down`; capacity must be 0–100. |
 | hypervisors | last valid aggregate, or empty | at most 4,096 entries with bounded strings and nonnegative capacity pairs. Not persisted by JO. |
 | loaded payload keys | intersection of key UUID + 32-byte fingerprint across every fresh node | at most 64 distinct UUIDs. A key is producer-ready only if all fresh replicas advertise precisely the same fingerprint. |
-| leader fencing token | Zone coordination lease fencing token | must be positive and fit signed 64-bit range. It is used by the encryption-key SQL fence. |
+| assignment epoch | Zone Control report assignment epoch | must be positive and fit signed 64-bit range. It is used by the encryption-key SQL fence; the protobuf field keeps its legacy wire name. |
 
 ## Phase 1 — each Dataplane replica writes bounded local evidence
 
-This phase is intentionally not leader-only. Each running Dataplane process
+This phase is intentionally not a singleton. Each running Dataplane process
 owns a `NodeRuntimeSampler`, which derives one immutable sample from its cgroup
 measurements, worker-pool states, Kafka lag cache, and loaded private-keyring
 public fingerprints. The sampler writes that sample to Zone-local JetStream KV
@@ -87,19 +87,16 @@ sequenceDiagram
     NS->>OT: export fixed-cardinality diagnostic metrics
 ```
 
-The OTel exporter is a diagnostic sink only. The leader and local admission do
+The OTel exporter is a diagnostic sink only. Zone Control and local admission do
 not read telemetry back from Victoria or the Collector as a control source.
 
-## Phase 2 — fenced Dataplane leader aggregates and publishes a report
+## Phase 2 — assigned Zone Control workers aggregate and publish a report
 
-### Leader authority
-
-Only the holder of `lease.zone.leader` runs the report publisher. Election is a
-CAS lease in `AURORA_ZONE_COORDINATION`: 15-second TTL, a renewal tick every
-five seconds, and a fencing token that increases at each successful takeover.
-The leader checks that lease immediately before an external publish. Loss of
-renewal cancels every leader duty, drains it for up to eight seconds, then lets
-a new leader begin a new session.
+Zone Control assigns storage, mail and hypervisor probe units independently and
+assigns a separate `zone_report.0` unit. Each owner reads local health KV and
+writes its service snapshot with its assignment epoch. The report worker checks
+its epoch before Kafka publication; reassignment cancels the old task and the
+new owner resumes from the latest KV values.
 
 ### Aggregation input and output
 
@@ -114,29 +111,29 @@ a new leader begin a new session.
 
 ```mermaid
 sequenceDiagram
-    participant LE as current Dataplane leader
-    participant CKV as coordination KV lease
+    participant ZC as assigned Zone Control workers
+    participant AKV as assignment KV
     participant HKV as Zone health KV
     participant AG as report aggregator
     participant KP as Dataplane Kafka producer
     participant KR as zone reports topic
 
-    LE->>CKV: verify current owner and fencing token
-    LE->>HKV: enumerate health keys
+    ZC->>AKV: verify current owner and assignment epoch
+    ZC->>HKV: enumerate health keys
     alt enumeration fails
-        LE->>AG: skip report and wait for next cadence
+        ZC->>AG: skip report and wait for next cadence
     else keys available
         AG->>HKV: read each fresh zone.node snapshot
         AG->>HKV: read mail storage and hypervisor snapshots
         AG->>AG: sum and average cluster signals
         AG->>AG: intersect loaded key fingerprints across fresh nodes
-        LE->>CKV: prove still current before publish
-        LE->>KP: publish ZoneReport keyed by Zone UUID
+        ZC->>AKV: prove assignment still current before publish
+        ZC->>KP: publish ZoneReport keyed by Zone UUID
         KP->>KR: durable Kafka send
     end
 ```
 
-The leader publishes a report even when there are no fresh nodes, but sets
+The assigned report worker publishes a report even when there are no fresh nodes, but sets
 `job_queue_lag_stale = true`. This lets Central retain lifecycle state rather
 than interpreting zero lag as idle capacity.
 
@@ -152,7 +149,7 @@ than interpreting zero lag as idle capacity.
 | Cluster values | finite average CPU/RAM within `[0,1]`, nonnegative lag/nodes/workers, and max workers not less than active workers. |
 | Workloads | both mail and storage status/capacity pass the strict contract. |
 | Keys | max 64 unique 16-byte UUIDs, each with a 32-byte fingerprint. |
-| Leader token | positive and no larger than signed 64-bit maximum. |
+| Assignment epoch | positive and no larger than signed 64-bit maximum. |
 
 ```mermaid
 sequenceDiagram
@@ -211,7 +208,7 @@ but is not populated by the transport today.
 | --- | --- |
 | Zone status | Only writes a changed target when both current and target satisfy the runtime state-machine guard: `active ↔ draining`, or target `disabled` from operational states. The policy itself only generates active/draining. Planned and maintenance remain SRE-owned. |
 | Mail/storage actual health | One `UPDATE ... FROM VALUES` writes only desired-enabled services and only when `actual_observed_at` is null or older than the report timestamp. It never UPSERTs missing service rows. |
-| Key readiness | Every registered Zone key is evaluated against the report's key ID/fingerprint set. `loaded_at` becomes report time only on exact fingerprint match, otherwise null. The write accepts only a newer leader fencing token, or the same token with a nonolder observation time. |
+| Key readiness | Every registered Zone key is evaluated against the report's key ID/fingerprint set. `loaded_at` becomes report time only on exact fingerprint match, otherwise null. The write accepts only a newer assignment epoch, or the same epoch with a nonolder observation time. |
 | Hypervisor inventory | Explicitly not persisted by JO as hierarchy business state. It remains telemetry/report content. |
 
 ```mermaid
@@ -245,8 +242,8 @@ snapshot when the replicated `desired_state` has not changed.
 
 | Failure or race | Guard | Result |
 | --- | --- | --- |
-| Old Dataplane leader resumes | coordination lease/current-owner check before publish | it should not publish a new report after losing authority. |
-| Report duplicate | timestamp fence for service state and leader/time fence for keys | older observations do not replace newer accepted ones. |
+| Old Zone Control assignment resumes | assignment epoch/current-owner check before publish | it should not publish a new report after losing authority. |
+| Report duplicate | timestamp fence for service state and assignment/time fence for keys | older observations do not replace newer accepted ones. |
 | Status transition races an SRE update | guarded SQL predicate | a rejected update is not treated as success; next report rereads state. |
 | Report has stale lag | policy retains lifecycle | no automatic recovery/drain based on an unknown queue. |
 | One node lacks a payload key | intersection removes it | Central cannot see that key as loaded on every fresh replica. |

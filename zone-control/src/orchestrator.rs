@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::{metering, transfer_ticket::config::Config};
+use crate::{
+    metering, transfer_ticket::config::Config, zone_control_kafka::ControlKafka,
+    zone_control_state::ZoneControlState, zone_metadata,
+};
 
 const MEMBERS_BUCKET: &str = "AURORA_ZONE_CONTROL_MEMBERS";
 const ASSIGNMENTS_BUCKET: &str = "AURORA_ZONE_CONTROL_ASSIGNMENTS";
@@ -27,17 +30,23 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 enum WorkClass {
     MetadataProjection,
     MetadataRepair,
-    ServiceProbe,
+    StorageProbe,
+    MailProbe,
+    HypervisorProbe,
+    ZoneReport,
     StorageScan,
     StorageReport,
     WorkerScale,
 }
 
 impl WorkClass {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 9] = [
         Self::MetadataProjection,
         Self::MetadataRepair,
-        Self::ServiceProbe,
+        Self::StorageProbe,
+        Self::MailProbe,
+        Self::HypervisorProbe,
+        Self::ZoneReport,
         Self::StorageScan,
         Self::StorageReport,
         Self::WorkerScale,
@@ -47,7 +56,10 @@ impl WorkClass {
         match self {
             Self::MetadataProjection => "metadata_projection",
             Self::MetadataRepair => "metadata_repair",
-            Self::ServiceProbe => "service_probe",
+            Self::StorageProbe => "storage_probe",
+            Self::MailProbe => "mail_probe",
+            Self::HypervisorProbe => "hypervisor_probe",
+            Self::ZoneReport => "zone_report",
             Self::StorageScan => "storage_scan",
             Self::StorageReport => "storage_report",
             Self::WorkerScale => "worker_scale",
@@ -316,7 +328,7 @@ async fn get_or_create_store(
 ) -> Result<kv::Store, String> {
     match js.get_key_value(bucket).await {
         Ok(store) => Ok(store),
-        Err(_) => js
+        Err(_) => match js
             .create_key_value(kv::Config {
                 bucket: bucket.to_string(),
                 description: description.to_string(),
@@ -328,7 +340,12 @@ async fn get_or_create_store(
                 ..Default::default()
             })
             .await
-            .map_err(|error| format!("create {bucket} KV: {error}")),
+        {
+            Ok(store) => Ok(store),
+            Err(create_error) => js.get_key_value(bucket).await.map_err(|get_error| {
+                format!("create {bucket} KV: {create_error}; reopen failed: {get_error}")
+            }),
+        },
     }
 }
 
@@ -359,7 +376,8 @@ fn is_cas_conflict(error: &impl std::fmt::Display) -> bool {
         || message.contains("conflict")
 }
 
-struct MeteringTask {
+struct WorkflowTask {
+    name: &'static str,
     shutdown: CancellationToken,
     handle: JoinHandle<Result<(), String>>,
 }
@@ -381,6 +399,28 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                 return;
             }
         };
+        let state = match ZoneControlState::connect(&config).await {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::error!(
+                    event_code = "ZONE_CONTROL_STATE_UNAVAILABLE",
+                    zone_id = %config.zone_id,
+                    error = %error
+                );
+                return;
+            }
+        };
+        let kafka = match ControlKafka::connect(&config).await {
+            Ok(kafka) => kafka,
+            Err(error) => {
+                tracing::error!(
+                    event_code = "ZONE_CONTROL_KAFKA_UNAVAILABLE",
+                    zone_id = %config.zone_id,
+                    error = %error
+                );
+                return;
+            }
+        };
         let units = work_units(config.control_assignment_shards as u16);
         tracing::info!(
             event_code = "ZONE_CONTROL_DISTRIBUTED_SCHEDULER_STARTED",
@@ -392,7 +432,15 @@ pub fn start(config: Config, shutdown: CancellationToken) {
         );
         let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut metering_task: Option<MeteringTask> = None;
+        let mut metering_task: Option<WorkflowTask> = None;
+        let mut metadata_task: Option<WorkflowTask> = None;
+        let mut metadata_repair_task: Option<WorkflowTask> = None;
+        let mut storage_probe_task: Option<WorkflowTask> = None;
+        let mut mail_probe_task: Option<WorkflowTask> = None;
+        let mut hypervisor_probe_task: Option<WorkflowTask> = None;
+        let mut zone_report_task: Option<WorkflowTask> = None;
+        let mut storage_scan_task: Option<WorkflowTask> = None;
+        let mut worker_scale_task: Option<WorkflowTask> = None;
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -407,7 +455,15 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                             member_id = %owner_id,
                             retryable = true
                         );
-                        stop_metering(&mut metering_task).await;
+                        stop_workflow(&mut metering_task).await;
+                        stop_workflow(&mut metadata_task).await;
+                        stop_workflow(&mut metadata_repair_task).await;
+                        stop_workflow(&mut storage_probe_task).await;
+                        stop_workflow(&mut mail_probe_task).await;
+                        stop_workflow(&mut hypervisor_probe_task).await;
+                        stop_workflow(&mut zone_report_task).await;
+                        stop_workflow(&mut storage_scan_task).await;
+                        stop_workflow(&mut worker_scale_task).await;
                         continue;
                     }
                     match coordinator.reconcile(&units).await {
@@ -427,44 +483,132 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                         ),
                     }
                     let report_unit = WorkUnit { class: WorkClass::StorageReport, shard: 0 };
-                    let owns_report_unit = coordinator
-                        .assignment_for(report_unit)
-                        .await
-                        .ok()
-                        .flatten()
-                        .is_some_and(|assignment| assignment.is_current_for(&owner_id, unix_time_ms()));
-                    if config.metering_enabled && owns_report_unit {
-                        if metering_task.as_ref().is_none_or(|task| task.handle.is_finished()) {
-                            if let Some(task) = metering_task.take() {
-                                let _ = task.handle.await;
-                            }
-                            let metering_shutdown = shutdown.child_token();
-                            let metering_config = config.clone();
-                            let task_shutdown = metering_shutdown.clone();
-                            let handle = tokio::spawn(async move { metering::run(metering_config, task_shutdown).await });
-                            metering_task = Some(MeteringTask { shutdown: metering_shutdown, handle });
-                            let assignment_epoch = coordinator
-                                .assignment_for(report_unit)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|value| value.assignment_epoch)
-                                .unwrap_or_default();
-                            tracing::info!(
-                                event_code = "ZONE_CONTROL_WORKFLOW_STARTED",
-                                zone_id = %config.zone_id,
-                                member_id = %owner_id,
-                                workflow = "storage_report",
-                                assignment_epoch
-                            );
+                    let metadata_unit = WorkUnit { class: WorkClass::MetadataProjection, shard: 0 };
+                    let repair_unit = WorkUnit { class: WorkClass::MetadataRepair, shard: 0 };
+                    let storage_probe_unit = WorkUnit { class: WorkClass::StorageProbe, shard: 0 };
+                    let mail_probe_unit = WorkUnit { class: WorkClass::MailProbe, shard: 0 };
+                    let hypervisor_probe_unit = WorkUnit { class: WorkClass::HypervisorProbe, shard: 0 };
+                    let zone_report_unit = WorkUnit { class: WorkClass::ZoneReport, shard: 0 };
+                    let storage_scan_unit = WorkUnit { class: WorkClass::StorageScan, shard: 0 };
+                    let worker_scale_unit = WorkUnit { class: WorkClass::WorkerScale, shard: 0 };
+                    let now_ms = unix_time_ms();
+                    let owns = |assignment: Option<AssignmentRecord>| {
+                        assignment.is_some_and(|value| value.is_current_for(&owner_id, now_ms))
+                    };
+                    let report_assignment = coordinator.assignment_for(report_unit).await.ok().flatten();
+                    let metadata_assignment = coordinator.assignment_for(metadata_unit).await.ok().flatten();
+                    let repair_assignment = coordinator.assignment_for(repair_unit).await.ok().flatten();
+                    let storage_probe_assignment = coordinator.assignment_for(storage_probe_unit).await.ok().flatten();
+                    let mail_probe_assignment = coordinator.assignment_for(mail_probe_unit).await.ok().flatten();
+                    let hypervisor_probe_assignment = coordinator.assignment_for(hypervisor_probe_unit).await.ok().flatten();
+                    let zone_report_assignment = coordinator.assignment_for(zone_report_unit).await.ok().flatten();
+                    let storage_scan_assignment = coordinator.assignment_for(storage_scan_unit).await.ok().flatten();
+                    let worker_scale_assignment = coordinator.assignment_for(worker_scale_unit).await.ok().flatten();
+                    let owns_report_unit = owns(report_assignment.clone());
+                    let owns_metadata_unit = owns(metadata_assignment.clone());
+                    let owns_repair_unit = owns(repair_assignment.clone());
+                    let owns_storage_probe = owns(storage_probe_assignment.clone());
+                    let owns_mail_probe = owns(mail_probe_assignment.clone());
+                    let owns_hypervisor_probe = owns(hypervisor_probe_assignment.clone());
+                    let owns_zone_report = owns(zone_report_assignment.clone());
+                    let owns_storage_scan = owns(storage_scan_assignment.clone());
+                    let owns_worker_scale = owns(worker_scale_assignment.clone());
+
+                    sync_workflow(&mut metadata_task, owns_metadata_unit, "metadata_projection", metadata_assignment.map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        let kafka = kafka.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                zone_metadata::run_projection(config, state, kafka, task_shutdown, assignment_epoch).await
+                            })
                         }
-                    } else {
-                        stop_metering(&mut metering_task).await;
-                    }
+                    }).await;
+                    sync_workflow(&mut metadata_repair_task, owns_repair_unit, "metadata_repair", repair_assignment.map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        let kafka = kafka.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                zone_metadata::run_repair_publisher(config, state, kafka, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
+                    sync_workflow(&mut metering_task, config.metering_enabled && owns_report_unit, "storage_report", report_assignment.map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move { metering::run(config, state, task_shutdown, assignment_epoch).await })
+                        }
+                    }).await;
+                    sync_workflow(&mut storage_probe_task, owns_storage_probe, "storage_probe", storage_probe_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::zone_health::run_storage_probe(config, state, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
+                    sync_workflow(&mut mail_probe_task, owns_mail_probe, "mail_probe", mail_probe_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::zone_health::run_mail_probe(config, state, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
+                    sync_workflow(&mut hypervisor_probe_task, owns_hypervisor_probe, "hypervisor_probe", hypervisor_probe_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::zone_health::run_hypervisor_probe(config, state, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
+                    sync_workflow(&mut zone_report_task, owns_zone_report, "zone_report", zone_report_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        let kafka = kafka.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::zone_health::run_zone_report(config, state, kafka, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
+                    sync_workflow(&mut storage_scan_task, owns_storage_scan, "storage_bucket_scan", storage_scan_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        let kafka = kafka.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::zone_storage::run_bucket_scanner(config, state, kafka, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
+                    sync_workflow(&mut worker_scale_task, owns_worker_scale, "worker_scale", worker_scale_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::zone_scaling::run_worker_scale_controller(config, state, task_shutdown, assignment_epoch).await
+                            })
+                        }
+                    }).await;
                 }
             }
         }
-        stop_metering(&mut metering_task).await;
+        stop_workflow(&mut metering_task).await;
+        stop_workflow(&mut metadata_task).await;
+        stop_workflow(&mut metadata_repair_task).await;
+        stop_workflow(&mut storage_probe_task).await;
+        stop_workflow(&mut mail_probe_task).await;
+        stop_workflow(&mut hypervisor_probe_task).await;
+        stop_workflow(&mut zone_report_task).await;
+        stop_workflow(&mut storage_scan_task).await;
+        stop_workflow(&mut worker_scale_task).await;
         tracing::info!(
             event_code = "ZONE_CONTROL_DISTRIBUTED_SCHEDULER_STOPPED",
             zone_id = %config.zone_id,
@@ -473,13 +617,65 @@ pub fn start(config: Config, shutdown: CancellationToken) {
     });
 }
 
-async fn stop_metering(task: &mut Option<MeteringTask>) {
+async fn sync_workflow<F>(
+    task: &mut Option<WorkflowTask>,
+    should_run: bool,
+    name: &'static str,
+    assignment_epoch: u64,
+    start: F,
+) where
+    F: FnOnce(CancellationToken, u64) -> JoinHandle<Result<(), String>>,
+{
+    if task
+        .as_ref()
+        .is_some_and(|value| value.handle.is_finished())
+    {
+        if let Some(task) = task.take() {
+            match task.handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    event_code = "ZONE_CONTROL_WORKFLOW_STOPPED",
+                    workflow = task.name,
+                    error = %error,
+                    retryable = true
+                ),
+                Err(error) => tracing::warn!(
+                    event_code = "ZONE_CONTROL_WORKFLOW_JOIN_FAILED",
+                    workflow = task.name,
+                    error = %error,
+                    retryable = true
+                ),
+            }
+        }
+    }
+    if should_run && task.is_none() {
+        let workflow_shutdown = CancellationToken::new();
+        *task = Some(WorkflowTask {
+            name,
+            handle: start(workflow_shutdown.clone(), assignment_epoch),
+            shutdown: workflow_shutdown,
+        });
+        tracing::info!(
+            event_code = "ZONE_CONTROL_WORKFLOW_STARTED",
+            workflow = name
+        );
+    } else if !should_run {
+        stop_workflow(task).await;
+    }
+}
+
+async fn stop_workflow(task: &mut Option<WorkflowTask>) {
     let Some(task) = task.take() else {
         return;
     };
     task.shutdown.cancel();
-    match tokio::time::timeout(Duration::from_secs(5), task.handle).await {
-        Ok(Ok(Ok(()))) | Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => {}
+    let mut handle = task.handle;
+    if tokio::time::timeout(Duration::from_secs(5), &mut handle)
+        .await
+        .is_err()
+    {
+        handle.abort();
+        let _ = handle.await;
     }
 }
 

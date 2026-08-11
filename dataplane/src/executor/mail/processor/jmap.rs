@@ -70,29 +70,6 @@ impl JmapClient {
         }
     }
 
-    pub async fn healthcheck(&self) -> Result<(), String> {
-        let payload = json!({
-            "using": ["urn:ietf:params:jmap:core"],
-            "methodCalls": [["Core/echo", {"dataplane": "mail"}, "health"]]
-        });
-        let response = crate::observability::otel::OtelTracer::trace_http_request(
-            "POST stalwart.jmap.health",
-            vec![
-                opentelemetry::KeyValue::new("http.request.method", "POST"),
-                opentelemetry::KeyValue::new("server.address", "stalwart-jmap"),
-                opentelemetry::KeyValue::new("aurora.operation", "healthcheck"),
-            ],
-            self.request().json(&payload),
-        )
-        .await
-        .map_err(|error| format!("JMAP health request failed: {error}"))?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("JMAP health returned HTTP {}", response.status()))
-        }
-    }
-
     pub async fn submit_batch(&self, mails: &[PreparedMail]) -> Vec<MailSubmitResult> {
         if mails.is_empty() {
             return Vec::new();

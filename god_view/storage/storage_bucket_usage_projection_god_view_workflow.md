@@ -10,8 +10,8 @@ changed projection.
 
 | Item | Contract |
 |---|---|
-| Trigger | Every 15 seconds from the current Zone Dataplane leader. |
-| Producer authority | Only a leader session that still permits external side effects. |
+| Trigger | Every 15 seconds from the assigned Zone Control storage-scan work unit. |
+| Producer authority | Only the current assignment epoch may perform the scan and publish. |
 | Eligibility | Zone metadata must read successfully, status must be `active`, and `services.storage` must be true. |
 | Source observation | MinIO `ListBuckets`, then `ListObjectsV2` pages for names beginning `ws-` or `tn-`. |
 | Transport | `StorageBucketSizesSnapshotV1` on `{prefix}.storage.sizes.v1`, key `zone_id`. |
@@ -32,40 +32,39 @@ changed projection.
 | `aurora:realtime:notifications` | Shared Redis Pub/Sub | JSON `{kind:"storage",user_id,payload:{sizes}}`, best effort only. |
 | Dead-letter topic | Kafka | Invalid snapshots are DLQ-published before source offset commit. |
 
-## Phase 1 — Leader-gated MinIO scan in Dataplane
+## Phase 1 — assigned Zone Control MinIO scan
 
-A Dataplane process starts the scanner only as a Zone leader duty. At each
-cycle it waits 15 seconds, reads Zone metadata from `AURORA_ZONE_CONFIG`, skips
-when metadata read fails or storage is disabled/inactive, and checks leader
-permission both before scanning and before publishing. It lists all buckets,
+Zone Control starts the scanner only while it owns
+`assignment.storage_scan.0`. At each cycle it waits 15 seconds, reads Zone
+metadata from `AURORA_ZONE_CONFIG`, skips when metadata read fails or storage
+is disabled/inactive, and checks the assignment epoch before publishing. It lists all buckets,
 ignores system names outside `ws-`/`tn-`, scans every paginated object list and
 uses saturating addition for object sizes. It publishes a complete snapshot only
 when non-empty.
 
 ```mermaid
 sequenceDiagram
-    participant L as Zone leader session
+    participant ZC as assigned Zone Control storage worker
     participant KV as AURORA_ZONE_CONFIG
-    participant DP as Dataplane storage scanner
+    participant DP as Zone Control storage scanner
     participant M as Private MinIO
     participant K as Storage sizes Kafka
 
-    L->>L: Wait 15 seconds
-    L->>KV: Read Zone metadata
+    ZC->>ZC: Wait 15 seconds
+    ZC->>KV: Read Zone metadata
     alt metadata unavailable, inactive or storage disabled
         KV-->>L: skip cycle
-    else leader may perform side effects
-        L->>DP: Start one scan
-        DP->>M: ListBuckets
+    else assignment may perform side effects
+        ZC->>M: ListBuckets
         loop each ws or tn bucket and every page
-            DP->>M: ListObjectsV2
-            M-->>DP: object sizes and continuation
+            ZC->>M: ListObjectsV2
+            M-->>ZC: object sizes and continuation
         end
-        DP->>L: Recheck leader permission
-        alt non-empty snapshot and still leader
-            L->>K: Publish StorageBucketSizesSnapshotV1 keyed by Zone
-        else empty or leadership lost
-            L->>L: Skip publish
+        ZC->>ZC: Recheck assignment epoch
+        alt non-empty snapshot and assignment still current
+            ZC->>K: Publish StorageBucketSizesSnapshotV1 keyed by Zone
+        else empty or assignment lost
+            ZC->>ZC: Skip publish
         end
     end
 ```
@@ -143,7 +142,7 @@ sequenceDiagram
 |---|---|
 | MinIO scan fails part way | Entire cycle is dropped and no partial snapshot is published. |
 | Snapshot is empty | No snapshot is emitted, so a bucket disappearing from MinIO does not itself set Central usage to zero. |
-| Kafka publish fails | Error is logged. Next successful leader cycle retries with a new full snapshot. |
+| Kafka publish fails | Error is logged. Next successful assigned cycle retries with a new full snapshot. |
 | Invalid source snapshot | DLQ publish must succeed before source offset is committed. |
 | PostgreSQL update fails | Worker stops with error before committing current offset, causing replay. Replays are safe with `IS DISTINCT FROM`. |
 | Redis notification fails | Offset commits after durable PG update. UI eventually learns by refetch. |
@@ -153,8 +152,8 @@ sequenceDiagram
 
 ## Code map
 
-- `dataplane/src/leader/leadership.rs`
-- `dataplane/src/leader/infra/storage.rs`
+- `zone-control/src/orchestrator.rs`
+- `zone-control/src/zone_storage.rs`
 - `dataplane/src/infra/kafka.rs`
 - `job-orchestrator/src/storage_usage/worker.rs`
 - `job-orchestrator/src/storage_usage/store.rs`

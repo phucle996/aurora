@@ -327,26 +327,6 @@ impl ZoneKvStore {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn health_get(&self, key: impl Into<String>) -> Result<Option<Bytes>, String> {
-        self.health
-            .get(key)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    pub async fn health_keys(&self) -> Result<Vec<String>, String> {
-        let mut stream = self
-            .health
-            .keys()
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut keys = Vec::new();
-        while let Some(key) = stream.try_next().await.map_err(|error| error.to_string())? {
-            keys.push(key);
-        }
-        Ok(keys)
-    }
-
     pub async fn health_put(&self, key: impl AsRef<str>, value: Bytes) -> Result<u64, String> {
         self.health
             .put(key, value)
@@ -354,95 +334,11 @@ impl ZoneKvStore {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn health_delete(&self, key: impl AsRef<str>) -> Result<(), String> {
-        self.health
-            .delete(key)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    /// [COMMENT]: Health writer cũ không được overwrite cycle mới dù request cũ hoàn tất sau khi lease đã takeover.
-    pub async fn health_put_fenced(
-        &self,
-        key: &str,
-        value: Bytes,
-        fencing_token: u64,
-    ) -> Result<bool, String> {
-        for _ in 0..5 {
-            let current = self
-                .health
-                .entry(key.to_string())
-                .await
-                .map_err(|error| error.to_string())?;
-            let current_token = current
-                .as_ref()
-                .and_then(|entry| serde_json::from_slice::<serde_json::Value>(&entry.value).ok())
-                .and_then(|snapshot| {
-                    snapshot
-                        .get("fencing_token")
-                        .and_then(|token| token.as_u64())
-                })
-                .unwrap_or_default();
-            if current_token > fencing_token {
-                return Ok(false);
-            }
-            let revision = current.as_ref().map_or(0, |entry| entry.revision);
-            if self
-                .health
-                .update(key, value.clone(), revision)
-                .await
-                .is_ok()
-            {
-                return Ok(true);
-            }
-        }
-        Err(format!("health snapshot CAS contention for {key}"))
-    }
-
     pub async fn coordination_get(&self, key: impl Into<String>) -> Result<Option<Bytes>, String> {
         self.coordination
             .get(key)
             .await
             .map_err(|error| error.to_string())
-    }
-
-    /// [COMMENT]: Soft coordination directives vẫn phải monotonic theo leader epoch; leader cũ
-    /// không được ghi đè scale signal của leader mới sau network partition hoặc process pause.
-    pub async fn coordination_put_fenced(
-        &self,
-        key: &str,
-        value: Bytes,
-        fencing_token: u64,
-    ) -> Result<bool, String> {
-        for _ in 0..5 {
-            let current = self
-                .coordination
-                .entry(key.to_string())
-                .await
-                .map_err(|error| error.to_string())?;
-            let current_token = current
-                .as_ref()
-                .and_then(|entry| serde_json::from_slice::<serde_json::Value>(&entry.value).ok())
-                .and_then(|snapshot| {
-                    snapshot
-                        .get("leader_fencing_token")
-                        .and_then(|token| token.as_u64())
-                })
-                .unwrap_or_default();
-            if current_token > fencing_token {
-                return Ok(false);
-            }
-            let revision = current.as_ref().map_or(0, |entry| entry.revision);
-            if self
-                .coordination
-                .update(key, value.clone(), revision)
-                .await
-                .is_ok()
-            {
-                return Ok(true);
-            }
-        }
-        Err(format!("coordination directive CAS contention for {key}"))
     }
 
     pub async fn read_zone_metadata(&self) -> Result<ZoneMetadata, String> {
@@ -461,41 +357,6 @@ impl ZoneKvStore {
             Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
             None => Ok(ZoneMetadata::default()),
         }
-    }
-
-    pub async fn update_zone_metadata(
-        &self,
-        status: Option<&str>,
-        service: Option<(&str, bool)>,
-    ) -> Result<(), String> {
-        for _ in 0..5 {
-            let current = self.config_entry("zone.metadata".to_string()).await?;
-            let mut metadata = match &current {
-                Some(entry) => serde_json::from_slice::<ZoneMetadata>(&entry.value)
-                    .map_err(|error| format!("zone metadata corrupt: {error}"))?,
-                None => ZoneMetadata::default(),
-            };
-            if let Some(status) = status {
-                metadata.status = status.to_string();
-            }
-            if let Some((name, enabled)) = service {
-                metadata.services.insert(name.to_string(), enabled);
-            }
-            metadata.updated_at = now_unix_ms() / 1_000;
-            let value =
-                Bytes::from(serde_json::to_vec(&metadata).map_err(|error| error.to_string())?);
-            let result = match current {
-                Some(entry) => {
-                    self.config_update("zone.metadata", value, entry.revision)
-                        .await
-                }
-                None => self.config_create("zone.metadata", value).await,
-            };
-            if result.is_ok() {
-                return Ok(());
-            }
-        }
-        Err("zone metadata CAS contention".to_string())
     }
 
     pub async fn acquire_lease(
@@ -618,24 +479,6 @@ impl ZoneKvStore {
             }
         }
         Ok(false)
-    }
-
-    /// [COMMENT]: Leader duty gọi check read-only ngay trước external side effect. Renew chỉ do
-    /// coordinator thực hiện để tránh nhiều task CAS cùng revision và tự gây mất leadership.
-    pub async fn lease_is_current(&self, lease: &ZoneLease) -> Result<bool, String> {
-        let Some(entry) = self
-            .coordination
-            .entry(lease.key.clone())
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(false);
-        };
-        let current: LeaseValue =
-            serde_json::from_slice(&entry.value).map_err(|error| error.to_string())?;
-        Ok(current.owner_id == lease.owner_id
-            && current.fencing_token == lease.fencing_token
-            && current.expires_at_unix_ms > now_unix_ms())
     }
 
     pub async fn release_lease(&self, lease: &ZoneLease) -> Result<bool, String> {

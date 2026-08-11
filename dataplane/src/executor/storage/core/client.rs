@@ -76,9 +76,4 @@ impl MinioClient {
         .await?;
         Ok(())
     }
-
-    /// Lấy tham chiếu đến S3 Client nội bộ
-    pub fn s3(&self) -> &S3Client {
-        &self.s3_client
-    }
 }

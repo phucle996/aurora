@@ -121,7 +121,6 @@ pub struct LogFields<'a> {
     pub event_id: Option<&'a str>,
     pub operation_id: Option<&'a str>,
     pub job_version: Option<u64>,
-    pub leader_fencing_token: Option<u64>,
     pub fencing_token: Option<u64>,
     pub runtime_generation: Option<u64>,
     pub slot: Option<u32>,
@@ -238,10 +237,6 @@ impl Logger {
 
     pub fn service_version() -> &'static str {
         &CONTEXT.get_or_init(LoggerContext::load).service_version
-    }
-
-    pub fn node_id() -> &'static str {
-        &CONTEXT.get_or_init(LoggerContext::load).node_id
     }
 
     pub fn dropped_lines() -> u64 {
@@ -431,7 +426,6 @@ impl Logger {
                     trace_id = trace_id.as_str(),
                     span_id = span_id.as_str(),
                     job_version = fields.job_version.unwrap_or_default(),
-                    leader_fencing_token = fields.leader_fencing_token.unwrap_or_default(),
                     fencing_token = fields.fencing_token.unwrap_or_default(),
                     runtime_generation = fields.runtime_generation.unwrap_or_default(),
                     slot = fields.slot.unwrap_or_default(),
@@ -505,7 +499,6 @@ impl Logger {
             job_topic = job_topic.as_ref(),
             job_version = fields.job_version.unwrap_or_default(),
             attempt,
-            leader_fencing_token = fields.leader_fencing_token.unwrap_or_default(),
             fencing_token = fields.fencing_token.unwrap_or_default(),
             runtime_generation = fields.runtime_generation.unwrap_or_default(),
             slot = fields.slot.unwrap_or_default(),

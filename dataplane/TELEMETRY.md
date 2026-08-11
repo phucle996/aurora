@@ -31,7 +31,7 @@ Tokio task
 
 NodeRuntimeSampler
   -> immutable in-memory NodeRuntimeSample
-  -> local admission and leader/scaling decisions
+  -> local admission and Zone Control scaling input
   -> Zone Health KV snapshot
   -> OTel gauges
 ~~~
@@ -74,7 +74,7 @@ exist:
 | Trace | trace_id, span_id |
 | Durable correlation | event_id, operation_id, job_version |
 | Kafka delivery | kafka_topic, kafka_partition, kafka_offset, assignment_epoch |
-| HA/fencing | leader_fencing_token, fencing_token, runtime_generation, slot |
+| Fencing | fencing_token, assignment_epoch, runtime_generation, slot |
 
 A DLQ event ID is deterministically derived from source topic, partition,
 offset, and error code. It remains stable across a publish-before-settle replay.
@@ -107,7 +107,7 @@ renewals, and no-change ticks must not be logged.
 Required diagnostic events are:
 
 1. Bootstrap, shutdown, and telemetry-pipeline health.
-2. Leader election, fencing, worker scale, and mail-runtime state transitions.
+2. Assignment epochs, worker scale application, and mail-runtime state transitions.
 3. Kafka contract rejection, durable DLQ publication, and source settlement.
 4. Zone KV failures that can leave health, snapshot, or scale state stale.
 5. External infrastructure transition, timeout, and recovery.
@@ -129,8 +129,8 @@ Worker registry -------------+              |
                                              |       +-------------> Zone Health KV zone.node.<node_id>
                                              +---------------------> OTel gauges
 
-Zone leader <-------------------------------- Zone Health KV
-  -> fenced, resource-aware scale directive -> worker scale follower
+Zone Control scale worker <------------------ Zone Health KV
+  -> assignment-fenced, resource-aware scale directive -> worker scale follower
 ~~~
 
 There is one sampler per Dataplane process. It produces an immutable snapshot
@@ -138,12 +138,12 @@ of CPU, memory, throttling, working set, active/starting/ready/draining workers,
 admitted jobs, Kafka lag, freshness, validity, and loaded payload-key readiness.
 
 Admission reads that RAM snapshot directly. It never reads the Collector.
-The sampler writes the same snapshot to Zone Health KV, where the Zone leader
-aggregates node health for scaling. OTel is an export path only.
+The sampler writes the same snapshot to Zone Health KV, where the assigned Zone
+Control scale worker aggregates node health. OTel is an export path only.
 
 A sample is stale when it is invalid, has a future timestamp, or is older than
 15 seconds. Admission then fails closed instead of treating unreadable cgroup
-data as idle capacity. The leader keeps its current scale target rather than
+data as idle capacity. Zone Control keeps its current scale target rather than
 scaling blindly from stale input.
 
 | Metric family | Purpose | Bounded dimensions |
@@ -205,13 +205,13 @@ or message body.
 | Condition | Telemetry result | Business effect |
 | --- | --- | --- |
 | stdout or collector slow | bounded logging/trace queues may drop and counters rise | execution and settlement continue |
-| Collector/backend outage | export is stale or unavailable | no admission, leader, or executor decision reads Collector state |
-| Zone Health KV write failure | bounded warning; subsequent snapshot retry | leader may treat that node as stale |
-| stale sampler | sample validity/age signal | admission fails closed; leader retains target |
+| Collector/backend outage | export is stale or unavailable | no admission, Zone Control, or executor decision reads Collector state |
+| Zone Health KV write failure | bounded warning; subsequent snapshot retry | Zone Control may treat that node as stale |
+| stale sampler | sample validity/age signal | admission fails closed; Zone Control retains target |
 | Kafka/Zone KV retry exhaustion | bounded error, span error, retry/DLQ signal | durable workflow owns retry and source settlement |
 | normal SIGTERM | worker drain, OTel provider shutdown, logger guard flush | no new work; tracked work follows shutdown barrier |
 | SIGKILL/process abort | tail diagnostics can be lost | Kafka, PostgreSQL, and Zone KV durability rules are unchanged |
-| stale leader resumes | fencing fields on diagnostics | owner check/fencing blocks stale side effect |
+| stale assignment worker resumes | fencing fields on diagnostics | assignment epoch blocks stale side effect |
 
 The termination grace period must cover worker drain, OTel shutdown, and the
 logger guard. Telemetry remains an observer throughout; it never becomes a
@@ -228,6 +228,5 @@ truth.
 | Kafka intake and consumer span | src/job_runtime/intake.rs, src/job_runtime/execution.rs |
 | result/retry/DLQ and settlement spans | src/job_runtime/completion.rs |
 | execution lease and watchdog telemetry | src/job_runtime/coordination/ |
-| Zone leader, fencing, health, and scale signals | src/leader/ |
+| Zone Control assignment, health, and scale signals | ../zone-control/src/{orchestrator,zone_health,zone_scaling}.rs |
 | Zone Collector and Victoria development path | ../dev/zone/otel/otel-collector.yml |
-

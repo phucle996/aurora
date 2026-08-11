@@ -52,11 +52,12 @@ message ZoneReport {
     int64 timestamp = 2;
     DataplaneCluster dataplane_cluster = 3;
     Workloads workloads = 4;
-    // The Zone leader reports only keys/fingerprints shared by every fresh
+    // The assigned Zone Control report worker reports only keys/fingerprints shared by every fresh
     // node snapshot. JO matches this public readiness observation against the
     // Hierarchy key registry before Controlplane may select an ACTIVE key.
     repeated LoadedPayloadKey loaded_payload_keys = 5;
-    // Monotonic Zone-KV lease fencing token rejects a report from a leader
-    // that lost ownership before its Kafka publish reached JO.
+    // Monotonic Zone Control assignment epoch rejects a report from a worker
+    // that lost ownership before its Kafka publish reached JO. The field name
+    // remains wire-compatible with the original v1 contract.
     uint64 leader_fencing_token = 6;
 }

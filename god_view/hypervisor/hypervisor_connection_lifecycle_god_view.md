@@ -13,7 +13,7 @@
 | Thành phần | Ownership |
 |---|---|
 | Dataplane đúng Zone | Giữ Proxmox endpoint/token, probe node và thực thi VM job |
-| Dataplane Zone leader | Chạy duy nhất periodic Proxmox health probe |
+| Assigned Zone Control worker | Chạy periodic Proxmox health probe cho đúng assignment epoch |
 | Dataplane worker | Không chạy health loop; chỉ gọi Proxmox khi thực thi command |
 | Zone Health KV | Current reconstructible snapshot, không phải business SoT |
 | Kafka Zone report | Durable transport cho bounded Zone report |
@@ -37,8 +37,8 @@ Không tồn tại các thành phần sau trong contract:
 
 ```mermaid
 flowchart LR
-    Lease["Zone leader lease + fencing"]
-    Leader["Dataplane leader"]
+    Lease["Zone Control assignment + epoch"]
+    Leader["Zone Control probe worker"]
     Runtime["Shared HypervisorRuntime"]
     Proxmox["Proxmox cluster"]
     KV["AURORA_ZONE_HEALTH"]
@@ -57,7 +57,7 @@ flowchart LR
 ```
 
 `HypervisorRuntime` là một shared runtime trong pod, dùng chung connection pool
-cho leader probe và worker execution. Không tạo HTTP client/pool riêng theo mỗi
+cho Zone Control probe và worker execution. Không tạo HTTP client/pool riêng theo mỗi
 loop hoặc mỗi job.
 
 Zone report hiện vẫn mang bounded `workloads.hypervisors` trong thời gian rollout
@@ -65,26 +65,26 @@ contract. JO validate schema, size, Zone binding và timestamp trước khi comm
 Kafka offset, nhưng không materialize physical node vào PostgreSQL. Việc xóa
 field transport này về sau phải là một protobuf-compatible rollout riêng.
 
-## 3. Leader-fenced probe flow
+## 3. Assignment-fenced probe flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Lease as Zone Coordination KV
-    participant Leader as Dataplane leader
+    participant Lease as Zone Control assignment KV
+    participant Leader as assigned Zone Control worker
     participant Runtime as HypervisorRuntime
     participant PVE as Proxmox
     participant Health as Zone Health KV
     participant Kafka as Kafka
     participant JO as Job Orchestrator
 
-    Leader->>Lease: Verify current owner and fencing token
+    Leader->>Lease: Verify current owner and assignment epoch
     Leader->>Health: Read zone metadata; require hypervisor enabled
-    alt metadata unavailable or lease lost
+    alt metadata unavailable or assignment lost
         Leader-->>Leader: Fail closed; skip external probe/write
     else service disabled
         Leader->>Health: Fenced PUT down/empty snapshot
-    else current leader
+    else current assignment
         Leader->>Runtime: probe_nodes()
         Runtime->>PVE: GET cluster node inventory
         alt probe succeeds
@@ -102,9 +102,9 @@ sequenceDiagram
     JO->>Kafka: Commit offset after required Zone service side effects
 ```
 
-Probe interval có jitter để tránh đồng bộ tải sau rolling restart. Khi leader
-chết, lease hết hạn cho phép replica khác takeover. Mọi write health của leader
-cũ phải bị fencing token từ chối; việc có hai process cùng sống trong cửa sổ
+Probe interval có jitter để tránh đồng bộ tải sau rolling restart. Khi worker
+chết, assignment hết hạn cho phép replica khác takeover. Mọi write health của worker
+cũ phải bị assignment epoch từ chối; việc có hai process cùng sống trong cửa sổ
 failover không được tạo hai writer hợp lệ.
 
 ## 4. Snapshot semantics
@@ -133,15 +133,15 @@ rồi giữ resource lease/provider-binding idempotency boundary cho mutation.
 | Failure | Semantics |
 |---|---|
 | Zone metadata/KV unavailable | Probe fail-closed; không gọi Proxmox hoặc ghi unfenced |
-| Proxmox timeout/error | Ghi current snapshot disconnected nếu vẫn giữ lease |
+| Proxmox timeout/error | Ghi current snapshot disconnected nếu assignment vẫn current |
 | Health snapshot stale/mất | Rebuild ở probe kế tiếp; không sửa business resource |
 | Kafka report publish lỗi | Không giả lập DB node state; producer retry bounded |
 | JO duplicate/out-of-order report | Timestamp fence bảo vệ Zone service observation |
-| Leader chết giữa probe/write | Successor takeover; fencing chặn zombie writer |
+| Worker chết giữa probe/write | Reassignment; epoch chặn zombie writer |
 | OTel collector unavailable | Business/VM execution không phụ thuộc collector |
 
-Graceful shutdown hủy leader duties, chờ bounded in-flight probe rồi release
-lease bằng compare-owner/fence. Worker shutdown và Kafka settlement tuân theo
+Graceful shutdown hủy assigned probe, chờ bounded in-flight probe rồi dừng.
+Worker shutdown và Kafka settlement tuân theo
 job lifecycle riêng; health probe không được giữ worker hoặc command offset.
 
 ## 6. Security và cardinality

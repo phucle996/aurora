@@ -286,7 +286,7 @@ flowchart LR
 
 | Component | Owns | Boundary |
 | --- | --- | --- |
-| Dataplane | Job intake, worker pool, leader election, admission, executor, and result/report | Exactly one Zone; no Central DB/Redis credential |
+| Dataplane | Job intake, worker pool, admission, executor, result settlement, and node sampling | Exactly one Zone; no Central DB/Redis credential |
 | Zone JetStream KV | Metadata/config projection, current health, and CAS lease/fencing | Zone-local; not Central NATS |
 | Zone Public Edge | Ticket-gated object/image transfer and runtime ingress | Does not receive Central cookies, ACR assertions, or Zone KV credentials |
 | Zone Transfer Ticket Issuer | Issue/revoke one-time ticket state in Zone KV | Receives only grants injected by Zone Control Authorizer |
@@ -326,7 +326,7 @@ Dataplane startup:
 Load config + read-only HPKE keyring
 -> connect Kafka / NATS Core / Zone KV
 -> bootstrap Zone projection
--> build worker/leader/executor graph
+-> build execution-only worker/executor graph
 -> accept jobs
 ```
 
@@ -342,13 +342,15 @@ Execution path:
 8. Commit the contiguous terminal offset; a result that is not durable cannot
    settle its source.
 
-The Zone leader holds a separate lease, runs infrastructure probes, repairs
-metadata, emits the Zone report, and decides worker scaling. Pod death or a
-rebalance recovers through Kafka replay, assignment epochs, and lease expiry.
+Zone Control owns infrastructure probes, metadata projection/repair, Zone
+reports, storage inventory, and worker-scale decisions. Each duty is a separate
+assigned work unit with a CAS `assignment_epoch`; Dataplane has no Zone-wide
+leader session. Pod death or replica rebalance stops the old work unit and the
+new owner resumes from Kafka/JetStream state.
 
-### Gate B target: distributed Zone Control scheduling
+### Gate B: distributed Zone Control scheduling
 
-The target topology removes that process-wide leader. `zone-control` remains one
+The cutover removes that process-wide leader. `zone-control` remains one
 binary but advertises replica membership in `AURORA_ZONE_CONTROL_MEMBERS` and
 stores per-work-unit assignments in `AURORA_ZONE_CONTROL_ASSIGNMENTS`. Weighted
 rendezvous assignment, CAS-updated `assignment_epoch`, per-unit expiry and
@@ -357,10 +359,10 @@ rebalance independently. Event-driven work will use durable pull queues; ordered
 state transitions keep their own serial partition. A stale owner must stop before
 an external side effect, while idempotent outbox/inbox state handles replay.
 
-The membership/assignment foundation is implemented and tested locally. The
-legacy Dataplane leader duty set remains enabled until each duty has a concrete
-Zone Control owner and a no-dual-writer integration test; this avoids silently
-losing metadata, health, report or storage-scan behavior during the migration.
+The Gate B cutover is complete: Dataplane no longer compiles or starts a
+Zone-wide supervisor. Zone Control must start with
+`ZONE_CONTROL_ORCHESTRATOR_ENABLED=true`; a disabled scheduler is a startup
+error rather than a silent fallback. No duty has a second Dataplane owner.
 
 ### Zone network isolation
 
@@ -385,7 +387,7 @@ networks so that an upstream capability cannot be granted accidentally.
 | --- | --- |
 | `AURORA_ZONE_CONFIG` | Zone metadata and immutable runtime projection |
 | `AURORA_ZONE_HEALTH` | Rebuildable current health |
-| `AURORA_ZONE_COORDINATION` | CAS lease and fencing |
+| `AURORA_ZONE_COORDINATION` | Assignment epochs and fenced scale directives |
 | Pod memory | Worker registry, admission counters, mail L1, and dynamic lag |
 | MinIO/Stalwart/Kubernetes/Hypervisor | External workload side effects |
 | Zone Victoria | Read-only diagnostic telemetry |

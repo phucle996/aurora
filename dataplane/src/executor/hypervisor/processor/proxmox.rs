@@ -22,12 +22,6 @@ pub(crate) struct ProxmoxNode {
     /// Tổng dung lượng RAM vật lý (bytes)
     #[serde(default)]
     pub maxmem: u64,
-    /// Dung lượng disk OS node đang dùng (bytes)
-    #[serde(default)]
-    pub disk: u64,
-    /// Tổng dung lượng disk OS node (bytes)
-    #[serde(default)]
-    pub maxdisk: u64,
 }
 
 /// Wrapper lớp ngoài của Proxmox API response envelope

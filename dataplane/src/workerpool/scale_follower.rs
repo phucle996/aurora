@@ -17,7 +17,7 @@ pub(crate) struct WorkerScaleDirective {
     pub lag_stale: bool,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
-    pub leader_fencing_token: u64,
+    pub assignment_epoch: u64,
 }
 
 fn validate_worker_scale_directive_target(
@@ -26,18 +26,18 @@ fn validate_worker_scale_directive_target(
     min_workers: usize,
     max_workers: usize,
     now_ms: u64,
-    last_leader_fencing_token: u64,
+    last_assignment_epoch: u64,
     last_issued_at_unix_ms: u64,
 ) -> Option<usize> {
     (directive.zone_id == zone_id
         && !directive.lag_stale
-        && directive.leader_fencing_token > 0
+        && directive.assignment_epoch > 0
         && directive.issued_at_unix_ms <= directive.expires_at_unix_ms
         && directive.expires_at_unix_ms > now_ms
         && directive.target_per_node >= min_workers
         && directive.target_per_node <= max_workers
-        && (directive.leader_fencing_token > last_leader_fencing_token
-            || (directive.leader_fencing_token == last_leader_fencing_token
+        && (directive.assignment_epoch > last_assignment_epoch
+            || (directive.assignment_epoch == last_assignment_epoch
                 && directive.issued_at_unix_ms >= last_issued_at_unix_ms)))
         .then_some(directive.target_per_node)
 }
@@ -51,7 +51,7 @@ pub(crate) fn start_worker_scale_directive_follower(
         let _task_guard = task_guard;
         let shutdown = worker_pool.cancel_token();
         let mut last_failure_code: Option<&'static str> = None;
-        let mut last_leader_fencing_token = 0_u64;
+        let mut last_assignment_epoch = 0_u64;
         let mut last_issued_at_unix_ms = 0_u64;
         loop {
             let directive = match runtime
@@ -98,7 +98,7 @@ pub(crate) fn start_worker_scale_directive_follower(
                             runtime.config().min_workers,
                             runtime.config().max_workers,
                             current_unix_time_millis(),
-                            last_leader_fencing_token,
+                            last_assignment_epoch,
                             last_issued_at_unix_ms,
                         )
                         .is_none()
@@ -109,16 +109,14 @@ pub(crate) fn start_worker_scale_directive_follower(
                                 "Ignored stale-lag, wrong-zone, expired, out-of-order, unfenced, or out-of-bounds worker scale directive",
                                 "",
                                 LogFields {
-                                    leader_fencing_token: Some(
-                                        directive.leader_fencing_token,
-                                    ),
+                                    fencing_token: Some(directive.assignment_epoch),
                                     outcome: Some("rejected"),
                                     ..LogFields::default()
                                 },
                             );
                             None
                         } else {
-                            last_leader_fencing_token = directive.leader_fencing_token;
+                            last_assignment_epoch = directive.assignment_epoch;
                             last_issued_at_unix_ms = directive.issued_at_unix_ms;
                             log_scale_follower_recovered(&mut last_failure_code);
                             Some(directive)
@@ -188,7 +186,7 @@ async fn apply_worker_scale_directive_target(
     }
     Logger::sys_info(
         "worker.scale_follower",
-        &format!("Áp dụng leader scale directive: {current} -> {target} workers"),
+        &format!("Applying assigned Zone Control scale directive: {current} -> {target} workers"),
     );
     if target > current {
         for worker_id in 1..=target {
@@ -224,7 +222,7 @@ mod tests {
             lag_stale: false,
             issued_at_unix_ms: 100,
             expires_at_unix_ms: 200,
-            leader_fencing_token: 7,
+            assignment_epoch: 7,
         }
     }
 
@@ -261,7 +259,7 @@ mod tests {
             None
         );
         value.target_per_node = 3;
-        value.leader_fencing_token = 0;
+        value.assignment_epoch = 0;
         assert_eq!(
             validate_worker_scale_directive_target(&value, "zone-a", 1, 10, 150, 0, 0),
             None

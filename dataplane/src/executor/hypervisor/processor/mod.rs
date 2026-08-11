@@ -5,7 +5,7 @@ mod proxmox;
 pub(super) use create_vm::execute_vm_create;
 pub(crate) use image::ImageObjectStore;
 pub(crate) use image::{execute_image_delete, execute_image_import};
-pub(crate) use proxmox::{ProxmoxClient, ProxmoxNode};
+pub(crate) use proxmox::ProxmoxClient;
 
 #[cfg(test)]
 #[path = "../test/create_vm.rs"]

@@ -7,7 +7,7 @@ authoritative hierarchy aggregate.
 
 Its purpose is deliberately narrow: Dataplane needs a rebuildable local answer
 to **is this Zone active and which service types are desired-enabled?** before
-it admits work or runs leader-only infrastructure probes. PostgreSQL remains
+it admits work. PostgreSQL remains
 the only source of truth for `hierarchy.zones` and
 `hierarchy.zone_services`.
 
@@ -15,7 +15,7 @@ the only source of truth for `hierarchy.zones` and
 
 | Concern | Contract |
 | --- | --- |
-| Workflow owner | Job Orchestrator (JO) ChangefeedWorker publishes the Central snapshot. The current fenced Dataplane leader projects it locally. |
+| Workflow owner | Job Orchestrator (JO) ChangefeedWorker publishes the Central snapshot. An assigned Zone Control metadata-projection work unit projects it locally. |
 | Authoritative state | PostgreSQL `hierarchy.zones.status` and `hierarchy.zone_services.desired_state`. |
 | Local projection | The JSON aggregate at `AURORA_ZONE_CONFIG/zone.metadata`. It is replaceable cache, never an ownership or lifecycle source of truth. |
 | Trigger | An `INSERT` or `UPDATE` received from the configured logical-replication publication for `hierarchy.zones` or `hierarchy.zone_services`. |
@@ -32,10 +32,10 @@ commit and traces the resulting runtime side effect end to end.
 | --- | --- | --- | --- | --- |
 | PostgreSQL | `hierarchy.zones` | Controlplane or guarded JO runtime status update | logical replication | Zone ID and current `status` are authoritative. |
 | PostgreSQL | `hierarchy.zone_services` | Controlplane | logical replication | `desired_state` is authoritative. `actual_state` is operational evidence only. |
-| Kafka | `aurora.zone.metadata.<zone_uuid>.v1` | JO ChangefeedWorker or JO repair responder | one current Zone metadata leader | `ZoneMetadataSnapshotV1`, keyed by the textual Zone UUID. The topic must be compacted by infrastructure provisioning. |
-| Kafka | `aurora.jobs.dlq.v1` | Dataplane metadata listener | operators | `DeadLetterRecordV1` is durable evidence before poison source settlement. |
-| Zone JetStream KV | bucket `AURORA_ZONE_CONFIG`, key `zone.metadata` | Dataplane metadata leader | Dataplane intake and leader probes | JSON `ZoneMetadata { status, services, updated_at }`. No TTL, history one, file storage. |
-| Zone JetStream KV | `AURORA_ZONE_COORDINATION/lease.zone.leader` | Dataplane leader election | every leader duty | owner ID plus monotonic fencing token and expiry. It gates projection side effects. |
+| Kafka | `aurora.zone.metadata.<zone_uuid>.v1` | JO ChangefeedWorker or JO repair responder | Zone Control metadata-projection consumer group | `ZoneMetadataSnapshotV1`, keyed by the textual Zone UUID. The topic must be compacted by infrastructure provisioning. |
+| Kafka | `aurora.jobs.dlq.v1` | Zone Control metadata listener | operators | `DeadLetterRecordV1` is durable evidence before poison source settlement. |
+| Zone JetStream KV | bucket `AURORA_ZONE_CONFIG`, key `zone.metadata` | assigned Zone Control metadata projection | Dataplane intake and Zone Control duties | JSON `ZoneMetadata { status, services, updated_at }`. No TTL, history one, file storage. |
+| Zone JetStream KV | `AURORA_ZONE_CONTROL_ASSIGNMENTS/assignment.metadata_projection.0` | Zone Control assignment coordinator | metadata consumer | owner ID plus monotonic `assignment_epoch` and expiry. It gates projection side effects. |
 
 ### `ZoneMetadataSnapshotV1` wire fields
 
@@ -45,7 +45,7 @@ commit and traces the resulting runtime side effect end to end.
 | `zone_id` | authoritative Zone UUID | must byte-match the configured Dataplane `ZONE_ID`. |
 | `status` | current `hierarchy.zones.status` reread by JO | copied into `zone.metadata.status`. |
 | `services[]` | all current `zone_services.service_type` and `desired_state` rows | each pair is merged into the local `services` map. |
-| `observed_at_unix_ms` | JO wall clock | diagnostic only in the current Dataplane projector. It is not a stale-write fence. |
+| `observed_at_unix_ms` | JO wall clock | diagnostic only in the current Zone Control projector. It is not a stale-write fence. |
 | `schema_version` | constant `1` | required by the Dataplane listener. |
 
 ## Phase 1 — committed hierarchy change becomes a Changefeed input
@@ -147,15 +147,15 @@ If PostgreSQL no longer has the Zone row, `query_zone_metadata` emits
 `status = "disabled"` and an empty service map. This is a read fallback, not a
 Zone-delete protocol.
 
-## Phase 3 — a fenced Dataplane leader projects Kafka into Zone KV
+## Phase 3 — an assigned Zone Control worker projects Kafka into Zone KV
 
-### Leader precondition
+### Assignment precondition
 
-Every Dataplane replica can run jobs, but only one current leader runs this
-listener. It owns `lease.zone.leader` by a JetStream-KV compare-and-set lease:
-15-second TTL, five-second renewal, hostname plus boot UUID owner ID, and a
-monotonic fencing token. The supervisor cancels all leader duties when renewal
-or a current-owner read fails.
+Every Zone Control replica advertises membership and receives independent work
+units through weighted rendezvous assignment. The metadata projection unit has
+one ordered shard. Its assignment record has a 20-second expiry and a
+monotonic `assignment_epoch`; losing the unit cancels the consumer before a new
+owner resumes the Kafka group.
 
 | Input | Requirement |
 | --- | --- |
@@ -167,27 +167,27 @@ or a current-owner read fails.
 
 ```mermaid
 sequenceDiagram
-    participant LE as Dataplane leader supervisor
-    participant CKV as Zone coordination KV
+    participant ZC as assigned Zone Control metadata worker
+    participant AKV as Zone Control assignment KV
     participant KC as metadata Kafka consumer
     participant KF as Kafka assignment fence
     participant KV as Zone config KV
-    participant IN as Dataplane job intake and probes
+    participant IN as Dataplane job intake
 
-    LE->>CKV: verify current leader lease before side effects
-    CKV-->>LE: current fencing token
-    KC-->>LE: poll metadata record
-    LE->>KF: register topic partition offset at assignment epoch
-    LE->>LE: decode schema and require configured Zone UUID
-    LE->>KV: CAS merge status into zone.metadata
+    ZC->>AKV: verify assignment epoch before side effects
+    AKV-->>ZC: current owner and epoch
+    KC-->>ZC: poll metadata record
+    ZC->>KF: register topic partition offset at assignment epoch
+    ZC->>ZC: decode schema and require configured Zone UUID
+    ZC->>KV: CAS merge status into zone.metadata
     loop each service in snapshot
-        LE->>KV: CAS merge service desired flag
+        ZC->>KV: CAS merge service desired flag
     end
     alt every KV write succeeded
-        LE->>KC: settle contiguous source offset
+        ZC->>KC: settle contiguous source offset
         IN->>KV: read projected metadata before intake or probe
-    else lease lost KV failure or rebalance
-        LE->>LE: leave source offset unsettled for replay
+    else assignment lost KV failure or rebalance
+        ZC->>ZC: leave source offset unsettled for replay
     end
 ```
 
@@ -213,7 +213,7 @@ metadata value therefore does not become permission to admit new work.
 
 | Failure or race | Current behavior |
 | --- | --- |
-| Another Dataplane replica becomes leader | The old session cancels and does not project or settle further records. The new leader reconsumes from the group. |
+| Assignment moves to another Zone Control replica | The old worker cancels and does not project or settle further records. The new owner reconsumes from the group. |
 | Kafka unavailable at JO | WAL LSN stays behind the durable publication boundary and reconnect logic retries. |
 | Kafka unavailable in Zone | The local metadata stays at its last projection. Intake should remain governed by that local value and its own fail-closed checks. |
 | Zone KV unavailable | The metadata source offset stays uncommitted. No partially failed record is declared applied. |

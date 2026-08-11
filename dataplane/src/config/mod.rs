@@ -68,9 +68,6 @@ pub struct Config {
     pub stalwart_jmap_bearer_token: String,
     pub stalwart_jmap_username: String,
     pub stalwart_jmap_password: String,
-    /// [COMMENT]: Read-only management identity chỉ được cấp ClusterNode query/get; không tái sử dụng mail submission credential.
-    pub stalwart_management_jmap_url: String,
-    pub stalwart_reporter_bearer_token: String,
     /// [COMMENT]: Sender tĩnh phase Dataplane; Controlplane sender projection sẽ thay registry này ở phase sau.
     pub mail_sender_profile_id: String,
     pub mail_sender_version: u32,
@@ -112,11 +109,6 @@ pub struct Config {
     /// [COMMENT]: Consumer reverse report và local health observation có cadence độc lập.
     pub mail_consumer_report_interval_ms: u64,
     pub mail_health_observe_interval_ms: u64,
-
-    /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
-    pub minio_host: Option<String>,
-    /// [COMMENT]: Cổng API dịch vụ MinIO (thường là 9000) (Optional)
-    pub minio_port: Option<u16>,
 
     // ============================================================================
     // 🔒 CẤU HÌNH PROXMOX HYPERVISOR API (Chỉ lưu tại Dataplane — Không lên Controlplane)
@@ -268,10 +260,6 @@ impl Config {
             stalwart_jmap_bearer_token: env::var("STALWART_JMAP_BEARER_TOKEN").unwrap_or_default(),
             stalwart_jmap_username: env::var("STALWART_JMAP_USERNAME").unwrap_or_default(),
             stalwart_jmap_password: env::var("STALWART_JMAP_PASSWORD").unwrap_or_default(),
-            stalwart_management_jmap_url: env::var("STALWART_MANAGEMENT_JMAP_URL")
-                .unwrap_or_default(),
-            stalwart_reporter_bearer_token: env::var("STALWART_REPORTER_BEARER_TOKEN")
-                .unwrap_or_default(),
             mail_sender_profile_id: required_env("MAIL_SENDER_PROFILE_ID")?,
             mail_sender_version: parse_env("MAIL_SENDER_VERSION", 1_u32),
             mail_sender_address: required_env("MAIL_SENDER_ADDRESS")?,
@@ -343,13 +331,6 @@ impl Config {
                 10_000_u64,
             )
             .clamp(5_000, 120_000),
-
-            minio_host: Some(required_env("MINIO_HOST")?),
-            minio_port: Some(
-                required_env("MINIO_PORT")?
-                    .parse::<u16>()
-                    .map_err(|_| "MINIO_PORT must be a valid port".to_owned())?,
-            ),
 
             // ============================================================================
             // 🔒 CẤU HÌNH PROXMOX HYPERVISOR (Least Privilege API Token — env-only)

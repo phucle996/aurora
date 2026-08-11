@@ -105,14 +105,15 @@ sequenceDiagram
 - Critical intake/retry/completion/watchdog exit hoặc panic làm process fail-safe shutdown, fence
   execution đang active và trả lỗi để container supervisor restart.
 
-## 3. Leader, admission và autoscaling
+## 3. Admission và autoscaling
 
-- Stable Zone leader giữ `lease.zone.leader`, TTL 15 giây và renew mỗi 5 giây.
-- Chỉ leader chạy recurring infrastructure probes, metadata repair, Zone report và scale decision.
+- Zone Control assigns probe, metadata, report, inventory and scale work units;
+  Dataplane has no Zone-wide leader lease.
 - Hysteresis mở circuit từ `90%`, đóng dưới `60%`.
 - Admission budget theo số worker `Ready`, không theo `MAX_WORKERS`; pacing dùng admitted jobs/CPU/RAM.
 - Bounded MPSC truyền backpressure.
-- Mỗi node xuất cached lag của partition local; leader aggregate rồi phát fenced scale directive TTL 15 giây.
+- Mỗi node xuất cached lag của partition local; assigned Zone Control scale
+  worker aggregates rồi phát directive có `assignment_epoch` TTL 15 giây.
 - Worker chỉ apply directive đúng Zone/chưa hết hạn; lag stale giữ target trước.
 
 ## 4. Mail runtime
@@ -162,8 +163,9 @@ snapshot qua NATS Core; không lưu dynamic runtime trong Kafka, PostgreSQL ho�
 - `src/job_runtime/coordination/`: fenced lease acquisition/renewal và execution watchdog.
 - `src/workerpool/runtime.rs`: immutable job wiring và bounded multi-consumer queue.
 - `src/workerpool/pool.rs`: execution-aware worker slots, drain và shutdown barrier.
-- `src/leader/`: election, metadata, health probe, report, storage scan và scale decision.
-- `src/leader/worker_scaling.rs`: zonal scale controller, hysteresis/cooldown và resource safeguard.
+- `../zone-control/src/orchestrator.rs`: weighted work-unit assignment and rebalance.
+- `../zone-control/src/zone_health.rs`, `zone_metadata.rs`, `zone_storage.rs`, and
+  `zone_scaling.rs`: Zone-wide control duties; Dataplane only applies their directives.
 - `src/workerpool/scale_follower.rs`: apply fenced worker target.
 - `src/executor/mail/runtime/`: customer broker suites.
 - `src/executor/mail/processor/`: render/JMAP/batching.

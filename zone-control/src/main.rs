@@ -3,9 +3,23 @@ use std::error::Error;
 mod metering;
 mod orchestrator;
 mod transfer_ticket;
+mod zone_control_kafka;
+mod zone_control_state;
+mod zone_health;
+mod zone_metadata;
+mod zone_scaling;
+mod zone_storage;
 
 pub mod storage_usage_report_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.storage.metering.v1.rs"));
+}
+
+pub mod transport_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.transport.v1.rs"));
+}
+
+pub mod zone_report_proto {
+    include!(concat!(env!("OUT_DIR"), "/zone.rs"));
 }
 
 #[tokio::main]
@@ -17,14 +31,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let config = transfer_ticket::config::Config::from_env()?;
     let store = transfer_ticket::store::TicketStore::connect(&config).await?;
     let shutdown = tokio_util::sync::CancellationToken::new();
-    if config.orchestrator_enabled {
-        orchestrator::start(config.clone(), shutdown.clone());
-    } else {
-        tracing::info!(
-            event_code = "ZONE_CONTROL_ORCHESTRATOR_DISABLED",
-            reason = "distributed control scheduler is disabled during controlled extraction"
+    if !config.orchestrator_enabled {
+        return Err(
+            "ZONE_CONTROL_ORCHESTRATOR_ENABLED must be true after the Gate B cutover; legacy Zone-wide control is removed".into(),
         );
     }
+    orchestrator::start(config.clone(), shutdown.clone());
     if !config.metering_enabled {
         tracing::info!(
             event_code = "ZONE_STORAGE_METERING_DISABLED",

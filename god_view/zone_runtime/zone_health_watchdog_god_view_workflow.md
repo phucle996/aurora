@@ -34,7 +34,7 @@ processor.
 | PostgreSQL | `zone_services.actual_state` | report worker and watchdog | Current operational observation; watchdog writes only `down`. |
 | PostgreSQL | `zone_services.actual_observed_at` | report worker | Time of the last accepted report. Watchdog only reads it in the current code. |
 | PostgreSQL | `zone_services.updated_at` | writer | Updated by watchdog as audit/change time. It is not report freshness. |
-| Kafka | `aurora.zone.reports.v1` | Dataplane leader to JO report worker | Later valid reports can overwrite watchdog-down subject to report timestamp fencing. |
+| Kafka | `aurora.zone.reports.v1` | assigned Zone Control report worker to JO report worker | Later valid reports can overwrite watchdog-down subject to report timestamp fencing. |
 
 ## Phase 1 — one JO replica receives temporary scan authority
 
@@ -126,7 +126,7 @@ observation.
 ## Phase 3 — a later live report recovers operational evidence
 
 The watchdog never declares a service healthy. Recovery comes only from a new
-Dataplane leader report that passes JO's normal Kafka validation.
+Zone Control report-worker report that passes JO's normal Kafka validation.
 
 ### Recovery input and output
 
@@ -139,7 +139,7 @@ Dataplane leader report that passes JO's normal Kafka validation.
 
 ```mermaid
 sequenceDiagram
-    participant DP as current Dataplane leader
+    participant DP as assigned Zone Control report worker
     participant K as Kafka zone reports
     participant JR as JO report worker
     participant PG as hierarchy.zone_services
@@ -187,7 +187,7 @@ implementation can reconcile them deliberately.
 | Null timestamps are skipped | `NULL < NOW() - interval` evaluates to null, not true. | Services that have never been reported do not become down through this flow. |
 | Scan is global | The SQL has no Zone UUID or Zone status filter. | Operational semantics cover all Central Zones, not a single Zone. |
 | Lease release errors are ignored | The Lua release result is assigned but not acted on. | TTL remains the recovery mechanism if Redis cannot release cleanly. |
-| Reports use a different fence | Report processing compares report timestamps for service health and applies leader/time fencing for encryption keys. | Do not assume a watchdog update participates in those stronger report fences. |
+| Reports use a different fence | Report processing compares report timestamps for service health and applies assignment/time fencing for encryption keys. | Do not assume a watchdog update participates in those stronger report fences. |
 
 This workflow remains useful as a conservative stale-report indicator, but its
 current behavior must not be represented as a complete heartbeat or lifecycle

@@ -2,7 +2,7 @@
 
 This is the cold-start and periodic recovery path for the Zone metadata
 projection. It deliberately does not query PostgreSQL from the Zone. A newly
-elected Dataplane leader asks Central for a full snapshot through Kafka, then
+an assigned Zone Control repair worker asks Central for a full snapshot through Kafka, then
 uses the same local projection boundary as ordinary metadata propagation.
 
 The workflow exists because a Zone can start after a Central configuration
@@ -14,10 +14,10 @@ durable record in the Zone's compacted metadata topic.
 
 | Concern | Contract |
 | --- | --- |
-| Trigger owner | The current fenced Dataplane leader starts one repair publisher at leader-session start, then repeats after one hour plus 0–29 seconds of jitter. |
+| Trigger owner | The assigned Zone Control metadata-repair work unit starts one publisher, then repeats after one hour plus 0–29 seconds of jitter. |
 | Central responder | JO `run_metadata_query_listener` owns query validation and the read-only PostgreSQL reread. |
 | Source of truth | PostgreSQL hierarchy Zone status and desired service state. |
-| Zone authority | The Dataplane leader may write only the rebuildable `AURORA_ZONE_CONFIG/zone.metadata` projection. |
+| Zone authority | Zone Control may write only the rebuildable `AURORA_ZONE_CONFIG/zone.metadata` projection. |
 | Durable transport | Kafka query topic and per-Zone metadata topic, both manual-settlement at their consumers. |
 | Explicit non-goals | The query cannot create a Zone, change service desired state, change Zone lifecycle, grant access, repair a deleted KV key by guessing data, or read Central PostgreSQL from the Zone. |
 
@@ -25,21 +25,21 @@ durable record in the Zone's compacted metadata topic.
 
 | Layer | Identifier | Value and invariant |
 | --- | --- | --- |
-| Zone coordination KV | `AURORA_ZONE_COORDINATION/lease.zone.leader` | Leader CAS value contains `owner_id`, fencing token, and expiry. TTL 15 seconds, coordinator renews every five seconds. |
+| Zone coordination KV | `AURORA_ZONE_CONTROL_ASSIGNMENTS/assignment.metadata_repair.0` | Assignment CAS value contains owner ID, `assignment_epoch`, and expiry. |
 | Kafka request | `aurora.zone.metadata.queries.v1` | `ZoneMetadataQueryV1`, Kafka key is textual Zone UUID. This is not a Redis reply channel. |
 | Kafka response | `aurora.zone.metadata.<zone_uuid>.v1` | Full `ZoneMetadataSnapshotV1` for exactly one Zone. Infrastructure must configure this per-Zone topic as compacted. |
 | Kafka quarantine | `aurora.jobs.dlq.v1` | Invalid query or invalid Zone snapshot is recorded before that consumer settles its source. |
 | Zone config KV | `AURORA_ZONE_CONFIG/zone.metadata` | JSON projection with no TTL. Absent metadata defaults to inactive and no services. |
-| Request identity | `request_id` | New random UUID from the leader. JO copies it into reply `event_id`; it is correlation only today, not a local ordering fence. |
-| Cadence | leader start, then `3,600 + random(0..30)` seconds | No immediate retry loop after an unsuccessful Kafka publish. The next timer or a later leader session tries again. |
+| Request identity | `request_id` | New random UUID from the assigned worker. JO copies it into reply `event_id`; it is correlation only today, not a local ordering fence. |
+| Cadence | assignment start, then `3,600 + random(0..30)` seconds | No immediate retry loop after an unsuccessful Kafka publish. The next timer or a later assignment tries again. |
 
 ### `ZoneMetadataQueryV1` contract
 
 | Field | Producer | Current responder validation |
 | --- | --- | --- |
-| `request_id` | fresh leader-generated UUID bytes | exactly 16 bytes |
+| `request_id` | fresh Zone Control-generated UUID bytes | exactly 16 bytes |
 | `zone_id` | configured Dataplane Zone UUID bytes | exactly 16 bytes, then parsed into a UUID |
-| `requested_at_unix_ms` | current leader wall-clock time | must be positive |
+| `requested_at_unix_ms` | current Zone Control wall-clock time | must be positive |
 | `schema_version` | constant `1` | must equal `1` |
 
 The responder accepts a maximum 64 KiB record. It does not use the Kafka record
@@ -47,58 +47,52 @@ key as an additional binding, and it does not currently enforce a clock window
 or reject a nil UUID. Those AS-IS limits appear below rather than being hidden
 behind a stronger description.
 
-## Phase 1 — Dataplane acquires leader authority and emits a repair query
+## Phase 1 — assigned Zone Control repair worker emits a repair query
 
 ### Preconditions
 
-Every Dataplane pod tries to acquire the same Zone-local JetStream KV lease.
-The lease value is changed by compare-and-set, carries a monotonically
-increasing fencing token, and uses a hostname plus boot UUID as its owner ID.
-The elected pod is still a normal job worker; it merely gains the singleton
-runtime duties for this leader session.
+Every Zone Control replica advertises membership. Weighted rendezvous chooses
+one owner for `assignment.metadata_repair.0`; the assignment epoch fences a
+reassignment and the worker is cancelled before a new owner starts.
 
 | Check | Result |
 | --- | --- |
-| Lease acquire succeeds within five seconds | Start leader session and all leader duties. |
-| Lease held by another node | Wait roughly 1–2 seconds with jitter and retry election. |
-| KV acquisition or current-owner read fails | Fail closed: no metadata query and no external leader side effect. |
-| Lease renewal returns false or errors | Cancel the entire session, drain/abort duties, and let a future election occur. |
+| Assignment is current | Start the repair publisher for the assigned epoch. |
+| Assignment belongs to another replica | Do not publish; the other owner remains responsible. |
+| Assignment KV read or epoch check fails | Fail closed: no query and no external side effect. |
+| Assignment expires or is replaced | Cancel the publisher and leave the next interval to the new owner. |
 
 ### Internal input and output
 
 | Part | Contract |
 | --- | --- |
-| Input | Current `ZoneLeaderSession`, configured `ZONE_ID`, Kafka producer, and a valid current coordination lease. |
+| Input | Current Zone Control assignment epoch, configured `ZONE_ID`, and Kafka producer. |
 | Output | A schema-1 repair query keyed by the textual Zone UUID. |
 | Publication boundary | `KafkaTransport::publish_message` encodes Protobuf and waits for the idempotent producer's `acks=all` result. |
-| Failure | A failed publish only logs a warning. The leader does not synthesize `active`, clear KV, or contact PostgreSQL. |
+| Failure | A failed publish only logs a warning. The repair worker does not synthesize `active`, clear KV, or contact PostgreSQL. |
 
 ```mermaid
 sequenceDiagram
-    participant DP as Dataplane replica
-    participant CKV as Zone coordination KV
-    participant LS as ZoneLeaderSession
+    participant ZC as Zone Control replica
+    participant AKV as assignment KV
     participant RP as metadata repair publisher
     participant KP as Dataplane Kafka producer
     participant KQ as zone metadata query topic
 
-    DP->>CKV: CAS acquire lease.zone.leader with owner and TTL
-    CKV-->>DP: fencing token N
-    DP->>LS: start session with lease N
-    LS->>CKV: read current owner before external side effect
-    CKV-->>LS: owner and token N still current
+    ZC->>AKV: read assignment.metadata_repair.0
+    AKV-->>ZC: owner and assignment epoch N
     RP->>RP: create request UUID and current timestamp
     RP->>KP: publish ZoneMetadataQueryV1 keyed by Zone UUID
     KP->>KQ: durable idempotent Kafka send
     alt publish fails
-        RP->>RP: log and wait until next jittered hour or next leader
+        RP->>RP: log and wait until next jittered hour or next assignment
     end
 ```
 
-The publisher runs immediately on entering its loop, so a newly elected leader
-does not wait an hour for its first repair. Its next wait is cancellation-aware:
-leader loss stops the task instead of letting an old leader publish after
-failover.
+The publisher runs immediately on entering its loop, so a newly assigned owner
+does not wait an hour for its first repair. Its next wait is
+cancellation-aware: assignment loss stops the task instead of letting an old
+owner publish after rebalance.
 
 ## Phase 2 — JO validates the query and rereads Central authority
 
@@ -153,9 +147,9 @@ missed. If no Zone exists for the requested UUID, `query_zone_metadata` returns
 | DLQ publish errors | Return the error. The source query offset remains uncommitted and the record replays. |
 | PostgreSQL or response publish errors | Return the error. The source query offset remains uncommitted and the record replays. |
 
-## Phase 3 — current Zone leader projects the response into local KV
+## Phase 3 — assigned Zone Control metadata worker projects the response into local KV
 
-The response is consumed by the same leader-owned listener that receives live
+The response is consumed by the Zone Control metadata-projection listener that receives live
 CDC metadata snapshots. The response is not delivered to a temporary reply
 queue and no direct JO-to-Dataplane RPC exists.
 
@@ -163,8 +157,8 @@ queue and no direct JO-to-Dataplane RPC exists.
 
 | Step | Exact behavior |
 | --- | --- |
-| Consumer creation | Leader opens group `aurora-zone-metadata-<zone_uuid>-v1` on only its Zone's topic, with manual commit and an assignment-epoch fence. |
-| Side-effect gate | Before processing a poll and before external writes, `ZoneLeaderSession` reads the current coordination lease. A stale session returns without settling. |
+| Consumer creation | Zone Control opens group `aurora-zone-metadata-<zone_uuid>-v1` on only its Zone's topic, with manual commit and an assignment-epoch fence. |
+| Side-effect gate | Before processing a poll and before external writes, the worker checks its Zone Control assignment epoch. A stale worker returns without settling. |
 | Decode | Tombstones, invalid Protobuf, non-v1 schema, and a Zone UUID that differs byte-for-byte from configured `ZONE_ID` are poison input. |
 | Projection | It CAS-merges `status` first and each response service entry afterward into one JSON KV document. |
 | Success settlement | The Kafka delivery settles only after every merge succeeded. |
@@ -173,15 +167,15 @@ queue and no direct JO-to-Dataplane RPC exists.
 ```mermaid
 sequenceDiagram
     participant KM as per-Zone metadata topic
-    participant DL as Dataplane metadata leader
-    participant CKV as Zone coordination KV
+    participant DL as Zone Control metadata worker
+    participant AKV as assignment KV
     participant KV as AURORA_ZONE_CONFIG
     participant KD as jobs DLQ topic
     participant IN as local intake and probes
 
     KM-->>DL: repair snapshot at partition offset
-    DL->>CKV: prove lease is still current
-    alt leader is fenced
+    DL->>AKV: prove assignment epoch is still current
+    alt assignment is fenced
         DL->>DL: stop without projection or offset settlement
     else snapshot invalid or tombstone
         DL->>KD: publish durable deterministic DLQ record
@@ -205,8 +199,8 @@ sequenceDiagram
 | Situation | Recovery result |
 | --- | --- |
 | Zone restarts with no config KV value | `zone.metadata` reads as inactive/no services until a compacted record or repair response is projected. |
-| Leader changes during a query | The old leader can no longer project or settle after its lease check. The new leader publishes a new query and consumes the durable response topic. |
-| Query succeeds but Zone is offline | The compacted metadata topic retains the latest broker record subject to broker retention/configuration. The next leader consumes it. |
+| Assignment changes during a query | The old worker can no longer project or settle after its epoch check. The new owner publishes a new query and consumes the durable response topic. |
+| Query succeeds but Zone is offline | The compacted metadata topic retains the latest broker record subject to broker retention/configuration. The next assigned worker consumes it. |
 | Response applies but offset commit fails | Replay writes the same status and service entries again. |
 | Zone KV outage | Source record is not settled. The local value remains whatever was last successfully applied. |
 | JO restart | Kafka consumer group resumes its uncommitted query. PostgreSQL reread is safe because the reply is a complete snapshot. |

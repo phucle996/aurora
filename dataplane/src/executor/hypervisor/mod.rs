@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub use executor::dispatch_hypervisor_job;
-pub(crate) use processor::ProxmoxNode;
 
 pub mod hypervisor_proto {
     include!(concat!(env!("OUT_DIR"), "/hypervisor.rs"));
@@ -39,9 +38,5 @@ impl HypervisorRuntime {
             .acquire_owned()
             .await
             .map_err(|_| "Hypervisor mutation limiter is closed".to_string())
-    }
-
-    pub(crate) async fn probe_nodes(&self) -> Result<Vec<ProxmoxNode>, String> {
-        self.proxmox.fetch_nodes().await
     }
 }

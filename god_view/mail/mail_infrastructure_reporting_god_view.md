@@ -40,8 +40,8 @@ flowchart LR
     UI -->|renew returns latest snapshot| CP
 
     POD[Every Mail Dataplane pod] --> LOCAL[mail.health.node local snapshot]
-    LOCAL --> HO[Zone leader mail observer]
-    HO -->|leader-fenced| ZKV[zone.service.mail]
+    LOCAL --> HO[Zone Control mail-probe worker]
+    HO -->|assignment-fenced| ZKV[zone.service.mail]
     HO -->|single recurring probe| JMAP[JMAP and Stalwart]
     HO -->|low-cardinality| OTEL[OTLP and Grafana]
 ```
@@ -98,13 +98,13 @@ Mỗi pod ghi `mail.health.node.{node_id}` chứa boot UUID và queue pressure, 
 chứa bất kỳ runtime consumer field nào. `active_consumer_slots` là pod-local OTel gauge đi thẳng
 collector/Grafana, không qua NATS KV.
 
-Stable holder của `lease.zone.leader` thực hiện observer:
+Assigned Zone Control probe/report workers thực hiện observer theo từng work unit:
 
-1. Leader verify current owner/fencing rồi chạy JMAP probe và Stalwart read-only `ClusterNode/query/get`.
-2. Leader scan tối đa 512 fresh `mail.health.node.*` cho capacity/service state.
-3. Leader derive `healthy/degraded/down` và fenced PUT `zone.service.mail` bằng leader token.
-4. Leader record low-cardinality OTel metrics; không scan runtime customer, không XADD Central Redis.
-5. Mất leader renew cancel observer; leader mới takeover với fencing token lớn hơn.
+1. Mail-probe worker verify assignment epoch rồi chạy JMAP probe và Stalwart read-only `ClusterNode/query/get`.
+2. Mail-probe worker scan tối đa 512 fresh `mail.health.node.*` cho capacity/service state.
+3. Mail-probe worker derive `healthy/degraded/down` và fenced PUT `zone.service.mail` bằng assignment epoch.
+4. Report worker record low-cardinality OTel metrics; không scan runtime customer, không XADD Central Redis.
+5. Mất assignment cancel observer; replica khác nhận unit với epoch lớn hơn.
 
 ## 6. OTel/Grafana contract
 
@@ -135,8 +135,8 @@ queue và broker identifier không được làm metric label.
 | Redis lỗi trước NATS watch publish | Không ACK watch Stream, PEL reclaim | Idempotent retry |
 | NATS Core mất watch/report | At-most-once soft state, UI renew và heartbeat định kỳ | Tự phục hồi, không sai business |
 | Redis/DB lỗi khi aggregate | Report sample hiện tại có thể mất; heartbeat sau gửi lại | Snapshot không rollback |
-| Hai pod cùng infra probe | Stable `lease.zone.leader` CAS | Chỉ current leader probe |
-| Leader cũ hoàn tất chậm | Current-owner check + fenced KV PUT | Không overwrite `zone.service.mail` |
+| Hai pod cùng infra probe | Assignment CAS + epoch | Chỉ current assignment probe |
+| Worker cũ hoàn tất chậm | Current-assignment check + fenced KV PUT | Không overwrite `zone.service.mail` |
 
 ## 8. Code ownership
 
@@ -149,7 +149,7 @@ queue và broker identifier không được làm metric label.
 | NATS report intake | `job-orchestrator/src/mail_runtime/ingest.rs` |
 | Centrifugo bridge | `notification-service/src/application/job_notifications.rs` and `runtime_updates.rs` |
 | Pod-local health state | `dataplane/src/executor/mail/supervisor/local_observer.rs` |
-| Zonal aggregate health | `dataplane/src/leader/infra/mail.rs` |
+| Zonal aggregate health | `zone-control/src/zone_health.rs` |
 | OTel metrics | `dataplane/src/executor/mail/supervisor/metrics.rs` |
 
 Không được tái tạo runtime PostgreSQL tables, `mail.runtime.*` Zone KV keys,

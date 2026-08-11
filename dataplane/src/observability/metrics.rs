@@ -43,7 +43,7 @@ static KAFKA_UNSETTLED_RECORDS: OnceLock<Gauge<f64>> = OnceLock::new();
 /// One coherent observation fan-outs to admission control, OTel and Zone KV.
 ///
 /// `sample_valid` is deliberately separate from the numeric values: a failed
-/// cgroup read must never look like a fresh zero-load sample to the leader.
+/// cgroup read must never look like a fresh zero-load sample to Zone Control.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct NodeRuntimeSample {
@@ -196,7 +196,7 @@ impl NodeRuntimeSampler {
                     .await;
 
                 // A lag snapshot can be older than the resource sample while
-                // admission is paused. Preserve that distinction for the leader.
+                // admission is paused. Preserve that distinction for Zone Control.
                 sample.job_queue_lag = job_queue_lag;
                 sample.job_queue_lag_stale = job_queue_lag_stale
                     || job_queue_lag_observed_at == 0
@@ -281,7 +281,7 @@ pub struct NodeRuntimeMetrics;
 
 impl NodeRuntimeMetrics {
     /// Register OTel instruments once. OTel is the export/diagnostic sink;
-    /// local admission and leader control never read values back from the
+    /// local admission and Zone Control never read values back from the
     /// Collector, they consume the same in-memory sample directly.
     pub fn init_registry() {
         let _ = node_cpu_utilization();

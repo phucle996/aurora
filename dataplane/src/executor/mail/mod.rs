@@ -29,7 +29,6 @@ pub struct MailRuntime {
     // Hostname ổn định qua container lifetime; boot UUID đổi sau restart để không nhập nhằng incarnation.
     pub(crate) runtime_node_id: String,
     pub(crate) runtime_boot_id: uuid::Uuid,
-    jmap: Arc<JmapClient>,
 }
 
 impl MailRuntime {
@@ -64,12 +63,7 @@ impl MailRuntime {
             metrics,
             runtime_node_id,
             runtime_boot_id,
-            jmap,
         }))
-    }
-
-    pub async fn healthcheck(&self) -> Result<(), String> {
-        self.jmap.healthcheck().await
     }
 
     pub(crate) fn runtime_snapshots(&self) -> Vec<runtime::RuntimeHealthSnapshot> {

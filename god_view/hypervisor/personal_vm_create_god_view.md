@@ -187,9 +187,9 @@ executor/hypervisor/
 ```
 
 Runtime sở hữu duy nhất connection pool `reqwest`, mutation semaphore
-`PROXMOX_MAX_CONCURRENT_JOBS` và Zone-local provider-binding runtime. Zone leader
-dùng chính runtime này để health probe; không tạo client/pool thứ hai. Chỉ leader
-được chạy periodic infrastructure probe. Worker chỉ gọi Proxmox khi thực thi
+`PROXMOX_MAX_CONCURRENT_JOBS` và Zone-local provider-binding runtime. Zone Control
+probe worker dùng client riêng cho health probe; không tạo client/pool thứ hai
+trong mỗi job. Worker chỉ gọi Proxmox khi thực thi
 command đã lease/fence, không tự chạy health loop.
 
 Semaphore chỉ bao quanh external mutation từ clone/configure/resize/start.

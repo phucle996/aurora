@@ -10,8 +10,9 @@ use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::{LogFields, Logger};
 use tokio_util::sync::CancellationToken;
 
-/// [COMMENT]: Local observer tuyệt đối không gọi JMAP/Stalwart. Nó chỉ export state của pod để
-/// leader aggregate; vì vậy scale-out không nhân số request health tới hạ tầng.
+/// [COMMENT]: Local observer tuyệt đối không gọi JMAP/Stalwart. Nó chỉ export
+/// state của pod để assigned Zone Control workers aggregate; vì vậy scale-out
+/// không nhân số request health tới hạ tầng.
 pub(super) fn start_mail_dataplane_local_snapshot_writer(
     config: Arc<Config>,
     zone_kv: Arc<ZoneKvStore>,

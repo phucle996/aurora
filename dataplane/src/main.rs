@@ -6,7 +6,6 @@ mod config;
 mod executor;
 mod infra;
 mod job_runtime;
-mod leader;
 mod observability;
 mod security;
 mod workerpool;

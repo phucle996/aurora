@@ -154,16 +154,9 @@ impl AppContainer {
             self.worker_pool.track_task(),
         );
 
-        // [COMMENT]: Một entry point duy nhất sở hữu election và mọi Zone-wide singleton duty.
-        crate::leader::ZoneLeaderSupervisor::start_zone_leader_supervisor(
-            self.config.clone(),
-            self.zone_kv.clone(),
-            self.kafka.clone(),
-            self.worker_pool.mail_runtime.clone(),
-            self.worker_pool.hypervisor_runtime.clone(),
-            self.worker_pool.cancel_token(),
-            self.worker_pool.track_task(),
-        );
+        // Zone Control owns all Zone-wide control workflows. Dataplane starts only
+        // execution-local runtimes and consumes fenced directives produced by the
+        // assigned Zone Control work units.
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.job_execution_lease_registry.clone();
@@ -264,15 +257,17 @@ impl AppContainer {
             .await;
         });
 
-        // Bootstrap the configured baseline immediately; the leader directive
-        // is an optimization signal and may be stale during failover.
+        // Bootstrap the configured baseline immediately; the assigned Zone
+        // Control directive is an optimization signal and may be stale during
+        // reassignment.
         for worker_id in 1..=self.config.min_workers {
             self.worker_pool
                 .spawn_worker(worker_id, worker_runtime.clone());
         }
 
-        // [COMMENT]: Worker không tự quyết định scale. Nó chỉ apply directive có leader fencing
-        // và TTL từ AURORA_ZONE_COORDINATION; directive stale thì giữ capacity hiện tại.
+        // [COMMENT]: Worker không tự quyết định scale. Nó chỉ apply directive có
+        // assignment epoch và TTL từ AURORA_ZONE_COORDINATION; directive stale
+        // thì giữ capacity hiện tại.
         crate::workerpool::scale_follower::start_worker_scale_directive_follower(
             self.worker_pool.clone(),
             worker_runtime,

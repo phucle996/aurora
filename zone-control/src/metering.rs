@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::{
     storage_usage_report_proto::{StorageUsageAggregateV1, StorageUsageReportV1},
     transfer_ticket::config::Config,
+    zone_control_state::ZoneControlState,
 };
 
 const OUTBOX_STREAM: &str = "AURORA_ZONE_STORAGE_USAGE_OUTBOX";
@@ -43,7 +44,7 @@ const REPORT_NAMESPACE: Uuid = Uuid::from_u128(0x5f0a_8e90_46e5_4fbb_8c01_7108_7
 
 /// The metering publisher has its own settings and transport capabilities. It
 /// deliberately does not share a context with transfer-ticket HTTP handlers or
-/// the Zone leader coordinator.
+/// the distributed Zone Control assignment scheduler.
 #[derive(Clone)]
 struct Settings {
     zone_id: Uuid,
@@ -206,21 +207,27 @@ impl KafkaPublisher {
 }
 
 /// Starts the Zone-local report publisher. The caller keeps this workflow
-/// opt-in so Dataplane's legacy billing/leader duty cannot run a second
-/// charge-producing path during the migration.
-pub async fn run(config: Config, shutdown: CancellationToken) -> Result<(), String> {
+/// opt-in while the Cost Engine cutover remains a separate deployment gate.
+pub async fn run(
+    config: Config,
+    state: Arc<ZoneControlState>,
+    shutdown: CancellationToken,
+    assignment_epoch: u64,
+) -> Result<(), String> {
     if shutdown.is_cancelled() {
         return Ok(());
     }
     let settings = Settings::from_env(&config)
         .map_err(|error| format!("ZONE_STORAGE_METERING_CONFIG_INVALID: {error}"))?;
-    run_generation(&config, settings, shutdown).await
+    run_generation(&config, settings, state, shutdown, assignment_epoch).await
 }
 
 async fn run_generation(
     config: &Config,
     settings: Settings,
+    state: Arc<ZoneControlState>,
     shutdown: CancellationToken,
+    assignment_epoch: u64,
 ) -> Result<(), String> {
     let client = connect_nats(config).await?;
     let js = jetstream::new(client);
@@ -283,9 +290,19 @@ async fn run_generation(
         settings.clone(),
         js.clone(),
         clickhouse,
+        state.clone(),
         shutdown.clone(),
+        assignment_epoch,
     ));
-    let mut relay = tokio::spawn(relay_loop(settings, js, consumer, kafka, shutdown.clone()));
+    let mut relay = tokio::spawn(relay_loop(
+        settings,
+        js,
+        consumer,
+        kafka,
+        state,
+        shutdown.clone(),
+        assignment_epoch,
+    ));
     tokio::select! {
         result = &mut aggregation => {
             relay.abort();
@@ -308,7 +325,9 @@ async fn aggregate_loop(
     settings: Settings,
     js: async_nats::jetstream::Context,
     clickhouse: ClickhouseClient,
+    state: Arc<ZoneControlState>,
     shutdown: CancellationToken,
+    assignment_epoch: u64,
 ) -> Result<(), String> {
     let mut interval = tokio::time::interval(settings.poll_interval);
     interval.tick().await;
@@ -316,6 +335,9 @@ async fn aggregate_loop(
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
             _ = interval.tick() => {
+                if !state.assignment_is_current("assignment.storage_report.0", assignment_epoch).await? {
+                    return Ok(());
+                }
                 if let Err(error) = publish_closed_windows(&settings, &js, &clickhouse).await {
                     tracing::warn!(event_code = "ZONE_STORAGE_METERING_AGGREGATION_FAILED", error = %error);
                 }
@@ -449,7 +471,9 @@ async fn relay_loop(
     js: async_nats::jetstream::Context,
     consumer: PullConsumer,
     kafka: KafkaPublisher,
+    state: Arc<ZoneControlState>,
     shutdown: CancellationToken,
+    assignment_epoch: u64,
 ) -> Result<(), String> {
     let mut messages = consumer
         .messages()
@@ -498,6 +522,12 @@ async fn relay_loop(
                 .await
                 .map_err(|error| format!("ACK rejected Zone report outbox message: {error}"))?;
             continue;
+        }
+        if !state
+            .assignment_is_current("assignment.storage_report.0", assignment_epoch)
+            .await?
+        {
+            return Ok(());
         }
         kafka.publish(&report).await?;
         message
