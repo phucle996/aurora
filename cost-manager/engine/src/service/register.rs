@@ -18,17 +18,31 @@ pub async fn run_services(
 ) {
     println!("Đang đăng ký và khởi chạy các background services...");
 
-    // [COMMENT]: Spawn job xử lý tính cước cho dịch vụ Storage
-    let storage_billing_handle = tokio::spawn(
-        crate::service::storage::egress_billing::run_storage_egress_billing(
-            config.clone(),
-            pg_pool.clone(),
-            ch_client.clone(),
-            redis_conn.clone(),
-            pricing_runtime.clone(),
-            shutdown_rx.clone(),
-        ),
-    );
+    // [COMMENT]: Report-driven settlement is opt-in until the reconciliation
+    // and cutover gates are approved. The default remains the legacy path so
+    // a deployment can never debit through both workflows at once.
+    let storage_billing_handle = if config.storage_report_settlement_enabled {
+        tokio::spawn(
+            crate::service::storage::usage_report_settlement::run_storage_usage_report_settlement(
+                config.clone(),
+                pg_pool.clone(),
+                redis_conn.clone(),
+                pricing_runtime.clone(),
+                shutdown_rx.clone(),
+            ),
+        )
+    } else {
+        tokio::spawn(
+            crate::service::storage::egress_billing::run_storage_egress_billing(
+                config.clone(),
+                pg_pool.clone(),
+                ch_client.clone(),
+                redis_conn.clone(),
+                pricing_runtime.clone(),
+                shutdown_rx.clone(),
+            ),
+        )
+    };
 
     // [COMMENT]: Mỗi replica subscribe Shared Redis broadcast để L1 luôn warm và failover
     // không phải đợi reload lạnh; periodic DB reconcile vẫn là safety net.

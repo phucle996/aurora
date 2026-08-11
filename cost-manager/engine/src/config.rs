@@ -41,6 +41,9 @@ pub struct Config {
     pub lock_ttl_secs: u64,
     /// Thời gian sống (TTL) của block key trên Redis khi ví của tài khoản bị khóa
     pub block_key_ttl_secs: u64,
+    /// Opt-in report-driven storage settlement.  False keeps the legacy
+    /// ClickHouse path active during the controlled shadow/cutover phases.
+    pub storage_report_settlement_enabled: bool,
 
     // --- CẤU HÌNH BẢO MẬT KẾT NỐI (TLS/mTLS) ---
     /// PostgreSQL SSL Mode (`disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`)
@@ -138,6 +141,16 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(2592000); // 30 ngày = 30 * 24 * 3600
 
+        let storage_report_settlement_enabled = match env::var("STORAGE_REPORT_SETTLEMENT_ENABLED")
+        {
+            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" => true,
+                "0" | "false" | "no" => false,
+                _ => return Err("STORAGE_REPORT_SETTLEMENT_ENABLED is invalid".to_owned()),
+            },
+            Err(_) => false,
+        };
+
         // --- Đọc cấu hình TLS/mTLS từ biến môi trường ---
 
         let pg_ssl_mode = required_env("PG_SSL_MODE")?.to_ascii_lowercase();
@@ -160,6 +173,7 @@ impl Config {
             scan_interval,
             lock_ttl_secs,
             block_key_ttl_secs,
+            storage_report_settlement_enabled,
             pg_ssl_mode,
             pg_ssl_root_cert,
             pg_ssl_client_cert,
