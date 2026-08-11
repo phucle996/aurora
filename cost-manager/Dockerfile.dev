@@ -44,7 +44,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 WORKDIR /app
 
 # [COMMENT]: Sao chép Rust Engine binary vào PATH hệ thống để Go API có thể spawn trực tiếp
-COPY --from=rust-builder /app/engine/target/release/cost-manager-engine /usr/local/bin/cost-manager-engine
+COPY --from=rust-builder /app/cost-manager/engine/target/release/cost-manager-engine /usr/local/bin/cost-manager-engine
 
 # [COMMENT]: Sao chép Go REST/gRPC API binary từ Stage 2
 COPY --from=go-builder /out/cost-manager-api /usr/local/bin/cost-manager-api

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
-use crate::{mail_runtime, storage_usage, zone_state};
+use crate::{mail_runtime, storage_metering, storage_usage, zone_state};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,6 +97,29 @@ impl RuntimeWorkers {
             }
         };
 
+        let metering_config = self.config.clone();
+        let metering_kafka = self.kafka.clone();
+        let metering_redis = self.cache_redis.clone();
+        let metering_worker = async move {
+            let mut failures = 0_u32;
+            loop {
+                if let Err(error) = storage_metering::run_usage_report_relay(
+                    &metering_config,
+                    metering_kafka.clone(),
+                    &metering_redis,
+                )
+                .await
+                {
+                    Logger::sys_error(
+                        "workers.storage_metering",
+                        "Storage usage report relay stopped; retrying",
+                        &error.to_string(),
+                    );
+                }
+                retry_delay("storage_metering", &mut failures).await;
+            }
+        };
+
         let reports_config = self.config.clone();
         let reports_redis = self.cache_redis.clone();
         let reports_worker = async move {
@@ -188,6 +211,7 @@ impl RuntimeWorkers {
             _ = zone_worker => {}
             _ = metadata_worker => {}
             _ = storage_worker => {}
+            _ = metering_worker => {}
             _ = reports_worker => {}
             _ = ingest_worker => {}
             _ = watch_worker => {}

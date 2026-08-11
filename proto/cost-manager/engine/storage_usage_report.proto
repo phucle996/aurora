@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package aurora.storage.metering.v1;
+
+// A closed, Zone-owned metering window. It contains only bounded resource
+// identifiers and byte counters; it never carries a ticket, cookie, access
+// secret, object key, wallet owner or raw authorization header.
+message StorageUsageReportV1 {
+  uint32 schema_version = 1;
+  string report_id = 2;
+  string zone_id = 3;
+  int64 window_start_unix_ms = 4;
+  int64 window_end_unix_ms = 5;
+  uint64 sequence = 6;
+  bool correction = 7;
+  repeated StorageUsageAggregateV1 aggregates = 8;
+  bytes report_sha256 = 9;
+  // Set only for an append-only correction. The corrected report is never
+  // deleted or mutated in place by a downstream settlement consumer.
+  string correction_of_report_id = 10;
+}
+
+message StorageUsageAggregateV1 {
+  string resource_id = 1;
+  uint64 upload_bytes = 2;
+  uint64 download_bytes = 3;
+  uint64 request_count = 4;
+}

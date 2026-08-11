@@ -8,6 +8,7 @@ mod observability;
 mod outbox;
 mod reconcile;
 mod results;
+mod storage_metering;
 mod storage_usage;
 mod workers;
 mod zone_state;

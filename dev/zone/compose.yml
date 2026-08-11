@@ -114,6 +114,8 @@ services:
     image: otel/opentelemetry-collector-contrib:0.154.0
     container_name: zone-z1-otel-collector
     user: "0:0"
+    environment:
+      ZONE_ID: ${ZONE_ID:?ZONE_ID_must_be_injected}
     command:
       - "--config=/etc/otelcol-contrib/config.yaml"
     volumes:
@@ -132,6 +134,8 @@ services:
       zone-victorialogs:
         condition: service_started
       zone-victoriatraces:
+        condition: service_started
+      zone-clickhouse:
         condition: service_started
     networks:
       zone-infra:
@@ -183,6 +187,22 @@ services:
       - zone_z1_vtraces_data:/vtraces
     expose:
       - "10428"
+    networks:
+      zone-telemetry-ingest:
+    restart: unless-stopped
+
+  zone-clickhouse:
+    cpuset: "0-5"
+    image: clickhouse/clickhouse-server:25.8
+    container_name: zone-z1-clickhouse
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    expose:
+      - "9000"
+      - "8123"
+    volumes:
+      - zone_z1_clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       zone-telemetry-ingest:
     restart: unless-stopped
@@ -325,6 +345,7 @@ volumes:
   zone_z1_vmetrics_data:
   zone_z1_vlogs_data:
   zone_z1_vtraces_data:
+  zone_z1_clickhouse_data:
 
 networks:
   zone-infra:

@@ -3,6 +3,7 @@ use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 #[derive(Clone)]
 pub struct Config {
     pub listen_addr: SocketAddr,
+    pub orchestrator_enabled: bool,
     pub zone_id: String,
     pub public_base_url: String,
     pub ticket_ttl: Duration,
@@ -42,6 +43,11 @@ impl Config {
         }
         Ok(Self {
             listen_addr,
+            // The existing Dataplane still owns the legacy Zone-wide leader
+            // session until its duties are migrated. Keeping this opt-in
+            // prevents two writers from acquiring `lease.zone.leader` during
+            // the controlled extraction window.
+            orchestrator_enabled: parsed_bool("ZONE_CONTROL_ORCHESTRATOR_ENABLED", false)?,
             zone_id,
             public_base_url,
             ticket_ttl: Duration::from_secs(ticket_ttl_seconds),
@@ -63,6 +69,17 @@ fn required(name: &str) -> Result<String, String> {
 fn parsed<T: std::str::FromStr>(name: &str, default: T) -> Result<T, String> {
     match env::var(name) {
         Ok(value) => value.parse().map_err(|_| format!("{name} is invalid")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parsed_bool(name: &str, default: bool) -> Result<bool, String> {
+    match env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" => Ok(true),
+            "0" | "false" | "no" => Ok(false),
+            _ => Err(format!("{name} is invalid")),
+        },
         Err(_) => Ok(default),
     }
 }

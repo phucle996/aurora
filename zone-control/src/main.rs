@@ -12,7 +12,15 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let config = transfer_ticket::config::Config::from_env()?;
     let store = transfer_ticket::store::TicketStore::connect(&config).await?;
     let shutdown = tokio_util::sync::CancellationToken::new();
-    orchestrator::start(config.clone(), shutdown.clone());
+    if config.orchestrator_enabled {
+        orchestrator::start(config.clone(), shutdown.clone());
+    } else {
+        tracing::info!(
+            event_code = "ZONE_CONTROL_ORCHESTRATOR_DISABLED",
+            reason =
+                "legacy Dataplane still owns Zone-wide leader duties during controlled extraction"
+        );
+    }
     transfer_ticket::app::run(config, store, shutdown).await?;
     Ok(())
 }

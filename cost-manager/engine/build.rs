@@ -3,6 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[
             "../../proto/cost-manager/engine/storage_usage.proto",
             "../../proto/cost-manager/engine/pricing_event.proto",
+            "../../proto/cost-manager/engine/storage_usage_report.proto",
         ],
         &["../../proto/cost-manager/engine"],
     )?;

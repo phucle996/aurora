@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../proto/managed_service.proto");
     println!("cargo:rerun-if-changed=../proto/zone_report.proto");
     println!("cargo:rerun-if-changed=../proto/job-orchestrator/job_event.proto");
+    println!("cargo:rerun-if-changed=../proto/cost-manager/engine/storage_usage_report.proto");
     // [COMMENT]: Biên dịch toàn bộ proto files, gồm Billing resource ownership contract.
     prost_build::compile_protos(
         &[
@@ -19,10 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "../proto/job-orchestrator/hypervisor_job.proto",
             // [COMMENT]: ResourceOwnershipChangedV1 — contract ownership phía Billing.
             "../proto/job-orchestrator/resource_ownership.proto",
+            "../proto/cost-manager/engine/storage_usage_report.proto",
             // [COMMENT]: Canonical source lives at the monorepo root; local copies are forbidden.
             "../proto/managed_service.proto",
         ],
-        &["../proto/job-orchestrator", "../proto"],
+        &[
+            "../proto/job-orchestrator",
+            "../proto",
+            "../proto/cost-manager/engine",
+        ],
     )?;
 
     Ok(())

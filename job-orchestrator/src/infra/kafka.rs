@@ -351,6 +351,9 @@ impl KafkaTransport {
     pub fn storage_sizes_topic(&self) -> String {
         format!("{}.storage.sizes.v1", self.topic_prefix)
     }
+    pub fn storage_usage_reports_topic(&self) -> String {
+        format!("{}.storage.usage.reports.v1", self.topic_prefix)
+    }
     pub fn dead_letter_topic(&self) -> String {
         format!("{}.jobs.dlq.v1", self.topic_prefix)
     }

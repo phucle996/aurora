@@ -4,6 +4,11 @@ pub mod pricing_event_proto {
     include!(concat!(env!("OUT_DIR"), "/billing.pricing.v1.rs"));
 }
 
+#[allow(dead_code)]
+pub mod storage_usage_report_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.storage.metering.v1.rs"));
+}
+
 pub mod lock;
 pub mod runner;
 pub mod runtime;

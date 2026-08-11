@@ -13,6 +13,10 @@ pub mod hypervisor {
     include!(concat!(env!("OUT_DIR"), "/hypervisor.rs"));
 }
 
+pub mod storage_usage_report {
+    include!(concat!(env!("OUT_DIR"), "/aurora.storage.metering.v1.rs"));
+}
+
 pub fn verify_generated_contracts() {
     // These messages are used by sibling services. Constructing them here keeps
     // protobuf drift visible to the compiler even when JO does not consume them.

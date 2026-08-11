@@ -32,7 +32,8 @@ flowchart LR
     NATS["NATS Core"]
     Cost["Cost Manager\nGo API + Rust Engine"]
     BillingDB[("Billing PostgreSQL")]
-    ClickHouse[("ClickHouse")]
+    ClickHouse[("Central ClickHouse
+    current metering")]
     Notify["Notification Service"]
     Scylla[("Scylla")]
     Centrifugo["Centrifugo"]
@@ -78,6 +79,14 @@ flowchart LR
     Cost --> OTel
     Notify --> OTel
 ```
+
+Storage metering is being moved to a Zone-local journal and a versioned report
+transport. The staged path is `Zone Public Edge -> Zone OTel -> Zone
+ClickHouse -> Zone Control report outbox -> Kafka -> Job Orchestrator -> Shared
+Redis -> Cost Engine -> Billing PostgreSQL`. Until the settlement and
+reconciliation gates pass, the Central ClickHouse edge above remains the
+current billing dependency; the new report relay is validation-only and does
+not debit wallets.
 
 ### Components and ownership
 

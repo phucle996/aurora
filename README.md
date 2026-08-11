@@ -47,7 +47,10 @@ Scylla, ClickHouse, Centrifugo, and the OpenTelemetry/Victoria/Grafana stack.
 | [Zone Runtime Stream](./zone-runtime-stream/) | Rust/Axum | SSE read plane for Zone metrics and logs from Victoria |
 
 Local Zone infrastructure consists of NATS JetStream KV, MinIO, Stalwart,
-the OTel Collector, and VictoriaMetrics/VictoriaLogs/VictoriaTraces.
+the Zone OTel Collector, Zone ClickHouse metering journal, and
+VictoriaMetrics/VictoriaLogs/VictoriaTraces. Zone ClickHouse is local journal
+state only; Central Cost Engine continues its current ClickHouse billing path
+until the storage-report cutover gates pass.
 
 ### Shared repository assets
 

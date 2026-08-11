@@ -1,6 +1,7 @@
 # Aurora Proto Contracts — Platform Transport Registry
 
-> **Status:** `platform_transport.proto`, `managed_service.proto` and `zone_report.proto` are canonical root
+> **Status:** `platform_transport.proto`, `managed_service.proto`, `zone_report.proto` and the
+> storage metering report are canonical root
 > sources. Mọi service phải generate binding từ registry này; không đặt `.proto`
 > source trong subproject.
 >
@@ -43,6 +44,7 @@ The platform outer command is now canonical too:
 | --- | --- | --- |
 | `aurora.transport.v1.JobCommandV1` | `proto/platform_transport.proto` | JO → DP outer command envelope |
 | `aurora.zone.transfer.v1.TransferGrantV1` / `TransferTicketV1` | `proto/zone/transfer_ticket.proto` | Control Authorizer → Zone Control → Public Edge ticket workflow |
+| `aurora.storage.metering.v1.StorageUsageReportV1` | `proto/cost-manager/engine/storage_usage_report.proto` | Zone-local storage journal → Kafka → JO → Cost Engine settlement |
 | `aurora.transport.v1.ProtectedPayloadV1` | `proto/platform_transport.proto` | Opaque CP outbox payload and byte-identical JO relay |
 | `zone.ZoneReport` | `proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
 | `job_lifecycle.JobExecutionResultProto` | `proto/job-orchestrator/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |

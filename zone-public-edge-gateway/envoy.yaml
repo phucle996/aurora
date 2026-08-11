@@ -118,9 +118,14 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
                       log_format:
                         json_format:
-                          log_type: zone-public-edge-access
+                          # This event is the reviewed, post-authorizer storage
+                          # access schema. It carries only a stable resource
+                          # reference and transfer counters; no ticket, cookie,
+                          # access key or object path is exported.
+                          log_type: zone-storage-access
                           timestamp: "%START_TIME%"
                           request_id: "%REQ(X-REQUEST-ID)%"
+                          resource_id: "%REQ(X-AURORA-RESOURCE-ID)%"
                           method: "%REQ(:METHOD)%"
                           status: "%RESPONSE_CODE%"
                           response_flags: "%RESPONSE_FLAGS%"

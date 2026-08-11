@@ -4,6 +4,9 @@ extensions:
   file_storage:
     directory: /var/lib/otelcol/file_storage
     create_directory: true
+  file_storage/metering:
+    directory: /var/lib/otelcol/metering_file_storage
+    create_directory: true
 
 receivers:
   otlp:
@@ -49,6 +52,39 @@ receivers:
         to: body
         on_error: send_quiet
 
+  file_log/storage_metering:
+    start_at: end
+    storage: file_storage/metering
+    max_log_size: 1MiB
+    max_log_size_behavior: truncate
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    exclude:
+      - /var/lib/docker/containers/${env:HOSTNAME}*/*
+    include_file_path: true
+    operators:
+      - type: json_parser
+        id: metering_parser_docker
+        on_error: send_quiet
+      - type: move
+        id: metering_move_log_to_body
+        from: attributes.log
+        to: body
+        on_error: send_quiet
+      - type: json_parser
+        id: metering_parser_app
+        on_error: send_quiet
+      - type: move
+        id: metering_move_message_to_body
+        from: attributes.message
+        to: body
+        on_error: send_quiet
+      - type: move
+        id: metering_move_msg_to_body
+        from: attributes.msg
+        to: body
+        on_error: send_quiet
+
 processors:
   memory_limiter:
     check_interval: 1s
@@ -62,6 +98,7 @@ processors:
         statements:
           - set(resource.attributes["aurora.component.scope"], "zone") where log.attributes["zone_id"] != nil
           - set(resource.attributes["aurora.zone.id"], log.attributes["zone_id"]) where log.attributes["zone_id"] != nil
+          - set(log.attributes["zone_id"], "${env:ZONE_ID}") where log.attributes["log_type"] == "zone-storage-access"
           # Unknown Zone/infra records share one bounded quarantine stream. Never
           # derive a stream label from a container, pod or customer resource ID.
           - set(log.attributes["service_name"], "infra") where log.attributes["service_name"] == nil
@@ -108,6 +145,12 @@ processors:
         - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] == nil
         - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] != nil and not IsMatch(attributes["log_type"], "^zone-")
 
+  filter/only_storage_metering:
+    error_mode: ignore
+    logs:
+      log_record:
+        - attributes["log_type"] != "zone-storage-access"
+
   batch:
 
 exporters:
@@ -151,8 +194,15 @@ exporters:
     tls:
       insecure: true
 
+  # This is Zone-local metering journal ingestion only. It never sends data to
+  # the Central collector or Central ClickHouse.
+  clickhouse/storage_metering:
+    endpoint: "tcp://zone-clickhouse:9000"
+    database: "otlp"
+    ttl: 168h
+
 service:
-  extensions: [file_storage]
+  extensions: [file_storage, file_storage/metering]
   pipelines:
     traces:
       receivers: [otlp]
@@ -166,3 +216,7 @@ service:
       receivers: [file_log]
       processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, batch]
       exporters: [otlp_http/victorialogs]
+    logs/storage-metering:
+      receivers: [file_log/storage_metering]
+      processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, filter/only_storage_metering, batch]
+      exporters: [clickhouse/storage_metering]

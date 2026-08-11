@@ -66,7 +66,7 @@ jobs:
               image_name=aurora-job-orchestrator
               context=.
               dockerfile=job-orchestrator/Dockerfile
-              source_paths=(job-orchestrator proto/job-orchestrator proto/managed_service.proto proto/platform_transport.proto proto/zone_report.proto .dockerignore .github/workflows/central-release.yml)
+              source_paths=(job-orchestrator proto/job-orchestrator proto/cost-manager/engine/storage_usage_report.proto proto/managed_service.proto proto/platform_transport.proto proto/zone_report.proto .dockerignore .github/workflows/central-release.yml)
               ;;
             notification-service-v*)
               prefix=notification-service
