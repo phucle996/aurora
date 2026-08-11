@@ -15,7 +15,6 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // [COMMENT]: WorkspacePersonalHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi cá nhân (Personal/Me)
