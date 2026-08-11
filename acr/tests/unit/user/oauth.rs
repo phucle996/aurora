@@ -31,7 +31,7 @@ fn social_link_state_omits_zone_and_tenant_context() {
         zone_id: String::new(),
         zone_code: String::new(),
         user_id: "user".to_string(),
-        return_to: "/tenant/settings/social-links".to_string(),
+        return_to: "/personal/settings/social-links".to_string(),
     };
 
     let serialized = serde_json::to_string(&state).expect("state must serialize");
@@ -90,6 +90,29 @@ fn social_link_state_and_index_share_the_cluster_hash_slot() {
     let state_token = format!("{slot}.opaque-state");
     assert!(state_key("github", &state_token).contains(&format!("{{{slot}}}")));
     assert!(link_index_key(user_id, "github").contains(&format!("{{{slot}}}")));
+}
+
+#[test]
+fn social_link_callback_redirect_never_returns_to_a_tenant_path() {
+    use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
+
+    let response = oauth_social_link_redirect("/tenant/settings/social-links", "linked", &[]);
+    let denied = match response.http_response {
+        Some(HttpResponse::DeniedResponse(denied)) => denied,
+        _ => panic!("social link callback must return an Envoy denied response"),
+    };
+    let location = denied
+        .headers
+        .into_iter()
+        .filter_map(|option| option.header)
+        .find(|header| header.key.eq_ignore_ascii_case("location"))
+        .map(|header| header.value)
+        .expect("social link callback must redirect");
+
+    assert_eq!(
+        location,
+        "/personal/settings/social-links?social_link=failed"
+    );
 }
 
 #[test]

@@ -4,7 +4,21 @@
 > PostgreSQL là durable owner của device/refresh state; Auth-State Redis là runtime session
 > state; Shared L2 Redis Stream là bounded durable bridge nội vùng Central.
 
-## 1. API và ownership
+## API scope and edge-routing contract
+
+All three routes are `/me` self-device APIs. ACR keeps `:path` unchanged, does
+not set `x-original-path`, and never rewrites to `/personal` or `/tenant`.
+`x-user-id` is the sole device owner and `x-client-device-id` is only the
+current-device reference. Controlplane does not run permission/role-level
+`Authorize`; repository ownership guards remain mandatory.
+
+| Phase | Owner | Output |
+|---|---|---|
+| 1. ACR admits self-device request | Cloud Console → Envoy/ACR | Trusted self user and current-device context reach Controlplane |
+| 2. Controlplane lists devices | Controlplane → PostgreSQL → ACR presence RPC | Durable owned list with best-effort online projection |
+| 3. Controlplane revokes and ACR cleans runtime | Controlplane → PostgreSQL → Shared Redis Stream → ACR | Durable device/refresh revoke then at-least-once runtime cleanup |
+
+## Phase 1 — ACR admits self-device request
 
 | Method/path | Identity source | Kết quả |
 |---|---|---|
@@ -16,7 +30,40 @@ Cloud Console không tự tạo owner/user/current-device claim. `is_current` l�
 do Controlplane so `DevicePresence.ID` (canonical `client_device_id`) với trusted
 `X-Client-Device-ID`; authorization vẫn được repository enforce lại.
 
-## 2. Durable và runtime state
+### Client → Envoy → ACR processing and forward
+
+| Boundary | What it receives or does |
+|---|---|
+| Client → Envoy | Device list or revoke method/path, target UUID when applicable, body and browser cookies. Client identity/proof headers are untrusted. |
+| Envoy → ACR | ExtAuthz `CheckRequest` with method, path, bounded body, headers and edge address. |
+| ACR local | Applies CORS/rate limit and verifies JWT, key/secret and Auth-State session. Invalid session returns local denial. |
+| ACR → Controlplane | Preserves the operation/path/body, removes raw proof headers, and overwrites `x-user-id`, `x-user-name`, `x-user-level`, `x-tenant-id`, `x-zone-id`, `x-client-device-id`, optional `x-workspace-id`, and `x-session-proof-verified=false`. |
+
+`x-user-id` is the only owner input. `x-client-device-id` is only the current
+device reference; the repository reauthorizes every requested target.
+
+```mermaid
+sequenceDiagram
+    participant UI as Cloud Console
+    participant E as Envoy
+    participant X as ACR ExtAuthzService
+    participant RL as ACR RateLimiter
+    participant TM as ACR TokenManager
+    participant SM as ACR SessionManager
+    participant AR as Auth-State Redis
+    participant CP as Controlplane IAM
+
+    UI->>E: Self-device list or revoke request
+    E->>X: CheckRequest with headers and body
+    X->>RL: Pre-auth IP and device limit
+    X->>TM: Verify access_token JWT
+    X->>SM: Get runtime session by claim and access_key
+    SM->>AR: GET session and compare access-secret hash
+    X-->>E: Remove raw proof and overwrite identity headers
+    E->>CP: Original operation plus ACR headers
+```
+
+## Durable và runtime state
 
 | State | Store | Durability |
 |---|---|---|
@@ -29,51 +76,87 @@ do Controlplane so `DevicePresence.ID` (canonical `client_device_id`) với trus
 Shared Redis Stream phải bật persistence/replica và eviction policy không xóa pending entries.
 Nó không thay PostgreSQL business SoT.
 
-## 3. List path
+## Phase 2 — Controlplane lists owned devices
+
+Gin global middleware parses the ACR `x-user-id` and `x-client-device-id`.
+`DeviceSelfHandler.ListMyDevices` applies its five-second budget, obtains both
+values from Gin context and calls `DeviceSelfService.ListMyDevices`. The service
+runs `DeviceSelfRepository.ListDevicesByUserID` and the bounded
+`iam.device.get_active_sessions` ACR RPC in parallel; PostgreSQL failure fails
+the request, while the presence RPC failure becomes `is_online=false`.
 
 ```mermaid
 sequenceDiagram
     participant UI as Cloud Console
-    participant CP as Controlplane IAM
+    participant E as Envoy
+    participant A as ACR
+    participant G as Gin router
+    participant M as ContextInjector
+    participant H as DeviceSelfHandler.ListMyDevices
+    participant S as DeviceSelfService.ListMyDevices
+    participant Repo as DeviceSelfRepository.ListDevicesByUserID
     participant DB as PostgreSQL
     participant SR as Shared L2 PubSub
-    participant ACR
     participant AR as Auth-State Redis
 
-    UI->>CP: GET /api/v1/me/iam/device/read
+    E->>G: List operation plus ACR identity headers
+    G->>M: Global middleware parses context
+    M->>H: Handler with self user and current device
+    H->>S: ListMyDevices user limit offset
     par Durable list
-        CP->>DB: list owned devices
+        S->>Repo: ListDevicesByUserID
+        Repo->>DB: List owned devices
     and Soft online snapshot
-        CP->>SR: GetActiveDevices request/reply, timeout 2s
-        SR->>ACR: one winning subscriber
-        ACR->>AR: read active user sessions
-        ACR-->>CP: client_device_id + last_seen
+        S->>SR: GetActiveDevices request/reply, timeout 2s
+        SR->>A: one winning subscriber
+        A->>AR: read active user sessions
+        A-->>S: client_device_id + last_seen
     end
-    CP-->>UI: device rows + is_online + is_current
+    S-->>H: Durable list plus soft presence
+    H-->>E: device rows + is_online + is_current
+    E-->>UI: device list response
 ```
 
 Auth-State Redis/PubSub lỗi không làm durable list fail: `is_online=false` là soft-state fallback.
 PostgreSQL lỗi làm whole request fail. Online snapshot không được dùng để authorize revoke.
 
-## 4. Revoke path
+## Phase 3 — Controlplane revokes device and ACR cleans runtime
+
+Gin global middleware yields trusted self/current-device context.
+`DeviceSelfHandler.RevokeMyDevice` or `LogoutOtherDevices` validates path input
+then calls the matching `DeviceSelfService` workflow. The service calls one
+`DeviceSelfRepository` CTE transaction to revoke device rows/delete refresh
+hashes, then writes `RevokeUserSessionsByDevicesRequest` to the Redis Stream.
+An `XADD` failure after commit returns an error; retry is desired-state safe.
 
 ```mermaid
 sequenceDiagram
     participant UI as Cloud Console
-    participant CP as Controlplane IAM
+    participant E as Envoy
+    participant A as ACR
+    participant G as Gin router
+    participant M as ContextInjector
+    participant H as DeviceSelfHandler
+    participant S as DeviceSelfService
+    participant Repo as DeviceSelfRepository
     participant DB as PostgreSQL
     participant SR as Shared L2 Stream
-    participant ACR
     participant AR as Auth-State Redis
 
-    UI->>CP: POST delete/:client_device_id hoặc delete-others
-    CP->>DB: one CTE lock/revoke device + delete refresh tokens
-    DB-->>CP: canonical client_device_ids
-    CP->>SR: XADD protobuf RevokeUserSessionsByDevicesRequest
-    CP-->>UI: success after XADD
-    ACR->>SR: XREADGROUP pending first, then new batch <= 32
-    ACR->>AR: revoke aliases, EXPIRE session 5s, clean indexes
-    ACR->>SR: XACK + XDEL only after runtime success
+    E->>G: Revoke operation plus ACR identity headers
+    G->>M: Global middleware parses context
+    M->>H: Handler with self user and current device
+    H->>S: RevokeMyDevice or LogoutOtherDevices
+    S->>Repo: Revoke self-owned device set
+    Repo->>DB: One CTE lock revoke and delete refresh hashes
+    DB-->>Repo: Canonical client device IDs
+    S->>SR: XADD RevokeUserSessionsByDevicesRequest
+    S-->>H: Durable revoke result
+    H-->>E: success after XADD
+    E-->>UI: success response
+    A->>SR: XREADGROUP pending first, then new batch <= 32
+    A->>AR: revoke aliases, EXPIRE session 5s, clean indexes
+    A->>SR: XACK + XDEL only after runtime success
 ```
 
 Single-device repository compares target and current by the canonical

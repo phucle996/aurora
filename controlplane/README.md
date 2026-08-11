@@ -118,7 +118,7 @@ Tầng Repository thực hiện lưu trữ bền vững dưới PostgreSQL. Các
      service không đo lại downstream call để tránh double-count.
    * Không dùng global metric singleton, raw path, UUID, owner/workspace/zone ID,
      topic, Redis key, SQL text hoặc raw error làm metric label. Contract đầy đủ nằm
-     tại `god_view/controlplane/telemetry_god_view.md`.
+     tại [TELEMETRY.md](TELEMETRY.md).
 3. **Cơ chế Bảo mật Token & Session**:
    * ACR (Biên) chịu trách nhiệm xác thực Trinity Credentials thô qua cookie và kiểm tra session trạng thái tại Redis L2.
    * Control Plane nhận thông tin định danh và phân quyền an toàn qua các Header đáng tin cậy đã được ACR inject: `x-user-id`, `x-user-level`, `x-tenant-id`, `x-workspace-id`, `x-zone-id`.

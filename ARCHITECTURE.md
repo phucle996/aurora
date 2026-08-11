@@ -4,6 +4,11 @@ Aurora tách runtime thành một Central cluster và một hoặc nhiều Zone.
 
 Các contract chi tiết theo workflow nằm trong [`god_view/`](./god_view/). Shared wire contract nằm tại [`proto/`](./proto/); tài liệu này mô tả topology và ownership ở cấp hệ thống.
 
+Detailed architecture contracts are maintained separately for [Central–Zone
+transport](./architecture/CENTRAL_ZONE_TRANSPORT.md), [Vault connection and
+crypto bootstrap](./architecture/VAULT_CONNECTION_BOOTSTRAP.md), [Zone
+Edge](./architecture/ZONE_EDGE.md), and [platform telemetry](./TELEMETRY.md).
+
 ## 1. Central
 
 ### Topology

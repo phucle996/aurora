@@ -1269,6 +1269,10 @@ impl Authorization for ExtAuthzService {
                     "x-session-proof-timestamp".to_string(),
                     "x-session-proof-challenge-id".to_string(),
                     "x-session-proof-verified".to_string(),
+                    // Workspace selection comes only from the workspace_id
+                    // cookie below. Remove a direct browser header first so
+                    // an absent cookie cannot leave caller input upstream.
+                    HEADER_X_WORKSPACE_ID.to_string(),
                 ]);
 
                 if let Some(signed) = zone_control_signed_headers {

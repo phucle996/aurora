@@ -68,9 +68,10 @@ export async function createWorkspace(input: CreateWorkspaceInput, signal?: Abor
   return res?.data;
 }
 
-// [COMMENT]: deleteWorkspace sends DELETE request to hierarchy api to remove a workspace
-export async function deleteWorkspace(id: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/hierarchy/workspaces/${id}`, {
+// [COMMENT]: The API deletes only the active workspace selected by the verified
+// ACR context. The browser never sends a workspace ID for deletion.
+export async function deleteWorkspace(signal?: AbortSignal): Promise<void> {
+  await fetchJSON("/api/v1/hierarchy/workspaces", {
     method: "DELETE",
     signal,
   });

@@ -60,12 +60,12 @@ export async function getMySocialLinks(signal?: AbortSignal): Promise<SocialLink
   });
 }
 
-export async function startSocialLink(provider: SocialProvider, returnTo: string): Promise<string> {
+export async function startSocialLink(provider: SocialProvider): Promise<string> {
   const response = await criticalFetchJSON<{ authorization_url?: unknown }>(
     `/api/v1/me/critical/iam/social-link/${provider}/start`,
     {
       method: "POST",
-      body: { return_to: returnTo },
+      body: { return_to: "/personal/settings/social-links" },
     },
   );
   if (typeof response.authorization_url !== "string" || !response.authorization_url.startsWith("https://")) {

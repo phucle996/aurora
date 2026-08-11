@@ -7,9 +7,9 @@ role hoặc Zone authority.
 
 | Phase | Owner | Input | Output |
 |---|---|---|---|
-| 1. Verify and renew | Browser → Envoy → ACR | Trinity cookies + authenticated request | Forward request, hoặc replacement Trinity cookies khi sliding renewal |
-| 2. Recover context | ACR → Auth-State Redis → CP IAM | Opaque `refresh_token` + requested tenant/Zone cookies | Intercepted `200` + fresh personal/tenant Trinity cookies; browser retries |
-| 3. Logout and revoke | Browser → ACR → CP IAM → Auth-State Redis | `POST /api/v1/auth/logout` + cookies | Durable refresh revoke, runtime cleanup, `204` and cleared credentials |
+| 1. ACR verifies and renews | Browser → Envoy → ACR | Trinity cookies + authenticated request | Forward request, hoặc replacement Trinity cookies khi sliding renewal |
+| 2. ACR recovers context | ACR → Auth-State Redis → CP IAM | Opaque `refresh_token` + requested tenant/Zone cookies | Intercepted `200` + fresh personal/tenant Trinity cookies; browser retries |
+| 3. ACR coordinates logout and revoke | Browser → ACR → CP IAM → Auth-State Redis | `POST /api/v1/auth/logout` + cookies | Durable refresh revoke, runtime cleanup, `204` and cleared credentials |
 
 ## Session authority at a glance
 
@@ -25,7 +25,26 @@ The browser holds only HttpOnly credentials and display/context cookies. It does
 not choose user ID, role, Zone UUID, tenant authority, device identity or runtime
 session key. Envoy strips trusted headers before ACR injects verified values.
 
-## Phase 1 — Verify current Trinity session and renew it safely
+## API scope and edge-routing contract
+
+This is the common session contract that ACR applies before an authenticated
+request reaches its workflow owner. Route scope determines both the ACR path
+decision and the Controlplane authorization boundary; a verified identity alone
+never grants platform or tenant authority.
+
+| API scope | ACR action after Trinity verification | Controlplane authority |
+|---|---|---|
+| `/me/**` self-user route | Preserve `:path`; do not set `x-original-path`; never choose an owner branch or rewrite to `/personal` or `/tenant` | Target comes only from verified `x-user-id`. No permission/level `Authorize` middleware; a critical self route additionally requires session proof. |
+| Neutral platform route | Select the verified personal branch, overwrite `:path` with internal `/api/v1/personal/**`, and set `x-original-path` | `middleware.Authorize` loads the platform `user_role`, enforces the route permission and required level, then the repository rechecks durable facts. |
+| Neutral tenant route | Select the verified concrete tenant branch, overwrite `:path` with internal `/api/v1/tenant/**`, and set `x-original-path` | `middleware.Authorize` loads the tenant `membership_role`, enforces tenant/workspace permission and required level, then the repository rechecks membership and hierarchy facts. |
+| Direct owner-prefixed browser route | Deny external `/personal/**` and `/tenant/**` owner paths | No upstream request. `POST /api/v1/tenant/go-to-tenant` remains its documented ACR-local exception. |
+
+`/auth/**` and other documented ACR-local or public routes are excluded from
+owner rewriting. ACR overwrites every trusted identity/context header in every
+forwarded branch; it does not trust client-provided owner or authorization
+headers.
+
+## Phase 1 — ACR verifies current Trinity session and renews it safely
 
 Every non-public Cloud Console request reaches ACR `ext_authz`. Valid session
 verification is the normal path; sliding renewal is an internal replacement of
@@ -54,6 +73,16 @@ an already-valid session, not an opaque-token recovery.
 5. At/below threshold, ACR signs a new JWT and atomically rotates runtime
    session key/secret through the existing rotation fence. The opaque refresh
    credential is not read, rotated or extended.
+
+### ACR forward contract
+
+| Forwarded item | Source at ACR | Constraint |
+|---|---|---|
+| Original method and bounded body | Browser request | Preserved only after session verification succeeds |
+| Path and `x-original-path` | Browser request plus verified route scope | `/me/**` preserves `:path` and has no `x-original-path`; a neutral owner route is rewritten to verified `/personal/**` or `/tenant/**` and records the original path |
+| Verified identity, tenant, Zone, authorization and proof headers | Verified JWT plus `UserAccessSession` | ACR overwrites these headers after Envoy strips client-supplied versions |
+| Rotated Trinity cookies | ACR local sliding-renewal result | Added only for rotation winner; upstream receives no raw refresh credential |
+| `refresh_token` and failed-session material | Browser cookies | Not forwarded to the upstream API in this phase |
 
 #### Output headers and cookies
 
@@ -90,17 +119,23 @@ sequenceDiagram
         A-->>E: 401 local response
         E-->>B: Authentication failure
     else valid and TTL above threshold
-        A-->>E: Verified headers
-        E->>U: Forward original request
+        alt Self or excluded route
+            A-->>E: Original path plus verified headers
+        else Neutral owner route
+            A->>A: Select verified personal or tenant branch
+            A-->>E: Rewritten path plus x-original-path and verified headers
+        end
+        E->>U: Forward scoped request
     else valid and TTL at threshold
         A->>V: Sign replacement JWT
         A->>R: Atomic rotate runtime session
-        A-->>E: Verified headers + Set-Cookie
-        E->>U: Forward original request
+        A->>A: Preserve self path or rewrite verified owner path
+        A-->>E: Scoped request plus verified headers and Set-Cookie
+        E->>U: Forward scoped request
     end
 ```
 
-## Phase 2 — Recover a session with opaque user/device credential
+## Phase 2 — ACR recovers a session with opaque user/device credential
 
 This phase begins only after Trinity verification fails or Trinity cookies are
 absent. ACR intercepts the original request and issues a replacement session;
@@ -132,6 +167,23 @@ the original request is never forwarded under a newly recovered owner context.
 5. ACR signs fresh JWT, registers fresh runtime session from CP's canonical
    `client_device_id`, publishes brief recovery cache and returns local `200`
    with cookies. Browser retries the original request.
+
+### Controlplane processing
+
+Recovery enters Controlplane through Shared Redis Pub/Sub, not Gin. The
+dispatch-lock winner invokes `AuthRedisHandler.handleRecoverUserSession`, which
+bounds/decodes the envelope and calls `SessionRefreshService.RecoverUserSession`.
+That service reads the credential and authority snapshot through its refresh
+repository before the handler publishes one correlated response.
+
+### ACR forward contract
+
+| Forwarded item | Source at ACR | Constraint |
+|---|---|---|
+| `RecoverUserSessionRequest.refresh_token` | HttpOnly browser cookie | Sent only over bounded ACR → CP request/reply transport |
+| Optional `requested_tenant_id` | Validated tenant cookie | CP reauthorizes from durable role/membership facts |
+| Correlation request ID | ACR | Binds one reply and dispatch fence to one recovery attempt |
+| Original interrupted request, expired JWT and client identity headers | Browser request | Not forwarded to CP or upstream during recovery |
 
 #### Internal request/reply
 
@@ -170,35 +222,44 @@ sequenceDiagram
     participant A as ACR
     participant AR as Auth-State Redis
     participant SR as Shared L2 Redis
-    participant CP as Controlplane IAM
+    participant CP as CP replicas
+    participant H as AuthRedisHandler
+    participant S as SessionRefreshService
+    participant Repo as RefreshTokenRepository
     participant DB as PostgreSQL
     participant V as Vault
 
     B->>E: Request + refresh_token + tenant/Zone cookies
     E->>A: ExtAuthz after Trinity failure
     A->>A: Validate tenant and resolve concrete Zone
-    A->>AR: Cache read; acquire recovery owner lock
+    A->>AR: Read cache and acquire recovery owner lock
     A->>SR: RecoverUserSession request
     SR->>CP: Pub/Sub fan-out
-    CP->>SR: Acquire request-ID fence
-    CP->>DB: Credential + current authority snapshot
+    CP->>H: handleRecoverUserSession
+    H->>SR: Acquire request-ID fence
+    H->>H: Bound decode and validate request
+    H->>S: RecoverUserSession token and requested tenant
+    S->>Repo: Read credential and authority snapshot
+    Repo->>DB: Query durable user device role facts
     alt requested tenant no longer authorized but personal valid
-        CP-->>SR: personal fallback authorization
+        S-->>H: personal fallback authorization
+        H->>SR: Publish correlated response
         SR-->>A: Fallback response
         A->>V: Sign personal JWT
-        A->>AR: Register session/cache; release owner lock
+        A->>AR: Register session and cache then release owner lock
         A-->>E: 200 + personal cookies + context-reset
     else authorized context
-        CP-->>SR: Authorized user/device/context
+        S-->>H: Authorized user device and context
+        H->>SR: Publish correlated response
         SR-->>A: Correlated response
         A->>V: Sign context JWT
-        A->>AR: Register session/cache; release owner lock
+        A->>AR: Register session and cache then release owner lock
         A-->>E: 200 + replacement cookies
     end
-    E-->>B: Intercepted recovery response; browser retries
+    E-->>B: Intercepted recovery response then browser retries
 ```
 
-## Phase 3 — Revoke durable credential and clear runtime session
+## Phase 3 — ACR coordinates durable revoke and runtime cleanup
 
 Logout has one durable ordering rule: CP must prove opaque refresh credential
 revocation before ACR clears browser or runtime state. This prevents a false

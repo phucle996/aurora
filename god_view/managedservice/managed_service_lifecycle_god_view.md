@@ -8,6 +8,17 @@
 > Khi code, schema hay deployment mâu thuẫn với tài liệu này, dừng thay đổi và
 > sửa God View/contract trước. Không suy luận runtime behavior từ module shell.
 
+## API scope and edge-routing contract
+
+Customer lifecycle request dùng neutral API trước edge. Sau Trinity verification,
+ACR chọn verified personal hoặc concrete tenant context, rewrite internal target
+thành `/api/v1/personal/**` hoặc `/api/v1/tenant/**`, overwrite `:path` và set
+`x-original-path`; browser gọi trực tiếp owner prefix bị từ chối. Personal
+`user_role` hoặc tenant `membership_role` authorizer kiểm tra permission và
+required level trước handler, rồi repository rechecks durable owner/workspace/
+Zone binding. Đây không phải `/me` self-user route; SRE catalog routes theo
+contract admin riêng và không được suy diễn thành customer owner branch.
+
 ## 0. Control header
 
 | Thuộc tính | Contract |
@@ -20,7 +31,7 @@
 | Customer completion | Durable Controlplane operation/API và một Notification timeline row; không dùng NATS runtime hay apply ACK |
 | Telemetry | Zone OTel → VictoriaMetrics/VictoriaLogs → generic `zone-runtime-stream` → Zone Public Edge; read-only, eventual; Managed Service adapter first |
 | Canonical inner protobuf | `proto/managed_service.proto` được freeze ở P00 và generate từ root này tại P01 |
-| Related SoT | [Kafka transport](../platform/kafka_platform_transport_god_view.md), [Notification timeline](../notification/user_timeline_god_view.md), [Dataplane telemetry](../dataplane/telemetry_god_view.md), [Zone Public Edge](../platform/zone_edge_gateway_god_view.md) |
+| Related SoT | [Central–Zone transport](../../architecture/CENTRAL_ZONE_TRANSPORT.md), [Notification timeline](../notification/user_timeline_god_view.md), [Dataplane telemetry](../../dataplane/TELEMETRY.md), [Zone Public Edge](../../architecture/ZONE_EDGE.md) |
 
 ## 1. Scope và boundary không được vượt qua
 

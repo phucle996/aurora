@@ -636,9 +636,7 @@ impl OAuthProviderService {
         let return_to = payload
             .return_to
             .unwrap_or_else(|| "/personal/settings/social-links".to_string());
-        if return_to != "/personal/settings/social-links"
-            && return_to != "/tenant/settings/social-links"
-        {
+        if return_to != "/personal/settings/social-links" {
             return Some(Ok(Response::new(error_json(
                 HttpStatusCode::BadRequest,
                 "Invalid return path",
@@ -1783,9 +1781,7 @@ fn oauth_social_link_redirect(
     outcome: &str,
     cookies_to_set: &[String],
 ) -> CheckResponse {
-    let destination = if return_to == "/personal/settings/social-links"
-        || return_to == "/tenant/settings/social-links"
-    {
+    let destination = if return_to == "/personal/settings/social-links" {
         format!("{return_to}?social_link={outcome}")
     } else {
         "/personal/settings/social-links?social_link=failed".to_string()

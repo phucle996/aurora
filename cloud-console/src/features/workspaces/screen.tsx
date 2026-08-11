@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import {
   LayoutGrid,
   Plus,
@@ -69,9 +70,10 @@ function CopyBadge({ value }: { value: string }) {
 }
 
 export function WorkspacesScreen() {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const scope = useConsoleQueryScope();
-  const { profile, checkPermission } = useUserSession();
+  const { profile, checkPermission, renderContext } = useUserSession();
   const {
     activeWorkspaceID,
     addWorkspaceToCatalog,
@@ -172,19 +174,22 @@ export function WorkspacesScreen() {
   };
 
   // [COMMENT]: Mutation xóa Workspace và cập nhật local cache + global dropdown catalog
-  const deleteWorkspaceMutation = useMutation<void, Error, string>({
-    mutationFn: (id) => deleteWorkspace(id),
-    onSuccess: (_, id) => {
+  const deleteWorkspaceMutation = useMutation<void, Error>({
+    mutationFn: () => deleteWorkspace(),
+    onSuccess: () => {
       if (deleteTarget) {
         toast.success(`Workspace "${deleteTarget.name}" deleted.`);
       }
       queryClient.setQueryData<WorkspaceItem[]>([...scope, "workspaces"], (prev) => {
         if (!prev) return [];
-        return prev.filter((item) => item.id !== id);
+        return prev.filter((item) => item.id !== deleteTarget?.id);
       });
-      removeWorkspaceFromCatalog(id);
+      if (deleteTarget) {
+        removeWorkspaceFromCatalog(deleteTarget.id);
+      }
       setIsDeleteModalOpen(false);
       setDeleteTarget(null);
+      router.replace(renderContext?.kind === "tenant" ? "/tenant/workspaces/continue" : "/personal/workspaces/continue");
     },
     onError: (err) => {
       const msg = err instanceof Error ? err.message : "Failed to delete workspace.";
@@ -208,7 +213,7 @@ export function WorkspacesScreen() {
       toast.error("Workspace code does not match.");
       return;
     }
-    deleteWorkspaceMutation.mutate(deleteTarget.id);
+    deleteWorkspaceMutation.mutate();
   };
 
   // [COMMENT]: Toggle sort — nếu click cùng cột thì đảo chiều, khác cột thì set mới
@@ -470,12 +475,12 @@ export function WorkspacesScreen() {
                     </td>
 
                     {/* Delete action */}
-                    {canDelete && (
+                    {canDelete && isActive && (
                       <td className="px-6 py-4 text-right">
                         <button
                           onClick={(e) => handleOpenDeleteModal(ws, e)}
                           className="inline-flex items-center gap-1.5 px-2.5 h-7 rounded-lg border border-transparent text-[11px] font-semibold text-muted-foreground hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/5 transition-all cursor-pointer opacity-0 group-hover:opacity-100"
-                          title="Delete workspace"
+                          title="Delete current workspace"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                           <span>Delete</span>

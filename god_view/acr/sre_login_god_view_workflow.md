@@ -1,349 +1,268 @@
-# Workflow God View: SRE Admin Login Workflow (Stateless Interception at Edge)
+# SRE Admin Login — ACR-local Workflow God View
 
-## 📌 1. Tổng Quan Kiến Trúc (Architecture & Cloud-Native HA)
+This workflow issues the privileged SRE Trinity entirely at ACR. It is an edge
+credential issuance route, not an IAM user login and not a Controlplane HTTP
+call. Vault is the source of the SRE API-key material, TOTP verification and
+JWT HMAC signing; Auth-State Redis is the durable runtime-session boundary.
 
-SRE Admin là phương thức truy cập khẩn cấp/quản trị hệ thống cấp cao (Emergency Access Method) chứ không phải là một tài khoản người dùng tĩnh trong cơ sở dữ liệu Postgres. Để đảm bảo tính sẵn sàng cao (High Availability), độ trễ thấp và kiến trúc Zero-Trust trên môi trường Cloud-Native, luồng đăng nhập SRE Admin được thiết kế và thực thi hoàn toàn tại tầng biên (Edge Gatekeeper) thông qua **Rust acr (ext_authz)** mà không đi qua Go Control Plane hay Database.
+## API-scope contract
 
-### 🛡️ Ràng Buộc Bảo Mật & Phòng Chống Race Condition
+| Boundary | Contract |
+| --- | --- |
+| Method/path | exact `POST /admin/auth/login` |
+| Principal before success | anonymous SRE login attempt |
+| JSON body | `api_key`, `totp_code`, optional base64 standard Ed25519 `device_public_key` |
+| Headers used | Origin, `X-Forwarded-For`, optional `client_device_id` cookie for edge gates; body is taken from Envoy HTTP attributes |
+| Success | local `204 No Content`, four SRE cookies on Path `/admin` |
+| Failure payload | `{"error_message":"..."}` local JSON |
+| Upstream HTTP | never |
+| Durable success owner | Auth-State Redis SRE session keyed by generated access key |
 
-1. **Ủy thác và bảo vệ Secrets qua Vault (Zero-Store Plaintext & Vault Verification)**:
-   - Plaintext SRE API Key được lưu trữ tại HashiCorp Vault (`secret/data/admin/api-key`). Rust acr chỉ nạp động từ Vault, tính băm SHA-256 rồi lưu vào L1 Cache trong vòng 24 giờ. Plaintext API Key tuyệt đối không lưu trữ lâu dài.
-   - SRE TOTP Secret không được tải về acr. Quá trình xác minh OTP được gửi trực tiếp lên Vault TOTP secrets engine (`POST /v1/totp/code/admin`) để thực thi. Đảm bảo khóa bí mật 2FA không bao giờ xuất hiện trong không gian RAM của acr.
-2. **Không áp dụng Replay Protection cho OTP**:
-   - Nhằm tránh gián đoạn các kịch bản tự động hóa hoặc các thao tác khẩn cấp liên tục của SRE trong vòng 30s, hệ thống KHÔNG thực hiện khóa OTP cũ trong Redis L2.
-3. **Cơ chế Trinity Cookie & Session độc lập (Phase 3)**:
-   - Khi đăng nhập thành công, Rust acr tự phát hành và ký số JWT Access Token (claims: `sub="sre"`, `zone_id="global"`, không có `role` hay `lvl` vì đây là tài khoản kỹ thuật quản trị khẩn cấp, không phải thực thể user).
-   - Session của SRE Admin được đăng ký trực tiếp trên Redis L2 dạng `AdminAccessSession { access_secret_hash, device_public_key }` dưới key `iam:admin_access_session:<access_key>` để phục vụ xác thực phi trạng thái ở các request sau.
-   - acr phản hồi `204 No Content` cùng các cookie `access_token`, `access_key`, `access_secret`, `zone_code=global`.
-4. **Không mở rộng Port HTTP**:
-   - Tránh việc mở thêm các cổng lắng nghe HTTP mới trên acr gây rủi ro an ninh mạng. Envoy Ingress bắt trực tiếp route `/admin/auth/login` (POST) và định tuyến tới Ext-Authz của acr để thực hiện Edge Termination.
-5. **JWT Signature L1 Cache (Vault Transit Offload)**:
-   - Sau khi đăng nhập thành công, các request tiếp theo của SRE sẽ được xác thực chữ ký JWT qua L1 moka Cache (RAM, per-Pod) thay vì gọi Vault Transit mỗi request. Chi tiết kiến trúc 2 lớp xem mục 5 bên dưới.
-6. **Dynamic Device Binding & Edge Signature Verification**:
-   - Khi đăng nhập SRE, client (Admin UI / CLI) tạo cặp khóa Ed25519 (private key non-extractable lưu trong IndexedDB, public key base64-encoded) gửi lên API đăng nhập qua tham số `device_public_key`.
-   - Public key này được đính kèm vào `AdminAccessSession` lưu trên Redis L2.
-   - Các request Critical (đường dẫn chứa `/critical/`) gửi `X-Admin-Signature`, `X-Admin-Timestamp`, UUID `X-Admin-Nonce` và `X-Admin-StepUp-Code`. ACR verify Ed25519 trên `METHOD\nPATH\nQUERY\nBODY_SHA256\nTIMESTAMP\nNONCE`, claim nonce bằng Redis `SET NX EX 300`, rồi mới gọi Vault verify TOTP. OTP sai vẫn burn nonce và client phải ký request mới.
-7. **Managed Service catalog critical boundary (đã implement P02):**
-   - Normal route `/admin/managed-services/catalog/*` chỉ có read và category/definition/version metadata create/update. State transition và toàn bộ blueprint/draft/validate/publish/retire/delete chỉ tồn tại dưới `/admin/critical/managed-services/catalog/*`; không có normal mirror.
-   - ACR nhận diện `/critical/`, verify TOTP/chữ ký và consume nonce bind method + path + body; ACR không query Controlplane database để tự quyết định lifecycle/pin.
-   - Sau verify, ACR remove toàn bộ `x-admin-*` và raw `x-session-proof-*`, rồi overwrite `x-session-proof-verified=true` và inject opaque UUID `x-session-proof-challenge-id`. Chữ ký, TOTP, timestamp và nonce không được tới Controlplane/log business; CP fail-close nếu marker thiếu và chỉ dùng challenge ID làm audit provenance.
-   - Critical proof là additional gate, không bypass immutable published revision hoặc FK/pin; hard delete record đang pin vẫn bị Controlplane reject.
+This route does not accept a user/tenant/Zone/workspace selection. A successful
+SRE JWT always starts with `sub=sre`, access key generated by ACR, and
+`zone_id=global`. A physical Zone is selected later by the separate SRE Zone
+switch workflow.
 
----
+## Request and response contract
 
-## 🔄 2. Sơ Đồ Kiến Trúc & Luồng Dữ Liệu (System Architecture) - End-to-End
+### REST input
 
-```mermaid
-graph TD
-    classDef client fill:#332244,stroke:#8844ff,stroke-width:2px;
-    classDef gateway fill:#112233,stroke:#3388ff,stroke-width:2px;
-    classDef edgeService fill:#113322,stroke:#33cc88,stroke-width:2px;
-    classDef control fill:#331111,stroke:#ff5555,stroke-width:2px;
-    classDef cache fill:#112211,stroke:#33aa55,stroke-width:2px;
+| Field | Required | Handler rule | Security purpose |
+| --- | --- | --- | --- |
+| `api_key` | yes | JSON string, nonempty after trim | candidate for SHA-256 comparison to Vault-sourced secret hash |
+| `totp_code` | yes | JSON string, nonempty after trim | passed to Vault TOTP engine; secret never enters ACR |
+| `device_public_key` | no | base64 standard decode must be exactly 32 bytes when nonempty | becomes critical-request Ed25519 verification key |
+| body source | yes | Envoy text body, otherwise raw body bytes | no separate HTTP server body parser |
+| `Content-Type` | no code check | client convention should be JSON | handler accepts JSON bytes regardless of header |
 
-    Client["💻 SRE Client (Admin UI / CLI)"]:::client
-    Envoy["🛡️ Envoy Ingress Gateway"]:::gateway
-    acr["🦀 Rust acr (ext_authz)"]:::edgeService
-    Vault["🔑 HashiCorp Vault"]:::control
-    Redis["🗄️ Redis L2 Session Store"]:::cache
+### REST output
 
-    Client -- "1. POST /admin/auth/login {api_key, totp_code}" --> Envoy
-    Envoy -- "2. Intercept check request" --> acr
-    acr -- "3. Lazy-load & Cache API Key Hash (24h)" --> Vault
-    acr -- "4. Gửi TOTP code đi xác thực" --> Vault
-    acr -- "5. Lưu AdminAccessSession" --> Redis
-    acr -- "6. Response 204 No Content + Cookies" --> Envoy
-    Envoy -- "7. Set-Cookie & Trả kết quả thành công" --> Client
-```
+| Outcome | HTTP status | Body | Cookies |
+| --- | --- | --- | --- |
+| issued | `204` | none | `access_token`, `access_key`, `access_secret`, `zone_code=global` |
+| empty/malformed body or missing API key/TOTP | `400` | JSON error message | none |
+| API key/TOTP mismatch | `401` | JSON `Invalid API key or OTP code` | none |
+| Vault API-key/TOTP failure | `500` | JSON engine/configuration error | none |
+| Vault signing, device-key validation, Redis registration failure | `500` | JSON error | none |
+| CORS/pre-auth rate denial | dispatcher denial/`429` | edge-specific body | none |
 
----
+The success cookies are `HttpOnly; Secure; SameSite=Lax; Path=/admin` except
+`zone_code`, which is readable by browser code. Credential max age is
+`session_ttl_secs`; Zone cookie max age is one year. Domain is omitted when
+`app_public_domain` is empty and otherwise appended from config.
 
-## 🔍 3. Chi Tiết Trình Tự Thực Hiện (Sequence Diagram) - End-to-End
+## Session, Vault and key contract
+
+| Item | Owner | Operation | Invariant |
+| --- | --- | --- | --- |
+| Vault admin API-key record | Vault KV at configured `admin_api_key_path` | read, extract `data.data.api_key`, SHA-256 | raw API key is not stored by ACR after request processing |
+| Vault TOTP | configured Vault TOTP key | verify supplied code | ACR never receives TOTP seed |
+| Vault Transit HMAC | configured transit key | sign JWT input | signing key never leaves Vault |
+| `iam:sre_access_session:{access_key}` | Auth-State Redis | atomic `SET` protobuf then `EXPIRE session_ttl_secs` | holds SHA-256 secret and optional device public key |
+| SRE JWT cache | per-pod Moka | populated later only after valid token verification | login does not write this cache |
+| `zone_code` | browser cookie | set to `global` | virtual context only, not a physical Zone record |
+
+`SreAccessSession` contains `access_secret_hash` and `device_public_key`. It
+has no user ID, tenant ID or generic user session index. Its key space is
+different from `iam:user_session:*` and cannot be interpreted as a user session.
+
+## Phase 1 — Client → Envoy → ExtAuthz dispatcher
+
+Envoy sends the request body and HTTP attributes to the gRPC ext_authz check.
+ACR runs allowed-origin validation and the pre-auth `sre_general` limiter before
+local interceptor dispatch. The SRE login handler runs after the other local
+user/Billing session interceptors have declined the route, and before normal
+SRE authentication, post-auth limiting, CSRF, Zone resolution and upstream
+header construction.
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Client as SRE Client (UI/CLI)
-    participant Envoy as Envoy Ingress
-    participant acr as Rust acr (ext_authz)
-    participant Vault as HashiCorp Vault
-    participant Redis as Redis L2
+    participant UI as SRE Admin UI or CLI
+    participant E as Envoy
+    participant X as ExtAuthzService check
+    participant CG as CORS branch
+    participant RL as RateLimiter
+    participant AR as Auth-State Redis
+    participant H as SRE login handler
 
-    Client->>Envoy: POST /admin/auth/login {api_key, totp_code}
-    Envoy->>acr: ext_authz check (raw body included)
-    
-    Note over acr: Intercept tại admin_login_handler
-    
-    alt L1 Cache Miss
-        acr->>Vault: Đọc secret/data/admin/api-key
-        Vault-->>acr: Trả về Plaintext API Key
-        Note over acr: Băm SHA-256 & Cache vào L1 (24h)
-    else L1 Cache Hit
-        Note over acr: Đọc băm API Key trực tiếp từ L1 RAM
-    end
-
-    Note over acr: Đối chiếu SHA256(input_api_key) == L1_cached_api_key_hash
-    
-    alt API Key Mismatch
-        acr-->>Envoy: Denied (HTTP 401 Unauthorized - "Invalid credentials")
-        Envoy-->>Client: Trả về 401 Unauthorized
-    else API Key Match
-        acr->>Vault: Xác thực OTP (POST /v1/totp/code/admin)
-        Vault-->>acr: Trả về kết quả (valid: true/false)
-        alt OTP Mismatch
-            acr-->>Envoy: Denied (HTTP 401 Unauthorized - "Invalid credentials")
-            Envoy-->>Client: Trả về 401 Unauthorized
-        else OTP Match
-            Note over acr: Sinh random access_key (UUIDv4) & access_secret (UUIDv4)
-            Note over acr: Tạo JWT claims { sub: "sre", zone_id: "global", access_key, ... }
-            acr->>Vault: Ký JWT qua Vault Transit Engine
-            Vault-->>acr: Trả về JWT Access Token
-            
-            Note over acr: Băm SHA-256 access_secret
-            acr->>Redis: Đăng ký AdminAccessSession (key = iam:admin_access_session:access_key)
-            Redis-->>acr: Ghi nhận thành công
-            
-            acr-->>Envoy: OkResponse (HTTP 204 No Content + Cookies)
-            Note over Envoy: Set-Cookie: access_token, access_key, access_secret, zone_code=global
-            Envoy-->>Client: Trả về 204 No Content (Login Success)
+    UI->>E: POST SRE login JSON
+    E->>X: CheckRequest method path headers raw body
+    X->>CG: validate Origin when present
+    alt origin rejected
+        CG-->>E: local permission denied
+        E-->>UI: denial response
+    else origin accepted or absent
+        X->>RL: pre-auth sre general IP and device counters
+        RL->>AR: INCR rate keys
+        alt limit exceeded
+            RL-->>E: local 429
+            E-->>UI: rate limited
+        else exact SRE login path
+            X->>H: handle local login
         end
     end
 ```
 
----
+The generic limiter fails open if its Redis counter cannot be reached. The
+credential-validation operations below do not fail open: a Vault or session
+registration error produces a local server error without cookies.
 
-## 🏛️ 4. Bản Đồ Tham Chiếu File Mã Nguồn (Implementation References)
+## Phase 2 — parse credentials and authenticate against Vault
 
-- **Định tuyến & Intercept tại Biên**: [ext_authz.rs](../../acr/src/service/ext_authz.rs) - Định tuyến request `/admin/auth/login` qua bộ điều hướng đăng nhập tại biên.
-- **Xử lý đăng nhập SRE**: [admin_login_handler.rs](../../acr/src/service/login/admin_login_handler.rs) - Chặn bắt đường dẫn `/admin/auth/login`, phân tách payload, đối chiếu băm API Key, gửi OTP sang Vault xác thực, đăng ký session và phát hành cookies.
-- **Tương tác Vault REST Client**: [vault.rs](../../acr/src/infra/vault.rs) - Cung cấp hàm `read_secret` đọc an toàn cấu hình mật và `verify_totp` để xác thực mã OTP.
-- **Quản lý Token & Claims**: [token.rs](../../acr/src/core/token.rs) - Định nghĩa `Claims`, cung cấp cơ chế Cache L1 cho API Key Hash và L1 JWT Signature Cache (moka).
-- **L2 Cache & Session Store**: [session.rs](../../acr/src/core/session.rs) - Lưu trữ trạng thái phiên làm việc của SRE.
-- **Dependencies**: [Cargo.toml](../../acr/Cargo.toml) — `moka = { version = "0.12", features = ["future"] }`.
-
----
-
-## 🔐 5. JWT Signature L1 Cache — Vault Transit Offload
-
-Mỗi request API đi qua Envoy Ext-Authz đều yêu cầu acr xác thực chữ ký JWT. Nếu mỗi lần đều gọi Vault Transit (`verify_hmac`), Vault sẽ trở thành điểm nghẽn (bottleneck) và điểm sập duy nhất (SPOF) cho toàn bộ traffic hệ thống.
-
-**Giải pháp**: Tách xác thực JWT thành **2 lớp độc lập**:
-
-- **Lớp 1 — L1 Signature Cache (Stateless, moka)**: Cache kết quả xác thực chữ ký toán học của JWT trong RAM mỗi Pod. Chỉ cache token đã được Vault xác nhận hợp lệ.
-- **Lớp 2 — L2 Session Store (Stateful, Redis)**: Luôn kiểm tra trạng thái phiên (session tồn tại, `access_secret_hash` khớp) trên Redis L2 sau khi qua lớp chữ ký. Đảm bảo session revocation có hiệu lực **ngay lập tức** trên tất cả Pod.
-
-### 🛡️ Ràng Buộc Bảo Mật & An Toàn Dữ Liệu
-
-1. **Chỉ cache Token hợp lệ (Valid-Only Cache)**:
-   - Token giả, hết hạn, hoặc chữ ký sai **không bao giờ vào cache**. Kẻ tấn công không thể làm tràn RAM bằng garbage tokens.
-2. **Giới hạn RAM cứng (Bounded Memory)**:
-   - Max capacity = **50,000 entries** (~6.4 MB RAM). Khi đầy, moka tự động trục xuất entry ít được truy cập nhất (LRU).
-3. **Tự phục hồi khi hết hạn (Self-Healing Expiry)**:
-   - Khi cache hit, luôn kiểm tra lại `exp > now`. Nếu token đã hết hạn cứng → loại bỏ khỏi cache và từ chối.
-4. **Multi-Pod Scale-Out an toàn**:
-   - Mỗi Pod duy trì L1 cache độc lập. Tổng dung lượng nhân với số Pod nhưng vẫn cực nhỏ (50k entries × N pods).
-   - Session revocation vẫn tức thì vì lớp L2 Redis luôn được kiểm tra sau L1.
-5. **Không lưu trữ Key Material**:
-   - L1 cache **không chứa Vault signing key** — chỉ chứa kết quả xác thực (Claims struct). Vault key không bao giờ rời khỏi Vault.
-
----
-
-## 🔄 6. Sơ Đồ Kiến Trúc 2 Lớp (Two-Layer Verification)
-
-```mermaid
-graph TD
-    classDef request fill:#332244,stroke:#8844ff,stroke-width:2px;
-    classDef l1 fill:#113322,stroke:#33cc88,stroke-width:2px;
-    classDef vault fill:#331111,stroke:#ff5555,stroke-width:2px;
-    classDef l2 fill:#112211,stroke:#33aa55,stroke-width:2px;
-
-    Request["📨 Incoming API Request (JWT Cookie)"]:::request
-    L1["🧠 L1 moka Cache (RAM, per-Pod)"]:::l1
-    Vault["🔑 Vault Transit (verify_hmac)"]:::vault
-    L2["🗄️ Redis L2 Session Store"]:::l2
-    Allow["✅ Allow Request"]:::l1
-    Deny["❌ Deny Request"]:::request
-
-    Request -- "1. SHA-256(JWT) → cache key" --> L1
-    L1 -- "Cache Hit & exp valid" --> L2
-    L1 -- "Cache Miss" --> Vault
-    Vault -- "Signature Invalid" --> Deny
-    Vault -- "Signature Valid → insert cache" --> L2
-    L2 -- "Session exists & secret match" --> Allow
-    L2 -- "Session not found / revoked" --> Deny
-```
-
----
-
-## 🔍 7. Chi Tiết Trình Tự Xác Thực Sau Đăng Nhập (Post-Login Verification Sequence)
+The handler uses Envoy's text body when nonempty and otherwise its raw body.
+It rejects an empty byte slice and then deserializes JSON. It reads the current
+API key record from Vault through `SreTokenManager.get_admin_api_key_hash`,
+hashes the supplied API key with SHA-256, compares the hexadecimal strings, and
+only then asks Vault to verify TOTP.
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Client as API Client
-    participant acr as Rust acr (ext_authz)
-    participant Moka as L1 moka Cache (RAM)
-    participant Vault as Vault Transit
-    participant Redis as Redis L2
+    participant H as SRE login handler
+    participant P as JSON payload parser
+    participant TM as SreTokenManager
+    participant VKV as Vault KV client
+    participant VT as Vault TOTP engine
+    participant CR as DeniedHttpResponseBuilder
 
-    Client->>acr: Request with JWT Cookie
-    acr->>Moka: Lookup SHA-256(JWT)
-    
-    alt L1 Cache Hit
-        Moka-->>acr: Trả về Claims (cached)
-        Note over acr: Kiểm tra exp > now
-        alt Token hết hạn
-            acr->>Moka: Invalidate entry
-            acr-->>Client: 401 Token expired
-        else Token còn hạn
-            acr->>Redis: Kiểm tra Session (access_key, access_secret_hash)
-            alt Session hợp lệ
-                Redis-->>acr: Session data
-                acr-->>Client: ✅ Allow (forward upstream)
-            else Session bị thu hồi
-                Redis-->>acr: Key not found
-                acr-->>Client: ❌ 401 Session revoked
-            end
-        end
-    else L1 Cache Miss
-        acr->>Vault: verify_hmac(signing_input, signature)
-        alt Chữ ký không hợp lệ
-            Vault-->>acr: valid = false
-            acr-->>Client: ❌ 401 Invalid signature
-        else Chữ ký hợp lệ
-            Vault-->>acr: valid = true
-            acr->>Moka: Insert Claims (cache key = SHA-256(JWT))
-            acr->>Redis: Kiểm tra Session (access_key, access_secret_hash)
-            alt Session hợp lệ
-                Redis-->>acr: Session data
-                acr-->>Client: ✅ Allow (forward upstream)
-            else Session bị thu hồi
-                Redis-->>acr: Key not found
-                acr-->>Client: ❌ 401 Session revoked
+    H->>P: select text or raw CheckRequest body
+    alt empty malformed or required field absent
+        P->>CR: local 400 JSON error
+    else payload accepted
+        H->>TM: get admin API key hash
+        TM->>VKV: read configured admin API-key record
+        VKV-->>TM: secret data
+        TM->>TM: SHA256 stored API key
+        H->>H: SHA256 supplied key and compare hashes
+        alt hashes differ
+            H->>CR: local 401 generic credential error
+        else API key matches
+            H->>TM: verify supplied TOTP code
+            TM->>VT: Vault TOTP verify request
+            VT-->>TM: valid false or error
+            alt invalid TOTP
+                H->>CR: local 401 generic credential error
+            else TOTP valid
+                H-->>H: proceed to issue session
             end
         end
     end
 ```
 
----
+The current implementation reads the admin API-key secret for each handler call;
+there is no API-key hash cache in `SreTokenManager`. The JWT signature Moka cache
+is only used later by verification requests. TOTP codes have no explicit Redis
+replay key in this workflow; Vault's TOTP decision is the only code validation.
 
-## 📊 8. Phân Tích Dung Lượng RAM (Memory Budget)
+## Phase 3 — generate, sign and persist an SRE Trinity
 
-| Thành phần Entry | Kích thước |
-| :--- | :--- |
-| Cache Key (SHA-256 hex) | 64 bytes |
-| Claims struct (serialized) | ~200 bytes |
-| moka overhead (bucket, pointers) | ~56 bytes |
-| **Tổng 1 entry** | **~320 bytes** |
+After both credentials pass, `release_sre_session` generates UUIDv4 access key
+and secret, hashes the secret, creates claims, requests a Vault HMAC signature,
+validates an optional device public key, then registers the protobuf session.
 
-| Số Session đồng thời | RAM tiêu thụ (per Pod) |
-| :--- | :--- |
-| 10,000 | ~3.2 MB |
-| 50,000 (max cap) | ~16 MB |
+```mermaid
+sequenceDiagram
+    participant H as SRE login handler
+    participant I as release_sre_session
+    participant TM as SreTokenManager
+    participant VS as Vault HMAC signer
+    participant DK as Device key validator
+    participant SM as SessionManager
+    participant AR as Auth-State Redis
+    participant CR as DeniedHttpResponseBuilder
 
-→ Với giới hạn cứng 50,000 entries, mỗi Pod tiêu thụ tối đa **~16 MB RAM** cho L1 cache — an toàn cho mọi cấu hình Kubernetes Pod.
-
----
-
-## 📋 9. Đặc Tả Dữ Liệu & API Contract (Data Specs & API Contract)
-
-### 9.1. Cấu Trúc JWT Claims cho SRE Admin
-
-Sau khi xác thực thành công SRE API Key và TOTP, JWT được tạo ra đại diện cho quyền truy cập khẩn cấp toàn cục mà không đại diện cho bất kỳ User cụ thể nào.
-
-| Claim | Kiểu dữ liệu | Giá trị mẫu / Định dạng | Mô tả |
-| :--- | :--- | :--- | :--- |
-| `sub` | String | `"sre"` | Định danh đối tượng (Subject) cố định cho SRE |
-| `zid` | String | `"global"` | Zone quản trị tối cao của SRE |
-| `access_key` | String (UUIDv4) | `"e1a38f38-a15d-4f10-9c4c-7033502213e8"` | Key định danh phiên, dùng làm khóa tra cứu trong Redis L2 |
-| `iss` | String | `"aurora-acr"` | Nguồn phát hành (Issuer) |
-| `exp` | i64 (Unix timestamp) | `1782278400` | Thời điểm hết hạn của Token |
-| `iat` | i64 (Unix timestamp) | `1782274800` | Thời điểm phát hành Token |
-
-SRE Trinity không mang `role_id` hoặc `jti`. `access_key` bind JWT với session
-Redis và là revocation boundary; critical SRE requests dùng nonce Ed25519 riêng
-làm replay fence, vì vậy một `jti` không được consume sẽ chỉ là dead metadata.
-
----
-
-### 9.2. Danh Sách Cookies Thiết Lập (Trinity Credentials)
-
-Khi đăng nhập thành công, Envoy / acr phản hồi 4 cặp Cookie độc lập nhằm phân mảnh bảo mật:
-
-| Tên Cookie | Giá trị lưu trữ | Phân vùng Cookie Specs | Mô tả bảo mật |
-| :--- | :--- | :--- | :--- |
-| `access_token` | JWT Token (Ví dụ: `v1_abcd...`) | `HttpOnly; Secure; SameSite=Lax; Path=/` | Chứa JWT ký bởi Vault, dùng để verify stateless ở L1 |
-| `access_key` | UUIDv4 (Ví dụ: `e1a38f38...`) | `HttpOnly; Secure; SameSite=Lax; Path=/` | Dùng để định vị địa chỉ Session Key trên Redis L2 |
-| `access_secret`| UUIDv4 (Ví dụ: `9fa8b12c...`) | `HttpOnly; Secure; SameSite=Lax; Path=/` | Secret ngẫu nhiên để verify tính toàn vẹn (khớp với băm ở L2) |
-| `zone_code` | `"global"` | `HttpOnly; Secure; SameSite=Lax; Path=/` | Xác định zone truy cập hiện tại của SRE |
-
----
-
-### 9.3. Danh Mục Secrets Trong HashiCorp Vault
-
-Tất cả dữ liệu nhạy cảm được ủy quyền lưu trữ và xử lý trực tiếp tại Vault:
-
-| Path / Engine | Key / Parameter | Kiểu | Mô tả bảo mật |
-| :--- | :--- | :--- | :--- |
-| `/v1/secret/data/admin/api-key` | `api_key` | KV Version 2 | Lưu API Key tĩnh dạng plaintext của SRE. acr chỉ nạp, băm SHA-256 và cache trong RAM 24h. |
-| `/v1/totp/code/admin` | `code` | TOTP Engine | Key name `admin`. acr gửi trực tiếp code lên để xác thực. TOTP Secret Key gốc nằm hoàn toàn trong Vault. |
-| `/v1/transit/hmac/trinity` | `input`, `algorithm` | Transit Engine | Ký số JWT (`sign_hmac`) dùng thuật toán `sha2-256`. Trả về chữ ký dạng `vault:v1:base64`. |
-| `/v1/transit/verify/trinity` | `input`, `hmac` | Transit Engine | Xác thực chữ ký JWT (`verify_hmac`). Trả về trạng thái `valid: true/false`. |
-
----
-
-### 9.4. Đặc Tả API Contract (Endpoint: `/admin/auth/login`)
-
-#### A. Request Spec
-
-- **Method**: `POST`
-- **Path**: `/admin/auth/login`
-- **Headers**:
-  - `Content-Type: application/json`
-
-**Body**:
-
-```json
-{
-  "api_key": "sre_super_secret_static_key_configured_in_vault",
-  "totp_code": "685934",
-  "device_public_key": "base64_encoded_ed25519_public_key_bytes"
-}
+    H->>I: issue session with optional device public key
+    I->>I: generate UUID access key and secret
+    I->>I: SHA256 access secret
+    I->>I: build claims sub sre Zone global access key exp iat
+    I->>TM: generate SRE JWT
+    TM->>VS: sign JWT input through Vault
+    VS-->>TM: versioned HMAC signature
+    TM-->>I: access token
+    I->>DK: base64 decode optional device key and require 32 bytes
+    alt invalid device key
+        DK-->>H: issue error no session persisted
+        H->>CR: local 500 JSON error
+    else valid or empty device key
+        I->>SM: register SRE session
+        SM->>AR: atomic SET protobuf then EXPIRE TTL
+        alt Redis registration fails
+            AR-->>H: error
+            H->>CR: local 500 JSON error
+        else registration succeeds
+            I-->>H: token key secret
+            H->>CR: local 204 and four cookies
+        end
+    end
 ```
 
-#### B. Response Spec (Thành công - 204 No Content)
+Device-key validation currently happens after Vault has signed the newly built
+JWT, but before any Redis session is registered or cookie is issued. An invalid
+key therefore leaves no usable session; the signing call is an unobservable
+orphan from the browser's perspective.
 
-- **Status**: `204 No Content`
-- **Headers**:
-  - `Set-Cookie: access_token=eyJhbGciOi...v1_xyz; Path=/; HttpOnly; Secure; SameSite=Lax`
-  - `Set-Cookie: access_key=e1a38f38-a15d-4f10-9c4c-7033502213e8; Path=/; HttpOnly; Secure; SameSite=Lax`
-  - `Set-Cookie: access_secret=9fa8b12c-cb5b-4c28-bbbe-e283cb73aa8b; Path=/; HttpOnly; Secure; SameSite=Lax`
-  - `Set-Cookie: zone_code=global; Path=/; HttpOnly; Secure; SameSite=Lax`
+The generated JWT contains `sub`, `zid`, `access_key`, optional `iss`, `exp`
+and `iat`. It deliberately contains no user UUID, tenant ID, RBAC role or
+workspace. Critical SRE requests later use the stored device public key, their
+own nonce, and Vault TOTP step-up; login itself creates none of that nonce
+state.
 
-#### C. Response Spec (Thất bại do thông tin không hợp lệ)
+## Phase 4 — local response settlement
 
-- **Status**: `401 Unauthorized`
-- **Headers**:
-  - `Content-Type: application/json`
+The handler constructs `DeniedHttpResponse` with gRPC unauthenticated status.
+Envoy interprets it as an edge-local HTTP response and never forwards login
+JSON to Controlplane.
 
-**Body**:
+```mermaid
+sequenceDiagram
+    participant H as SRE login handler
+    participant CR as DeniedHttpResponseBuilder
+    participant E as Envoy
+    participant UI as SRE Admin UI or CLI
 
-```json
-{
-  "error": "Invalid credentials"
-}
+    H->>CR: HTTP 204 with SRE Trinity and Zone cookies
+    CR-->>E: local denied ext authz response
+    E-->>UI: success without body
 ```
 
-#### D. Response Spec (Lỗi hệ thống / Vault không kết nối)
+| Cookie | Value source | Path | Purpose |
+| --- | --- | --- | --- |
+| `access_token` | Vault-signed SRE JWT | `/admin` | signed identity/context |
+| `access_key` | fresh UUIDv4 | `/admin` | selects SRE Redis runtime record |
+| `access_secret` | fresh UUIDv4 | `/admin` | validates against stored hash |
+| `zone_code` | literal `global` | `/admin` | browser SRE context display/selection seed |
 
-- **Status**: `500 Internal Server Error`
-- **Headers**:
-  - `Content-Type: application/json`
+## Failure, replay and security boundaries
 
-**Body**:
+| Event | HTTP result | State settlement |
+| --- | --- | --- |
+| repeated valid login | new independent SRE session each time | older sessions are not revoked by this workflow |
+| invalid API key or TOTP | `401` generic error | no session/nonce state |
+| Vault unavailable | `500` | no cookies; caller retries with fresh request |
+| Redis session registration unavailable | `500` | no cookies; signed token is not usable because no session exists |
+| invalid device key | `500` | no session/cookies |
+| pre-auth rate overflow | `429` | limiter counter/L1 block only |
 
-```json
-{
-  "error": "Internal server error"
-}
-```
+### AS-IS security observations
+
+| Current execution fact | Implication |
+| --- | --- |
+| local login runs before normal CSRF check | the route relies on CORS and pre-auth budget rather than CSRF middleware |
+| API-key hash comparison is ordinary string equality | no explicit constant-time comparison is used in handler code |
+| optional device key may be empty | later SRE critical signature verification cannot validate a usable Ed25519 key for such a session |
+| device-key validation follows Vault JWT signing | failed key validation still consumed a signing operation but persists no credential |
+
+These facts describe AS-IS code. Any hardening is a separate change requiring
+an explicit security-contract decision.
+
+## Observability and code map
+
+| Component | Responsibility | Code |
+| --- | --- | --- |
+| dispatcher | CheckRequest extraction, CORS, pre-auth rate limit, route order | `acr/src/gateway/ext_authz.rs` |
+| local handler | body parsing, API key/TOTP decision, cookie response | `acr/src/sre/login.rs` |
+| token manager | Vault secret read, TOTP verification, JWT sign/verify cache | `acr/src/sre/claims.rs` |
+| runtime session | Redis protobuf registration and later verification | `acr/src/sre/session.rs` |
+| cookie definitions | cookie names and common clear semantics | `acr/src/pkg/cookie.rs` |
+
+Logs may identify that an SRE login attempt succeeded or failed, but must never
+record API keys, TOTP values, raw JWTs, access secrets, or device public keys.

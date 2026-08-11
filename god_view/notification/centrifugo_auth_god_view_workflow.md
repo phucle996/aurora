@@ -159,7 +159,7 @@ Notification duy trì một Pub/Sub reply socket cho cả pod. Mỗi request đ�
 
 ### 📈 Distributed Tracing & Giám Sát (Metrics)
 - **Tracing Context**: Hệ thống trích xuất header `traceparent` từ Centrifugo (được lan truyền từ client ban đầu) thông qua W3C Trace Context để đo lường độ trễ E2E.
-- **OTel Metrics**: Auth call dùng `notification_shared_redis_calls_total` và `notification_shared_redis_call_duration_seconds`; realtime listener nội vùng Central dùng metric Shared Redis. Label phải thuộc tập hữu hạn theo [Telemetry God View](telemetry_god_view.md).
+- **OTel Metrics**: Auth call dùng `notification_shared_redis_calls_total` và `notification_shared_redis_call_duration_seconds`; realtime listener nội vùng Central dùng metric Shared Redis. Label phải thuộc tập hữu hạn theo [Notification telemetry contract](../../notification-service/TELEMETRY.md).
 
 ---
 

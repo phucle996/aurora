@@ -75,7 +75,10 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		personalGroup.GET("/hierarchy/workspaces/catalog",
 			module.WorkspacePersonalHandler.GetWorkspaceCatalogPersonal,
 		)
-		personalGroup.DELETE("/hierarchy/workspaces/:workspace_id",
+		// Deletion is bound to the verified active workspace context. The browser
+		// cannot select another resource in the URL.
+		personalGroup.DELETE("/hierarchy/workspaces",
+			middleware.Authorize("hierarchy:workspace:delete", module.L1Registry, "*"),
 			module.WorkspacePersonalHandler.DeleteWorkspacePersonal,
 		)
 		// Tenant creation is a personal-owner action. A tenant session cannot
@@ -115,7 +118,9 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 			module.WorkspaceTenantHandler.GetWorkspaceCatalogTenant,
 		)
 		// [COMMENT]: Xóa workspace thuộc tenant — yêu cầu quyền hierarchy:workspace:delete
-		tenantGroup.DELETE("/hierarchy/workspaces/:workspace_id",
+		// The authorization target and deletion target are the same ACR-injected
+		// active workspace; no path parameter can select a second workspace.
+		tenantGroup.DELETE("/hierarchy/workspaces",
 			middleware.Authorize("hierarchy:workspace:delete", module.L1Registry, "*"),
 			module.WorkspaceTenantHandler.DeleteWorkspaceTenant,
 		)

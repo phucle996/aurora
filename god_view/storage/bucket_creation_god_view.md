@@ -4,7 +4,7 @@
 > Đây là Source of Truth cho create bucket asynchronous lifecycle. PostgreSQL/outbox là business boundary,
 > Central Kafka là durable job/result transport, Dataplane đúng Zone mới gọi MinIO.
 > Ownership/Billing event nằm tại
-> [`resource_ownership_god_view.md`](../billing/resource_ownership_god_view.md).
+> [`cost-manager/ARCHITECTURE.md`](../../cost-manager/ARCHITECTURE.md).
 
 ## 0. Contract
 

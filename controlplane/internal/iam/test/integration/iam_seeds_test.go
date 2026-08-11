@@ -105,6 +105,44 @@ func TestTenantWalletTopUpIsNotAPlatformPermission(t *testing.T) {
 	}
 }
 
+func TestPlatformUserCanManagePersonalWorkspaces(t *testing.T) {
+	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM bootstrap seed: %v", err)
+	}
+
+	source := string(sql)
+	for _, required := range []string{
+		"permission.module='hierarchy'",
+		"permission.object='workspace'",
+		"permission.behavior IN ('create', 'read', 'delete')",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("platform_user baseline must include %q", required)
+		}
+	}
+}
+
+func TestPlatformUserWorkspaceGrantMigrationRefreshesCompiledRoles(t *testing.T) {
+	sql, err := migrations.Files.ReadFile("000008_platform_user_workspace_permissions.up.sql")
+	if err != nil {
+		t.Fatalf("read platform user workspace grant migration: %v", err)
+	}
+
+	source := string(sql)
+	for _, required := range []string{
+		"INSERT INTO platform_role_permissions",
+		"WHERE role.code = 'platform_user'",
+		"WITH compiled AS",
+		"UPDATE user_role AS assignment",
+		"iam_workspace_role_entry",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("workspace grant migration must contain %q", required)
+		}
+	}
+}
+
 func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
 	sql, err := migrations.Files.ReadFile("000002_iam_tables.up.sql")
 	if err != nil {

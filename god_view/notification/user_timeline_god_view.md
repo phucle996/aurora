@@ -3,6 +3,15 @@
 > Source of Truth cho lịch sử hành vi self-user và job notification. Đây là
 > projection phục vụ Console; không phải IAM, billing hay resource aggregate SoT.
 
+## API scope and edge-routing contract
+
+Timeline API là `/me` self-user flow. ACR derives the sole subject from verified
+`x-user-id`, preserves `/api/v1/me/**`, does not set `x-original-path`, and
+never rewrites to `/personal` or `/tenant`. Controlplane does not run a
+permission/level owner authorizer; storage queries are constrained by that
+verified user ID. Critical self endpoints, if added, require session proof at
+ACR without changing this route or authority rule.
+
 ## Hai luồng, hai durability boundary
 
 ```mermaid

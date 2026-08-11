@@ -71,6 +71,8 @@ export type WorkspaceContextValue = {
   selectWorkspace: (id: string) => void;
   // [COMMENT]: Clear toàn bộ workspace state khi logout
   clearWorkspaceContext: () => void;
+  // [COMMENT]: Clear active selection while keeping the catalog for onboarding.
+  clearActiveWorkspaceSelection: () => void;
   // [COMMENT]: Thêm trực tiếp workspace mới tạo vào catalog dropdown trên client mà không cần gọi API (0-Request)
   addWorkspaceToCatalog: (item: WorkspaceCatalogItem) => void;
   // [COMMENT]: Xoá trực tiếp workspace khỏi catalog dropdown trên client (0-Request)
@@ -158,6 +160,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setLoading(false);
   }, []);
 
+  const clearActiveWorkspaceSelection = useCallback(() => {
+    clearCookieWorkspaceID();
+    setActiveWorkspaceID(null);
+  }, []);
+
   // [COMMENT]: addWorkspaceToCatalog — append trực tiếp workspace mới tạo vào catalog dropdown hiện tại trên client
   const addWorkspaceToCatalog = useCallback((item: WorkspaceCatalogItem) => {
     setCatalog((prev) => {
@@ -186,14 +193,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const currentCookie = getCookieWorkspaceID();
       if (currentCookie === id) {
         clearCookieWorkspaceID();
-        if (newCatalog.length > 0) {
-          // Auto-select workspace tiếp theo còn lại
-          const firstID = newCatalog[0].id;
-          setCookieWorkspaceID(firstID);
-          setActiveWorkspaceID(firstID);
-        } else {
-          setActiveWorkspaceID(null);
-        }
+        // Deletion leaves the user context-less. Choosing the next workspace
+        // is an explicit onboarding action, never an implicit first-item pick.
+        setActiveWorkspaceID(null);
       }
 
       return newCatalog;
@@ -215,6 +217,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     initWorkspaceContext,
     selectWorkspace,
     clearWorkspaceContext,
+    clearActiveWorkspaceSelection,
     addWorkspaceToCatalog,
     removeWorkspaceFromCatalog,
   };

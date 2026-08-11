@@ -69,7 +69,7 @@ Snapshot fields:
 
 Bucket snapshot chỉ cập nhật Controlplane `used_bytes` phục vụ authorized list API. Nó không phát
 usage event sang Cost. Cost Manager projects ownership riêng và tính usage từ ClickHouse theo
-`storage_usage_billing_god_view.md`; charging path không query Controlplane DB.
+[`cost-manager/ARCHITECTURE.md`](../../cost-manager/ARCHITECTURE.md); charging path không query Controlplane DB.
 
 ## 4. Failure matrix
 

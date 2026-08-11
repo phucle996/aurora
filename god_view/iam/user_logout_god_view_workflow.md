@@ -7,11 +7,11 @@ selects nor requires tenant, workspace or Zone context.
 
 | Phase | Owner | Input | Output |
 |---|---|---|---|
-| 1. Revoke durable refresh credential | Browser → Envoy/ACR → Shared Redis → IAM | `POST /api/v1/auth/logout` and optional refresh cookie | Refresh hash is absent in PostgreSQL, or ACR returns failure without clearing cookies |
-| 2. Revoke runtime and browser credentials | ACR → Auth-State Redis → Browser | Proven durable revoke, or no refresh cookie | Current runtime family expires and ACR returns `204` with cookies cleared |
+| 1. ACR proves durable refresh revocation | Browser → Envoy/ACR → Shared Redis → IAM | `POST /api/v1/auth/logout` and optional refresh cookie | Refresh hash is absent in PostgreSQL, or ACR returns failure without clearing cookies |
+| 2. ACR revokes runtime and browser credentials | ACR → Auth-State Redis → Browser | Proven durable revoke, or no refresh cookie | Current runtime family expires and ACR returns `204` with cookies cleared |
 | 3. Tear down console state | Cloud Console | Logout call resolves or rejects | In-memory session/query/workspace state cleared and browser goes to `/signin` |
 
-## Phase 1 — Prove durable refresh revocation
+## Phase 1 — ACR proves durable refresh revocation
 
 The request is intercepted by ACR, not forwarded to an application HTTP
 handler. A refresh token is an opaque bearer credential, so its PostgreSQL row
@@ -29,18 +29,30 @@ phase is skipped and the workflow continues to Phase 2.
 
 ### ACR and IAM processing/output
 
-1. ACR rejects a supplied refresh token outside `64..=512` characters with
+1. Envoy sends ACR an ExtAuthz `CheckRequest` carrying method, path, bounded
+   body, cookies and edge headers; this endpoint is intercepted and no HTTP
+   request is forwarded to Controlplane.
+2. ACR rejects a supplied refresh token outside `64..=512` characters with
    `401`; it makes no mutation and does not clear cookies.
-2. ACR encodes `RevokeOpaqueRefreshTokenRequest{refresh_token}` and sends a
+3. ACR encodes `RevokeOpaqueRefreshTokenRequest{refresh_token}` and sends a
    request/reply envelope through Shared Redis. It waits at most 800 ms.
-3. One Controlplane consumer obtains a 30-second request-ID `SET NX` fence,
+4. One Controlplane consumer obtains a 30-second request-ID `SET NX` fence,
    trims and revalidates the token shape, hashes it with SHA-256, and deletes
    the matching `iam.refresh_tokens` row.
-4. Zero deleted rows are a successful idempotent revoke. Only after the delete
+5. Zero deleted rows are a successful idempotent revoke. Only after the delete
    succeeds does Controlplane publish the empty protobuf reply.
-5. Missing consumer, Redis/Controlplane/PostgreSQL failure, malformed reply or
+6. Missing consumer, Redis/Controlplane/PostgreSQL failure, malformed reply or
    timeout produces `503`; ACR leaves runtime and cookies untouched so the
    browser retains its server-side retry capability.
+
+### Controlplane processing
+
+This phase has no Gin router: Shared Redis Pub/Sub fan-out enters
+`AuthRedisHandler.handleRevokeOpaqueToken`. The `SET NX` dispatch winner bounds
+and unmarshals the protobuf, revalidates refresh-token shape, then calls
+`SessionRefreshService.RevokeOpaqueRefreshToken`, which delegates the SHA-256
+delete to `RefreshTokenRepository`. Only the handler publishes the empty
+correlated reply after that service call succeeds.
 
 #### Response headers
 
@@ -71,33 +83,46 @@ phase is skipped and the workflow continues to Phase 2.
 ```mermaid
 sequenceDiagram
     participant UI as Cloud Console
+    participant E as Envoy
     participant A as ACR
     participant SR as Shared Redis
-    participant IAM as Controlplane IAM
+    participant CP as CP replicas
+    participant H as AuthRedisHandler
+    participant S as SessionRefreshService
+    participant Repo as RefreshTokenRepository
     participant DB as IAM PostgreSQL
 
-    UI->>A: POST logout with refresh cookie
+    UI->>E: POST logout with cookies
+    E->>A: ExtAuthz CheckRequest with cookies
     alt refresh cookie is missing
         A->>A: Skip durable revoke
     else refresh shape is invalid
-        A-->>UI: 401 without clearing cookies
+        A-->>E: Local 401 without clearing cookies
+        E-->>UI: 401 without clearing cookies
     else refresh credential is present
         A->>SR: Publish request envelope with request ID
-        SR->>IAM: Fan out revoke request
-        IAM->>SR: Acquire request ID fence
-        IAM->>DB: Delete refresh row by SHA-256 hash
+        SR-->>CP: PubSub fan-out revoke request
+        CP->>H: handleRevokeOpaqueToken
+        H->>SR: Acquire request ID fence
+        H->>H: Bound decode and validate token shape
+        H->>S: RevokeOpaqueRefreshToken raw token
+        S->>Repo: Delete by SHA-256 token hash
+        Repo->>DB: Delete refresh row
         alt delete succeeds or row is absent
-            DB-->>IAM: Durable revoked state
-            IAM->>SR: Publish empty correlated reply
+            DB-->>Repo: Durable revoked state
+            Repo-->>S: Idempotent success
+            S-->>H: Revocation proven
+            H->>SR: Publish empty correlated reply
             SR-->>A: Revocation confirmed
         else dependency failure
-            IAM-->>A: No reply
-            A-->>UI: 503 without clearing cookies
+            H->>H: Log failure without publishing reply
+            A-->>E: Local 503 without clearing cookies
+            E-->>UI: 503 without clearing cookies
         end
     end
 ```
 
-## Phase 2 — Expire runtime session family and clear cookies
+## Phase 2 — ACR expires runtime session family and clears cookies
 
 This phase runs only after Phase 1 confirms durable revocation, or immediately
 when the browser has no refresh cookie. Runtime cleanup is intentionally best

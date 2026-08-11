@@ -4,7 +4,7 @@
 > Đây là Source of Truth cho consumer/template desired state từ Controlplane PostgreSQL xuống NATS
 > JetStream KV của đúng Zone. Durable projection transport là Kafka transport plane; không còn Redis Job.
 > Kafka platform semantics nằm tại
-> [`kafka_platform_transport_god_view.md`](../platform/kafka_platform_transport_god_view.md).
+> [`CENTRAL_ZONE_TRANSPORT.md`](../../architecture/CENTRAL_ZONE_TRANSPORT.md).
 
 ## 0. Control header
 

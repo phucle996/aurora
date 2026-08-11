@@ -172,8 +172,25 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 		return fmt.Errorf("iam service: marshal account verified event: %w", err)
 	}
 
-	// [COMMENT]: Repository commit activation + role + domain event trong một PostgreSQL transaction.
-	if err := s.repo.ActivateUser(ctx, userID, "platform_user", billingEventID, payload); err != nil {
+	now := time.Now().UTC()
+	activation := iamEntity.AccountActivation{
+		UserID:              userID,
+		RoleCode:            "platform_user",
+		BillingEventID:      billingEventID,
+		BillingEventPayload: payload,
+	}
+	bootstrapWorkspaces := iamEntity.BootstrapPersonalWorkspaces{
+		OwnerID:     userID,
+		Name:        "Personal",
+		CodePrefix:  "personal",
+		Description: "Default personal workspace created during account activation.",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	// [COMMENT]: Repository commits activation, role, per-active-Zone workspace
+	// bootstrap, and the Billing event in one PostgreSQL transaction.
+	if err := s.repo.ActivateUser(ctx, activation, bootstrapWorkspaces); err != nil {
 		return err
 	}
 	// [COMMENT]: Chỉ wake sau commit; channel đầy hoặc pod crash không làm mất event vì fallback vẫn quét durable outbox.

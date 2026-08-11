@@ -4,14 +4,14 @@ Dataplane thực thi workload của đúng một Zone. Kafka là durable Central
 ephemeral realtime transport; NATS JetStream KV riêng Zone giữ desired runtime projection,
 health và coordination. Dataplane không có credential Redis trung tâm.
 
-God View chính:
+Tài liệu kiến trúc chính:
 
-- [`leader_worker_god_view.md`](../god_view/dataplane/leader_worker_god_view.md)
-- Node runtime sampling và resource-aware autoscaling được mô tả trong phần `Kafka lag và scale signal`
-  của `leader_worker_god_view.md`.
-- [`telemetry_god_view.md`](../god_view/dataplane/telemetry_god_view.md)
-- [`kafka_platform_transport_god_view.md`](../god_view/platform/kafka_platform_transport_god_view.md)
-- [`zone_metadata_sync_and_state_machine_god_view.md`](../god_view/hierarchy/zone_metadata_sync_and_state_machine_god_view.md)
+- [Dataplane architecture](ARCHITECTURE.md)
+- Node runtime sampling và resource-aware autoscaling được mô tả trong
+  [Dataplane architecture](ARCHITECTURE.md#node-sampling-and-worker-scaling).
+- [Telemetry architecture](TELEMETRY.md)
+- [`CENTRAL_ZONE_TRANSPORT.md`](../architecture/CENTRAL_ZONE_TRANSPORT.md)
+- [`zone_metadata_propagation_god_view_workflow.md`](../god_view/zone_runtime/zone_metadata_propagation_god_view_workflow.md)
 - [`mail_configuration_projection_god_view.md`](../god_view/mail/mail_configuration_projection_god_view.md)
 
 ## 1. Boundary

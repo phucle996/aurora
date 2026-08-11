@@ -179,6 +179,16 @@ global. Session user vẫn phải có Zone UUID cụ thể.
 When `trust_device=true`, the refresh token and expiry come from CP; ACR only
 writes the HttpOnly cookie and never mints a second token.
 
+### ACR forward contract to Phase 3
+
+| Forwarded item | Source at ACR | Constraint |
+|---|---|---|
+| Canonical `username`, optional `tenant_domain` and concrete `zone_code` | Strict parsed body and ACR Zone resolution | Raw `username@domain`, global Zone and invalid Zone never cross this boundary |
+| Password | Original bounded JSON body | Sent only in `VerifyUserCredentialsRequest`; never logged, cached or returned |
+| Verified public key, generated `client_device_id`, device name/type, trust flag, client IP and user agent | Verified proof, ACR generation and edge metadata | Client cannot choose another user's identity, tenant UUID or device ID |
+| Correlation request ID | ACR | Binds one Shared L2 request/reply exchange to one proof consume |
+| Raw session-proof nonce/signature and browser cookie | ACR/Auth-State Redis and browser | Consumed or read locally; never forwarded to Controlplane |
+
 ### Key contract
 
 `{normalized_zone_code}` là `trim().to_ascii_lowercase()`; các placeholder UUID

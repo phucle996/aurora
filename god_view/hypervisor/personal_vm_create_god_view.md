@@ -5,6 +5,15 @@
 > Proxmox và trả trạng thái về Controlplane. Luồng Cost/Metering chưa thuộc
 > contract này; không được suy luận trạng thái thanh toán từ VM lifecycle.
 
+## API scope and edge-routing contract
+
+Đây là personal platform workflow. Browser chỉ gọi neutral Hypervisor API; ACR
+verify session, chọn personal context, rewrite internal target thành
+`/api/v1/personal/hypervisor/**`, overwrite `:path` và set `x-original-path`.
+Direct `/personal/**` từ browser bị từ chối. Personal authorizer kiểm tra
+permission và required role level trước handler, và repository rechecks durable
+user/workspace/Zone scope. Đây không phải `/me` self-user route.
+
 ## 1. Phạm vi và ownership
 
 | Thành phần | Ownership |

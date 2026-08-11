@@ -55,10 +55,10 @@ Bucket size is a separate periodic snapshot workflow documented in
 
 ## 5. References
 
-- Platform transport: [`kafka_platform_transport_god_view.md`](../platform/kafka_platform_transport_god_view.md)
+- Central–Zone transport architecture: [`CENTRAL_ZONE_TRANSPORT.md`](../../architecture/CENTRAL_ZONE_TRANSPORT.md)
 - Bucket create/delete: [`bucket_creation_god_view.md`](bucket_creation_god_view.md)
 - Bucket list/size: [`bucket_list_god_view.md`](bucket_list_god_view.md)
-- Ownership: [`resource_ownership_god_view.md`](../billing/resource_ownership_god_view.md)
+- Ownership: [`cost-manager/ARCHITECTURE.md`](../../cost-manager/ARCHITECTURE.md)
 
 ## 6. Zone Edge Gateway access-session path (staged)
 
@@ -123,4 +123,4 @@ Invariants:
 Implementation detail and rollout gates are tracked in
 [`zone_edge_gateway_storage_access_plan.md`](zone_edge_gateway_storage_access_plan.md).
 The two-edge topology is authoritative in
-[`zone_edge_gateway_god_view.md`](../platform/zone_edge_gateway_god_view.md).
+[`ZONE_EDGE.md`](../../architecture/ZONE_EDGE.md).

@@ -145,6 +145,9 @@ WHERE
         AND (permission.behavior='read'
              OR (permission.module='iam' AND permission.object='mfa' AND permission.behavior='view')))
  OR (role.code='platform_user' AND (
+		(permission.module='hierarchy' AND permission.object='workspace'
+			AND permission.behavior IN ('create', 'read', 'delete'))
+	 OR
         (permission.module='managed-service' AND permission.object IN ('catalog', 'instance')
             AND permission.behavior IN ('read', 'write'))
      OR (permission.module='billing' AND permission.object='subscription' AND permission.behavior='write')

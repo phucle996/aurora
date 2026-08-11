@@ -5,6 +5,16 @@
 > ownership authorization. Controlplane **không giữ broker connection, không
 > consume customer message, không render template và không gọi Stalwart**.
 
+## API scope and edge-routing contract
+
+Mail configuration có personal và tenant owner workflow riêng. Browser gọi
+neutral Mail API; ACR chỉ sau session verification mới chọn verified owner,
+rewrite nội bộ sang `/api/v1/personal/mail/**` hoặc `/api/v1/tenant/mail/**`,
+overwrite `:path` và set `x-original-path`. Direct owner-prefixed browser route
+bị từ chối. Personal `user_role` hoặc tenant `membership_role` authorizer kiểm
+tra route permission và required level trước handler; repository rechecks
+workspace, ownership và Zone facts. Không phải `/me` self-user API.
+
 ## 0. Control header
 
 | Thuộc tính | Giá trị |

@@ -247,9 +247,18 @@ func (r *AuthRepository) IsUserActive(ctx context.Context, userID uuid.UUID) (bo
 	return active, nil
 }
 
-// [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
-// và gán vai trò tương ứng cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
-func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string, eventID uuid.UUID, eventPayload []byte) error {
+// ActivateUser commits account activation and per-active-Zone personal workspace
+// bootstrap in one transaction. It accepts separate workflow commands so IAM
+// activation does not absorb hierarchy placement fields into its own entity.
+func (r *AuthRepository) ActivateUser(
+	ctx context.Context,
+	activation iamEntity.AccountActivation,
+	workspaces iamEntity.BootstrapPersonalWorkspaces,
+) error {
+	if activation.UserID == uuid.Nil || workspaces.OwnerID != activation.UserID {
+		return iamTaxonomy.ErrInvalidArgument
+	}
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("iam repo: begin activate tx: %w", err)
@@ -263,7 +272,7 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 	var username string
 	var status string
 	lockUserQuery := fmt.Sprintf(`SELECT username, status FROM %s.users WHERE id = $1 FOR UPDATE`, r.schema)
-	if err = tx.QueryRow(ctx, lockUserQuery, userID).Scan(&username, &status); err != nil {
+	if err = tx.QueryRow(ctx, lockUserQuery, activation.UserID).Scan(&username, &status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return iamTaxonomy.ErrUserNotFound
 		}
@@ -272,15 +281,6 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 	if status != "pending-active" && status != "active" {
 		return fmt.Errorf("user status is %s, cannot activate", status)
 	}
-	if status == "pending-active" {
-		if _, err = tx.Exec(ctx, fmt.Sprintf(`
-			UPDATE %s.users SET status = 'active', updated_at = NOW()
-			WHERE id = $1 AND status = 'pending-active'
-		`, r.schema), userID); err != nil {
-			return fmt.Errorf("iam repo: activate user: %w", err)
-		}
-	}
-
 	// [COMMENT]: Retry của active user cũng tải role chuẩn và INSERT ON CONFLICT để self-heal dữ liệu legacy thiếu role.
 	queryRolePerms := fmt.Sprintf(`
 		SELECT r.id, r.name, r.role_level, r.version,
@@ -291,7 +291,7 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 		WHERE r.code = $1
 	`, r.schema, r.schema, r.schema)
 
-	rows, err := tx.Query(ctx, queryRolePerms, roleCode)
+	rows, err := tx.Query(ctx, queryRolePerms, activation.RoleCode)
 	if err != nil {
 		return err
 	}
@@ -346,7 +346,7 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 
 	_, err = tx.Exec(ctx, queryInsertRole,
 		uuid.Must(uuid.NewV7()),
-		userID,
+		activation.UserID,
 		username,
 		uuid.Nil, // workspace_id (nil UUID)
 		roleID,
@@ -359,17 +359,54 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 		return fmt.Errorf("iam repo: insert user role assignment: %w", err)
 	}
 
-	// [COMMENT]: Activation, role và event cùng commit; không tồn tại cửa sổ DB commit nhưng event bị mất.
-	_, err = tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.billing_outbox_records
-			(event_id, event_type, schema_version, aggregate_type, aggregate_id, aggregate_version,
-			 owner_id, owner_type, actor_user_id, payload, occurred_at)
-		VALUES ($1, 'billing.wallet.personal.provision.requested.v1', 1, 'IAM_USER', $2, 1,
-		        $2, 'PERSONAL', $2, $3, NOW())
-		ON CONFLICT (event_id) DO NOTHING
-	`, r.schema), eventID, userID, eventPayload)
+	// One CTE activates the pending row, snapshots every active Zone under a
+	// shared lock, fans out a deterministic owner-and-Zone code, and writes the
+	// Billing outbox. Retried activation only inserts rows for newly active Zones
+	// because the owner/code conflict is idempotent.
+	var activeZoneCount int
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
+		WITH activated_user AS MATERIALIZED (
+			UPDATE %s.users
+			SET status = 'active', updated_at = NOW()
+			WHERE id = $4 AND status = 'pending-active'
+			RETURNING id
+		), active_zones AS MATERIALIZED (
+			SELECT id
+			FROM %s.zones
+			WHERE status = 'active'
+			FOR SHARE
+		), seeded_workspaces AS (
+			INSERT INTO %s.personal_workspaces
+				(name, code, description, zone_id, owner_id, created_at, updated_at)
+			SELECT $1, $2 || '-' || zone.id::text, $3, zone.id, $4, $5, $6
+			FROM active_zones AS zone
+			ON CONFLICT (owner_id, code) DO NOTHING
+			RETURNING id
+		), billing_outbox AS (
+			INSERT INTO %s.billing_outbox_records
+				(event_id, event_type, schema_version, aggregate_type, aggregate_id, aggregate_version,
+				 owner_id, owner_type, actor_user_id, payload, occurred_at)
+			VALUES ($7, 'billing.wallet.personal.provision.requested.v1', 1, 'IAM_USER', $4, 1,
+			        $4, 'PERSONAL', $4, $8, NOW())
+			ON CONFLICT (event_id) DO NOTHING
+			RETURNING id
+		)
+		SELECT COUNT(*)::int FROM active_zones
+	`, r.schema, r.hierarchySchema, r.hierarchySchema, r.schema),
+		workspaces.Name,
+		workspaces.CodePrefix,
+		workspaces.Description,
+		workspaces.OwnerID,
+		workspaces.CreatedAt,
+		workspaces.UpdatedAt,
+		activation.BillingEventID,
+		activation.BillingEventPayload,
+	).Scan(&activeZoneCount)
 	if err != nil {
-		return fmt.Errorf("iam repo: insert account verified outbox: %w", err)
+		return fmt.Errorf("iam repo: seed activation workspaces and outbox: %w", err)
+	}
+	if activeZoneCount == 0 {
+		return iamTaxonomy.ErrBootstrapZoneUnavailable
 	}
 
 	if err := tx.Commit(ctx); err != nil {

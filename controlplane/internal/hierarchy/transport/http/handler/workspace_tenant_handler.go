@@ -242,19 +242,17 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 // @Tags         workspaces-tenant
 // @Accept       json
 // @Produce      json
-// @Param        workspace_id   path   string true "Workspace ID (UUID) cần xóa"
 // @Success      200 {object} map[string]interface{} "Workspace deleted successfully"
-// @Router       /api/v1/tenant/hierarchy/workspaces/{workspace_id} [delete]
+// @Router       /api/v1/tenant/hierarchy/workspaces [delete]
 func (h *WorkspaceTenantHandler) DeleteWorkspaceTenant(c *gin.Context) {
 	const op = "hierarchy.workspace.tenant.delete"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	workspaceIDStr := c.Param("workspace_id")
-	workspaceID, err := uuid.Parse(workspaceIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid workspace_id param format")
-		apires.RespondBadRequest(c, "invalid workspace_id format")
+	// The ACR-selected workspace is both the authorization subject and the
+	// deletion target. This prevents a same-Tenant cross-workspace delete.
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
 		return
 	}
 
@@ -264,7 +262,7 @@ func (h *WorkspaceTenantHandler) DeleteWorkspaceTenant(c *gin.Context) {
 		return
 	}
 
-	err = h.tenantSvc.DeleteWorkspaceForTenant(ctx, &hierarchyEntity.DeleteTenantWorkspace{ID: workspaceID, TenantID: tenantID})
+	err := h.tenantSvc.DeleteWorkspaceForTenant(ctx, &hierarchyEntity.DeleteTenantWorkspace{ID: workspaceID, TenantID: tenantID})
 	if err != nil {
 		switch {
 		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):

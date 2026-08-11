@@ -11,8 +11,8 @@ và [`user_social_unlink_god_view_workflow.md`](user_social_unlink_god_view_work
 
 | Phase | Owner | Input | Output |
 |---|---|---|---|
-| 1. OAuth start | Client → Envoy → ACR | REST `POST` + strict JSON (`provider`, `zone_code`, device context) | REST `200` authorization URL hoặc local error |
-| 2. Provider callback | Provider → Envoy → ACR | REST `GET` query `state` + `code` | `302/303` redirect về Console, MFA gate hoặc session cookies |
+| 1. ACR starts OAuth | Client → Envoy → ACR | REST `POST` + strict JSON (`provider`, `zone_code`, device context) | REST `200` authorization URL hoặc local error |
+| 2. ACR consumes provider callback | Provider → Envoy → ACR | REST `GET` query `state` + `code` | `302/303` redirect về Console, MFA gate hoặc session cookies |
 | 3. Controlplane IAM | ACR → Shared L2 Redis → CP | `request_id[16] || VerifyExternalIdentityRequest` | `VerifyExternalIdentityResponse` trên reply channel |
 
 **Identity authority:** PostgreSQL chỉ cho phép login bằng
@@ -32,7 +32,7 @@ role, device, refresh token và snapshot provider.
 Vault tại ACR startup:
 `secret/data/acr/oauth/google` hoặc `secret/data/acr/oauth/github`.
 
-## Phase 1 — Issue OAuth authorization URL (Client → ACR)
+## Phase 1 — ACR issues OAuth authorization URL
 
 Phase này kiểm tra context mà client muốn đăng nhập trước khi redirect sang
 provider. Mục đích là bind `zone_code`, device proof key, PKCE verifier, nonce
@@ -78,6 +78,13 @@ Zone hay redirect đích.
    `operation_id`, PKCE `code_verifier` và provider nonce.
 4. ACR lưu JSON state one-time với `SET NX EX 300`, sau đó tạo authorization
    URL. Client chỉ redirect tới URL do ACR trả về.
+
+### ACR forward contract
+
+| Destination | Contract |
+|---|---|
+| OAuth provider | Browser receives only ACR-created `authorization_url`; state, PKCE verifier and nonce remain in ACR/Auth-State Redis |
+| Controlplane | No request in this phase. ACR must first consume and verify the provider callback in Phase 2 |
 
 #### Response headers
 
@@ -137,7 +144,7 @@ sequenceDiagram
     end
 ```
 
-## Phase 2 — Consume provider callback and issue session (Provider → ACR)
+## Phase 2 — ACR consumes provider callback and issues session
 
 Phase này là trust boundary của OAuth. ACR consume state atomically, đổi code
 lấy provider token, verify provider identity rồi mới gửi canonical identity
@@ -174,6 +181,15 @@ sang Phase 3. Provider không được gọi trực tiếp Controlplane và call
 6. Với response CP: reject `zone_code` mismatch; MFA chỉ tạo continuation,
    không issue session; success mới gọi `release_user_session`, ký JWT và set
    cookies.
+
+### ACR forward contract to Phase 3
+
+| Forwarded item | Source at ACR | Constraint |
+|---|---|---|
+| `provider`, `provider_subject`, verified email metadata, display name and avatar URL | Canonical provider identity after provider verification | Raw provider token, code, ID token and JSON are never forwarded |
+| Device public key, canonical `client_device_id`, device name/type and `trust_device` | Consumed one-time OAuth state | Bound to the browser flow that created the state |
+| Concrete `zone_code`, client IP and user agent | Validated OAuth state and edge metadata | ACR rejects a CP response with a different Zone |
+| Correlation request ID | ACR | Binds one Shared L2 request/reply exchange to one callback |
 
 #### Response headers
 
@@ -331,7 +347,7 @@ sequenceDiagram
         S->>Repo: Verify linked provider subject
         Repo->>DB: Lock external identity and active user
         DB-->>Repo: Identity snapshot, user and global role
-        alt identity missing, revoked, inactive or no role
+        alt identity missing, inactive or no role
             Repo-->>S: Generic invalid or role-required error
             S-->>H: valid=false
         else MFA enabled
@@ -385,7 +401,7 @@ sequenceDiagram
 | CP Redis handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | CP service/domain | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go), [`controlplane/internal/iam/domain/entity/auth.go`](../../controlplane/internal/iam/domain/entity/auth.go) |
 | CP repository/durable identity | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |
-| Provider secret/config SoT | [`vault_connection_bootstrap_god_view.md`](../platform/vault_connection_bootstrap_god_view.md) |
+| Provider secret/config SoT | [`VAULT_CONNECTION_BOOTSTRAP.md`](../../architecture/VAULT_CONNECTION_BOOTSTRAP.md) |
 
 ## Change rule
 

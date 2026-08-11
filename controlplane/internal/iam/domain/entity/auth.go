@@ -34,6 +34,27 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
+// AccountActivation is the IAM-owned durable activation command. It deliberately
+// excludes workspace placement, which has its own workflow command below.
+type AccountActivation struct {
+	UserID              uuid.UUID
+	RoleCode            string
+	BillingEventID      uuid.UUID
+	BillingEventPayload []byte
+}
+
+// BootstrapPersonalWorkspaces is the activation-owned template used to seed one
+// personal workspace in every active Zone. Zone fan-out is repository work so
+// the public activation request never accepts a Zone selector.
+type BootstrapPersonalWorkspaces struct {
+	OwnerID     uuid.UUID
+	Name        string
+	CodePrefix  string
+	Description string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type PasswordHistory struct {
 	ID           uuid.UUID
 	UserID       uuid.UUID

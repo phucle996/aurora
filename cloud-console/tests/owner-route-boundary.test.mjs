@@ -39,3 +39,13 @@ test("self-user critical APIs keep me before critical and never select an owner"
   assert.match(settingsAPI, /\/api\/v1\/me\/critical\/iam\/social-link/);
   assert.doesNotMatch(settingsAPI, /\/api\/v1\/critical\/me\//);
 });
+
+test("social-link is self-scoped even when the console renders a tenant", async () => {
+  const settingsAPI = await readFile(path.resolve("src/features/settings/api.ts"), "utf8");
+  const socialLinksScreen = await readFile(path.resolve("src/features/settings/social-links-screen.tsx"), "utf8");
+
+  assert.match(settingsAPI, /return_to:\s*"\/personal\/settings\/social-links"/);
+  assert.doesNotMatch(settingsAPI, /returnTo/);
+  assert.doesNotMatch(socialLinksScreen, /renderContext|useConsoleQueryScope/);
+  assert.match(socialLinksScreen, /\["self", "settings", "social-links"\]/);
+});

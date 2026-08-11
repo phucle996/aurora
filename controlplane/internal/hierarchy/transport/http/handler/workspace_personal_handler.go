@@ -211,19 +211,17 @@ func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 // @Tags         workspaces-personal
 // @Accept       json
 // @Produce      json
-// @Param        workspace_id   path   string true "Workspace ID (UUID) cần xóa"
 // @Success      200 {object} map[string]interface{} "Workspace deleted successfully"
-// @Router       /api/v1/personal/hierarchy/workspaces/{workspace_id} [delete]
+// @Router       /api/v1/personal/hierarchy/workspaces [delete]
 func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 	const op = "hierarchy.workspace.personal.delete"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	workspaceIDStr := c.Param("workspace_id")
-	workspaceID, err := uuid.Parse(workspaceIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid workspace_id param format")
-		apires.RespondBadRequest(c, "invalid workspace_id format")
+	// The target is the workspace selected in the verified ACR context, never a
+	// browser path/body selector.
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
 		return
 	}
 
@@ -233,7 +231,7 @@ func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 		return
 	}
 
-	err = h.personalSvc.DeleteWorkspaceForPersonal(ctx, &hierarchyEntity.DeletePersonalWorkspace{ID: workspaceID, OwnerID: ownerUserID})
+	err := h.personalSvc.DeleteWorkspaceForPersonal(ctx, &hierarchyEntity.DeletePersonalWorkspace{ID: workspaceID, OwnerID: ownerUserID})
 	if err != nil {
 		switch {
 		case errors.Is(err, hierarchyTaxonomy.ErrNotFound):

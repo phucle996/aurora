@@ -7,10 +7,11 @@ request thành công.
 
 | Phase | Owner | Input | Output |
 |---|---|---|---|
-| 1. Register pending identity | Client → Envoy/ACR → Controlplane IAM | Public REST registration JSON | Durable `users` + `user_profiles` in `pending-active` hoặc `400`/`409`/`500` |
-| 2. Dispatch verification mail | IAM → Security Redis → Kafka → Mail runtime | Newly committed pending identity | Event-scoped OTT envelope; pending login can resend |
+| 1. ACR admits public registration | Client → Envoy/ACR | Public REST registration JSON | CORS/rate-limit decision then exact request forwarding |
+| 2. IAM registers pending identity | ACR → Controlplane IAM | Forwarded public REST registration JSON | Durable `users` + `user_profiles` in `pending-active` hoặc `400`/`409`/`500` |
+| 3. IAM dispatches verification mail | IAM → Security Redis → Kafka → Mail runtime | Newly committed pending identity | Event-scoped OTT envelope; pending login can resend |
 
-## Phase 1 — Create pending identity
+## Phase 1 — ACR admits public registration
 
 ACR only applies CORS and public rate limit before forwarding the exact public
 route. The browser cannot choose mail transport, token, role, wallet owner,
@@ -46,6 +47,40 @@ Zone or tenant.
 | `location` | Optional; successful GeoIP lookup takes precedence |
 | `timezone` | Optional, trimmed |
 
+### ACR processing and output
+
+### Client → Envoy → ACR processing and forward
+
+| Boundary | What it receives or does |
+|---|---|
+| Client → Envoy | Public method/path, `Content-Type`, registration JSON including opaque password, optional browser device cookie and edge-visible origin. No client identity header is authoritative. |
+| Envoy → ACR | ExtAuthz `CheckRequest` with method, path, bounded body, request headers and `X-Forwarded-For`; Envoy waits for ACR before Controlplane routing. |
+| ACR local | Enforces allowed origin and pre-auth IP/device rate limit. It does not parse, canonicalize, hash, log or persist registration fields/password. Rejection returns local edge denial. |
+| ACR → Envoy/IAM | Forwards original method/path, `Content-Type` and JSON unchanged. ACR injects no verified identity, tenant, Zone, device or proof header for this public route; any client copy is non-authoritative and the public handler must ignore it. |
+
+```mermaid
+sequenceDiagram
+    participant UI as Cloud Console
+    participant E as Envoy
+    participant X as ACR ExtAuthzService
+    participant RL as ACR RateLimiter
+    participant IAM as Controlplane IAM
+
+    UI->>E: POST registration JSON and headers
+    E->>X: CheckRequest with headers and body
+    X->>X: Verify Origin against allowed origins
+    X->>RL: Check pre-auth IP and device counters
+    alt edge policy rejects
+        X-->>E: Local edge deny
+        E-->>UI: Edge error
+    else admitted
+        X-->>E: Allow with no trusted identity headers
+        E->>IAM: Method path Content-Type and registration JSON
+    end
+```
+
+## Phase 2 — IAM creates pending identity
+
 ### IAM processing and REST output
 
 1. Handler has a five-second request budget and rejects malformed JSON, username
@@ -54,8 +89,17 @@ Zone or tenant.
    initializes profile fields.
 3. Repository atomically inserts `iam.users` and `iam.user_profiles`. Canonical
    PostgreSQL unique indexes decide username/email conflict.
-4. After commit, IAM starts Phase 2. There is still no role, Billing event,
+4. After commit, IAM starts Phase 3. There is still no role, Billing event,
    device, refresh credential or runtime session.
+
+### Controlplane processing
+
+Gin matches the public route and runs its global middleware chain. Public
+registration carries no verified identity, so ContextInjector supplies no actor
+authority. `AuthHandler.RegisterAccount` applies the handler budget, strict
+binds and canonicalizes the request, then calls `AuthService.RegisterAccount`.
+The service hashes the password and builds user/profile entities; only
+`AuthRepository.CreateRegisteredUser` writes the joint transaction.
 
 #### Response headers
 
@@ -83,26 +127,33 @@ Zone or tenant.
 ```mermaid
 sequenceDiagram
     participant UI as Cloud Console
-    participant E as Envoy + ACR
-    participant H as IAM handler
-    participant S as AuthService
+    participant E as Envoy
+    participant R as Gin router
+    participant M as Global middleware
+    participant H as AuthHandler.RegisterAccount
+    participant S as AuthService.RegisterAccount
+    participant Repo as AuthRepository.CreateRegisteredUser
     participant DB as PostgreSQL
 
-    UI->>E: POST /api/v1/auth/register
-    E->>H: Public route after CORS/rate limit
-    H->>H: Canonicalize and validate JSON
-    H->>S: RegisterAccount
+    E->>R: Forwarded public HTTP request
+    R->>M: Run global middleware chain
+    M->>H: Public handler without actor context
+    H->>H: Strict bind canonicalize and validate JSON
+    H->>S: RegisterAccount user profile and password
     S->>S: Hash password, create UUIDv7, mark pending-active
-    S->>DB: Begin, insert users and profile, commit
+    S->>Repo: CreateRegisteredUser entities
+    Repo->>DB: Begin, insert users and profile, commit
     alt validation, hash, UUID or DB failure
-        H-->>UI: 400/409/500
+        H-->>E: 400/409/500
+        E-->>UI: REST error
     else identity committed
         S->>S: Start verification dispatch
-        H-->>UI: 201 account created
+        H-->>E: 201 account created
+        E-->>UI: 201 account created
     end
 ```
 
-## Phase 2 — Issue verification intent and mail dispatch
+## Phase 3 — Issue verification intent and mail dispatch
 
 Mail is a recovery-capable delivery side effect, not registration authority. A
 post-commit OTT/Kafka failure is logged and still returns `201`; the account

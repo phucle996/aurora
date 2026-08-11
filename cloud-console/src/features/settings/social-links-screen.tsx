@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link2, Loader2, ShieldCheck, Unlink } from "lucide-react";
@@ -13,7 +13,6 @@ import {
   unlinkSocialLink,
   type SocialProvider,
 } from "@/features/settings/api";
-import { useConsoleQueryScope } from "@/shared/query/scope";
 import { useUserSession } from "@/session/use-session";
 
 type SocialLinksScreenProps = {
@@ -29,17 +28,17 @@ const providers: Array<{
   { id: "github", name: "GitHub", description: "Use your verified GitHub identity as another way to sign in." },
 ];
 
+const socialLinksQueryKey = ["self", "settings", "social-links"] as const;
+const socialLinksReturnTo = "/personal/settings/social-links";
+
 export function SocialLinksScreen({ callbackOutcome }: SocialLinksScreenProps) {
   const router = useRouter();
-  const scope = useConsoleQueryScope();
   const queryClient = useQueryClient();
-  const { profile, renderContext } = useUserSession();
-  const returnTo = renderContext ? `/${renderContext.kind}/settings/social-links` : "";
-  const queryKey = useMemo(() => [...scope, "settings", "social-links"] as const, [scope]);
+  const { profile } = useUserSession();
   const [confirmProvider, setConfirmProvider] = useState<SocialProvider | null>(null);
 
   const linksQuery = useQuery({
-    queryKey,
+    queryKey: socialLinksQueryKey,
     queryFn: ({ signal }) => getMySocialLinks(signal),
     staleTime: 10_000,
   });
@@ -48,18 +47,15 @@ export function SocialLinksScreen({ callbackOutcome }: SocialLinksScreenProps) {
     if (!callbackOutcome) return;
     if (callbackOutcome === "linked") {
       toast.success("Social account linked");
-      void queryClient.invalidateQueries({ queryKey });
+      void queryClient.invalidateQueries({ queryKey: socialLinksQueryKey });
     } else {
       toast.error("The social account could not be linked");
     }
-    if (returnTo) router.replace(returnTo, { scroll: false });
-  }, [callbackOutcome, queryClient, queryKey, returnTo, router]);
+    router.replace(socialLinksReturnTo, { scroll: false });
+  }, [callbackOutcome, queryClient, router]);
 
   const startMutation = useMutation({
-    mutationFn: (provider: SocialProvider) => {
-      if (!returnTo) throw new Error("The verified console context is unavailable");
-      return startSocialLink(provider, returnTo);
-    },
+    mutationFn: startSocialLink,
     onSuccess: (authorizationURL) => window.location.assign(authorizationURL),
     onError: (error) => toast.error(error instanceof Error ? error.message : "Social linking could not start"),
   });
@@ -68,7 +64,7 @@ export function SocialLinksScreen({ callbackOutcome }: SocialLinksScreenProps) {
     mutationFn: unlinkSocialLink,
     onSuccess: async () => {
       setConfirmProvider(null);
-      await queryClient.invalidateQueries({ queryKey });
+      await queryClient.invalidateQueries({ queryKey: socialLinksQueryKey });
       toast.success("Social account unlinked");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Social account could not be unlinked"),

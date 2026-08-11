@@ -16,8 +16,9 @@ type AuthRepository interface {
 	LoginUserTenant(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error)
 	CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error
 	IsUserActive(ctx context.Context, userID uuid.UUID) (bool, error)
-	// [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
-	// và gán vai trò tương ứng cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
-	ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string, eventID uuid.UUID, eventPayload []byte) error
+	// ActivateUser commits account activation and its personal-workspace bootstrap
+	// together. The two workflow commands stay separate while one transaction
+	// preserves the no-active-user-without-workspace invariant.
+	ActivateUser(ctx context.Context, activation iamEntity.AccountActivation, workspaces iamEntity.BootstrapPersonalWorkspaces) error
 	VerifyExternalIdentity(ctx context.Context, req iamEntity.ExternalLoginRequest) (*iamEntity.ExternalIdentity, *iamEntity.LoginUser, error)
 }

@@ -400,7 +400,7 @@ Goal: freeze the cross-boundary contract before implementation.
   - If the spike fails, create a bounded Rust S3 adapter for non-presigned operations; do not weaken authz to keep direct proxying.
 
 - [ ] **ZSG-0007 — God View draft**
-  - Write the final workflow diagram and update `god_view/billing/storage_usage_billing_god_view.md` design notes before code contract merge.
+  - Write the final workflow diagram and update `cost-manager/ARCHITECTURE.md` metering notes before code contract merge.
   - Record that this plan is temporary until the God View is updated and reviewed.
 
 **Phase gate:** contracts, threat model, upstream signing choice, NATS sizing and key distribution are approved.
@@ -552,7 +552,7 @@ Goal: preserve accurate usage billing without relying on client STS access keys.
   - Preserve `resource_id` and immutable owner snapshot lineage in Cost projection.
 
 - [ ] **ZSG-5004 — Update billing God View**
-  - Replace access-key-only identity assumptions in `god_view/billing/storage_usage_billing_god_view.md`.
+  - Replace access-key-only identity assumptions in `cost-manager/ARCHITECTURE.md`.
   - Document list/head/tag/bulk request metering and provider-side presigned byte metering.
   - Keep Controlplane ownership as SoT and Cost ownership projection as the charging lookup.
 

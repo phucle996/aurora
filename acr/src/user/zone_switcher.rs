@@ -119,11 +119,16 @@ pub async fn handle_user_zone_switch(
         }
     };
 
-    let resolved = if zone_code == "global" {
-        Some(("global".to_string(), "active".to_string()))
-    } else {
-        resolve_code_to_id_and_status(shared_redis, redis_client, &zone_code).await
-    };
+    // `global` is an SRE-only virtual Zone. A user session must never be
+    // re-issued with it through this ACR-local switch workflow.
+    if zone_code == "global" {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::BadRequest,
+            "Zone unavailable",
+        ))));
+    }
+
+    let resolved = resolve_code_to_id_and_status(shared_redis, redis_client, &zone_code).await;
 
     let (zone_id, zone_status) = match resolved {
         Some(r) => r,
@@ -208,11 +213,7 @@ pub async fn handle_user_zone_switch(
         }
     };
 
-    claims.zone_id = if zone_code == "global" {
-        Some("global".to_string())
-    } else {
-        Some(zone_id)
-    };
+    claims.zone_id = Some(zone_id);
 
     let new_jwt = match token_mgr.generate_token(&claims).await {
         Ok(jwt) => jwt,
