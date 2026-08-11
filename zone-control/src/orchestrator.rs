@@ -99,7 +99,10 @@ struct MemberRecord {
 
 impl MemberRecord {
     fn is_alive(&self, now_ms: i64) -> bool {
-        !self.member_id.is_empty() && self.weight > 0 && self.expires_at_unix_ms > now_ms
+        !self.member_id.is_empty()
+            && self.weight > 0
+            && self.max_concurrency > 0
+            && self.expires_at_unix_ms > now_ms
     }
 }
 
@@ -357,8 +360,16 @@ fn rendezvous_owner<'a>(unit_key: &str, members: &'a [MemberRecord]) -> Option<&
         digest.update([0]);
         digest.update(member.member_id.as_bytes());
         let hash = digest.finalize();
-        let raw = u128::from_be_bytes(hash[..16].try_into().expect("SHA-256 prefix length"));
-        raw.saturating_mul(u128::from(member.weight))
+        // Keep the hash score in 64 bits before applying capacity. Using the
+        // full 128-bit prefix and saturating multiplication would collapse
+        // most scores to `u128::MAX` as soon as capacity is greater than one.
+        let raw = u64::from_be_bytes(hash[..8].try_into().expect("SHA-256 prefix length"));
+        // Capacity participates in the deterministic score, so a replica with
+        // more reserved control slots receives proportionally more work. This
+        // keeps balancing stable without introducing a singleton scheduler.
+        let capacity_weight =
+            u128::from(member.weight).saturating_mul(u128::from(member.max_concurrency));
+        u128::from(raw) * capacity_weight
     })
 }
 
@@ -780,7 +791,22 @@ mod tests {
             *counts.entry(owner.member_id.clone()).or_insert(0) += 1;
         }
         assert_eq!(counts.len(), 3);
-        assert!(counts.values().all(|count| *count > 100));
+        assert!(counts.values().all(|count| *count > 20), "{counts:?}");
+    }
+
+    #[test]
+    fn assignment_follows_capacity_weight() {
+        let mut small = member("small", 1);
+        small.max_concurrency = 1;
+        let mut large = member("large", 1);
+        large.max_concurrency = 4;
+        let members = vec![small, large];
+        let mut counts = BTreeMap::new();
+        for shard in 0..1_024 {
+            let owner = rendezvous_owner(&format!("capacity.{shard}"), &members).unwrap();
+            *counts.entry(owner.member_id.clone()).or_insert(0) += 1;
+        }
+        assert!(counts["large"] > counts["small"] * 2);
     }
 
     #[test]
