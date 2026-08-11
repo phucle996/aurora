@@ -15,6 +15,9 @@ pub struct Config {
     pub nats_creds: PathBuf,
     pub nats_timeout: Duration,
     pub required_replicas: usize,
+    pub control_assignment_shards: usize,
+    pub control_max_concurrency: u32,
+    pub control_capacity_weight: u32,
 }
 
 impl Config {
@@ -42,6 +45,18 @@ impl Config {
         if !matches!(required_replicas, 1 | 3 | 5) {
             return Err("ZONE_TRANSFER_KV_REQUIRED_REPLICAS must be 1, 3 or 5".to_string());
         }
+        let control_assignment_shards = parsed("ZONE_CONTROL_ASSIGNMENT_SHARDS", 16_usize)?;
+        if !(1..=256).contains(&control_assignment_shards) {
+            return Err("ZONE_CONTROL_ASSIGNMENT_SHARDS must be 1..256".to_string());
+        }
+        let control_max_concurrency = parsed("ZONE_CONTROL_MAX_CONCURRENCY", 32_u32)?;
+        if !(1..=512).contains(&control_max_concurrency) {
+            return Err("ZONE_CONTROL_MAX_CONCURRENCY must be 1..512".to_string());
+        }
+        let control_capacity_weight = parsed("ZONE_CONTROL_CAPACITY_WEIGHT", 1_u32)?;
+        if !(1..=100).contains(&control_capacity_weight) {
+            return Err("ZONE_CONTROL_CAPACITY_WEIGHT must be 1..100".to_string());
+        }
         Ok(Self {
             listen_addr,
             // The existing Dataplane still owns the legacy Zone-wide leader
@@ -60,6 +75,9 @@ impl Config {
             nats_creds: PathBuf::from(required("NATS_ZONE_CREDS")?),
             nats_timeout: Duration::from_millis(parsed("NATS_ZONE_REQUEST_TIMEOUT_MS", 2_000_u64)?),
             required_replicas,
+            control_assignment_shards,
+            control_max_concurrency,
+            control_capacity_weight,
         })
     }
 }

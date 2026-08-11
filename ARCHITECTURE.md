@@ -100,7 +100,7 @@ current billing dependency and the new path must not run concurrently with it.
 | Job Orchestrator | WAL changefeed, command dispatch, result settlement, repair, and reconciliation | Zone private keys, Zone KV, or workload side effects |
 | Notification Service | Self-user timeline/inbox projection and realtime publish adapter | IAM, job lifecycle, or resource aggregates |
 | Cost Manager | Pricing, plans, wallet, ledger, payment, ownership projection, and usage rating | Controlplane PostgreSQL |
-| Zone Control | Fenced Zone-wide orchestration, transfer tickets, and opt-in closed-window storage report outbox/Kafka relay | Wallet mutation, payer inference, Central ClickHouse billing |
+| Zone Control | Distributed work-unit assignment/rebalance, transfer tickets, and opt-in closed-window storage report outbox/Kafka relay | Wallet mutation, payer inference, Central ClickHouse billing |
 | Vault | Workload bootstrap identity, connection records, and Transit keys | User or resource business state |
 
 ### Request plane
@@ -345,6 +345,22 @@ Execution path:
 The Zone leader holds a separate lease, runs infrastructure probes, repairs
 metadata, emits the Zone report, and decides worker scaling. Pod death or a
 rebalance recovers through Kafka replay, assignment epochs, and lease expiry.
+
+### Gate B target: distributed Zone Control scheduling
+
+The target topology removes that process-wide leader. `zone-control` remains one
+binary but advertises replica membership in `AURORA_ZONE_CONTROL_MEMBERS` and
+stores per-work-unit assignments in `AURORA_ZONE_CONTROL_ASSIGNMENTS`. Weighted
+rendezvous assignment, CAS-updated `assignment_epoch`, per-unit expiry and
+bounded draining allow metadata, probes, scans, reports and scaling workflows to
+rebalance independently. Event-driven work will use durable pull queues; ordered
+state transitions keep their own serial partition. A stale owner must stop before
+an external side effect, while idempotent outbox/inbox state handles replay.
+
+The membership/assignment foundation is implemented and tested locally. The
+legacy Dataplane leader duty set remains enabled until each duty has a concrete
+Zone Control owner and a no-dual-writer integration test; this avoids silently
+losing metadata, health, report or storage-scan behavior during the migration.
 
 ### Zone network isolation
 

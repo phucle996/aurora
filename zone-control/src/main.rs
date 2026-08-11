@@ -22,8 +22,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     } else {
         tracing::info!(
             event_code = "ZONE_CONTROL_ORCHESTRATOR_DISABLED",
-            reason =
-                "legacy Dataplane still owns Zone-wide leader duties during controlled extraction"
+            reason = "distributed control scheduler is disabled during controlled extraction"
         );
     }
     if !config.metering_enabled {
@@ -33,7 +32,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 "report publisher remains opt-in until Zone reconciliation and Cost cutover gates"
         );
     } else if !config.orchestrator_enabled {
-        return Err("ZONE_CONTROL_METERING_ENABLED requires ZONE_CONTROL_ORCHESTRATOR_ENABLED; the report publisher must run inside a fenced Zone Control lease".into());
+        return Err("ZONE_CONTROL_METERING_ENABLED requires ZONE_CONTROL_ORCHESTRATOR_ENABLED; the report publisher must run inside an assigned and fenced work unit".into());
     }
     transfer_ticket::app::run(config, store, shutdown).await?;
     Ok(())

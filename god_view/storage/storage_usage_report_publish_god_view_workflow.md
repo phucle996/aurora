@@ -11,16 +11,17 @@ UTC window.
 module projection, Zone-local journal,
 canonical report contract, closed-window publisher and durable JetStream outbox
 are implemented behind `ZONE_CONTROL_METERING_ENABLED=false` by default. The
-publisher runs only inside an active fenced Zone Control lease and relays to
-Kafka; it never mutates a wallet. Until the flag and the Cost cutover gates are
-approved, the existing Central ClickHouse polling path remains the only
-charge-producing billing runtime.
+publisher runs only while the `storage_report` work unit is assigned to the
+current Zone Control replica, with an assignment epoch and cancellation fence;
+it relays to Kafka and never mutates a wallet. Until the flag and the Cost
+cutover gates are approved, the existing Central ClickHouse polling path remains
+the only charge-producing billing runtime.
 
 ## Scope and ownership
 
 | Item | Contract |
 | --- | --- |
-| Owner | Zone Control metering workflow, leader-gated after duty takeover |
+| Owner | Zone Control metering workflow, `storage_report` work-unit assignment |
 | Input | Post-upstream generic metering event from Zone Public Edge |
 | Billable fields | `resource_id`, `bytes_sent` for `NETWORK_OUT`; `bytes_received` is retained for the approved upload branch |
 | Identity | Zone UUID plus stable resource UUID; no payer is inferred in Zone |
@@ -114,23 +115,25 @@ an additional billable request.
 
 ## Phase 3 — Closed-window aggregation and report outbox
 
-After the window close time and a bounded late-event grace period, the Zone
-Control metering owner reads the deduplicated journal. It groups by resource and
+After the window close time and a bounded late-event grace period, the assigned
+Zone Control work unit reads the deduplicated journal. It groups by resource and
 direction, validates numeric limits, computes the canonical checksum with
 `report_sha256` cleared, and writes the complete protobuf to the local
 JetStream File outbox before contacting Kafka. The report identity is UUIDv5 of
-Zone plus window and sequence, so a retry cannot append a second report. Only
-the current fenced Zone Control owner may run this workflow. A worker restart
-resumes the durable outbox consumer; it does not create a new identity.
+Zone plus window and sequence, so a retry cannot append a second report. The
+assignment epoch is checked before the workflow starts; losing assignment
+cancels the task and the durable outbox/idempotent report identity bounds any
+in-flight replay. A worker restart resumes the durable outbox consumer; it does
+not create a new identity.
 
 ```mermaid
 sequenceDiagram
-    participant O as Fenced Zone Control metering owner
+    participant O as Assigned Zone Control metering worker
     participant L as Zone access event journal
     participant Q as JetStream File report outbox
     participant K as Kafka storage report topic
 
-    O->>O: Check current Zone fencing token and closed UTC window
+    O->>O: Check current assignment epoch and closed UTC window
     O->>L: Read request-deduplicated events for one resource window
     L-->>O: Counters and request count
     O->>O: Validate bounds and build StorageUsageReportV1
@@ -170,7 +173,7 @@ sequenceDiagram
 | Unknown metering module/schema | Keep in generic raw telemetry only; no storage projection or billing report |
 | Existing ClickHouse volume during envelope migration | Apply the re-runnable journal/view migration before collector restart; keep the legacy storage event accepted only for the bounded transition window |
 | ClickHouse unavailable | Keep collector queue pending; no report is closed from partial input |
-| Zone Control loses lease | Lease-scoped metering task is cancelled; no new aggregation/outbox/Kafka side effect is started |
+| Zone Control loses assignment or membership heartbeat | Assignment-scoped metering task is cancelled; no new aggregation/outbox/Kafka side effect is started |
 | Kafka publish fails | Keep outbox pending and retry with the same report ID |
 | Correction | Publish a new report lineage; never edit a settled report or ledger |
 | Secret leakage attempt | Ticket, cookie, Authorization, access secret and object path are excluded at the Envoy schema boundary |
@@ -182,5 +185,5 @@ sequenceDiagram
 - `dev/zone/clickhouse/init.sql`
 - `proto/cost-manager/engine/storage_usage_report.proto`
 - `zone-control/src/metering.rs` (opt-in closed-window publisher and Kafka relay)
-- `zone-control/src/orchestrator.rs` (lease-scoped metering lifecycle)
+- `zone-control/src/orchestrator.rs` (membership, assignment epoch, rebalance and metering lifecycle)
 - Future God Plan: `cost-manager/tmp/zone-local-storage-metering-refactor-plan.md`
