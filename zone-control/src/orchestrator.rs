@@ -810,6 +810,23 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_member_reassigns_work_without_a_global_owner() {
+        let members = vec![member("a", 1), member("b", 1), member("c", 1)];
+        let remaining = vec![member("a", 1), member("b", 1)];
+        let mut reassigned = 0;
+        for shard in 0..1_024 {
+            let unit = format!("rebalance.{shard}");
+            let before = rendezvous_owner(&unit, &members).unwrap();
+            let after = rendezvous_owner(&unit, &remaining).unwrap();
+            if before.member_id == "c" {
+                assert_ne!(after.member_id, "c");
+                reassigned += 1;
+            }
+        }
+        assert!(reassigned > 0);
+    }
+
+    #[test]
     fn expired_assignment_is_not_authorized() {
         let assignment = AssignmentRecord {
             unit_key: "assignment.storage_report.0".to_string(),
