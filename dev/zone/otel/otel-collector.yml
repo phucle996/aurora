@@ -96,9 +96,11 @@ processors:
     log_statements:
       - context: log
         statements:
+          # The collector owns the Zone identity for every metering event. The
+          # producer cannot make a cross-Zone event by choosing this field.
+          - set(log.attributes["zone_id"], "${env:ZONE_ID}") where log.attributes["log_type"] == "metering"
           - set(resource.attributes["aurora.component.scope"], "zone") where log.attributes["zone_id"] != nil
           - set(resource.attributes["aurora.zone.id"], log.attributes["zone_id"]) where log.attributes["zone_id"] != nil
-          - set(log.attributes["zone_id"], "${env:ZONE_ID}") where log.attributes["log_type"] == "zone-storage-access"
           # Unknown Zone/infra records share one bounded quarantine stream. Never
           # derive a stream label from a container, pod or customer resource ID.
           - set(log.attributes["service_name"], "infra") where log.attributes["service_name"] == nil
@@ -140,16 +142,19 @@ processors:
     logs:
       log_record:
         # Drop a record unless it carries the Dataplane Zone identity or is a
-        # reviewed Zone Edge access-log schema. This prevents the two Docker
-        # collectors from duplicating Central logs into the customer store.
+        # reviewed Zone metering envelope or Zone-prefixed access schema. This
+        # prevents the two Docker collectors from duplicating Central logs into
+        # the customer store.
         - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] == nil
-        - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] != nil and not IsMatch(attributes["log_type"], "^zone-")
+        - attributes["service_name"] != "aurora-dataplane" and attributes["log_type"] != nil and attributes["log_type"] != "metering" and not IsMatch(attributes["log_type"], "^zone-")
 
-  filter/only_storage_metering:
+  # The envelope filter is intentionally module-agnostic. Module-owned
+  # ClickHouse projections validate `module` and `metering_schema` separately.
+  filter/only_metering:
     error_mode: ignore
     logs:
       log_record:
-        - attributes["log_type"] != "zone-storage-access"
+        - attributes["log_type"] != "metering"
 
   batch:
 
@@ -196,7 +201,7 @@ exporters:
 
   # This is Zone-local metering journal ingestion only. It never sends data to
   # the Central collector or Central ClickHouse.
-  clickhouse/storage_metering:
+  clickhouse/metering:
     endpoint: "tcp://zone-clickhouse:9000"
     database: "otlp"
     ttl: 168h
@@ -216,7 +221,7 @@ service:
       receivers: [file_log]
       processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, batch]
       exporters: [otlp_http/victorialogs]
-    logs/storage-metering:
+    logs/metering:
       receivers: [file_log/storage_metering]
-      processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, filter/only_storage_metering, batch]
-      exporters: [clickhouse/storage_metering]
+      processors: [memory_limiter, transform/zone_identity, filter/only_zone_runtime, filter/only_metering, batch]
+      exporters: [clickhouse/metering]

@@ -49,6 +49,26 @@ The platform outer command is now canonical too:
 | `zone.ZoneReport` | `proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
 | `job_lifecycle.JobExecutionResultProto` | `proto/job-orchestrator/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |
 
+## 1.1 Generic metering event envelope
+
+Structured metering events use one bounded envelope across Zone modules. The
+envelope is an OTel log-attribute contract, not a universal billing table:
+
+| Attribute | Contract |
+| --- | --- |
+| `log_type` | Exactly `metering` |
+| `module` | Bounded module owner such as `storage`; never selected by a client |
+| `metering_schema` | Versioned module event, for example `storage.access.completed.v1` |
+| `event_id` | Stable producer event identity; storage maps the same value to its `request_id` dedup projection |
+| `zone_id` | Injected/overwritten by the Zone collector from its runtime identity |
+| `resource_id` | Trusted resource UUID when the module requires one |
+
+The envelope filter is module-agnostic. Each module still owns its ClickHouse
+projection, validation, report contract, retention and settlement semantics.
+Unknown module/schema combinations remain raw telemetry and cannot enter a
+module projection or mutate a wallet. `owner_id`, ticket material, cookies,
+credentials, raw authorization and object paths are not envelope authority.
+
 Every Zone-bound `JobCommandV1.payload` is serialized `ProtectedPayloadV1`. Controlplane
 serializes one complete domain command then seals that complete byte slice. JO validates only
 public envelope metadata and never decrypts; Dataplane opens it before decoding the domain

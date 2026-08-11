@@ -81,7 +81,9 @@ flowchart LR
 ```
 
 Storage metering is being moved to a Zone-local journal and a versioned report
-transport. The staged path is `Zone Public Edge -> Zone OTel -> Zone
+transport. Public Edge emits the generic `log_type=metering` envelope with a
+bounded module and versioned schema; each module still owns its projection and
+report contract. The staged path is `Zone Public Edge -> Zone OTel -> Zone
 ClickHouse -> Zone Control report outbox -> Kafka -> Job Orchestrator -> Shared
 Redis -> Cost Engine -> Billing PostgreSQL`. The Zone Control publisher and
 Cost Engine relay are implemented but remain opt-in; until the settlement and

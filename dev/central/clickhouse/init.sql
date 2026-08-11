@@ -23,7 +23,9 @@ PARTITION BY toYYYYMM(TimestampTime)
 ORDER BY (ServiceName, SeverityText, TimestampTime, Timestamp)
 TTL TimestampTime + INTERVAL 7 DAY DELETE;
 
--- 2. Tạo database storage và bảng metering_logs
+-- 2. Tạo database storage và bảng storage-owned metering projection. The
+-- generic envelope identity/module/schema are retained for migration and audit;
+-- this legacy table is not the future universal billing contract.
 CREATE DATABASE IF NOT EXISTS storage;
 
 CREATE TABLE IF NOT EXISTS storage.metering_logs (
@@ -35,10 +37,21 @@ CREATE TABLE IF NOT EXISTS storage.metering_logs (
     method LowCardinality(String),
     status UInt16,
     duration_ms UInt32,
-    path String
+    path String,
+    event_id String,
+    module LowCardinality(String),
+    metering_schema LowCardinality(String)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (access_key, bucket_name, timestamp);
+
+-- The init hook runs only on a fresh Central volume. Keep the new envelope
+-- columns re-runnable for an explicitly managed migration before this legacy
+-- projection is retired.
+ALTER TABLE storage.metering_logs
+    ADD COLUMN IF NOT EXISTS event_id String,
+    ADD COLUMN IF NOT EXISTS module LowCardinality(String),
+    ADD COLUMN IF NOT EXISTS metering_schema LowCardinality(String);
 
 -- 3. Tạo bảng aggregated gộp theo giờ
 CREATE TABLE IF NOT EXISTS storage.hourly_metering_agg (
@@ -66,8 +79,11 @@ FROM storage.metering_logs
 WHERE status >= 200 AND status < 300
 GROUP BY hour, access_key, bucket_name;
 
--- 5. Materialized View parse logs từ otel_logs sang metering_logs phẳng
-CREATE MATERIALIZED VIEW IF NOT EXISTS storage.mv_otel_to_metering
+-- 5. Materialized View parse the storage projection from the generic
+-- metering envelope. The old log_type is accepted only during migration;
+-- unknown modules never enter this storage-owned table.
+DROP VIEW IF EXISTS storage.mv_otel_to_metering;
+CREATE MATERIALIZED VIEW storage.mv_otel_to_metering
 TO storage.metering_logs AS
 SELECT
     Timestamp AS timestamp,
@@ -78,9 +94,17 @@ SELECT
     LogAttributes['method'] AS method,
     toUInt16(coalesce(LogAttributes['status'], '200')) AS status,
     toUInt32(coalesce(LogAttributes['duration_ms'], '0')) AS duration_ms,
-    LogAttributes['path'] AS path
+    LogAttributes['path'] AS path,
+    LogAttributes['event_id'] AS event_id,
+    if(LogAttributes['module'] != '', LogAttributes['module'], 'storage') AS module,
+    if(LogAttributes['metering_schema'] != '', LogAttributes['metering_schema'], 'storage.access.completed.v1') AS metering_schema
 FROM otlp.otel_logs
-WHERE LogAttributes['log_type'] = 'envoy-storage-access';
+WHERE (
+        LogAttributes['log_type'] = 'metering'
+        AND LogAttributes['module'] = 'storage'
+        AND LogAttributes['metering_schema'] = 'storage.access.completed.v1'
+      )
+   OR LogAttributes['log_type'] = 'envoy-storage-access';
 
 -- 6. Tạo bảng bucket_size_history lưu trữ lịch sử dung lượng sử dụng của các buckets
 CREATE TABLE IF NOT EXISTS storage.bucket_size_history (

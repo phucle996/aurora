@@ -33,6 +33,8 @@ const OUTBOX_DLQ_SUBJECT: &str = "aurora.zone.storage.usage.dlq";
 const OUTBOX_CONSUMER: &str = "zone-control-storage-report-kafka-v1";
 const REPORT_TOPIC_SUFFIX: &str = "storage.usage.reports.v1";
 const REPORT_SCHEMA_VERSION: u32 = 1;
+const STORAGE_METERING_MODULE: &str = "storage";
+const STORAGE_METERING_SCHEMA: &str = "storage.access.completed.v1";
 const MAX_REPORT_BYTES: usize = 512 * 1024;
 const MAX_AGGREGATES: usize = 10_000;
 const MAX_REPORT_WINDOW_MS: i64 = 86_400_000;
@@ -402,6 +404,8 @@ async fn read_closed_window(
          sum(bytes_sent) AS download_bytes, count() AS request_count \
          FROM storage.access_event_journal FINAL \
          WHERE zone_id = toUUID('{}') \
+           AND module = '{}' \
+           AND metering_schema = '{}' \
            AND resource_id != toUUID('00000000-0000-0000-0000-000000000000') \
            AND timestamp >= toDateTime64('{}', 3, 'UTC') \
            AND timestamp < toDateTime64('{}', 3, 'UTC') \
@@ -409,6 +413,8 @@ async fn read_closed_window(
            AND method IN ('GET', 'PUT') \
          GROUP BY resource_id ORDER BY resource_id ASC",
         zone_id,
+        STORAGE_METERING_MODULE,
+        STORAGE_METERING_SCHEMA,
         window_start.format("%Y-%m-%d %H:%M:%S%.3f"),
         window_end.format("%Y-%m-%d %H:%M:%S%.3f")
     );

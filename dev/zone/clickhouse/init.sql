@@ -25,12 +25,17 @@ TTL TimestampTime + INTERVAL 7 DAY DELETE;
 
 CREATE DATABASE IF NOT EXISTS storage;
 
--- request_id is retained for the report publisher's explicit deduplication
--- query. Do not attach a SummingMergeTree directly to at-least-once OTel logs.
+-- event_id is the generic metering identity. request_id remains as a storage
+-- projection alias during migration so the publisher's deduplication key and
+-- existing retained rows stay compatible. Do not attach a SummingMergeTree
+-- directly to at-least-once OTel logs.
 CREATE TABLE IF NOT EXISTS storage.access_event_journal (
     timestamp DateTime64(3, 'UTC'),
     zone_id UUID,
+    event_id String,
     request_id String,
+    module LowCardinality(String),
+    metering_schema LowCardinality(String),
     resource_id UUID,
     method LowCardinality(String),
     status UInt16,
@@ -40,14 +45,26 @@ CREATE TABLE IF NOT EXISTS storage.access_event_journal (
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (resource_id, request_id)
-TTL timestamp + INTERVAL 30 DAY DELETE;
+TTL toDateTime(timestamp) + INTERVAL 30 DAY DELETE;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS storage.mv_otel_to_access_event_journal
+-- Keep a manually re-runnable migration path for an existing Zone volume. The
+-- Docker init hook runs only on a fresh volume, so operators must still apply
+-- this file during an in-place upgrade before restarting the collector.
+ALTER TABLE storage.access_event_journal
+    ADD COLUMN IF NOT EXISTS event_id String AFTER zone_id,
+    ADD COLUMN IF NOT EXISTS module LowCardinality(String) AFTER request_id,
+    ADD COLUMN IF NOT EXISTS metering_schema LowCardinality(String) AFTER module;
+
+DROP VIEW IF EXISTS storage.mv_otel_to_access_event_journal;
+CREATE MATERIALIZED VIEW storage.mv_otel_to_access_event_journal
 TO storage.access_event_journal AS
 SELECT
     Timestamp AS timestamp,
     toUUIDOrZero(LogAttributes['zone_id']) AS zone_id,
-    LogAttributes['request_id'] AS request_id,
+    if(LogAttributes['event_id'] != '', LogAttributes['event_id'], LogAttributes['request_id']) AS event_id,
+    if(LogAttributes['event_id'] != '', LogAttributes['event_id'], LogAttributes['request_id']) AS request_id,
+    if(LogAttributes['module'] != '', LogAttributes['module'], 'storage') AS module,
+    if(LogAttributes['metering_schema'] != '', LogAttributes['metering_schema'], 'storage.access.completed.v1') AS metering_schema,
     toUUIDOrZero(LogAttributes['resource_id']) AS resource_id,
     LogAttributes['method'] AS method,
     toUInt16OrZero(LogAttributes['status']) AS status,
@@ -55,7 +72,14 @@ SELECT
     toUInt64OrZero(LogAttributes['bytes_sent']) AS bytes_sent,
     toUInt32OrZero(LogAttributes['duration_ms']) AS duration_ms
 FROM otlp.otel_logs
-WHERE LogAttributes['log_type'] = 'zone-storage-access'
+WHERE (
+        (
+          LogAttributes['log_type'] = 'metering'
+          AND LogAttributes['module'] = 'storage'
+          AND LogAttributes['metering_schema'] = 'storage.access.completed.v1'
+        )
+        OR LogAttributes['log_type'] = 'zone-storage-access'
+      )
   AND LogAttributes['zone_id'] != ''
-  AND LogAttributes['request_id'] != ''
+  AND (LogAttributes['event_id'] != '' OR LogAttributes['request_id'] != '')
   AND LogAttributes['resource_id'] != '';

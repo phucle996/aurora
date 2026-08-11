@@ -122,8 +122,15 @@ static_resources:
                           # access schema. It carries only a stable resource
                           # reference and transfer counters; no ticket, cookie,
                           # access key or object path is exported.
-                          log_type: zone-storage-access
+                          # Generic metering envelope. The module/schema pair
+                          # routes this reviewed event to a module-owned
+                          # projection without making the collector know every
+                          # future billable product.
+                          log_type: metering
+                          module: storage
+                          metering_schema: storage.access.completed.v1
                           timestamp: "%START_TIME%"
+                          event_id: "%REQ(X-REQUEST-ID)%"
                           request_id: "%REQ(X-REQUEST-ID)%"
                           resource_id: "%REQ(X-AURORA-RESOURCE-ID)%"
                           method: "%REQ(:METHOD)%"
