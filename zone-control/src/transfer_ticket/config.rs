@@ -17,9 +17,9 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        let listen_addr = required("ZONE_TRANSFER_TICKET_ISSUER_LISTEN")?
+        let listen_addr = required("ZONE_CONTROL_LISTEN")?
             .parse()
-            .map_err(|_| "ZONE_TRANSFER_TICKET_ISSUER_LISTEN is invalid".to_string())?;
+            .map_err(|_| "ZONE_CONTROL_LISTEN is invalid".to_string())?;
         let zone_id = required("ZONE_ID")?;
         if uuid::Uuid::parse_str(&zone_id).is_err()
             || uuid::Uuid::parse_str(&zone_id).is_ok_and(|id| id.is_nil())

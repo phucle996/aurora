@@ -228,7 +228,7 @@ services:
     depends_on:
       minio:
         condition: service_started
-      zone-public-authorizer:
+      zone-public-edge-authorizer:
         condition: service_started
     networks:
       # Separate networks prevent runtime-stream from gaining a path to MinIO
@@ -237,14 +237,14 @@ services:
       zone-edge-runtime:
     restart: unless-stopped
 
-  zone-transfer-ticket-issuer:
+  zone-control:
     cpuset: "0-5"
-    image: ${AURORA_ZONE_TRANSFER_TICKET_ISSUER_IMAGE:?AURORA_ZONE_TRANSFER_TICKET_ISSUER_IMAGE_must_reference_a_GHCR_digest}
+    image: ${AURORA_ZONE_CONTROL_IMAGE:?AURORA_ZONE_CONTROL_IMAGE_must_reference_a_GHCR_digest}
     pull_policy: always
-    container_name: zone-z1-transfer-ticket-issuer
+    container_name: zone-z1-control
     init: true
     env_file:
-      - ../../zone-transfer-ticket-issuer/.env
+      - ../../zone-control/.env
     depends_on:
       nats-zone-z1:
         condition: service_healthy
@@ -255,14 +255,14 @@ services:
       zone-edge-storage:
     restart: unless-stopped
 
-  zone-public-authorizer:
+  zone-public-edge-authorizer:
     cpuset: "0-5"
-    image: ${AURORA_ZONE_PUBLIC_AUTHORIZER_IMAGE:?AURORA_ZONE_PUBLIC_AUTHORIZER_IMAGE_must_reference_a_GHCR_digest}
+    image: ${AURORA_ZONE_PUBLIC_EDGE_AUTHORIZER_IMAGE:?AURORA_ZONE_PUBLIC_EDGE_AUTHORIZER_IMAGE_must_reference_a_GHCR_digest}
     pull_policy: always
-    container_name: zone-z1-public-authorizer
+    container_name: zone-z1-public-edge-authorizer
     init: true
     env_file:
-      - ../../zone-public-authorizer/.env
+      - ../../zone-public-edge-gateway/authorizer/.env
     depends_on:
       nats-zone-z1:
         condition: service_healthy

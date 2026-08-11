@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1.90-slim-bookworm AS builder
 WORKDIR /app
-COPY zone-transfer-contract /app/zone-transfer-contract
+COPY proto /app/proto
 COPY zone-control-edge-gateway/authorizer/Cargo.toml zone-control-edge-gateway/authorizer/Cargo.lock /app/zone-control-edge-gateway/authorizer/
+COPY zone-control-edge-gateway/authorizer/build.rs /app/zone-control-edge-gateway/authorizer/build.rs
 COPY zone-control-edge-gateway/authorizer/src /app/zone-control-edge-gateway/authorizer/src
 WORKDIR /app/zone-control-edge-gateway/authorizer
 RUN cargo build --release --locked

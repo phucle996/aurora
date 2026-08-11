@@ -39,10 +39,10 @@ Scylla, ClickHouse, Centrifugo, and the OpenTelemetry/Victoria/Grafana stack.
 
 | Component | Technology | Role |
 | --- | --- | --- |
-| [Dataplane](./dataplane/) | Rust/Tokio | Per-Zone job admission, execution, leader election, and result/report handling |
+| [Dataplane](./dataplane/) | Rust/Tokio | Per-Zone job admission, execution, fences, and result/report handling |
+| [Zone Control](./zone-control/) | Rust/Axum/Tokio | Zone-wide orchestration and one-time transfer ticket issue/revoke workflows |
 | [Zone Public Edge](./zone-public-edge-gateway/) | Envoy | One-time browser object transfer and runtime ingress |
-| [Zone Transfer Ticket Issuer](./zone-transfer-ticket-issuer/) | Rust/Axum | Create/revoke one-time transfer state in Zone KV |
-| [Zone Public Authorizer](./zone-public-authorizer/) | Rust/Tonic | Consume a ticket before streaming to MinIO |
+| [Zone Public Authorizer](./zone-public-edge-gateway/authorizer/) | Rust/Tonic | Separate gRPC process that consumes a ticket before streaming to MinIO |
 | [Zone Control Edge](./zone-control-edge-gateway/) | Envoy + Rust | Private mTLS control boundary and capability authorization |
 | [Zone Runtime Stream](./zone-runtime-stream/) | Rust/Axum | SSE read plane for Zone metrics and logs from Victoria |
 
@@ -173,8 +173,8 @@ image passes the scan.
 | `dataplane-v*` | `aurora-dataplane` |
 | `zone-runtime-stream-v*` | `aurora-zone-runtime-stream` |
 | `zone-authorizer-v*` | `aurora-zone-control-authorizer` |
-| `zone-transfer-issuer-v*` | `aurora-zone-transfer-ticket-issuer` |
-| `zone-public-authorizer-v*` | `aurora-zone-public-authorizer` |
+| `zone-control-v*` | `aurora-zone-control` |
+| `zone-public-edge-authorizer-v*` | `aurora-zone-public-edge-authorizer` |
 
 Changes under `proto/**` trigger only the consumers of the changed contract;
 CI does not fan out to workflows that do not own that contract. Cloud Console

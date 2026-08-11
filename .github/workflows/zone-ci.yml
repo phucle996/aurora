@@ -8,9 +8,8 @@ on:
       - "dataplane/**"
       - "zone-runtime-stream/**"
       - "zone-control-edge-gateway/authorizer/**"
-      - "zone-transfer-ticket-issuer/**"
-      - "zone-public-authorizer/**"
-      - "zone-transfer-contract/**"
+      - "zone-control/**"
+      - "zone-public-edge-gateway/authorizer/**"
       - "proto/**"
       - ".github/workflows/zone-ci.yml"
   push:
@@ -19,9 +18,8 @@ on:
       - "dataplane/**"
       - "zone-runtime-stream/**"
       - "zone-control-edge-gateway/authorizer/**"
-      - "zone-transfer-ticket-issuer/**"
-      - "zone-public-authorizer/**"
-      - "zone-transfer-contract/**"
+      - "zone-control/**"
+      - "zone-public-edge-gateway/authorizer/**"
       - "proto/**"
       - ".github/workflows/zone-ci.yml"
 
@@ -39,7 +37,7 @@ jobs:
       dataplane: ${{ steps.scope.outputs.dataplane }}
       runtime_stream: ${{ steps.scope.outputs.runtime_stream }}
       authorizer: ${{ steps.scope.outputs.authorizer }}
-      transfer_issuer: ${{ steps.scope.outputs.transfer_issuer }}
+      zone_control: ${{ steps.scope.outputs.zone_control }}
       public_authorizer: ${{ steps.scope.outputs.public_authorizer }}
     steps:
       - uses: actions/checkout@v7
@@ -53,7 +51,7 @@ jobs:
             echo "dataplane=true" >> "$GITHUB_OUTPUT"
             echo "runtime_stream=true" >> "$GITHUB_OUTPUT"
             echo "authorizer=true" >> "$GITHUB_OUTPUT"
-            echo "transfer_issuer=true" >> "$GITHUB_OUTPUT"
+            echo "zone_control=true" >> "$GITHUB_OUTPUT"
             echo "public_authorizer=true" >> "$GITHUB_OUTPUT"
             exit 0
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -72,8 +70,8 @@ jobs:
           if $all || grep -Eq '^(dataplane/|proto/dataplane/|proto/(managed_service|platform_transport|zone_report)\.proto$)' "$RUNNER_TEMP/changed-files"; then echo "dataplane=true" >> "$GITHUB_OUTPUT"; else echo "dataplane=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^zone-runtime-stream/' "$RUNNER_TEMP/changed-files"; then echo "runtime_stream=true" >> "$GITHUB_OUTPUT"; else echo "runtime_stream=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^zone-control-edge-gateway/authorizer/' "$RUNNER_TEMP/changed-files"; then echo "authorizer=true" >> "$GITHUB_OUTPUT"; else echo "authorizer=false" >> "$GITHUB_OUTPUT"; fi
-          if $all || grep -Eq '^(zone-transfer-ticket-issuer/|zone-transfer-contract/)' "$RUNNER_TEMP/changed-files"; then echo "transfer_issuer=true" >> "$GITHUB_OUTPUT"; else echo "transfer_issuer=false" >> "$GITHUB_OUTPUT"; fi
-          if $all || grep -Eq '^(zone-public-authorizer/|zone-transfer-contract/)' "$RUNNER_TEMP/changed-files"; then echo "public_authorizer=true" >> "$GITHUB_OUTPUT"; else echo "public_authorizer=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(zone-control/|proto/zone/transfer_ticket.proto)' "$RUNNER_TEMP/changed-files"; then echo "zone_control=true" >> "$GITHUB_OUTPUT"; else echo "zone_control=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(zone-public-edge-gateway/authorizer/|proto/zone/transfer_ticket.proto)' "$RUNNER_TEMP/changed-files"; then echo "public_authorizer=true" >> "$GITHUB_OUTPUT"; else echo "public_authorizer=false" >> "$GITHUB_OUTPUT"; fi
 
   dataplane:
     needs: changes
@@ -191,13 +189,13 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
-  transfer-issuer:
+  zone-control:
     needs: changes
-    if: needs.changes.outputs.transfer_issuer == 'true'
+    if: needs.changes.outputs.zone_control == 'true'
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: zone-transfer-ticket-issuer
+        working-directory: zone-control
     steps:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
@@ -205,15 +203,15 @@ jobs:
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "zone-transfer-ticket-issuer -> target"
-          shared-key: zone-transfer-issuer
+          workspaces: "zone-control -> target"
+          shared-key: zone-control
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
-          scan-ref: zone-transfer-ticket-issuer
+          scan-ref: zone-control
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -225,7 +223,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: zone-public-authorizer
+        working-directory: zone-public-edge-gateway/authorizer
     steps:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
@@ -233,15 +231,15 @@ jobs:
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "zone-public-authorizer -> target"
-          shared-key: zone-public-authorizer
+          workspaces: "zone-public-edge-gateway/authorizer -> target"
+          shared-key: zone-public-edge-authorizer
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
-          scan-ref: zone-public-authorizer
+          scan-ref: zone-public-edge-gateway/authorizer
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true

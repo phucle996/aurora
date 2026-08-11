@@ -2,9 +2,10 @@ use std::{path::PathBuf, time::Duration};
 
 use async_nats::jetstream::{self, kv, stream::StorageType};
 use bytes::Bytes;
-use zone_transfer_contract::{TransferTicketState, TransferTicketV1};
+use prost::Message;
 
-use crate::config::Config;
+use super::transfer_proto::{TransferGrantV1, TransferTicketState, TransferTicketV1};
+use crate::transfer_ticket::config::Config;
 
 #[derive(Clone)]
 pub struct TicketStore {
@@ -66,9 +67,7 @@ impl TicketStore {
     }
 
     pub async fn create(&self, ticket: &TransferTicketV1) -> Result<(), String> {
-        let value = Bytes::from(
-            serde_json::to_vec(ticket).map_err(|error| format!("encode ticket: {error}"))?,
-        );
+        let value = Bytes::from(ticket.encode_to_vec());
         tokio::time::timeout(self.timeout, self.store.update(&ticket.ticket_id, value, 0))
             .await
             .map_err(|_| "create transfer ticket timed out".to_string())?
@@ -76,18 +75,14 @@ impl TicketStore {
         Ok(())
     }
 
-    pub async fn revoke(
-        &self,
-        ticket_id: &str,
-        grant: &zone_transfer_contract::TransferGrantV1,
-    ) -> Result<bool, String> {
+    pub async fn revoke(&self, ticket_id: &str, grant: &TransferGrantV1) -> Result<bool, String> {
         for _ in 0..5 {
             let entry = tokio::time::timeout(self.timeout, self.store.entry(ticket_id.to_string()))
                 .await
                 .map_err(|_| "read transfer ticket timed out".to_string())?
                 .map_err(|error| format!("read transfer ticket: {error}"))?;
             let Some(entry) = entry else { return Ok(false) };
-            let mut ticket: TransferTicketV1 = serde_json::from_slice(&entry.value)
+            let mut ticket = TransferTicketV1::decode(entry.value.as_ref())
                 .map_err(|_| "transfer ticket is corrupt".to_string())?;
             if ticket.actor_id != grant.actor_id
                 || ticket.zone_id != grant.zone_id
@@ -97,20 +92,20 @@ impl TicketStore {
             {
                 return Ok(false);
             }
-            if ticket.state == TransferTicketState::Revoked {
+            if ticket.state == TransferTicketState::Revoked as i32 {
                 return Ok(true);
             }
-            if ticket.state != TransferTicketState::Issued {
+            if ticket.state != TransferTicketState::Issued as i32 {
                 return Ok(false);
             }
-            ticket.state = TransferTicketState::Revoked;
-            let value = Bytes::from(
-                serde_json::to_vec(&ticket)
-                    .map_err(|error| format!("encode revoked ticket: {error}"))?,
-            );
+            ticket.state = TransferTicketState::Revoked as i32;
             if self
                 .store
-                .update(ticket_id, value, entry.revision)
+                .update(
+                    ticket_id,
+                    Bytes::from(ticket.encode_to_vec()),
+                    entry.revision,
+                )
                 .await
                 .is_ok()
             {

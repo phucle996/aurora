@@ -7,6 +7,10 @@ mod keys;
 mod request_binding;
 mod telemetry;
 mod transfer_ticket;
+
+pub mod transfer_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.zone.transfer.v1.rs"));
+}
 mod zone_access;
 
 #[tokio::main]

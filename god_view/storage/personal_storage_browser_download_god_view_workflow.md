@@ -112,6 +112,5 @@ retrying.
 - cloud-console/src/features/storage/objects/api.ts
 - cloud-console/src/app/(console)/storage/[id]/components/ObjectsTab.tsx
 - zone-public-edge-gateway/envoy.yaml
-- zone-public-authorizer/src/main.rs
-- zone-transfer-contract/src/lib.rs
-
+- zone-public-edge-gateway/authorizer/src/main.rs
+- proto/zone/transfer_ticket.proto

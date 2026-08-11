@@ -193,7 +193,7 @@ static_resources:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: zone-public-authorizer, port_value: 50053 }
+                    socket_address: { address: zone-public-edge-authorizer, port_value: 50053 }
 
 admin:
   access_log_path: /dev/null

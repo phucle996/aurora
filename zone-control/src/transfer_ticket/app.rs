@@ -11,14 +11,17 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
+use prost::Message;
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use zone_transfer_contract::{
-    TransferGrantV1, TransferTicketState, TransferTicketV1, TRANSFER_TICKET_SCHEMA_VERSION,
-};
 
-use crate::{config::Config, store::TicketStore};
+use super::{
+    config::Config,
+    store::TicketStore,
+    transfer_proto::{TransferGrantV1, TransferTicketState, TransferTicketV1},
+};
+use crate::transfer_ticket::TRANSFER_TICKET_SCHEMA_VERSION;
 
 const GRANT_HEADER: &str = "x-aurora-transfer-grant";
 
@@ -39,6 +42,7 @@ struct IssueResponse {
 pub async fn run(
     config: Config,
     store: TicketStore,
+    _shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = Arc::new(AppState { config, store });
     let app = Router::new()
@@ -50,7 +54,7 @@ pub async fn run(
         )
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind(state.config.listen_addr).await?;
-    tracing::info!(event_code = "ZONE_TRANSFER_TICKET_ISSUER_STARTED", address = %state.config.listen_addr, zone_id = %state.config.zone_id);
+    tracing::info!(event_code = "ZONE_CONTROL_STARTED", address = %state.config.listen_addr, zone_id = %state.config.zone_id, workflows = "orchestrator,transfer_ticket");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -67,14 +71,13 @@ async fn issue(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl I
     let expires_at_unix_seconds = now.saturating_add(state.config.ticket_ttl.as_secs());
     for _ in 0..3 {
         let ticket_id = uuid::Uuid::new_v4().to_string();
-        let mut secret = [0_u8; 32];
-        rand::rng().fill_bytes(&mut secret);
-        let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
-        let secret_sha256 = format!("{:x}", Sha256::digest(secret.as_bytes()));
+        let mut secret_bytes = [0_u8; 32];
+        rand::rng().fill_bytes(&mut secret_bytes);
+        let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret_bytes);
         let ticket = TransferTicketV1 {
             schema_version: TRANSFER_TICKET_SCHEMA_VERSION,
             ticket_id: ticket_id.clone(),
-            secret_sha256,
+            secret_sha256: format!("{:x}", Sha256::digest(secret.as_bytes())),
             capability: grant.capability.clone(),
             actor_id: grant.actor_id.clone(),
             zone_id: grant.zone_id.clone(),
@@ -88,7 +91,7 @@ async fn issue(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl I
             issued_at_unix_seconds: now,
             expires_at_unix_seconds,
             one_time: grant.one_time,
-            state: TransferTicketState::Issued,
+            state: TransferTicketState::Issued as i32,
         };
         match state.store.create(&ticket).await {
             Ok(()) => {
@@ -146,8 +149,7 @@ fn decode_grant(headers: &HeaderMap, expected_zone: &str) -> Result<TransferGran
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    let grant: TransferGrantV1 =
-        serde_json::from_slice(&bytes).map_err(|_| StatusCode::FORBIDDEN)?;
+    let grant = TransferGrantV1::decode(bytes.as_slice()).map_err(|_| StatusCode::FORBIDDEN)?;
     if grant.schema_version != TRANSFER_TICKET_SCHEMA_VERSION
         || grant.zone_id != expected_zone
         || !matches!(grant.method.as_str(), "PUT" | "GET")

@@ -1,8 +1,13 @@
 use base64::Engine;
+use prost::Message;
 use serde::Deserialize;
-use zone_transfer_contract::{TransferGrantV1, TRANSFER_TICKET_SCHEMA_VERSION};
 
-use crate::{control_assertion::ControlAssertion, error::AuthzError, zone_access::AccessRecord};
+use crate::{
+    control_assertion::ControlAssertion, error::AuthzError, transfer_proto::TransferGrantV1,
+    zone_access::AccessRecord,
+};
+
+const TRANSFER_TICKET_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Deserialize)]
 struct TicketRequest {
@@ -77,11 +82,7 @@ pub fn storage_object_grant(
             content_type: None,
             one_time: true,
         };
-        return Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&grant).map_err(|_| {
-                AuthzError::Dependency("TRANSFER_TICKET_GRANT_ENCODE_FAILED".into())
-            })?,
-        ));
+        return Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(grant.encode_to_vec()));
     }
     if request.capability != "storage.object"
         || request.access_session_id != assertion.access_session_id
@@ -150,10 +151,7 @@ pub fn storage_object_grant(
         content_type,
         one_time: true,
     };
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&grant)
-            .map_err(|_| AuthzError::Dependency("TRANSFER_TICKET_GRANT_ENCODE_FAILED".into()))?,
-    ))
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(grant.encode_to_vec()))
 }
 
 fn encode_object_key(value: &str) -> String {

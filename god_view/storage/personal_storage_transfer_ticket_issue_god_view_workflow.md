@@ -117,7 +117,7 @@ sequenceDiagram
     participant ZE as Zone Control Envoy
     participant ZA as Zone Control Authorizer
     participant KV as AURORA_ZONE_ACCESS
-    participant TI as Ticket Issuer
+    participant ZC as Zone Control
     participant TV as AURORA_ZONE_TRANSFER
 
     ZE->>ZA: CheckRequest signed assertion and body
@@ -125,20 +125,21 @@ sequenceDiagram
     ZA->>KV: GET access session projection
     KV-->>ZA: Actor Zone bucket actions prefix expiry
     ZA->>ZA: Validate upload or download object scope
-    ZA->>ZA: Encode TransferGrantV1
+    ZA->>ZA: Encode TransferGrantV1 protobuf bytes and base64url header
     ZA-->>ZE: OkResponse transfer grant header
-    ZE->>TI: Forward body and trusted grant
+    ZE->>ZC: Forward body and trusted grant
     alt issue
-        TI->>TI: Generate UUID and 32 byte secret
-        TI->>TV: CAS create Issued ticket
-        TV-->>TI: Durable ticket with TTL
-        TI-->>ZE: JSON URL ticket and expiry
+        ZC->>ZC: Generate UUID and 32 byte secret
+        ZC->>ZC: Decode canonical protobuf grant
+        ZC->>TV: CAS create protobuf Issued ticket
+        TV-->>ZC: Durable ticket with TTL
+        ZC-->>ZE: JSON URL ticket and expiry
         ZE-->>CE: HTTP 200 no-store
         CE-->>B: Opaque ticket response
     else revoke
-        TI->>TV: Read ticket and CAS Issued to Revoked
-        TV-->>TI: Revoke result
-        TI-->>ZE: 204 or 404
+        ZC->>TV: Read protobuf ticket and CAS Issued to Revoked
+        TV-->>ZC: Revoke result
+        ZC-->>ZE: 204 or 404
         ZE-->>CE: Revoke response
         CE-->>B: 204 or 404
     end
@@ -186,7 +187,7 @@ assertion.
 - `acr/src/gateway/ext_authz.rs`
 - `zone-control-edge-gateway/authorizer/src/transfer_ticket.rs`
 - `zone-control-edge-gateway/authorizer/src/authorization.rs`
-- `zone-transfer-ticket-issuer/src/app.rs`
-- `zone-transfer-ticket-issuer/src/store.rs`
-- `zone-transfer-contract/src/lib.rs`
-
+- `zone-control/src/transfer_ticket/app.rs`
+- `zone-control/src/transfer_ticket/store.rs`
+- `proto/zone/transfer_ticket.proto`
+- `zone-public-edge-gateway/authorizer/src/main.rs`

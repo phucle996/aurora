@@ -12,13 +12,17 @@ use envoy_types::pb::envoy::service::auth::v3::{
     authorization_server::{Authorization, AuthorizationServer},
     CheckRequest, CheckResponse,
 };
+use prost::Message;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tonic::{Request, Response, Status};
-use zone_transfer_contract::{
-    TransferTicketState, TransferTicketV1, TRANSFER_TICKET_SCHEMA_VERSION,
-};
+
+mod transfer_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.zone.transfer.v1.rs"));
+}
+
+const TRANSFER_TICKET_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone)]
 struct TicketStore {
@@ -78,7 +82,7 @@ impl Authorization for PublicAuthorizer {
                 Status::permission_denied("Transfer ticket invalid"),
             )));
         };
-        let mut ticket: TransferTicketV1 = serde_json::from_slice(&entry.value)
+        let mut ticket = transfer_proto::TransferTicketV1::decode(entry.value.as_ref())
             .map_err(|_| Status::unavailable("Transfer ticket store corrupt"))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -91,7 +95,7 @@ impl Authorization for PublicAuthorizer {
         let content_type = headers.get("content-type");
         if ticket.schema_version != TRANSFER_TICKET_SCHEMA_VERSION
             || ticket.zone_id != self.zone_id
-            || ticket.state != TransferTicketState::Issued
+            || ticket.state != transfer_proto::TransferTicketState::Issued as i32
             || ticket.expires_at_unix_seconds <= now
             || ticket
                 .secret_sha256
@@ -109,11 +113,8 @@ impl Authorization for PublicAuthorizer {
                 Status::permission_denied("Transfer ticket denied"),
             )));
         }
-        ticket.state = TransferTicketState::Consuming;
-        let value = Bytes::from(
-            serde_json::to_vec(&ticket)
-                .map_err(|_| Status::unavailable("Transfer ticket encode failed"))?,
-        );
+        ticket.state = transfer_proto::TransferTicketState::Consuming as i32;
+        let value = Bytes::from(ticket.encode_to_vec());
         match tokio::time::timeout(
             self.store.timeout,
             self.store.store.update(ticket_id, value, entry.revision),

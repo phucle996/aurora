@@ -6,8 +6,8 @@ on:
       - "dataplane-v*"
       - "zone-runtime-stream-v*"
       - "zone-authorizer-v*"
-      - "zone-transfer-issuer-v*"
-      - "zone-public-authorizer-v*"
+      - "zone-control-v*"
+      - "zone-public-edge-authorizer-v*"
 
 permissions:
   contents: read
@@ -60,23 +60,23 @@ jobs:
               image_name=aurora-zone-control-authorizer
               context=.
               dockerfile=zone-control-edge-gateway/authorizer/Dockerfile
-              source_paths=(zone-control-edge-gateway/authorizer zone-transfer-contract)
+              source_paths=(zone-control-edge-gateway/authorizer proto/zone/transfer_ticket.proto)
               ;;
-            zone-transfer-issuer-v*)
-              prefix=zone-transfer-issuer
-              component=zone-transfer-ticket-issuer
-              image_name=aurora-zone-transfer-ticket-issuer
+            zone-control-v*)
+              prefix=zone-control
+              component=zone-control
+              image_name=aurora-zone-control
               context=.
-              dockerfile=zone-transfer-ticket-issuer/Dockerfile
-              source_paths=(zone-transfer-ticket-issuer zone-transfer-contract)
+              dockerfile=zone-control/Dockerfile
+              source_paths=(zone-control proto/zone/transfer_ticket.proto)
               ;;
-            zone-public-authorizer-v*)
-              prefix=zone-public-authorizer
-              component=zone-public-authorizer
-              image_name=aurora-zone-public-authorizer
+            zone-public-edge-authorizer-v*)
+              prefix=zone-public-edge-authorizer
+              component=zone-public-edge-authorizer
+              image_name=aurora-zone-public-edge-authorizer
               context=.
-              dockerfile=zone-public-authorizer/Dockerfile
-              source_paths=(zone-public-authorizer zone-transfer-contract)
+              dockerfile=zone-public-edge-gateway/authorizer/Dockerfile
+              source_paths=(zone-public-edge-gateway/authorizer proto/zone/transfer_ticket.proto)
               ;;
             *)
               echo "Unsupported Zone release tag: $tag" >&2

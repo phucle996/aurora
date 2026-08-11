@@ -44,7 +44,7 @@ static_resources:
                       routes:
                         - match: { prefix: "/zone-control/v1/transfer-tickets" }
                           route:
-                            cluster: zone_transfer_ticket_issuer
+                            cluster: zone_control
                             timeout: 5s
                         - match:
                             safe_regex:
@@ -247,12 +247,12 @@ static_resources:
             max_pending_requests: 128
             max_requests: 256
       load_assignment:
-        cluster_name: zone_transfer_ticket_issuer
+        cluster_name: zone_control
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: zone-transfer-ticket-issuer, port_value: 8080 }
+                    socket_address: { address: zone-control, port_value: 8080 }
 admin:
   access_log_path: /dev/null
   address:
