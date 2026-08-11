@@ -7,12 +7,13 @@ services:
     cpuset: "0-5"
     image: nats:2.10-alpine
     container_name: zone-z1-nats-kv
-    command: [ "-js", "-sd", "/data", "-m", "8222" ]
+    command: [ "-c", "/etc/nats/tls/nats-server.conf", "-js", "-sd", "/data" ]
     ports:
       - "14222:4222"
       - "18222:8222"
     volumes:
       - dataplane_zone_z1_nats_data:/data
+      - ./nats:/etc/nats/tls:ro
     healthcheck:
       test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
       interval: 5s
@@ -20,6 +21,8 @@ services:
       retries: 5
     networks:
       zone-infra:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   dataplane-vn-n1:
@@ -43,6 +46,8 @@ services:
       # Dataplane reaches only Kafka and NATS Core on this shared boundary.
       # Missing Central dependencies fail at bootstrap and restart boundedly.
       aurora-transport:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     deploy:
       resources:
@@ -71,6 +76,8 @@ services:
     networks:
       zone-infra:
       aurora-transport:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     deploy:
       resources:
@@ -99,6 +106,8 @@ services:
     networks:
       zone-infra:
       aurora-transport:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     deploy:
       resources:
@@ -265,6 +274,8 @@ services:
     init: true
     env_file:
       - ../../zone-control/.env
+    volumes:
+      - ./nats:/etc/aurora/nats:ro
     depends_on:
       nats-zone-z1:
         condition: service_healthy
@@ -288,6 +299,8 @@ services:
     init: true
     env_file:
       - ../../zone-public-edge-gateway/authorizer/.env
+    volumes:
+      - ./nats:/etc/aurora/nats:ro
     depends_on:
       nats-zone-z1:
         condition: service_healthy

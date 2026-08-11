@@ -14,6 +14,8 @@ use crate::observability::logger::Logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Load deployment logging controls before installing the only global tracing subscriber.
     dotenvy::dotenv().ok();
 

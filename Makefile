@@ -26,13 +26,15 @@ ZONE_INFRA_SERVICES := \
 
 ZONE_APP_SERVICES := \
 	dataplane-vn-n1 dataplane-vn-n2 dataplane-vn-n3 zone-runtime-stream \
-	zone-public-edge-gateway
+	zone-control zone-public-edge-authorizer zone-public-edge-gateway
 
 CENTRAL_APP_ENV_FILES := \
 	controlplane/.env acr/.env cost-manager/api/.env cloud-console/.env \
 	cost-console/.env job-orchestrator/.env notification-service/.env
 
-ZONE_APP_ENV_FILES := dataplane/.env zone-runtime-stream/.env
+ZONE_APP_ENV_FILES := \
+	dataplane/.env zone-runtime-stream/.env zone-control/.env \
+	zone-public-edge-gateway/authorizer/.env
 
 .PHONY: help check-central-env check-central-app-env check-zone-env \
 	check-zone-app-env central-infra central-bootstrap central-app \
