@@ -1,0 +1,8 @@
+[package]
+name = "zone-transfer-contract"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

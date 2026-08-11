@@ -216,6 +216,9 @@ services:
     image: envoyproxy/envoy:v1.38.3
     container_name: zone-z1-public-edge-gateway
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
+    environment:
+      AWS_ACCESS_KEY_ID: ${ZONE_PUBLIC_S3_ACCESS_KEY:?ZONE_PUBLIC_S3_ACCESS_KEY_must_be_injected}
+      AWS_SECRET_ACCESS_KEY: ${ZONE_PUBLIC_S3_SECRET_KEY:?ZONE_PUBLIC_S3_SECRET_KEY_must_be_injected}
     volumes:
       - ../../zone-public-edge-gateway/envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ../shared/tls/grpc-server.crt:/etc/aurora/tls/tls.crt:ro
@@ -225,11 +228,49 @@ services:
     depends_on:
       minio:
         condition: service_started
+      zone-public-authorizer:
+        condition: service_started
     networks:
       # Separate networks prevent runtime-stream from gaining a path to MinIO
       # merely because both are named Public Edge upstreams.
       zone-edge-storage:
       zone-edge-runtime:
+    restart: unless-stopped
+
+  zone-transfer-ticket-issuer:
+    cpuset: "0-5"
+    image: ${AURORA_ZONE_TRANSFER_TICKET_ISSUER_IMAGE:?AURORA_ZONE_TRANSFER_TICKET_ISSUER_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
+    container_name: zone-z1-transfer-ticket-issuer
+    init: true
+    env_file:
+      - ../../zone-transfer-ticket-issuer/.env
+    depends_on:
+      nats-zone-z1:
+        condition: service_healthy
+    expose:
+      - "8080"
+    networks:
+      zone-infra:
+      zone-edge-storage:
+    restart: unless-stopped
+
+  zone-public-authorizer:
+    cpuset: "0-5"
+    image: ${AURORA_ZONE_PUBLIC_AUTHORIZER_IMAGE:?AURORA_ZONE_PUBLIC_AUTHORIZER_IMAGE_must_reference_a_GHCR_digest}
+    pull_policy: always
+    container_name: zone-z1-public-authorizer
+    init: true
+    env_file:
+      - ../../zone-public-authorizer/.env
+    depends_on:
+      nats-zone-z1:
+        condition: service_healthy
+    expose:
+      - "50053"
+    networks:
+      zone-infra:
+      zone-edge-storage:
     restart: unless-stopped
 
   stalwart:

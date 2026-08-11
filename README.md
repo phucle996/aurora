@@ -1,68 +1,75 @@
 # Aurora
 
-Aurora là monorepo của một nền tảng cloud đa Zone. Central quản lý identity, desired state, orchestration, notification và billing; mỗi Zone thực thi workload, giữ runtime state và telemetry của chính Zone đó.
+Aurora is a multi-Zone cloud platform monorepo. Central owns identity,
+desired state, orchestration, notification, and billing. Each Zone executes
+workloads for that Zone, keeps its runtime state, and emits its own telemetry.
 
 ## Documentation
 
-| Tài liệu | Nội dung |
+| Document | Contents |
 | --- | --- |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Kiến trúc Central và Zone, ownership và các luồng runtime |
-| [SECURITY.md](./SECURITY.md) | Security policy, trust boundary, secret handling và báo cáo lỗ hổng |
-| [dev/README.md](./dev/README.md) | Chi tiết Docker Compose, network và volume cho local development |
-| [proto/README.md](./proto/README.md) | Canonical Protobuf contracts và quy tắc compatibility |
-| [god_view/](./god_view/) | Source of Truth chi tiết theo từng workflow/domain |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Central and Zone architecture, ownership, and runtime flows |
+| [SECURITY.md](./SECURITY.md) | Security policy, trust boundaries, secret handling, and vulnerability reporting |
+| [dev/README.md](./dev/README.md) | Docker Compose, networks, and volumes for local development |
+| [proto/README.md](./proto/README.md) | Canonical Protobuf contracts and compatibility rules |
+| [god_view/](./god_view/) | Workflow-level Source of Truth for each domain |
 
 ## Components
 
 ### Central
 
-| Thành phần | Tech | Vai trò |
+| Component | Technology | Role |
 | --- | --- | --- |
-| [Central Envoy](./dev/central/envoy/) | Envoy | TLS termination, virtual host, API routing và ExtAuthz |
-| [ACR](./acr/) | Rust/Tonic | Session, Trinity/Billing/SRE authentication và trusted identity headers |
-| [Controlplane](./controlplane/) | Go/Gin/gRPC | Core API và durable desired state |
-| [Job Orchestrator](./job-orchestrator/) | Rust/Tokio | PostgreSQL changefeed, Kafka dispatch/result settlement và reconciliation |
-| [Notification Service](./notification-service/) | Rust/Axum | Activity/inbox projection, Redis consumers và Centrifugo adapter |
-| [Cost Manager API](./cost-manager/api/) | Go/Gin | Billing API, wallet, plan, tier, payment và ownership |
-| [Cost Manager Engine](./cost-manager/engine/) | Rust/Tokio | Usage rating, pricing runtime và wallet ledger debit |
+| [Central Envoy](./dev/central/envoy/) | Envoy | TLS termination, virtual hosts, API routing, and ExtAuthz |
+| [ACR](./acr/) | Rust/Tonic | Session, Trinity/Billing/SRE authentication, and trusted identity headers |
+| [Controlplane](./controlplane/) | Go/Gin/gRPC | Core API and durable desired state |
+| [Job Orchestrator](./job-orchestrator/) | Rust/Tokio | PostgreSQL changefeed, Kafka dispatch/result settlement, and reconciliation |
+| [Notification Service](./notification-service/) | Rust/Axum | Activity/inbox projection, Redis consumers, and Centrifugo adapter |
+| [Cost Manager API](./cost-manager/api/) | Go/Gin | Billing API, wallet, plan, tier, payment, and ownership |
+| [Cost Manager Engine](./cost-manager/engine/) | Rust/Tokio | Usage rating, pricing runtime, and wallet-ledger debit |
 | [Cloud Console](./cloud-console/) | Next.js/React | User console |
 | [Admin UI](./admin-ui/) | Vite/React | SRE/platform console |
 | [Cost Console](./cost-console/) | Vite/React | Billing console |
 
-Central infrastructure gồm Controlplane PostgreSQL, Billing PostgreSQL, Auth-State Redis, Shared L2 Redis, Kafka, NATS Core, Vault, Scylla, ClickHouse, Centrifugo và bộ OpenTelemetry/Victoria/Grafana.
+Central infrastructure consists of Controlplane PostgreSQL, Billing
+PostgreSQL, Auth-State Redis, Shared L2 Redis, Kafka, NATS Core, Vault,
+Scylla, ClickHouse, Centrifugo, and the OpenTelemetry/Victoria/Grafana stack.
 
 ### Zone
 
-| Thành phần | Tech | Vai trò |
+| Component | Technology | Role |
 | --- | --- | --- |
-| [Dataplane](./dataplane/) | Rust/Tokio | Per-Zone job admission, execution, leader election và result/report |
-| [Zone Public Edge](./zone-public-edge-gateway/) | Envoy | Public object transfer; runtime route là gate đang staged |
-| [Zone Control Edge](./zone-control-edge-gateway/) | Envoy + Rust | Private mTLS control boundary và capability authorization |
-| [Zone Runtime Stream](./zone-runtime-stream/) | Rust/Axum | SSE read-plane cho metrics/logs từ Zone Victoria |
+| [Dataplane](./dataplane/) | Rust/Tokio | Per-Zone job admission, execution, leader election, and result/report handling |
+| [Zone Public Edge](./zone-public-edge-gateway/) | Envoy | One-time browser object transfer and runtime ingress |
+| [Zone Transfer Ticket Issuer](./zone-transfer-ticket-issuer/) | Rust/Axum | Create/revoke one-time transfer state in Zone KV |
+| [Zone Public Authorizer](./zone-public-authorizer/) | Rust/Tonic | Consume a ticket before streaming to MinIO |
+| [Zone Control Edge](./zone-control-edge-gateway/) | Envoy + Rust | Private mTLS control boundary and capability authorization |
+| [Zone Runtime Stream](./zone-runtime-stream/) | Rust/Axum | SSE read plane for Zone metrics and logs from Victoria |
 
-Zone infrastructure local gồm NATS JetStream KV, MinIO, Stalwart, OTel Collector và VictoriaMetrics/VictoriaLogs/VictoriaTraces.
+Local Zone infrastructure consists of NATS JetStream KV, MinIO, Stalwart,
+the OTel Collector, and VictoriaMetrics/VictoriaLogs/VictoriaTraces.
 
 ### Shared repository assets
 
-| Path | Nội dung |
+| Path | Contents |
 | --- | --- |
-| [proto/](./proto/) | Canonical Protobuf source registry và cross-language fixtures |
-| [dev/](./dev/) | Central/Zone Docker Compose và local infrastructure config |
-| [k8s/](./k8s/) | Kubernetes, Argo CD, HPA/PDB, operator và NetworkPolicy manifests |
+| [proto/](./proto/) | Canonical Protobuf source registry and cross-language fixtures |
+| [dev/](./dev/) | Central/Zone Docker Compose and local infrastructure configuration |
+| [k8s/](./k8s/) | Kubernetes, Argo CD, HPA/PDB, operator, and NetworkPolicy manifests |
 | [god_view/](./god_view/) | Workflow-level design documents |
-| [scripts/](./scripts/) | Local bootstrap/provisioning helpers |
+| [scripts/](./scripts/) | Local bootstrap and provisioning helpers |
 
 ## Run locally
 
 ### Requirements
 
-- Docker Engine có Docker Compose V2.
+- Docker Engine with Docker Compose V2.
 - GNU Make.
-- `curl` và `jq` cho Vault bootstrap.
-- Python 3 cho Zone keyring generator.
-- GHCR `read:packages` credential nếu package Aurora là private.
+- `curl` and `jq` for Vault bootstrap.
+- Python 3 for the Zone keyring generator.
+- A GHCR `read:packages` credential when Aurora packages are private.
 
-### 1. Tạo app-owned environment files
+### 1. Create app-owned environment files
 
 ```bash
 cp controlplane/.env.example controlplane/.env
@@ -78,16 +85,18 @@ cp dev/central/.env.example dev/central/.env
 cp dev/zone/.env.example dev/zone/.env
 ```
 
-Điền các biến đang để trống trước khi start. `dev/central/.env` và
-`dev/zone/.env` phải pin mỗi Aurora service tới digest GHCR do release workflow
-đã scan; Compose không build source ở máy local. Nếu package private, login
-trước bằng một PAT chỉ có scope `read:packages`:
+Fill in every variable that is left blank before starting. `dev/central/.env`
+and `dev/zone/.env` must pin each Aurora service to a GHCR digest produced and
+scanned by the release workflow. Compose does not build source locally. For a
+private package, log in first with a PAT that has only the `read:packages`
+scope:
 
 ```bash
 echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u phucle996 --password-stdin
 ```
 
-Vault bootstrap tạo các development token cố định theo workload trong [`dev/central/vault/vault-bootstrap.sh`](./dev/central/vault/vault-bootstrap.sh):
+Vault bootstrap creates fixed development tokens per workload in
+[`dev/central/vault/vault-bootstrap.sh`](./dev/central/vault/vault-bootstrap.sh):
 
 | File | Local-only value |
 | --- | --- |
@@ -98,27 +107,32 @@ Vault bootstrap tạo các development token cố định theo workload trong [`
 | `cost-manager/api/.env` | `VAULT_TOKEN=aurora-dev-cost-manager-api-token` |
 | `cost-manager/api/.env` | `VAULT_ENGINE_TOKEN=aurora-dev-cost-manager-engine-token` |
 
-Các token trên chỉ dành cho Vault dev local. Đồng bộ `CENTRIFUGO_API_KEY`, MinIO và Stalwart credentials với giá trị development trong Compose. Không commit file `.env` hoặc `dataplane/.secrets/`.
+These tokens are for local Vault development only. Set `CENTRIFUGO_API_KEY`,
+MinIO, and Stalwart credentials to the development values used by Compose.
+Never commit `.env` files or `dataplane/.secrets/`.
 
-### 2. Khởi động Central
+### 2. Start Central
 
 ```bash
 make init-central
 ```
 
-Lệnh này start Central infrastructure trước, chờ Vault readiness, bootstrap
-Transit/KV/policy/connection records rồi mới pull/start các Central app image.
-Central phải lên trước vì nó tạo network `aurora-dev-transport`.
+This starts Central infrastructure first, waits for Vault readiness, bootstraps
+Transit/KV/policies/connection records, and then pulls and starts Central app
+images. Central must start first because it creates the `aurora-dev-transport`
+network.
 
-### 3. Khởi động Zone
+### 3. Start the Zone
 
 ```bash
 make init-zone
 ```
 
-Lệnh này sinh Dataplane HPKE keyring local và start Zone stack. Chỉ các Dataplane replica attach vào Central transport network để truy cập Kafka và NATS Core.
+This generates the local Dataplane HPKE keyring and starts the Zone stack. Only
+Dataplane replicas attach to the Central transport network to reach Kafka and
+NATS Core.
 
-### 4. Kiểm tra trạng thái và log
+### 4. Inspect status and logs
 
 ```bash
 docker compose -f dev/central/compose.yml ps
@@ -129,23 +143,24 @@ docker compose -f dev/central/compose.yml logs -f job-orchestrator
 docker compose -f dev/zone/compose.yml logs -f dataplane-vn-n1
 ```
 
-Có thể chạy lại các target này an toàn; Vault bootstrap dùng các request
-idempotent và Compose luôn dùng image GHCR với `--no-build`:
+These targets are safe to run again. Vault bootstrap uses idempotent requests,
+and Compose always uses GHCR images with `--no-build`:
 
 ```bash
 make up-central
 make up-zone
 ```
 
-Docker chỉ cache layer của image đã pull; Rust/Go/Node build cache và source
-build context không được tạo trên máy local.
+Docker only caches layers of pulled images; Rust/Go/Node build caches and source
+build contexts are not created on the local machine.
 
 ## Component releases
 
-GitHub Actions giữ CI và release tách theo Central/Zone và theo subproject. PR
-hoặc push branch chỉ chạy job của path bị thay đổi. Push một component tag chỉ
-build, Trivy-scan và publish đúng image GHCR đó; tag version chỉ được gắn sau
-khi image staging pass scan.
+GitHub Actions keeps CI and release workflows separate for Central and Zone and
+filters them by subproject. A pull request or branch push runs only jobs for
+changed paths. Pushing a component tag builds, Trivy-scans, and publishes only
+that component's GHCR image; the version tag is created only after the staging
+image passes the scan.
 
 | Tag | Image |
 | --- | --- |
@@ -154,25 +169,28 @@ khi image staging pass scan.
 | `jo-v*` | `aurora-job-orchestrator` |
 | `notification-service-v*` | `aurora-notification-service` |
 | `cost-manager-v*` | `aurora-cost-manager` |
-| `cloud-console-v*`, `admin-ui-v*`, `cost-console-v*` | Console tương ứng |
+| `cloud-console-v*`, `admin-ui-v*`, `cost-console-v*` | Corresponding console |
 | `dataplane-v*` | `aurora-dataplane` |
 | `zone-runtime-stream-v*` | `aurora-zone-runtime-stream` |
 | `zone-authorizer-v*` | `aurora-zone-control-authorizer` |
+| `zone-transfer-issuer-v*` | `aurora-zone-transfer-ticket-issuer` |
+| `zone-public-authorizer-v*` | `aurora-zone-public-authorizer` |
 
-`proto/**` chỉ trigger đúng consumer của contract đã đổi; CI không fan-out sang
-workflow không sở hữu contract đó. Cloud Console và Cost Console tạo
-`runtime-config.js` lúc container khởi động, vì vậy release image không cần
-GitHub Variables theo môi trường. Compose/Kubernetes phải truyền URL public
-qua `cloud-console/.env` (`NEXT_PUBLIC_ENVOY_URL`, `NEXT_PUBLIC_CENTRIFUGO_WS_URL`,
-`NEXT_PUBLIC_COST_CONSOLE_URL`) và `cost-console/.env` (`VITE_CLOUD_CONSOLE_URL`).
-Entrypoint fail-closed khi giá trị thiếu hoặc không hợp lệ; không đặt secret vào
-runtime config.
+Changes under `proto/**` trigger only the consumers of the changed contract;
+CI does not fan out to workflows that do not own that contract. Cloud Console
+and Cost Console create `runtime-config.js` when the container starts, so
+release images do not need environment-specific GitHub Variables. Compose and
+Kubernetes must provide public URLs through `cloud-console/.env`
+(`NEXT_PUBLIC_ENVOY_URL`, `NEXT_PUBLIC_CENTRIFUGO_WS_URL`,
+`NEXT_PUBLIC_COST_CONSOLE_URL`) and `cost-console/.env`
+(`VITE_CLOUD_CONSOLE_URL`). The entrypoint fails closed when a value is missing
+or invalid; secrets must never be placed in runtime configuration.
 
 ### 5. Local endpoints
 
 | Surface | Endpoint |
 | --- | --- |
-| Cloud Console qua Envoy | `https://localhost` hoặc `https://cloud.aurora.local` |
+| Cloud Console through Envoy | `https://localhost` or `https://cloud.aurora.local` |
 | Central Envoy HTTP / HTTPS | `http://localhost:80` / `https://localhost:443` |
 | Envoy admin | `http://localhost:29901` |
 | Admin UI direct | `http://localhost:5175` |
@@ -184,15 +202,18 @@ runtime config.
 | Zone Public Edge | `http://localhost:29000` |
 | MinIO API / Console | `http://localhost:9000` / `http://localhost:9001` |
 
-Các domain `*.aurora.local` cần resolve về `127.0.0.1` trong môi trường local.
+The `*.aurora.local` domains must resolve to `127.0.0.1` in a local
+environment.
 
-### 6. Dừng stack
+### 6. Stop the stack
 
-Zone được dừng trước Central:
+Stop the Zone before Central:
 
 ```bash
 make down-zone
 make down-central
 ```
 
-`make clean`, `make clean-central` và `make clean-zone` xóa named volumes. `clean-zone` còn xóa Dataplane keyring local; không dùng các lệnh này nếu cần giữ dữ liệu.
+`make clean`, `make clean-central`, and `make clean-zone` remove named volumes.
+`clean-zone` also removes the local Dataplane keyring; do not use these targets
+when the data must be preserved.

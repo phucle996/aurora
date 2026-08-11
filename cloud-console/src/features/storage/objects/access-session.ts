@@ -37,7 +37,7 @@ export function useStorageAccessSession(bucketId: string) {
     setMessage("Preparing the Zone access projection…");
     const refresh = createStorageAccessSession(bucketId, {
       durationSeconds: 900,
-      actions: ["ListBucket", "GetObject", "DeleteObject", "GetObjectTagging", "PutObjectTagging"],
+      actions: ["ListBucket", "GetObject", "PutObject", "DeleteObject", "GetObjectTagging", "PutObjectTagging"],
     }, controller.signal)
       .then((session) => {
         const expiresAt = Date.parse(session.expires_at);

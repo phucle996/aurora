@@ -6,6 +6,8 @@ on:
       - "dataplane-v*"
       - "zone-runtime-stream-v*"
       - "zone-authorizer-v*"
+      - "zone-transfer-issuer-v*"
+      - "zone-public-authorizer-v*"
 
 permissions:
   contents: read
@@ -56,9 +58,25 @@ jobs:
               prefix=zone-authorizer
               component=zone-authorizer
               image_name=aurora-zone-control-authorizer
-              context=zone-control-edge-gateway/authorizer
+              context=.
               dockerfile=zone-control-edge-gateway/authorizer/Dockerfile
-              source_paths=(zone-control-edge-gateway/authorizer)
+              source_paths=(zone-control-edge-gateway/authorizer zone-transfer-contract)
+              ;;
+            zone-transfer-issuer-v*)
+              prefix=zone-transfer-issuer
+              component=zone-transfer-ticket-issuer
+              image_name=aurora-zone-transfer-ticket-issuer
+              context=.
+              dockerfile=zone-transfer-ticket-issuer/Dockerfile
+              source_paths=(zone-transfer-ticket-issuer zone-transfer-contract)
+              ;;
+            zone-public-authorizer-v*)
+              prefix=zone-public-authorizer
+              component=zone-public-authorizer
+              image_name=aurora-zone-public-authorizer
+              context=.
+              dockerfile=zone-public-authorizer/Dockerfile
+              source_paths=(zone-public-authorizer zone-transfer-contract)
               ;;
             *)
               echo "Unsupported Zone release tag: $tag" >&2

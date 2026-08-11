@@ -6,6 +6,7 @@ mod error;
 mod keys;
 mod request_binding;
 mod telemetry;
+mod transfer_ticket;
 mod zone_access;
 
 #[tokio::main]

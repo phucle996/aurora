@@ -50,6 +50,17 @@ spec:
           ports:
             - { name: public, containerPort: 8080 }
             - { name: admin, containerPort: 9901 }
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: zone-public-minio-signer
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: zone-public-minio-signer
+                  key: secret-access-key
           volumeMounts:
             - { name: envoy-config, mountPath: /etc/envoy, readOnly: true }
             - { name: gateway-tls, mountPath: /etc/aurora/tls, readOnly: true }

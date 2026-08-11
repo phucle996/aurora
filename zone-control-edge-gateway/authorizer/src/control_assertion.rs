@@ -82,7 +82,10 @@ impl AssertionVerifier {
             || assertion.audience != ASSERTION_AUDIENCE
             || assertion.issuer != ASSERTION_ISSUER
             || assertion.zone_id != self.zone_id
-            || assertion.capability != "storage.object"
+            || !matches!(
+                assertion.capability.as_str(),
+                "storage.object" | "zone.transfer.ticket"
+            )
             || assertion.method != method
             || assertion.path_hash != sha256_hex(path.as_bytes())
             || assertion.body_hash != sha256_hex(body)

@@ -14,6 +14,7 @@ use crate::request_binding::{
     path_targets_storage_resource, storage_action, storage_body_is_allowed,
 };
 use crate::telemetry::Telemetry;
+use crate::transfer_ticket::storage_object_grant;
 use crate::zone_access::{AccessRecord, AccessStore};
 
 const MAX_CONTROL_BODY_BYTES: usize = 64 * 1024;
@@ -40,7 +41,10 @@ impl ZoneControlAuthorizer {
         }
     }
 
-    async fn authorize(&self, request: &CheckRequest) -> Result<ControlAssertion, AuthzError> {
+    async fn authorize(
+        &self,
+        request: &CheckRequest,
+    ) -> Result<(ControlAssertion, Option<String>), AuthzError> {
         let headers = request
             .get_client_headers()
             .ok_or(AuthzError::Denied("HTTP_CONTEXT_MISSING"))?;
@@ -66,6 +70,15 @@ impl ZoneControlAuthorizer {
         let verified = self
             .verifier
             .verify(assertion, signature, key_id, method, path, body)?;
+        if verified.capability == "zone.transfer.ticket" {
+            let record = self
+                .access
+                .get(&verified.access_session_id)
+                .await?
+                .ok_or(AuthzError::NotReady("ZONE_ACCESS_RECORD_MISSING"))?;
+            let grant = storage_object_grant(&verified, &record, method, path, body)?;
+            return Ok((verified, Some(grant)));
+        }
         if !storage_body_is_allowed(&verified.action, body) {
             return Err(AuthzError::Denied("CONTROL_BODY_SEMANTICS_FORBIDDEN"));
         }
@@ -75,7 +88,7 @@ impl ZoneControlAuthorizer {
             .await?
             .ok_or(AuthzError::NotReady("ZONE_ACCESS_RECORD_MISSING"))?;
         match_storage_record(&verified, &record, method, path)?;
-        Ok(verified)
+        Ok((verified, None))
     }
 }
 
@@ -95,7 +108,7 @@ impl Authorization for ZoneControlAuthorizer {
         };
         let _observation = self.telemetry.observe_check();
         match self.authorize(request.get_ref()).await {
-            Ok(assertion) => {
+            Ok((assertion, transfer_grant)) => {
                 self.telemetry.allowed();
                 let mut response = CheckResponse::with_status(Status::ok("authorized"));
                 response.set_http_response(
@@ -122,6 +135,13 @@ impl Authorization for ZoneControlAuthorizer {
                             ..Default::default()
                         };
                         ok.headers.push(option);
+                    }
+                    if let Some(grant) = transfer_grant {
+                        ok.headers.push(HeaderValueOption {
+                            header: Some(HeaderValue { key: "x-aurora-transfer-grant".to_string(), value: grant, ..Default::default() }),
+                            append_action: 2,
+                            ..Default::default()
+                        });
                     }
                     ok.headers_to_remove.extend([
                         "x-aurora-access-session-id".to_string(),

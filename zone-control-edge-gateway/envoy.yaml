@@ -42,6 +42,10 @@ static_resources:
                     - name: zone_control
                       domains: ["*"]
                       routes:
+                        - match: { prefix: "/zone-control/v1/transfer-tickets" }
+                          route:
+                            cluster: zone_transfer_ticket_issuer
+                            timeout: 5s
                         - match:
                             safe_regex:
                               regex: "^/zone-control/v1/storage/buckets/([^/]+)/objects(\\?.*)?$"
@@ -120,7 +124,7 @@ static_resources:
                       transport_api_version: V3
                       grpc_service:
                         envoy_grpc: { cluster_name: zone_control_authorizer }
-                        timeout: 500ms
+                        timeout: 0.5s
                       with_request_body:
                         # Control requests are bounded. Object/image bytes must
                         # use a presigned route through the Public Edge Gateway.
@@ -150,7 +154,7 @@ static_resources:
                           duration_ms: "%DURATION%"
   clusters:
     - name: zone_control_authorizer
-      connect_timeout: 250ms
+      connect_timeout: 0.25s
       type: STRICT_DNS
       lb_policy: LEAST_REQUEST
       circuit_breakers:
@@ -232,6 +236,23 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: minio, port_value: 9000 }
+    - name: zone_transfer_ticket_issuer
+      connect_timeout: 0.5s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 64
+            max_pending_requests: 128
+            max_requests: 256
+      load_assignment:
+        cluster_name: zone_transfer_ticket_issuer
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: zone-transfer-ticket-issuer, port_value: 8080 }
 admin:
   access_log_path: /dev/null
   address:

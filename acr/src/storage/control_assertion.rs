@@ -4,7 +4,7 @@ use std::sync::Arc;
 use base64::Engine;
 use prost::Message;
 use redis::AsyncCommands;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
@@ -17,6 +17,13 @@ const ASSERTION_ISSUER: &str = "aurora-acr";
 const ASSERTION_CAPABILITY: &str = "storage.object";
 const ASSERTION_TTL_SECONDS: i64 = 10;
 const MAX_CONTROL_BODY_BYTES: usize = 64 * 1024;
+
+#[derive(Deserialize)]
+struct GenericTransferTicketRequest {
+    capability: String,
+    operation: String,
+    access_session_id: String,
+}
 
 #[derive(Serialize)]
 struct Assertion<'a> {
@@ -63,6 +70,98 @@ pub struct StorageControlRequest<'a> {
     pub method: &'a str,
     pub path: &'a str,
     pub body: &'a [u8],
+}
+
+pub struct GenericTransferTicketRequestContext<'a> {
+    pub claims: &'a Claims,
+    pub token_mgr: &'a Arc<TokenManager>,
+    pub config: &'a Config,
+    pub method: &'a str,
+    pub path: &'a str,
+    pub body: &'a [u8],
+}
+
+pub async fn attest_transfer_ticket_request(
+    request: GenericTransferTicketRequestContext<'_>,
+) -> Result<SignedControlHeaders, &'static str> {
+    if request.body.len() > MAX_CONTROL_BODY_BYTES {
+        return Err("Zone transfer ticket request body exceeds 64 KiB");
+    }
+    if request
+        .config
+        .vault
+        .zone_control_assertion_key_path
+        .is_empty()
+        || request
+            .config
+            .vault
+            .zone_control_assertion_key_id
+            .is_empty()
+    {
+        return Err("Zone control assertion signer is not configured");
+    }
+    let envelope: GenericTransferTicketRequest = serde_json::from_slice(request.body)
+        .map_err(|_| "Zone transfer ticket envelope is invalid")?;
+    if envelope.capability.is_empty()
+        || envelope.capability.len() > 96
+        || !envelope
+            .capability
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || !matches!(
+            envelope.operation.as_str(),
+            "upload" | "download" | "revoke"
+        )
+        || uuid::Uuid::parse_str(&envelope.access_session_id).is_err()
+        || request.claims.zone_id.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("Zone transfer ticket envelope is invalid");
+    }
+    let now = chrono::Utc::now().timestamp();
+    let assertion = Assertion {
+        schema_version: 1,
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        jti: uuid::Uuid::new_v4().to_string(),
+        access_session_id: &envelope.access_session_id,
+        binding_hash: "",
+        actor_id: &request.claims.uid,
+        resource_id: &envelope.access_session_id,
+        resource_name: "zone-transfer-ticket",
+        workspace_id: "",
+        zone_id: request.claims.zone_id.as_deref().unwrap_or_default(),
+        capability: "zone.transfer.ticket",
+        action: "issue",
+        method: request.method,
+        path_hash: hex_sha256(request.path.as_bytes()),
+        body_hash: hex_sha256(request.body),
+        scope: "",
+        policy_revision: 1,
+        issued_at: now,
+        expires_at: now.saturating_add(ASSERTION_TTL_SECONDS),
+        audience: ASSERTION_AUDIENCE,
+        issuer: ASSERTION_ISSUER,
+        key_id: &request.config.vault.zone_control_assertion_key_id,
+    };
+    let encoded_assertion = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&assertion).map_err(|_| "Zone transfer assertion encoding failed")?,
+    );
+    let (actual_key_id, signature) = request
+        .token_mgr
+        .sign_zone_control_assertion(
+            &request.config.vault.zone_control_assertion_key_path,
+            encoded_assertion.as_bytes(),
+        )
+        .await
+        .map_err(|_| "Zone control assertion signing failed")?;
+    if actual_key_id != request.config.vault.zone_control_assertion_key_id {
+        return Err("Zone control assertion signing key version mismatch");
+    }
+    Ok(SignedControlHeaders {
+        access_session_id: envelope.access_session_id,
+        assertion: encoded_assertion,
+        signature,
+        key_id: actual_key_id,
+    })
 }
 
 pub async fn authorize_storage_and_sign(

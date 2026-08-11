@@ -12,10 +12,12 @@ import { useConsoleQueryScope } from "@/shared/query/scope";
 import { type BucketItem } from "@/features/storage/api";
 import {
   bulkDeleteGatewayObjects,
+  downloadGatewayObject,
   getGatewayTags,
   headGatewayObject,
   listGatewayObjects,
   putGatewayTags,
+  uploadGatewayObject,
   type GatewayObject,
   type StorageGatewayError,
 } from "@/features/storage/objects/api";
@@ -47,7 +49,7 @@ function formatDate(value: string): string {
 function gatewayMessage(error: unknown): string {
   const gateway = error as Partial<StorageGatewayError>;
   if (gateway?.status === 403) return "Storage access is preparing, expired, revoked, or forbidden. Try again after the Zone projection catches up.";
-  if (gateway?.status === 404 || gateway?.status === 501) return "Zone Control Edge Gateway is not enabled for this deployment.";
+  if (gateway?.status === 404 || gateway?.status === 501) return "Storage gateway route is not available in this deployment.";
   return error instanceof Error ? error.message : "Storage Gateway request failed.";
 }
 
@@ -135,6 +137,26 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
     setFileDetails((current) => current ? { ...current, tags } : current);
   }, [access, bucket.name, selectedFile]);
 
+  const uploadObject = useCallback(async (file: File, objectKey: string) => {
+    await access.execute((session, signal) => uploadGatewayObject(bucket.name, objectKey, file, session, signal));
+  }, [access, bucket.name]);
+
+  const downloadObject = useCallback(async (objectKey: string) => {
+    try {
+      const blob = await access.execute((session, signal) => downloadGatewayObject(bucket.name, objectKey, session, signal));
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = objectKey.split("/").at(-1) || "download";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (error) {
+      toast.error(gatewayMessage(error));
+    }
+  }, [access, bucket.name]);
+
   const selectedFiles = items.filter((item) => item.type === "file");
 
   return (
@@ -158,7 +180,7 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
             <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={objectsQuery.isFetching} aria-label="Refresh objects">
               <RefreshCw className={cn("h-3.5 w-3.5", objectsQuery.isFetching && "animate-spin")} />
             </Button>
-            <Button variant="outline" size="sm" onClick={() => toast.info("Download data-tickets are not enabled yet.")} disabled={!selectedItems.length}>
+            <Button variant="outline" size="sm" onClick={() => { if (selectedItems.length === 1) void downloadObject(selectedItems[0]); else toast.info("Select one object to download."); }} disabled={!selectedItems.length}>
               <Download className="h-3.5 w-3.5" /> Download
             </Button>
             <Button variant="outline" size="sm" onClick={() => setDeleteOpen(true)} disabled={!selectedItems.length} className="text-red-600 dark:text-red-400">
@@ -194,8 +216,14 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
         )}
       </div>
 
-      {selectedFile && <ObjectDetailPanel selectedFile={selectedFile} fileDetails={fileDetails} metadataLoading={metadataLoading} onClose={() => { setSelectedFile(null); setFileDetails(null); }} onSaveTags={saveTags} onDelete={async () => { await deleteSelected(); setSelectedFile(null); }} onDownload={() => toast.info("Download data-tickets are not enabled yet.")} />}
-      <UploadModal isOpen={uploadOpen} onClose={() => setUploadOpen(false)} />
+      {selectedFile && <ObjectDetailPanel selectedFile={selectedFile} fileDetails={fileDetails} metadataLoading={metadataLoading} onClose={() => { setSelectedFile(null); setFileDetails(null); }} onSaveTags={saveTags} onDelete={async () => { await deleteSelected(); setSelectedFile(null); }} onDownload={() => void downloadObject(selectedFile.fullName)} />}
+      <UploadModal
+        isOpen={uploadOpen}
+        prefix={currentPath.length ? `${currentPath.join("/")}/` : ""}
+        onClose={() => setUploadOpen(false)}
+        onUpload={uploadObject}
+        onUploaded={() => { void queryClient.invalidateQueries({ queryKey: [...scope, "storage", "objects", bucket.id] }); }}
+      />
       <DeleteConfirmModal isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} onConfirm={() => void deleteSelected()} items={selectedItems} isDeleting={false} />
     </div>
   );

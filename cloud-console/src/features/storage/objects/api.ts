@@ -23,12 +23,14 @@ export class StorageGatewayError extends Error {
   }
 }
 
-export class StorageDataTicketUnavailableError extends StorageGatewayError {
-  constructor() {
-    super(501, "Presigned data-tickets are not enabled for this deployment.", "unavailable");
-    this.name = "StorageDataTicketUnavailableError";
-  }
-}
+export type StorageTransferOperation = "upload" | "download";
+
+export type StorageDataTicket = {
+  method: "PUT" | "GET";
+  url: string;
+  transfer_ticket: string;
+  expires_at_unix_seconds: number;
+};
 
 function encodePathSegment(value: string): string {
   if (!value || value === "." || value === ".." || value.includes("\\") || value.includes("\0")) {
@@ -72,7 +74,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 async function gatewayRequest(
   path: string,
   accessSessionId: string,
-  options: { method?: "GET" | "HEAD" | "PUT" | "POST" | "DELETE"; body?: string; signal?: AbortSignal } = {},
+  options: {
+    method?: "GET" | "HEAD" | "PUT" | "POST" | "DELETE";
+    body?: string;
+    contentType?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort("storage gateway timeout"), 15_000);
@@ -85,7 +92,7 @@ async function gatewayRequest(
       credentials: "same-origin",
       headers: {
         "x-aurora-access-session-id": accessSessionId,
-        ...(options.body ? { "content-type": "application/xml" } : {}),
+        ...(options.body ? { "content-type": options.contentType ?? "application/xml" } : {}),
       },
       body: options.body,
       signal: controller.signal,
@@ -187,8 +194,142 @@ function escapeXml(value: string): string {
   return value.replace(/[<>&'\"]/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[character] ?? character);
 }
 
-export async function requestDataTicket(): Promise<never> {
-  throw new StorageDataTicketUnavailableError();
+export async function requestDataTicket(
+  accessSessionId: string,
+  request: {
+    operation: StorageTransferOperation;
+    bucketName: string;
+    objectKey: string;
+    contentLength?: number;
+    contentType?: string;
+  },
+  signal?: AbortSignal,
+): Promise<StorageDataTicket> {
+  assertSafeBucketName(request.bucketName);
+  const ticketResponse = await gatewayRequest("/zone-control/v1/transfer-tickets", accessSessionId, {
+    method: "POST",
+    contentType: "application/json",
+    body: JSON.stringify({
+      capability: "storage.object",
+      operation: request.operation,
+      access_session_id: accessSessionId,
+      resource: {
+        bucket_name: request.bucketName,
+        object_key: request.objectKey,
+      },
+      constraints: {
+        ...(request.contentLength === undefined ? {} : { content_length: request.contentLength }),
+        ...(request.contentType ? { content_type: request.contentType } : {}),
+      },
+    }),
+    signal,
+  });
+  const parsed: unknown = await ticketResponse.json();
+  if (!parsed || typeof parsed !== "object") {
+    throw new StorageGatewayError(502, "Zone transfer ticket response is invalid.", "invalid");
+  }
+  const value = parsed as Partial<StorageDataTicket>;
+  if (
+    (value.method !== "PUT" && value.method !== "GET") ||
+    typeof value.url !== "string" ||
+    typeof value.transfer_ticket !== "string" ||
+    !value.transfer_ticket.includes(".") ||
+    typeof value.expires_at_unix_seconds !== "number" ||
+    value.expires_at_unix_seconds <= Math.floor(Date.now() / 1000)
+  ) {
+    throw new StorageGatewayError(502, "Zone transfer ticket response is invalid.", "invalid");
+  }
+  let ticketUrl: URL;
+  try {
+    ticketUrl = new URL(value.url, window.location.origin);
+  } catch {
+    throw new StorageGatewayError(502, "Zone transfer ticket URL is invalid.", "invalid");
+  }
+  if (ticketUrl.protocol !== "https:" && ticketUrl.protocol !== "http:") {
+    throw new StorageGatewayError(502, "Zone transfer ticket URL is invalid.", "invalid");
+  }
+  return {
+    method: value.method,
+    url: ticketUrl.toString(),
+    transfer_ticket: value.transfer_ticket,
+    expires_at_unix_seconds: value.expires_at_unix_seconds,
+  };
+}
+
+async function transferRequest(
+  ticket: StorageDataTicket,
+  body: BodyInit | null,
+  contentType: string | undefined,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort("storage transfer timeout"), 15 * 60_000);
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) controller.abort(signal.reason);
+  else signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await fetch(ticket.url, {
+      method: ticket.method,
+      credentials: "omit",
+      headers: {
+        "x-aurora-transfer-ticket": ticket.transfer_ticket,
+        ...(contentType ? { "content-type": contentType } : {}),
+      },
+      body,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const code = response.status === 403 ? "forbidden" : response.status >= 500 ? "unavailable" : "invalid";
+      throw new StorageGatewayError(
+        response.status,
+        code === "forbidden"
+          ? "The transfer ticket is expired, already used, or forbidden."
+          : code === "unavailable"
+            ? "Zone Public Edge Gateway is unavailable."
+            : "Zone Public Edge Gateway rejected the transfer.",
+        code,
+      );
+    }
+    return response;
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+export async function uploadGatewayObject(
+  bucketName: string,
+  objectKey: string,
+  file: File,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const contentType = file.type || "application/octet-stream";
+  const ticket = await requestDataTicket(accessSessionId, {
+    operation: "upload",
+    bucketName,
+    objectKey,
+    contentLength: file.size,
+    contentType,
+  }, signal);
+  if (ticket.method !== "PUT") throw new StorageGatewayError(502, "Upload ticket method is invalid.", "invalid");
+  await transferRequest(ticket, file, contentType, signal);
+}
+
+export async function downloadGatewayObject(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const ticket = await requestDataTicket(accessSessionId, {
+    operation: "download",
+    bucketName,
+    objectKey,
+  }, signal);
+  if (ticket.method !== "GET") throw new StorageGatewayError(502, "Download ticket method is invalid.", "invalid");
+  const response = await transferRequest(ticket, null, undefined, signal);
+  return response.blob();
 }
 
 export { sleep };

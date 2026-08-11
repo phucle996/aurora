@@ -2230,4 +2230,12 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "zone-transfer-contract",
+]
+
+[[package]]
+name = "zone-transfer-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]

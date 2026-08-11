@@ -50,6 +50,7 @@ logs/
 **/docker-compose.override.yml
 
 # Build artifacts
+**/target/
 controlplane/tmp/
 dataplane/target/
 zone-control-edge-gateway/authorizer/target/

@@ -1115,68 +1115,117 @@ impl Authorization for ExtAuthzService {
             session_proof_challenge_id = Some(proof_id);
         }
 
-        let zone_control_signed_headers =
-            if path_without_query.starts_with("/zone-control/v1/storage/") {
-                let Some(ref storage_claims) = claims else {
-                    return Ok(Response::new(CheckResponse::with_status(
-                        Status::permission_denied(
-                            "Zone Control Edge Gateway requires a user Trinity session",
-                        ),
-                    )));
-                };
-                let raw_body = req
-                    .attributes
-                    .as_ref()
-                    .and_then(|attributes| attributes.request.as_ref())
-                    .and_then(|request| request.http.as_ref())
-                    .map(|http| {
-                        if http.body.is_empty() {
-                            http.raw_body.clone()
-                        } else {
-                            http.body.as_bytes().to_vec()
-                        }
-                    })
-                    .unwrap_or_default();
-                match crate::storage::control_assertion::authorize_storage_and_sign(
-                    crate::storage::control_assertion::StorageControlWorkflowContext {
-                        session_mgr: &self.session_mgr,
-                        token_mgr: &self.token_mgr,
-                        config: &self.config,
-                    },
-                    crate::storage::control_assertion::StorageControlRequest {
-                        claims: storage_claims,
-                        headers: client_headers,
-                        method,
-                        path,
-                        body: &raw_body,
-                    },
-                )
-                .await
-                {
-                    Ok(headers) => Some(headers),
-                    Err(reason) => {
-                        Logger::authz_log(
-                            &storage_claims.uid,
-                            method,
-                            authz_log_path,
-                            "DENIED",
-                            reason,
-                        );
-                        return Ok(Response::new(CheckResponse::with_status(
-                            Status::permission_denied(reason),
-                        )));
-                    }
-                }
-            } else if path_without_query.starts_with("/zone-control/v1/") {
-                // The Central route is intentionally generic, but ACR must
-                // fail closed until a capability has an explicit signer and
-                // policy. Otherwise a new path could inherit client headers.
+        let zone_control_signed_headers = if path_without_query
+            == "/zone-control/v1/transfer-tickets"
+            || path_without_query.starts_with("/zone-control/v1/transfer-tickets/")
+        {
+            let Some(ref transfer_claims) = claims else {
                 return Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone control capability is not allowed"),
+                    Status::permission_denied(
+                        "Zone transfer tickets require a user Trinity session",
+                    ),
                 )));
-            } else {
-                None
             };
+            let raw_body = req
+                .attributes
+                .as_ref()
+                .and_then(|attributes| attributes.request.as_ref())
+                .and_then(|request| request.http.as_ref())
+                .map(|http| {
+                    if http.body.is_empty() {
+                        http.raw_body.clone()
+                    } else {
+                        http.body.as_bytes().to_vec()
+                    }
+                })
+                .unwrap_or_default();
+            match crate::storage::control_assertion::attest_transfer_ticket_request(
+                crate::storage::control_assertion::GenericTransferTicketRequestContext {
+                    claims: transfer_claims,
+                    token_mgr: &self.token_mgr,
+                    config: &self.config,
+                    method,
+                    path,
+                    body: &raw_body,
+                },
+            )
+            .await
+            {
+                Ok(headers) => Some(headers),
+                Err(reason) => {
+                    Logger::authz_log(
+                        &transfer_claims.uid,
+                        method,
+                        authz_log_path,
+                        "DENIED",
+                        reason,
+                    );
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied(reason),
+                    )));
+                }
+            }
+        } else if path_without_query.starts_with("/zone-control/v1/storage/") {
+            let Some(ref storage_claims) = claims else {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied(
+                        "Zone Control Edge Gateway requires a user Trinity session",
+                    ),
+                )));
+            };
+            let raw_body = req
+                .attributes
+                .as_ref()
+                .and_then(|attributes| attributes.request.as_ref())
+                .and_then(|request| request.http.as_ref())
+                .map(|http| {
+                    if http.body.is_empty() {
+                        http.raw_body.clone()
+                    } else {
+                        http.body.as_bytes().to_vec()
+                    }
+                })
+                .unwrap_or_default();
+            match crate::storage::control_assertion::authorize_storage_and_sign(
+                crate::storage::control_assertion::StorageControlWorkflowContext {
+                    session_mgr: &self.session_mgr,
+                    token_mgr: &self.token_mgr,
+                    config: &self.config,
+                },
+                crate::storage::control_assertion::StorageControlRequest {
+                    claims: storage_claims,
+                    headers: client_headers,
+                    method,
+                    path,
+                    body: &raw_body,
+                },
+            )
+            .await
+            {
+                Ok(headers) => Some(headers),
+                Err(reason) => {
+                    Logger::authz_log(
+                        &storage_claims.uid,
+                        method,
+                        authz_log_path,
+                        "DENIED",
+                        reason,
+                    );
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied(reason),
+                    )));
+                }
+            }
+        } else if path_without_query.starts_with("/zone-control/v1/") {
+            // The Central route is intentionally generic, but ACR must
+            // fail closed until a capability has an explicit signer and
+            // policy. Otherwise a new path could inherit client headers.
+            return Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Zone control capability is not allowed"),
+            )));
+        } else {
+            None
+        };
 
         cookies_to_set.extend(cookies_to_set_zone);
 

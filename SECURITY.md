@@ -1,179 +1,250 @@
 # Security Policy
 
-Aurora xử lý identity, session, billing state, infrastructure command và Zone-local credentials. Mọi thay đổi tại authentication, authorization, cryptography, transport contract, payment, edge gateway hoặc secret boundary phải được xem là security-sensitive.
+Aurora handles identity, session state, billing state, infrastructure commands,
+and Zone-local credentials. Any change to authentication, authorization,
+cryptography, transport contracts, payment, edge gateways, or secret
+boundaries must be treated as security-sensitive.
 
 ## Supported versions
 
 | Version | Security support |
 | --- | --- |
-| `main` / bản release mới nhất | Có |
-| Commit hoặc release cũ | Chỉ khi maintainer xác nhận |
-| Fork không do Aurora maintain | Không |
+| `main` / latest release | Supported |
+| Older commit or release | Only when confirmed by a maintainer |
+| Fork not maintained by Aurora | Not supported |
 
-Repo hiện phát triển theo mainline. Security fix được áp dụng vào nhánh đang được support; không mặc định backport cho mọi commit cũ.
+The repository follows a mainline development model. Security fixes are
+applied to the supported branch; backporting to every older commit is not
+assumed.
 
 ## Reporting a vulnerability
 
-Không tạo public issue, discussion, pull request hoặc log paste có chứa chi tiết khai thác, token, cookie, private key hay dữ liệu người dùng.
+Do not create a public issue, discussion, pull request, or log paste containing
+exploit details, tokens, cookies, private keys, or user data.
 
-Ưu tiên dùng GitHub Private Vulnerability Reporting:
+Use GitHub Private Vulnerability Reporting when possible:
 
 [Report a vulnerability privately](https://github.com/phucle996/aurora/security/advisories/new)
 
-Nếu private reporting chưa được bật, hãy liên hệ maintainer qua một kênh riêng được công bố trên GitHub profile/repository. Có thể mở public issue chỉ để yêu cầu một kênh liên lạc riêng; không đính kèm chi tiết vulnerability.
+If private reporting is not enabled, contact a maintainer through a private
+channel published on the GitHub profile or repository. A public issue may be
+opened only to request a private contact channel; do not include vulnerability
+details in it.
 
-Báo cáo nên gồm:
+A report should include:
 
-- Component, commit/release và môi trường bị ảnh hưởng.
-- Mô tả impact và trust boundary bị phá vỡ.
-- Điều kiện tiên quyết và các bước tái hiện tối thiểu.
-- Proof of concept đã sanitize, không chứa production secret/data.
-- Đánh giá severity nếu có.
-- Cách khắc phục hoặc defense-in-depth đề xuất.
-- Kênh liên hệ và mong muốn attribution.
+- The affected component, commit/release, and environment.
+- The impact and the trust boundary that is crossed.
+- Preconditions and minimal reproduction steps.
+- A sanitized proof of concept with no production secret or data.
+- A severity assessment, when available.
+- Suggested remediation or defense-in-depth measures.
+- A contact channel and attribution preference.
 
-Không kiểm thử trên production hoặc dữ liệu của người khác. Không thực hiện destructive action, persistence, lateral movement, social engineering, denial of service hoặc exfiltration vượt quá mức cần thiết để chứng minh impact.
+Do not test against production or another person's data. Do not perform
+destructive actions, persistence, lateral movement, social engineering,
+denial-of-service, or exfiltration beyond what is necessary to demonstrate the
+impact.
 
 ## Response process
 
-Mục tiêu xử lý:
+Target handling timeframes are:
 
-1. Xác nhận đã nhận báo cáo trong 3 ngày làm việc.
-2. Triage severity và affected surface trong 7 ngày làm việc.
-3. Thống nhất cách phối hợp, embargo và disclosure với reporter.
-4. Phát hành fix/mitigation theo mức độ rủi ro.
-5. Công bố advisory sau khi người dùng có thời gian cập nhật phù hợp.
+1. Acknowledge receipt within three business days.
+2. Triage severity and affected surfaces within seven business days.
+3. Agree with the reporter on coordination, embargo, and disclosure.
+4. Release a fix or mitigation according to risk.
+5. Publish an advisory after supported users have had reasonable time to
+   update.
 
-Đây là mục tiêu best-effort, không phải SLA hoặc bug-bounty commitment. Reward không được mặc định nếu chưa có chương trình riêng được công bố.
+These are best-effort targets, not an SLA or bug-bounty commitment. A reward is
+not implied unless a separate program has been published.
 
 ## Security boundaries
 
 ### Central edge
 
-- Browser chỉ đi vào Central API qua Envoy.
-- Envoy terminate TLS, giới hạn body/timeout và gọi ACR bằng gRPC ExtAuthz.
-- ACR phải xóa hoặc overwrite mọi trusted identity/proof header do client gửi.
-- Static asset route có thể tắt ExtAuthz; API route không được kế thừa bypass đó.
-- Backend vẫn kiểm tra domain authorization; UI hiding hoặc ACR authentication không thay backend permission enforcement.
+- Browsers enter the Central API only through Envoy.
+- Envoy terminates TLS, bounds body size and timeouts, and calls ACR through
+  gRPC ExtAuthz.
+- ACR must remove or overwrite every trusted identity/proof header supplied by
+  the client.
+- Static asset routes may disable ExtAuthz; API routes must not inherit that
+  bypass.
+- Backends still enforce domain authorization; UI hiding or ACR authentication
+  never replaces backend permission enforcement.
 
 ### Identity and session
 
-- IAM PostgreSQL là durable identity/role/membership Source of Truth.
-- Auth-State Redis giữ runtime session, nonce, replay fence và rate limit; dependency failure phải fail-closed.
-- Shared L2 Redis chỉ giữ request/reply, cache, Pub/Sub, bounded Stream và workflow lock/checkpoint.
-- Auth-State Redis và Shared Redis phải dùng deployment, credential/ACL và namespace tách biệt.
-- Session/alias cookie là host-only, `Secure`, `HttpOnly` và có CSRF/session-proof contract phù hợp.
-- Critical route phải dùng fresh proof; không chấp nhận stale authorization cache cho privileged mutation.
+- IAM PostgreSQL is the durable identity, role, and membership Source of Truth.
+- Auth-State Redis stores runtime sessions, nonces, replay fences, and rate
+  limits; dependency failure must fail closed.
+- Shared L2 Redis stores request/reply, cache, Pub/Sub, bounded Streams, and
+  workflow locks/checkpoints only.
+- Auth-State Redis and Shared Redis must use separate deployments,
+  credentials/ACLs, and namespaces.
+- Session/alias cookies are host-only, `Secure`, and `HttpOnly`, with the
+  applicable CSRF/session-proof contract.
+- Critical routes require a fresh proof; privileged mutations must not rely on
+  stale authorization cache state.
 
 ### Central and Zone isolation
 
-- Kafka là durable Central↔Zone transport; NATS Core chỉ chở soft state.
-- NATS JetStream KV là database riêng của từng Zone, không phải Central event bus.
-- Dataplane Zone A không được subscribe command/metadata của Zone B.
-- JO không có Zone KV credential hoặc Zone HPKE private key.
-- Dataplane không có Controlplane/Billing PostgreSQL, Auth Redis, Shared Redis hoặc Vault credential.
-- Notification Service và Cost Engine không được cấp NATS/Zone KV credential nếu workflow không cần.
+- Kafka is the durable Central↔Zone transport; NATS Core carries soft state
+  only.
+- NATS JetStream KV is a database belonging to one Zone, not a Central event
+  bus.
+- A Zone A Dataplane must not subscribe to Zone B commands or metadata.
+- JO has no Zone KV credential or Zone HPKE private key.
+- Dataplane has no Controlplane/Billing PostgreSQL, Auth Redis, Shared Redis, or
+  Vault credential.
+- Notification Service and Cost Engine must not receive NATS/Zone KV
+  credentials unless a workflow explicitly requires them.
 
 ### Protected Zone payload
 
-- Controlplane serialize toàn bộ domain command rồi HPKE-seal bằng active public key của đúng Zone.
-- JO chỉ validate public envelope metadata và relay byte-identical ciphertext.
-- Dataplane load private key từ read-only Zone-local file mount; private key không được đặt trong env, image, PostgreSQL, Redis, Kafka, Zone KV, log hoặc trace.
-- AAD phải bind key, Zone, source domain, job topic, resource, job version và schema version.
-- Retry at-least-once reuse đúng ciphertext đã commit; không rebuild plaintext từ projection không authoritative.
-- DLQ chỉ chứa sanitized metadata, byte length và fingerprint khi cần; không copy raw protected payload.
+- Controlplane serializes the complete domain command and seals it with HPKE
+  using the active public key for the target Zone.
+- JO validates public envelope metadata and relays byte-identical ciphertext; it
+  does not decrypt the payload.
+- Dataplane loads the private key from a read-only Zone-local file mount. The
+  key must not be placed in environment variables, images, PostgreSQL, Redis,
+  Kafka, Zone KV, logs, or traces.
+- AAD binds the key, Zone, source domain, job topic, resource, job version, and
+  schema version.
+- At-least-once retries reuse the committed ciphertext; plaintext must not be
+  rebuilt from a non-authoritative projection.
+- A DLQ contains only sanitized metadata, byte length, and a fingerprint when
+  needed; it must not copy the raw protected payload.
 
 ### Zone edge separation
 
-- Zone Public Edge không nhận Central cookie, ACR assertion, Zone KV credential hoặc private control identity.
-- Public Edge chỉ route allow-listed data/read capability; presigned URL được MinIO/S3 verify.
-- Zone Control Edge chỉ nhận Central Envoy workload identity qua mTLS.
-- Zone Control Authorizer verify signed assertion, replay/request binding và Zone access; nó không tự suy ownership.
-- Runtime Stream chỉ query fixed allow-list từ Zone Victoria; browser không được truyền PromQL/LogsQL tùy ý.
+- Zone Public Edge does not receive Central cookies, ACR assertions, Zone KV
+  credentials, or private control identity.
+- Public Edge routes only allow-listed data/read capabilities. Public Authorizer
+  CAS-consumes the ticket before MinIO/SigV4 upstream access.
+- Zone Control Edge accepts only the Central Envoy workload identity over mTLS.
+- Zone Control Authorizer verifies the signed assertion, replay/request binding,
+  and Zone access; it does not infer ownership by itself.
+- Runtime Stream queries a fixed allow-list from Zone Victoria; a browser may
+  not supply arbitrary PromQL/LogsQL.
 
 ### Billing
 
-- Billing PostgreSQL tách khỏi Controlplane PostgreSQL.
-- Cost Manager không query trực tiếp Controlplane database.
-- Owner/user/tenant context được derive từ trusted identity; client-provided owner ID không phải billing authority.
-- Wallet mutation và immutable ledger insert phải commit cùng transaction.
-- Payment webhook phải verify signature trên exact raw body, timestamp window và idempotency key.
-- Money dùng fixed integer micro-unit; không dùng floating point cho settlement.
+- Billing PostgreSQL is separate from Controlplane PostgreSQL.
+- Cost Manager does not query the Controlplane database directly.
+- Owner/user/tenant context is derived from trusted identity; a client-provided
+  owner ID is not billing authority.
+- Wallet mutation and the immutable ledger insert must commit in one
+  transaction.
+- Payment webhooks verify the signature over the exact raw body, enforce a
+  timestamp window, and use an idempotency key.
+- Money uses fixed integer micro-units; floating point is not used for
+  settlement.
 
 ### Telemetry and projection
 
-- Victoria, Scylla timeline và realtime channel không phải business aggregate Source of Truth.
-- Log/metric/trace không chứa raw token, cookie, password, private key, customer credential, protected payload, rendered Secret hoặc presigned query.
-- User/resource/workspace/Zone UUID, raw path, Redis key, SQL text và error string không được dùng làm unbounded metric label.
-- Telemetry failure không được đổi durable business outcome.
+- Victoria, the Scylla timeline, and realtime channels are not business
+  aggregate Sources of Truth.
+- Logs, metrics, and traces must not contain raw tokens, cookies, passwords,
+  private keys, customer credentials, protected payloads, rendered Secrets, or
+  presigned queries.
+- User/resource/workspace/Zone UUIDs, raw paths, Redis keys, SQL text, and error
+  strings must not become unbounded metric labels.
+- Telemetry failure must not change the durable business outcome.
 
 ## Secret handling
 
-- Không commit `.env`, private key, access token, refresh token, cookie, Vault response, TLS private key hoặc Dataplane keyring.
-- Chỉ commit `.env.example` với placeholder không nhạy cảm.
-- Production dùng workload identity/AppRole/Kubernetes auth và least-privilege capability record; không dùng local static Vault token.
-- Mỗi service chỉ nhận secret cho downstream do nó sở hữu.
-- Secret phải được redact khỏi `Debug`, error response, structured log và test fixture.
-- Rotation phải giữ overlap/fencing cần thiết; không retire key khi retained outbox/projection còn tham chiếu.
+- Never commit `.env` files, private keys, access tokens, refresh tokens, Vault
+  responses, TLS private keys, or Dataplane keyrings.
+- Commit only `.env.example` files with non-sensitive placeholders.
+- Production uses workload identity/AppRole/Kubernetes auth and least-privilege
+  capability records; it does not use local static Vault tokens.
+- Each service receives only the secrets for the downstream systems it owns.
+- Redact secrets from `Debug`, error responses, structured logs, and test
+  fixtures.
+- Rotation must preserve the required overlap/fencing window; do not retire a
+  key while retained outbox/projection records still reference it.
 
-Nếu secret thật bị commit:
+If a real secret is committed:
 
-1. Revoke/rotate secret ngay; xóa khỏi Git history không làm secret cũ an toàn trở lại.
-2. Xác định nơi secret đã được dùng và audit access.
-3. Thay credential ở mọi deployment/consumer.
-4. Chỉ sau đó sanitize repository/history nếu cần.
-5. Ghi incident/advisory qua kênh riêng.
+1. Revoke or rotate it immediately; removing it from Git history does not make
+   the old secret safe again.
+2. Identify where it was used and audit access.
+3. Replace the credential in every deployment and consumer.
+4. Sanitize the repository/history only after the credential has been rotated.
+5. Record the incident or advisory through a private channel.
 
-Các giá trị cố định trong Docker Compose/Vault bootstrap là development-only và không được tái sử dụng ở staging/production.
+Fixed values in Docker Compose and Vault bootstrap are development-only and
+must not be reused in staging or production.
 
 ## Secure development requirements
 
 ### Input and authority
 
-- Validate size, schema, enum, UUID, timestamp, Zone/tenant/workspace scope tại boundary.
-- Không suy authority từ path, body, query hoặc header do client kiểm soát.
-- Normalize trước khi sign/hash/compare; signed message phải có canonical format versioned.
-- Unsupported route/schema/capability phải fail-closed.
+- Validate size, schema, enum, UUID, timestamp, and Zone/tenant/workspace scope
+  at the boundary.
+- Never derive authority from a path, body, query, or header controlled by the
+  client.
+- Normalize before signing, hashing, or comparing; signed messages must use a
+  versioned canonical format.
+- Unsupported routes, schemas, and capabilities must fail closed.
 
 ### Durable workflows
 
-- Aggregate mutation và outbox record commit cùng transaction.
-- Kafka/Redis Stream consumer chỉ ACK/commit sau durable side effect hoặc durable sanitized quarantine.
-- At-least-once handler phải idempotent và dùng stable identity/version/generation fence.
-- External mutation không được tự động retry nếu contract chưa chứng minh idempotency.
-- Lock giảm concurrency nhưng version/generation/fencing token mới là correctness boundary.
+- Commit aggregate mutation and its outbox record in one transaction.
+- A Kafka/Redis Stream consumer ACKs or commits only after a durable side effect
+  or durable sanitized quarantine.
+- At-least-once handlers must be idempotent and use a stable identity,
+  version/generation fence.
+- An external mutation must not be automatically retried unless idempotency is
+  proven by contract.
+- A lock reduces concurrency; version/generation/fencing tokens are the
+  correctness boundary.
 
 ### Cryptography
 
-- Không tự thiết kế primitive hoặc downgrade algorithm/TLS.
-- Dùng canonical shared contract và cross-language fixture trong [`proto/`](./proto/).
-- Key ID, algorithm suite, AAD và rotation state phải versioned.
-- Constant-time/verified library API được ưu tiên cho secret comparison và signature validation.
+- Do not design primitives or downgrade algorithms/TLS.
+- Use the canonical shared contract and cross-language fixtures in
+  [`proto/`](./proto/).
+- Version key IDs, algorithm suites, AAD, and rotation state.
+- Prefer constant-time or verified library APIs for secret comparison and
+  signature validation.
 
 ### Dependencies and infrastructure
 
-- Pin image/dependency version phù hợp với release policy; tránh `latest` trong production.
-- Security-sensitive dependency update phải chạy unit/integration/contract tests liên quan.
-- NetworkPolicy/ACL phải deny-by-default và chỉ mở exact ingress/egress cần thiết.
-- Production transport phải bật TLS/mTLS/SASL theo contract; không silent downgrade về plaintext.
-- Dev-only mode, root credential, auto schema hoặc open CORS không được đi vào production manifest.
+- Pin image and dependency versions according to release policy; avoid `latest`
+  in production.
+- A security-sensitive dependency update must run the related
+  unit/integration/contract tests.
+- NetworkPolicy and ACLs must deny by default and open only the exact required
+  ingress/egress.
+- Production transport must enable TLS/mTLS/SASL according to the contract; do
+  not silently downgrade to plaintext.
+- Dev-only mode, root credentials, automatic schema creation, and open CORS
+  must not enter production manifests.
 
 ## Review checklist
 
-Security review là bắt buộc khi thay đổi:
+A security review is mandatory when changing:
 
-- ACR, IAM, session/cookie, MFA, OAuth, RBAC hoặc trusted headers.
-- Vault policy/path, Redis ACL/namespace hoặc workload identity.
-- Protobuf field/schema, Kafka topic, NATS subject hoặc DLQ payload.
-- HPKE/AAD/key lifecycle hoặc Dataplane key mount.
-- Envoy route/filter, Zone Edge, NetworkPolicy hoặc CORS.
+- ACR, IAM, sessions/cookies, MFA, OAuth, RBAC, or trusted headers.
+- Vault policy/path, Redis ACL/namespace, or workload identity.
+- Protobuf fields/schemas, Kafka topics, NATS subjects, or DLQ payloads.
+- HPKE/AAD/key lifecycle or the Dataplane key mount.
+- Envoy routes/filters, Zone Edge, NetworkPolicy, or CORS.
 - Wallet/ledger/payment/ownership logic.
-- Logging, telemetry attribute hoặc data retention.
+- Logging, telemetry attributes, or data retention.
 
-PR security-sensitive nên chỉ rõ threat model, authority source, failure semantics, replay/race behavior, migration/cutover plan và verification evidence.
+A security-sensitive pull request should state the threat model, authority
+source, failure semantics, replay/race behavior, migration/cutover plan, and
+verification evidence.
 
 ## Disclosure
 
-Aurora phối hợp responsible disclosure. Reporter được ghi nhận nếu họ muốn và nếu disclosure không gây rủi ro thêm. Không công bố exploit detail trước khi fix/mitigation sẵn sàng cho người dùng đang được support.
+Aurora coordinates responsible disclosure. Reporters are credited when they
+want attribution and doing so does not add risk. Do not publish exploit details
+until a fix or mitigation is available to supported users.
 
-Security design chi tiết theo workflow nằm trong [`god_view/`](./god_view/); kiến trúc hệ thống nằm tại [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+Detailed security designs by workflow live in [`god_view/`](./god_view/); the
+system architecture is documented in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
