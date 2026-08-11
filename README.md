@@ -79,8 +79,10 @@ cp notification-service/.env.example notification-service/.env
 cp cost-manager/api/.env.example cost-manager/api/.env
 cp cloud-console/.env.example cloud-console/.env
 cp cost-console/.env.example cost-console/.env
-cp dataplane/.env.example dataplane/.env
-cp zone-runtime-stream/.env.example zone-runtime-stream/.env
+    cp dataplane/.env.example dataplane/.env
+    cp zone-control/.env.example zone-control/.env
+    cp zone-public-edge-gateway/authorizer/.env.example zone-public-edge-gateway/authorizer/.env
+    cp zone-runtime-stream/.env.example zone-runtime-stream/.env
 cp dev/central/.env.example dev/central/.env
 cp dev/zone/.env.example dev/zone/.env
 ```
