@@ -3,6 +3,7 @@ use bytes::Bytes;
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -86,12 +87,42 @@ pub struct ZoneKvStore {
     coordination: kv::Store,
 }
 
+/// Deployment-owned capabilities used only while opening the Zone KV session.
+/// Keeping these inputs named prevents the Zone KV workflow from growing an
+/// argument list whose fields can be confused with business data.
+pub struct ZoneKvConnectionConfig<'a> {
+    pub url: &'a str,
+    pub ca_cert: &'a str,
+    pub creds: &'a str,
+    pub client_cert: Option<&'a str>,
+    pub client_key: Option<&'a str>,
+}
+
 impl ZoneKvStore {
-    pub async fn connect(url: &str, replicas: usize) -> Result<Arc<Self>, String> {
+    pub async fn connect(
+        connection: ZoneKvConnectionConfig<'_>,
+        replicas: usize,
+    ) -> Result<Arc<Self>, String> {
         if !matches!(replicas, 1 | 3 | 5) {
             return Err("NATS_ZONE_KV_REPLICAS must be 1, 3 or 5".to_string());
         }
-        let client = async_nats::connect(url)
+        if connection.client_cert.is_some() != connection.client_key.is_some() {
+            return Err(
+                "NATS_ZONE_TLS_CERT and NATS_ZONE_TLS_KEY must be configured together".to_string(),
+            );
+        }
+        let mut options = async_nats::ConnectOptions::new()
+            .add_root_certificates(PathBuf::from(connection.ca_cert))
+            .require_tls(true);
+        if let (Some(cert), Some(key)) = (connection.client_cert, connection.client_key) {
+            options = options.add_client_certificate(PathBuf::from(cert), PathBuf::from(key));
+        }
+        let options = options
+            .credentials_file(PathBuf::from(connection.creds))
+            .await
+            .map_err(|error| format!("read Zone NATS credentials: {error}"))?;
+        let client = options
+            .connect(connection.url)
             .await
             .map_err(|error| format!("connect Zone NATS: {error}"))?;
         let js = jetstream::new(client);

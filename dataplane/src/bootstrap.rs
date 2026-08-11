@@ -72,10 +72,18 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         .map_err(|error| format!("initialize NATS Core runtime watch failed: {error}"))?;
 
     // [COMMENT]: Toàn bộ shared Zone state/lease nằm trong JetStream KV; Dataplane không bootstrap Internal Redis.
-    let zone_kv =
-        crate::infra::zone_kv::ZoneKvStore::connect(&cfg.nats_zone_url, cfg.nats_zone_kv_replicas)
-            .await
-            .map_err(|error| format!("initialize Zone NATS KV failed: {error}"))?;
+    let zone_kv = crate::infra::zone_kv::ZoneKvStore::connect(
+        crate::infra::zone_kv::ZoneKvConnectionConfig {
+            url: &cfg.nats_zone_url,
+            ca_cert: &cfg.nats_zone_ca_cert,
+            creds: &cfg.nats_zone_creds,
+            client_cert: cfg.nats_zone_client_cert.as_deref(),
+            client_key: cfg.nats_zone_client_key.as_deref(),
+        },
+        cfg.nats_zone_kv_replicas,
+    )
+    .await
+    .map_err(|error| format!("initialize Zone NATS KV failed: {error}"))?;
 
     // Đã loại bỏ hoàn toàn phần đọc file policy.yaml và khởi tạo PolicyEngine ở đây.
     // max_workers sẽ được quản lý tĩnh qua biến môi trường nạp từ Config.

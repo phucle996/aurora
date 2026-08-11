@@ -289,6 +289,9 @@ services:
       # Read-only local metering input. The publisher never receives Central
       # billing credentials or writes the Zone journal.
       zone-telemetry-ingest:
+      # Zone Control publishes metering/coordination reports to the same
+      # durable Kafka boundary as Dataplane in the local integration stack.
+      aurora-transport:
     restart: unless-stopped
 
   zone-public-edge-authorizer:

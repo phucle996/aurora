@@ -26,8 +26,9 @@ Tài liệu kiến trúc chính:
 | Pod memory | Worker registry, admission counters, mail L1 và dynamic lag |
 
 Dataplane không kết nối CP/Billing PostgreSQL, Shared/Auth Redis hoặc Vault. `NATS_URL` là NATS Core
-transport còn `NATS_ZONE_URL` là Zone-local JetStream; hai endpoint phải khác nhau. Production Zone KV
-dùng file storage và replica `3/5`.
+transport còn `NATS_ZONE_URL` là Zone-local JetStream; hai endpoint phải khác nhau. Zone KV luôn mở
+qua trust root `NATS_ZONE_TLS_CA` và credential file `NATS_ZONE_CREDS`; client certificate/key chỉ
+cần khi listener production bật mTLS. Production Zone KV dùng file storage và replica `3/5`.
 
 Dataplane chỉ subscribe `aurora.jobs.commands.zone.<zone_uuid>.v1`; không có fallback hoặc shared
 platform command topic. Envelope thiếu `target_zone_id` hoặc mang Zone khác phải fail-closed vào DLQ.

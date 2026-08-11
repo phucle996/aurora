@@ -95,7 +95,9 @@ not implied unless a separate program has been published.
 - NATS JetStream KV is a database belonging to one Zone, not a Central event
   bus.
 - A Zone A Dataplane must not subscribe to Zone B commands or metadata.
-- JO has no Zone KV credential or Zone HPKE private key.
+- JO has no Zone KV credential or Zone HPKE private key. Dataplane receives only
+  a Zone-scoped JetStream credential and trust root; it cannot use another
+  Zone's account or access Central persistence.
 - Dataplane has no Controlplane/Billing PostgreSQL, Auth Redis, Shared Redis, or
   Vault credential.
 - Notification Service and Cost Engine must not receive NATS/Zone KV

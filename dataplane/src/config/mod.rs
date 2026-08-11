@@ -41,6 +41,15 @@ pub struct Config {
 
     /// [COMMENT]: Endpoint JetStream riêng của Zone; tuyệt đối không trỏ sang NATS Core trung tâm.
     pub nats_zone_url: String,
+    /// Zone NATS trust root and credential file are deployment-owned secrets. The
+    /// Dataplane never accepts either value from a customer command or Zone KV.
+    pub nats_zone_ca_cert: String,
+    pub nats_zone_creds: String,
+    /// Client certificates are optional for isolated dev (server-auth TLS only)
+    /// but must be supplied as a complete pair when a production NATS listener
+    /// enforces mTLS.
+    pub nats_zone_client_cert: Option<String>,
+    pub nats_zone_client_key: Option<String>,
     /// [COMMENT]: Replica factor của Zone KV; production nên dùng 3, dev single-node dùng 1.
     pub nats_zone_kv_replicas: usize,
 
@@ -234,6 +243,10 @@ impl Config {
                 }
                 value
             },
+            nats_zone_ca_cert: required_env("NATS_ZONE_TLS_CA")?,
+            nats_zone_creds: required_env("NATS_ZONE_CREDS")?,
+            nats_zone_client_cert: env::var("NATS_ZONE_TLS_CERT").ok(),
+            nats_zone_client_key: env::var("NATS_ZONE_TLS_KEY").ok(),
             nats_zone_kv_replicas: parse_env("NATS_ZONE_KV_REPLICAS", 3_usize),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
