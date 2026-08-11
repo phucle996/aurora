@@ -96,8 +96,10 @@ not implied unless a separate program has been published.
   bus.
 - A Zone A Dataplane must not subscribe to Zone B commands or metadata.
 - JO has no Zone KV credential or Zone HPKE private key. Dataplane receives only
-  a Zone-scoped JetStream credential and trust root; it cannot use another
-  Zone's account or access Central persistence.
+  a Zone-scoped JetStream credential, the shared Zone CA trust root, and its
+  own client certificate/key; it cannot use another Zone's account or access
+  Central persistence. Zone NATS verifies the client certificate chain, so
+  server-only TLS connections are rejected.
 - Dataplane has no Controlplane/Billing PostgreSQL, Auth Redis, Shared Redis, or
   Vault credential.
 - Notification Service and Cost Engine must not receive NATS/Zone KV

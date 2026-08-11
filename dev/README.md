@@ -9,7 +9,9 @@ cross-wire hạ tầng Central và Zone:
   Stalwart, Zone Public Edge, `zone-runtime-stream` và bộ observability riêng
   của Zone.
 - `dev/shared/tls`: material local dùng cho mTLS/TLS fixture; không thuộc module
-  Controlplane và không được đưa vào image hay env.
+  Controlplane và không được đưa vào image hay env. Chạy
+  `dev/shared/tls/generate-dev-nats-mtls.sh` để tạo một CA dev dùng chung và
+  leaf riêng cho NATS server, Zone Control, Public Authorizer và Dataplane.
 
 Mọi `container_name` trong Central bắt đầu bằng `central-`; mọi container của
 Zone bắt đầu bằng `zone-`. Service DNS nội bộ vẫn dùng Compose service name để
@@ -46,6 +48,10 @@ hay Central transport dù các service cùng nằm trong một Compose project.
 Central `nats` chạy Core mode, không bật JetStream và không có data volume.
 JetStream chỉ tồn tại ở `nats-zone-z1` để làm Zone-local KV database; hai role
 không fallback hoặc dùng chung storage.
+
+Zone NATS dev bật mTLS thật (`verify: true`). Mọi client dùng CA chung cùng
+client certificate riêng và NATS credential scoped; thiếu certificate, CA hoặc
+credential phải làm bootstrap fail-closed.
 
 Dataplane vẫn fail-fast khi Kafka/NATS Core chưa sẵn sàng; `restart:
 unless-stopped` là bounded process recovery của môi trường dev. Compose không

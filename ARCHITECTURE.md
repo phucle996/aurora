@@ -310,9 +310,10 @@ The topic, `target_zone_id` envelope, and Zone configuration must agree.
 Cross-Zone or malformed messages fail closed and settle only after a sanitized
 durable DLQ record is written.
 
-JO has no Zone KV credential or HPKE private key. Dataplane has a Zone-scoped
-JetStream credential and trust root only; it has no Controlplane/Billing
-PostgreSQL, Auth Redis, Shared Redis, or Vault credential.
+JO has no Zone KV credential or HPKE private key. Dataplane has only a
+Zone-scoped JetStream credential, shared Zone CA trust root, and its own
+Zone-client certificate/key for the mTLS listener; it has no
+Controlplane/Billing PostgreSQL, Auth Redis, Shared Redis, or Vault credential.
 
 ### Dataplane runtime
 

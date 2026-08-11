@@ -7,15 +7,18 @@ services:
     cpuset: "0-5"
     image: nats:2.10-alpine
     container_name: zone-z1-nats-kv
-    command: [ "-c", "/etc/nats/tls/nats-server.conf", "-js", "-sd", "/data" ]
+    command: [ "-c", "/etc/nats/nats-server.conf", "-js", "-sd", "/data" ]
     ports:
       - "14222:4222"
       - "18222:8222"
     volumes:
       - dataplane_zone_z1_nats_data:/data
-      - ./nats:/etc/nats/tls:ro
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+      - ./nats/tls:/etc/nats/tls:ro
     healthcheck:
-      test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
+      # Probe the plaintext monitoring endpoint instead of opening a raw
+      # socket on the mTLS client port (which would create noisy TLS EOFs).
+      test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz?js-enabled-only=true" ]
       interval: 5s
       timeout: 3s
       retries: 5
