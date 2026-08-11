@@ -83,10 +83,10 @@ flowchart LR
 Storage metering is being moved to a Zone-local journal and a versioned report
 transport. The staged path is `Zone Public Edge -> Zone OTel -> Zone
 ClickHouse -> Zone Control report outbox -> Kafka -> Job Orchestrator -> Shared
-Redis -> Cost Engine -> Billing PostgreSQL`. Until the settlement and
+Redis -> Cost Engine -> Billing PostgreSQL`. The Zone Control publisher and
+Cost Engine relay are implemented but remain opt-in; until the settlement and
 reconciliation gates pass, the Central ClickHouse edge above remains the
-current billing dependency; the new report relay is validation-only and does
-not debit wallets.
+current billing dependency and the new path must not run concurrently with it.
 
 ### Components and ownership
 
@@ -98,6 +98,7 @@ not debit wallets.
 | Job Orchestrator | WAL changefeed, command dispatch, result settlement, repair, and reconciliation | Zone private keys, Zone KV, or workload side effects |
 | Notification Service | Self-user timeline/inbox projection and realtime publish adapter | IAM, job lifecycle, or resource aggregates |
 | Cost Manager | Pricing, plans, wallet, ledger, payment, ownership projection, and usage rating | Controlplane PostgreSQL |
+| Zone Control | Fenced Zone-wide orchestration, transfer tickets, and opt-in closed-window storage report outbox/Kafka relay | Wallet mutation, payer inference, Central ClickHouse billing |
 | Vault | Workload bootstrap identity, connection records, and Transit keys | User or resource business state |
 
 ### Request plane

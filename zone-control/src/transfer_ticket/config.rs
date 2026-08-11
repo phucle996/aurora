@@ -4,6 +4,7 @@ use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub orchestrator_enabled: bool,
+    pub metering_enabled: bool,
     pub zone_id: String,
     pub public_base_url: String,
     pub ticket_ttl: Duration,
@@ -48,6 +49,7 @@ impl Config {
             // prevents two writers from acquiring `lease.zone.leader` during
             // the controlled extraction window.
             orchestrator_enabled: parsed_bool("ZONE_CONTROL_ORCHESTRATOR_ENABLED", false)?,
+            metering_enabled: parsed_bool("ZONE_CONTROL_METERING_ENABLED", false)?,
             zone_id,
             public_base_url,
             ticket_ttl: Duration::from_secs(ticket_ttl_seconds),

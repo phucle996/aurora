@@ -48,9 +48,11 @@ Scylla, ClickHouse, Centrifugo, and the OpenTelemetry/Victoria/Grafana stack.
 
 Local Zone infrastructure consists of NATS JetStream KV, MinIO, Stalwart,
 the Zone OTel Collector, Zone ClickHouse metering journal, and
-VictoriaMetrics/VictoriaLogs/VictoriaTraces. Zone ClickHouse is local journal
-state only; Central Cost Engine continues its current ClickHouse billing path
-until the storage-report cutover gates pass.
+VictoriaMetrics/VictoriaLogs/VictoriaTraces. Zone Control can opt into the
+closed-window report publisher (`ZONE_CONTROL_METERING_ENABLED=true`) which
+persists a bounded `StorageUsageReportV1` in JetStream before Kafka relay.
+Production keeps it disabled until reconciliation/cutover gates pass; Central
+Cost Engine continues its current ClickHouse billing path in the meantime.
 
 ### Shared repository assets
 

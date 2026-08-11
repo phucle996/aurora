@@ -268,11 +268,16 @@ services:
     depends_on:
       nats-zone-z1:
         condition: service_healthy
+      zone-clickhouse:
+        condition: service_started
     expose:
       - "8080"
     networks:
       zone-infra:
       zone-edge-storage:
+      # Read-only local metering input. The publisher never receives Central
+      # billing credentials or writes the Zone journal.
+      zone-telemetry-ingest:
     restart: unless-stopped
 
   zone-public-edge-authorizer:

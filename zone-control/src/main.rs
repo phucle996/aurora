@@ -1,7 +1,12 @@
 use std::error::Error;
 
+mod metering;
 mod orchestrator;
 mod transfer_ticket;
+
+pub mod storage_usage_report_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.storage.metering.v1.rs"));
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -20,6 +25,15 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             reason =
                 "legacy Dataplane still owns Zone-wide leader duties during controlled extraction"
         );
+    }
+    if !config.metering_enabled {
+        tracing::info!(
+            event_code = "ZONE_STORAGE_METERING_DISABLED",
+            reason =
+                "report publisher remains opt-in until Zone reconciliation and Cost cutover gates"
+        );
+    } else if !config.orchestrator_enabled {
+        return Err("ZONE_CONTROL_METERING_ENABLED requires ZONE_CONTROL_ORCHESTRATOR_ENABLED; the report publisher must run inside a fenced Zone Control lease".into());
     }
     transfer_ticket::app::run(config, store, shutdown).await?;
     Ok(())

@@ -6,9 +6,10 @@ use std::{
 use async_nats::jetstream::{self, kv, stream::StorageType};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::transfer_ticket::config::Config;
+use crate::{metering, transfer_ticket::config::Config};
 
 /// Zone Control owns Zone-wide coordination. Ticket issuance is a separate
 /// workflow context and does not receive this lease or any orchestrator state.
@@ -34,16 +35,38 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                 continue;
             };
             tracing::info!(event_code = "ZONE_CONTROL_LEADER_ELECTED", zone_id = %config.zone_id, owner_id = %owner_id, fencing_token = lease.fencing_token);
+            let metering_shutdown = CancellationToken::new();
+            let (metering_failed_tx, mut metering_failed_rx) = watch::channel(false);
+            let metering_task = if config.metering_enabled {
+                let metering_config = config.clone();
+                let lease_shutdown = metering_shutdown.clone();
+                Some(tokio::spawn(async move {
+                    if let Err(error) = metering::run(metering_config, lease_shutdown).await {
+                        tracing::error!(event_code = "ZONE_STORAGE_METERING_STOPPED", error = %error);
+                        let _ = metering_failed_tx.send(true);
+                    }
+                }))
+            } else {
+                None
+            };
             let mut renew = tokio::time::interval(Duration::from_secs(5));
             renew.tick().await;
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
+                    changed = metering_failed_rx.changed(), if config.metering_enabled => {
+                        if changed.is_err() || *metering_failed_rx.borrow() { break; }
+                    }
                     _ = renew.tick() => {
                         if !coordinator.renew(&lease).await { break; }
                         tracing::debug!(event_code = "ZONE_CONTROL_ORCHESTRATOR_TICK", zone_id = %config.zone_id, owner_id = %owner_id, fencing_token = lease.fencing_token);
                     }
                 }
+            }
+            metering_shutdown.cancel();
+            if let Some(task) = metering_task {
+                task.abort();
+                let _ = task.await;
             }
             let _ = coordinator.release(&lease).await;
         }

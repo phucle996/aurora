@@ -7,11 +7,13 @@ it is never copied into telemetry or a billing report. The report describes
 observed bytes for a stable resource reference inside one Zone and one closed
 UTC window.
 
-**Implementation status:** the reviewed access-event schema, Zone-local journal
-deployment and canonical report contract are staged. The Zone report publisher
-and Kafka outbox remain shadow-mode work in the God Plan. Until that publisher
-is enabled, the existing Central ClickHouse polling path remains the billing
-runtime and this workflow must not debit a wallet.
+**Implementation status:** the reviewed access-event schema, Zone-local journal,
+canonical report contract, closed-window publisher and durable JetStream outbox
+are implemented behind `ZONE_CONTROL_METERING_ENABLED=false` by default. The
+publisher runs only inside an active fenced Zone Control lease and relays to
+Kafka; it never mutates a wallet. Until the flag and the Cost cutover gates are
+approved, the existing Central ClickHouse polling path remains the only
+charge-producing billing runtime.
 
 ## Scope and ownership
 
@@ -22,7 +24,7 @@ runtime and this workflow must not debit a wallet.
 | Billable fields | `resource_id`, `bytes_sent` for `NETWORK_OUT`; `bytes_received` is retained for the approved upload branch |
 | Identity | Zone UUID plus stable resource UUID; no payer is inferred in Zone |
 | Window | UTC half-open `[window_start, window_end)` with a maximum of 24 hours |
-| Durable local state | Zone ClickHouse access-event journal and a report outbox owned by the future publisher |
+| Durable local state | Zone ClickHouse access-event journal and JetStream File outbox `AURORA_ZONE_STORAGE_USAGE_OUTBOX` |
 | Transport | Kafka topic `{prefix}.storage.usage.reports.v1`, keyed by Zone UUID |
 | Output | `StorageUsageReportV1` protobuf, at-least-once |
 
@@ -109,16 +111,17 @@ an additional billable request.
 After the window close time and a bounded late-event grace period, the Zone
 Control metering owner reads the deduplicated journal. It groups by resource and
 direction, validates numeric limits, computes the canonical checksum with
-`report_sha256` cleared, and writes the complete protobuf to the local report
-outbox before contacting Kafka. Only the current fenced Zone Control owner may
-publish a report. A worker restart resumes the outbox row; it does not create a
-new report identity for the same window.
+`report_sha256` cleared, and writes the complete protobuf to the local
+JetStream File outbox before contacting Kafka. The report identity is UUIDv5 of
+Zone plus window and sequence, so a retry cannot append a second report. Only
+the current fenced Zone Control owner may run this workflow. A worker restart
+resumes the durable outbox consumer; it does not create a new identity.
 
 ```mermaid
 sequenceDiagram
-    participant O as Zone Control metering owner
+    participant O as Fenced Zone Control metering owner
     participant L as Zone access event journal
-    participant Q as Zone report outbox
+    participant Q as JetStream File report outbox
     participant K as Kafka storage report topic
 
     O->>O: Check current Zone fencing token and closed UTC window
@@ -126,13 +129,13 @@ sequenceDiagram
     L-->>O: Counters and request count
     O->>O: Validate bounds and build StorageUsageReportV1
     O->>O: Compute SHA-256 over canonical protobuf with checksum empty
-    O->>Q: Insert report and stable outbox identity
+    O->>Q: Publish report with Nats-Msg-Id=report_id and await ACK
     alt Kafka unavailable
-        Q-->>O: Keep pending and expose lag metric
+        Q-->>O: Keep pending; the durable outbox has no Kafka side effect yet
     else Kafka available
-        O->>K: Publish with acks=all and Zone key
+        O->>K: Publish with idempotent producer, acks=all and Zone key
         K-->>O: Durable acknowledgement
-        O->>Q: Mark published
+        O->>Q: ACK outbox message after Kafka acknowledgement
     end
 ```
 
@@ -147,6 +150,8 @@ sequenceDiagram
 | Correction identity | `correction=true` and `correction_of_report_id`; append-only |
 | Local journal identity | `(resource_id, request_id)` |
 | Outbox state | `PENDING -> PUBLISHED`, never delete before retention/audit boundary |
+| JetStream outbox | Stream `AURORA_ZONE_STORAGE_USAGE_OUTBOX`, subject `aurora.zone.storage.usage.report.<zone_uuid>`, durable consumer `zone-control-storage-report-kafka-v1` |
+| Quarantine | Stream `AURORA_ZONE_STORAGE_USAGE_DLQ`, sanitized reason plus payload SHA-256 only |
 
 ## Failure and security rules
 
@@ -156,7 +161,7 @@ sequenceDiagram
 | OTel restart or retry | Journal may receive a duplicate; publisher deduplicates request ID |
 | Invalid resource or oversized event | Reject and expose a bounded metric; do not report |
 | ClickHouse unavailable | Keep collector queue pending; no report is closed from partial input |
-| Zone Control loses lease | Stop aggregation and publish side effects immediately |
+| Zone Control loses lease | Lease-scoped metering task is cancelled; no new aggregation/outbox/Kafka side effect is started |
 | Kafka publish fails | Keep outbox pending and retry with the same report ID |
 | Correction | Publish a new report lineage; never edit a settled report or ledger |
 | Secret leakage attempt | Ticket, cookie, Authorization, access secret and object path are excluded at the Envoy schema boundary |
@@ -167,5 +172,6 @@ sequenceDiagram
 - `dev/zone/otel/otel-collector.yml`
 - `dev/zone/clickhouse/init.sql`
 - `proto/cost-manager/engine/storage_usage_report.proto`
-- Future owner: `zone-control/src/orchestrator.rs` metering workflow
+- `zone-control/src/metering.rs` (opt-in closed-window publisher and Kafka relay)
+- `zone-control/src/orchestrator.rs` (lease-scoped metering lifecycle)
 - Future God Plan: `cost-manager/tmp/zone-local-storage-metering-refactor-plan.md`
