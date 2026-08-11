@@ -1,4 +1,3 @@
-use clickhouse::Client as ClickhouseClient;
 use std::time::Duration;
 use tokio::signal;
 
@@ -25,25 +24,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pricing_runtime = engine::PricingRuntime::bootstrap(pg_pool.clone()).await?;
     println!("Đã bootstrap immutable Tier pricing catalog vào L1!");
 
-    // [COMMENT]: 3. Khởi tạo kết nối ClickHouse client.
-    // TLS/mTLS cho ClickHouse được xử lý ở tầng hạ tầng (service mesh / proxy) nên
-    // application kết nối qua HTTP plain tới local endpoint.
-    let ch_client = ClickhouseClient::default()
-        .with_url(&app_config.clickhouse_url)
-        .with_database("storage");
-    println!("Kết nối thành công tới ClickHouse!");
-
-    // [COMMENT]: 4. Khởi tạo kết nối Redis multiplexed connection qua infra
+    // [COMMENT]: 3. Khởi tạo kết nối Redis multiplexed connection qua infra
     let redis_conn = infra::redis::init_redis_conn(&vault, &app_config).await?;
     println!("Kết nối thành công tới Redis!");
 
-    // [COMMENT]: 5. Thiết lập watch channel cho Graceful Shutdown
+    // [COMMENT]: 4. Thiết lập watch channel cho Graceful Shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // [COMMENT]: 6. Khởi chạy các background services
+    // [COMMENT]: 5. Khởi chạy các background services
     let services_config = app_config.clone();
     let services_pg_pool = pg_pool.clone();
-    let services_ch_client = ch_client.clone();
     let services_redis_conn = redis_conn.clone();
     let services_pricing_runtime = pricing_runtime.clone();
 
@@ -51,7 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service::register::run_services(
             services_config,
             services_pg_pool,
-            services_ch_client,
             services_redis_conn,
             services_pricing_runtime,
             shutdown_rx,
@@ -59,14 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     });
 
-    // [COMMENT]: 7. Chờ tín hiệu kết thúc từ hệ điều hành (Ctrl+C hoặc SIGTERM)
+    // [COMMENT]: 6. Chờ tín hiệu kết thúc từ hệ điều hành (Ctrl+C hoặc SIGTERM)
     shutdown_signal().await;
 
-    // [COMMENT]: 8. Gửi tín hiệu tắt hệ thống tới các services
+    // [COMMENT]: 7. Gửi tín hiệu tắt hệ thống tới các services
     println!("Đang gửi tín hiệu dừng tới các background services...");
     let _ = shutdown_tx.send(true);
 
-    // [COMMENT]: 9. Đợi các background tasks kết thúc (Graceful Shutdown)
+    // [COMMENT]: 8. Đợi các background tasks kết thúc (Graceful Shutdown)
     println!("Đợi các dịch vụ hoàn thành nốt công việc...");
     tokio::select! {
         _ = services_handle => {

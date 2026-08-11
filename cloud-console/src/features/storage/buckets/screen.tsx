@@ -25,7 +25,7 @@ export function StorageDirectoryScreen() {
   // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket.
   // Cập nhật trực tiếp dữ liệu vào cache của React Query để tránh flicker UI và tối ưu tải mạng.
   useBucketSizesSync(
-    useCallback((updatedSizes: Record<string, number>) => {
+    useCallback((updatedSizes: Record<string, string>) => {
       queryClient.setQueryData<BucketItem[]>(
         [...scope, "storage", "buckets"],
         (prevBuckets) => {
@@ -35,7 +35,7 @@ export function StorageDirectoryScreen() {
             if (updatedSizes[bucket.name] !== undefined) {
               return {
                 ...bucket,
-                used_bytes: updatedSizes[bucket.name],
+                used_mb: updatedSizes[bucket.name],
               };
             }
             return bucket;

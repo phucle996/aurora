@@ -38,7 +38,7 @@ join qua workspace owner, vì UUID bucket từ URL không phải authority.
 
 | Status | `data` |
 |---|---|
-| `200` | `id`, physical `name`, `capacity_quota_bytes`, `used_bytes`, `created_at`, `updated_at` |
+| `200` | `id`, physical `name`, `capacity_quota_bytes`, `used_mb` (fixed-point decimal string), `created_at`, `updated_at` |
 | `400` | Invalid UUID error envelope |
 | `403` | ACR/context/permission failure |
 | `404` | Bucket absent or owned by another personal workspace |
@@ -89,7 +89,9 @@ the workspace-scoped read grant before handler execution. The handler uses a
 five-second request context, parses only the UUID, and calls
 `PersonalBucketService.GetBucket`. The service delegates to one repository
 query; it does not query Zone/MinIO because `used_bytes` is the latest
-asynchronous PostgreSQL projection, not a live S3 probe.
+asynchronous PostgreSQL projection, not a live S3 probe. The handler converts
+that durable byte count to `used_mb` before returning JSON, so the UI never
+parses an unsafe byte integer.
 
 ```mermaid
 sequenceDiagram
@@ -109,6 +111,7 @@ sequenceDiagram
     R->>PG: SELECT bucket JOIN personal workspace by owner
     alt matching row
         PG-->>H: durable bucket projection
+        H->>H: Convert used_bytes to fixed-point used_mb string
         H-->>E: 200 data envelope
     else no row
         PG-->>H: ErrNotFound
@@ -125,7 +128,7 @@ sequenceDiagram
 |---|---|
 | Bucket create is still pending | Row already exists after command commit, so this endpoint can show it even before MinIO succeeds. |
 | Create later fails | JO removes the candidate row. A subsequent read becomes `404`. |
-| Size lag | `used_bytes` remains the last accepted size snapshot. Read does not block on Zone reachability. |
+| Size lag | `used_bytes` remains the last accepted size snapshot and is returned as fixed-point `used_mb`. Read does not block on Zone reachability. |
 | Cross-owner UUID probe | Repository returns no row and handler replies `404`. |
 | Cross-workspace or cross-Zone UUID owned by same user | Repository checks owner only, not current workspace or Zone. A grant on the selected workspace can therefore read another personally owned bucket by UUID. This differs from list/names scope behavior. |
 | Missing workspace cookie | ACR may authenticate user but Controlplane `Authorize` rejects because its permission key requires workspace context. |

@@ -1,85 +1,98 @@
 # Storage Bucket Usage Projection — God View
 
 This runtime workflow projects physically observed MinIO usage into
-Controlplane PostgreSQL. It is not an API request and it does not use the
-storage command/result outbox. PostgreSQL `used_bytes` is the durable read model
-for bucket list/detail and a soft realtime notification wakes the UI after a
-changed projection.
+Controlplane PostgreSQL for bucket list/detail views. It is not an API request
+and does not use the storage command/result outbox. PostgreSQL `used_bytes` is
+the durable read model; the HTTP boundary serializes it as fixed-point `used_mb`
+for the UI. Redis only wakes the UI after a changed projection.
+
+The scanner also writes the Zone-local capacity journal used by the separate
+hourly billing-report workflow. A UI projection failure must not silently
+become a billing observation, and a billing report never reads Controlplane
+PostgreSQL.
 
 ## Runtime contract
 
 | Item | Contract |
 |---|---|
-| Trigger | Every 15 seconds from the assigned Zone Control storage-scan work unit. |
-| Producer authority | Only the current assignment epoch may perform the scan and publish. |
+| Trigger | One hourly UTC-boundary scan from each assigned `storage_scan.<shard>` work unit. |
+| Producer authority | Only the current assignment epoch may scan, journal and publish. |
 | Eligibility | Zone metadata must read successfully, status must be `active`, and `services.storage` must be true. |
-| Source observation | MinIO `ListBuckets`, then `ListObjectsV2` pages for names beginning `ws-` or `tn-`. |
-| Transport | `StorageBucketSizesSnapshotV1` on `{prefix}.storage.sizes.v1`, key `zone_id`. |
-| Consumer | JO consumer group `aurora-job-orchestrator-storage-sizes-v1`. |
-| Durable SoT | Controlplane PostgreSQL `personal_buckets.used_bytes` or `tenant_buckets.used_bytes`. |
+| Source observation | MinIO `ListBuckets`, then paginated `ListObjectsV2` for names beginning `ws-` or `tn-`. |
+| Work split | Stable bucket-name hash selects one of `ZONE_CONTROL_ASSIGNMENT_SHARDS` shards; batches are paused to bound load. |
+| UI transport | Shard fragment `StorageBucketSizesSnapshotV1` on `{prefix}.storage.sizes.v1`, keyed by `zone_id`. |
+| Billing journal | `storage.bucket_capacity_journal` plus one `storage.bucket_capacity_scan_completions` marker per shard. |
+| Consumer | JO group `aurora-job-orchestrator-storage-sizes-v1`. |
+| Durable UI SoT | Controlplane PostgreSQL `personal_buckets.used_bytes` or `tenant_buckets.used_bytes`. |
 | Soft projection | Shared Redis Pub/Sub `aurora:realtime:notifications`; loss does not block Kafka offset commit. |
 
 ## Message and key contract
 
 | Field/key | Store | Constraint / operation |
 |---|---|---|
-| `StorageBucketSizesSnapshotV1.event_id` | Kafka protobuf | Exactly 16 bytes. It is diagnostic, not a per-bucket dedup table. |
-| `zone_id` | Kafka protobuf | Exactly 16 bytes and used as producer key. JO currently parses but discards it after validation. |
-| `observed_at_unix_ms` | Kafka protobuf | Carried but not used as a PostgreSQL ordering fence. |
+| `StorageBucketSizesSnapshotV1.event_id` | Kafka protobuf | Exactly 16 bytes; identifies one shard fragment. |
+| `zone_id` | Kafka protobuf | Exactly 16 bytes and producer key; JO validates it before projection. |
+| `observed_at_unix_ms` | Kafka protobuf | Observation timestamp; currently not a PostgreSQL ordering fence. |
 | Bucket entries | Kafka protobuf | At most 50,000; non-negative size; non-empty name ≤128 beginning `ws-` or `tn-`. |
-| `storage.personal_buckets.used_bytes` | PostgreSQL | `UPDATE ... IS DISTINCT FROM` returns owner only if value changed. |
-| `storage.tenant_buckets.used_bytes` | PostgreSQL | Same distinct update, then query active tenant member ids. |
-| `aurora:realtime:notifications` | Shared Redis Pub/Sub | JSON `{kind:"storage",user_id,payload:{sizes}}`, best effort only. |
-| Dead-letter topic | Kafka | Invalid snapshots are DLQ-published before source offset commit. |
+| `storage.bucket_capacity_journal` | Zone ClickHouse | One observed byte count per bucket/shard/generation for billing. |
+| `storage.bucket_capacity_scan_completions` | Zone ClickHouse | Barrier marker; billing waits for all configured shard IDs for one hour. |
+| `storage.personal_buckets.used_bytes` | PostgreSQL | `UPDATE ... IS DISTINCT FROM` returns owner only when value changed. |
+| `storage.tenant_buckets.used_bytes` | PostgreSQL | Same distinct update, then query active tenant member IDs. |
+| `aurora:realtime:notifications` | Shared Redis Pub/Sub | JSON `{kind:"storage",user_id,payload:{unit:"MB",sizes:{bucket:"decimal"}}}`, best effort only. |
+| Dead-letter topic | Kafka | Invalid fragments are DLQ-published before source offset commit. |
 
-## Phase 1 — assigned Zone Control MinIO scan
+## Phase 1 — assigned Zone Control MinIO shard scan
 
-Zone Control starts the scanner only while it owns
-`assignment.storage_scan.0`. At each cycle it waits 15 seconds, reads Zone
-metadata from `AURORA_ZONE_CONFIG`, skips when metadata read fails or storage
-is disabled/inactive, and checks the assignment epoch before publishing. It lists all buckets,
-ignores system names outside `ws-`/`tn-`, scans every paginated object list and
-uses saturating addition for object sizes. It publishes a complete snapshot only
-when non-empty.
+Zone Control starts one scanner per owned `assignment.storage_scan.<shard>`.
+The scanner aligns to the next UTC hour, reads `AURORA_ZONE_CONFIG`, skips an
+inactive/disabled Zone, lists the bucket catalog, keeps only this shard's
+names, and scans object pages in bounded batches with a configured pause.
+Assignment epoch checks happen before each batch and before every side effect.
+A non-empty shard emits a UI fragment; an empty shard emits no UI fragment but
+still records its capacity completion marker for billing.
 
 ```mermaid
 sequenceDiagram
-    participant ZC as assigned Zone Control storage worker
-    participant KV as AURORA_ZONE_CONFIG
-    participant DP as Zone Control storage scanner
+    participant ZC as Zone Control scheduler
+    participant KV as Assignment and Zone metadata KV
+    participant W as Storage scan shard worker
     participant M as Private MinIO
+    participant H as Zone CH capacity journal/barrier
     participant K as Storage sizes Kafka
 
-    ZC->>ZC: Wait 15 seconds
-    ZC->>KV: Read Zone metadata
+    ZC->>KV: Heartbeat and reconcile assignment.storage_scan.shard
+    KV-->>ZC: Current member and assignment epoch
+    ZC->>W: Start shard with epoch
+    W->>W: Wait for next UTC hour boundary
+    W->>KV: Read Zone metadata
     alt metadata unavailable, inactive or storage disabled
-        KV-->>L: skip cycle
-    else assignment may perform side effects
-        ZC->>M: ListBuckets
-        loop each ws or tn bucket and every page
-            ZC->>M: ListObjectsV2
-            M-->>ZC: object sizes and continuation
+        KV-->>W: Skip this cycle
+    else eligible and assignment current
+        W->>M: ListBuckets and retain this shard's names
+        loop each bounded batch and every object page
+            W->>KV: Verify assignment epoch
+            W->>M: ListObjectsV2
+            M-->>W: Object sizes and continuation token
+            W->>W: Pause between batches
         end
-        ZC->>ZC: Recheck assignment epoch
-        alt non-empty snapshot and assignment still current
-            ZC->>K: Publish StorageBucketSizesSnapshotV1 keyed by Zone
+        W->>H: Insert capacity rows and shard completion marker
+        W->>KV: Verify assignment before publish
+        alt non-empty fragment and assignment still current
+            W->>K: Publish StorageBucketSizesSnapshotV1 fragment keyed by Zone
         else empty or assignment lost
-            ZC->>ZC: Skip publish
+            W->>W: Skip UI publish; retain only a complete marker for an empty shard
         end
     end
 ```
 
 ## Phase 2 — JO validation, PostgreSQL projection and soft notification
 
-JO polls Kafka manually. It requires payload ≤8 MiB, decodes schema version 1,
-validates byte lengths/count/names/non-negative sizes, and sends malformed
-records to DLQ before committing their source offset. For a valid snapshot it
-iterates entries. Personal update joins workspace and returns one owner only
-when value changed. Tenant update returns all active members only when its
-bucket changed. Database side-effect error exits listener without committing
-this or later partition offsets. After all durable updates, it publishes a
-per-user size map to Redis. Pub/Sub failure is logged and ignored because the
-database projection is already authoritative.
+JO polls the storage-sizes Kafka topic manually. It requires payload ≤8 MiB,
+schema version 1, exact event/Zone byte lengths, ≤50,000 entries, namespace
+validity and non-negative sizes. A valid fragment updates only the bucket
+entries it contains; fragments from different shards therefore compose into
+the current projection. A PostgreSQL side-effect error stops the listener
+before committing the current or later partition offsets.
 
 ```mermaid
 sequenceDiagram
@@ -89,36 +102,38 @@ sequenceDiagram
     participant R as Shared Redis PubSub
     participant U as Cloud Console
 
-    K-->>JO: Snapshot record
-    JO->>JO: Decode size and namespace validation
-    alt invalid snapshot
-        JO->>K: Publish DLQ record
-        JO->>K: Commit source offset
-    else valid snapshot
-        loop each bucket
+    K-->>JO: Shard snapshot fragment
+    JO->>JO: Decode size, namespace and fragment validation
+    alt invalid fragment
+        JO->>K: Publish sanitized DLQ record
+        JO->>K: Commit source offset after DLQ ACK
+    else valid fragment
+        loop each bucket in this shard fragment
             alt ws bucket
                 JO->>PG: UPDATE personal used_bytes if distinct
                 PG-->>JO: changed owner or no row
             else tn bucket
                 JO->>PG: UPDATE tenant used_bytes and active members
-                PG-->>JO: changed member ids or no row
+                PG-->>JO: changed member IDs or no row
             end
         end
         alt any PostgreSQL update fails
-            JO->>JO: Return error without committing offset
+            JO-->>JO: Return error without committing offset
         else all updates durable
-            JO->>R: Publish changed sizes per user
-            R-->>U: best effort refresh hint
+            JO->>R: Publish changed sizes per user as fixed-point MB strings
+            R-->>U: Best-effort refresh hint
             JO->>K: Commit source offset
         end
     end
 ```
 
-## Phase 3 — Read-side visibility
+## Phase 3 — read-side visibility
 
-Personal bucket list/detail reads `used_bytes` directly from PostgreSQL after
-normal ACR and Controlplane authorization. UI can receive Pub/Sub hint, but
-loss/reordering of notification cannot alter the value it sees after refetch.
+Personal and tenant bucket list/detail APIs read `used_bytes` only after their
+normal ACR and Controlplane authorization, then serialize it as `used_mb`.
+The Pub/Sub message carries the same unit as fixed-point MB strings. The
+message is a refresh hint; loss, duplication or reordering cannot alter the
+value returned after a refetch.
 
 ```mermaid
 sequenceDiagram
@@ -126,35 +141,34 @@ sequenceDiagram
     participant R as Shared Redis PubSub
     participant E as Envoy and ACR
     participant CP as Controlplane storage read
-    participant PG as PostgreSQL
+    participant PG as Controlplane PostgreSQL
 
     R-->>U: Optional storage size changed hint
     U->>E: Refetch authorized bucket list or detail
-    E->>CP: Personal rewritten request and trusted context
+    E->>CP: Personal/tenant rewritten request and trusted context
     CP->>PG: Read used_bytes projection
-    PG-->>CP: latest committed value
-    CP-->>U: authoritative JSON response
+    PG-->>CP: Latest committed value
+    CP-->>U: Authoritative JSON response with used_mb, not raw bytes
 ```
 
 ## Failure, ordering and accuracy rules
 
 | Condition | Actual behavior |
 |---|---|
-| MinIO scan fails part way | Entire cycle is dropped and no partial snapshot is published. |
-| Snapshot is empty | No snapshot is emitted, so a bucket disappearing from MinIO does not itself set Central usage to zero. |
-| Kafka publish fails | Error is logged. Next successful assigned cycle retries with a new full snapshot. |
-| Invalid source snapshot | DLQ publish must succeed before source offset is committed. |
-| PostgreSQL update fails | Worker stops with error before committing current offset, causing replay. Replays are safe with `IS DISTINCT FROM`. |
-| Redis notification fails | Offset commits after durable PG update. UI eventually learns by refetch. |
-| Snapshot ordering | `observed_at_unix_ms` is not used to fence out-of-order snapshot writes. A late snapshot can overwrite a newer `used_bytes`; this is an accuracy discrepancy. |
-| Snapshot source Zone | JO validates that `zone_id` is 16 bytes but discards it before updating by globally unique bucket name. The consumer does not prove that snapshot Zone equals stored bucket Zone. |
-| Tenant runtime path | Worker supports `tn-` projections although tenant HTTP handlers are currently no-op. This is a runtime data path, not evidence that tenant storage API is enabled. |
+| MinIO scan fails part way | Drop the entire shard cycle; do not emit a partial fragment or billing completion. |
+| Assignment is lost | Cancel before the next batch or publish; another replica can rebalance the shard. |
+| Empty shard | No UI fragment; completion marker still allows the hourly billing barrier to close. |
+| Kafka publish fails | Capacity journal remains durable; UI fragment retries on the next assigned cycle. |
+| Invalid source fragment | DLQ publish must succeed before source offset is committed. |
+| PostgreSQL update fails | Worker stops before committing current offset, causing replay; `IS DISTINCT FROM` makes replay safe. |
+| Redis notification fails | Offset commits after durable PostgreSQL update; UI learns by refetch. |
+| Fragment ordering | `observed_at_unix_ms` is not yet a PostgreSQL ordering fence; a late fragment can overwrite newer `used_bytes`. |
+| Tenant runtime path | `tn-` projection is supported although tenant HTTP storage handlers remain no-op; projection support is not API enablement. |
 
 ## Code map
 
 - `zone-control/src/orchestrator.rs`
 - `zone-control/src/zone_storage.rs`
-- `dataplane/src/infra/kafka.rs`
 - `job-orchestrator/src/storage_usage/worker.rs`
 - `job-orchestrator/src/storage_usage/store.rs`
 - `proto/platform_transport.proto`

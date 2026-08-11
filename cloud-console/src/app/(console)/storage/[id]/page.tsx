@@ -37,7 +37,7 @@ function ViewBucketContent() {
   const queryClient = useQueryClient();
   // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket cho chi tiết bucket
   useBucketSizesSync(
-    useCallback((updatedSizes: Record<string, number>) => {
+    useCallback((updatedSizes: Record<string, string>) => {
       queryClient.setQueryData<BucketItem | null>(
         [...scope, "storage", "bucket", id],
         (prevBucket) => {
@@ -45,7 +45,7 @@ function ViewBucketContent() {
           if (updatedSizes[prevBucket.name] !== undefined) {
             return {
               ...prevBucket,
-              used_bytes: updatedSizes[prevBucket.name],
+              used_mb: updatedSizes[prevBucket.name],
             };
           }
           return prevBucket;

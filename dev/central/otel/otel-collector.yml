@@ -136,8 +136,8 @@ processors:
   # Central and Zone have independent customer telemetry stores. Docker filelog
   # can see the whole development host, so Central discards records carrying
   # Zone/customer identity before export. Unlabelled MinIO/Stalwart infra logs
-  # remain part of the Central operator plane. The separate metering pipeline
-  # below receives reviewed metering envelopes for ClickHouse.
+  # remain part of the Central operator plane. Storage metering is Zone-owned
+  # and never enters the Central telemetry pipeline.
   filter/exclude_zone_runtime:
     error_mode: ignore
     logs:
@@ -206,29 +206,7 @@ processors:
           - delete_key(log.attributes, "span_id") where log.attributes["span_id"] == ""
           - delete_key(log.attributes, "error") where log.attributes["error"] == ""
 
-  # transform/metering: storage is one module-owned projection of the generic
-  # metering envelope. It never logs raw Authorization and only parses the
-  # bounded bucket segment needed by the legacy Central projection.
-  transform/metering:
-    error_mode: ignore
-    log_statements:
-      - context: log
-        statements:
-          - merge_maps(log.attributes, ExtractPatterns(log.attributes["path"], "^/(?P<bucket_name>[^/]+)"), "upsert") where log.attributes["path"] != nil and ((log.attributes["log_type"] == "metering" and log.attributes["module"] == "storage" and log.attributes["metering_schema"] == "storage.access.completed.v1") or log.attributes["log_type"] == "envoy-storage-access")
-
-  # The generic envelope filter is stable as new metering modules are added.
-  # The legacy value remains accepted during Central ClickHouse migration.
-  filter/only_metering:
-    error_mode: ignore
-    logs:
-      log_record:
-        - attributes["log_type"] != "metering" and attributes["log_type"] != "envoy-storage-access"
-
 exporters:
-  clickhouse:
-    endpoint: "tcp://clickhouse:9000"
-    database: "otlp"
-    ttl: 168h
   debug:
     verbosity: basic
   # Exporter gửi dữ liệu metrics sang VictoriaMetrics bằng chuẩn Remote Write
@@ -294,10 +272,3 @@ service:
       # Bổ sung filter/exclude_noise trước transform để lọc bỏ log rác ngay khi nhận được
       processors: [memory_limiter, filter/exclude_noise, transform, filter/exclude_zone_runtime, batch]
       exporters: [otlp_http/victorialogs]
-
-    # Pipeline logs/metering: nhận envelope chung; module-owned projections
-    # decide which fields are valid for ClickHouse.
-    logs/metering:
-      receivers: [file_log]
-      processors: [memory_limiter, transform, filter/only_metering, transform/metering, batch]
-      exporters: [clickhouse]

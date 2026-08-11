@@ -44,12 +44,12 @@ func TestEstimateStorageUsesActivePricingAndL1Cache(t *testing.T) {
 		ServiceType: entity.ServiceTypeStorage, VersionNumber: 1,
 		EffectiveFrom: time.Now().Add(-time.Minute), Currency: "USD",
 		Ranges: []entity.TierRangeInput{
-			{RangeStart: 0, RangeEnd: 51_200, BaseUnitPrice: 15_000},
-			{RangeStart: 51_200, RangeEnd: 0, BaseUnitPrice: 12_000},
+			{RangeStart: 0, RangeEnd: 50, BaseUnitPrice: 15_000},
+			{RangeStart: 50, RangeEnd: 0, BaseUnitPrice: 12_000},
 		},
 	}}
 	service := billingService.NewTierService(repo, nil)
-	capacityBytes := int64(51_201 * 1_048_576)
+	capacityBytes := int64(51_201_000_000)
 
 	first, err := service.EstimateStorage(context.Background(), capacityBytes)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestEstimateStorageUsesActivePricingAndL1Cache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second estimate: %v", err)
 	}
-	if first.HourlyMicroUnits != 768_012_000 || first.MonthlyMicroUnits != 560_648_760_000 {
+	if first.HourlyMicroUnits != 764_412 || first.MonthlyMicroUnits != 558_020_760 {
 		t.Fatalf("estimate = %#v", first)
 	}
 	if second.TierVersionID != first.TierVersionID || repo.calls.Load() != 1 {
@@ -80,7 +80,7 @@ func TestEstimateStorageHandlesLargeExactIntegerCharge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("large estimate: %v", err)
 	}
-	if estimate.HourlyMicroUnits != 1_073_741_824_000_000 {
+	if estimate.HourlyMicroUnits != 1_125_899_906_842 {
 		t.Fatalf("hourly estimate = %d", estimate.HourlyMicroUnits)
 	}
 }

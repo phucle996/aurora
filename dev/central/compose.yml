@@ -144,20 +144,6 @@ services:
           - controlplane.aurora.local
     restart: unless-stopped
 
-  clickhouse:
-    cpuset: "0-5"
-    image: clickhouse/clickhouse-server:latest
-    container_name: central-clickhouse
-    environment:
-      - CLICKHOUSE_SKIP_USER_SETUP=1
-    ports:
-      - "18123:8123" # Cổng HTTP interface để push logs & query debug
-      - "19000:9000" # Cổng native protocol của ClickHouse
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    restart: unless-stopped
-
   psql:
     cpuset: "0-5"
     image: postgres:18
@@ -239,8 +225,6 @@ services:
         condition: service_healthy
       acr-redis:
         condition: service_healthy
-      clickhouse:
-        condition: service_started
       vault:
         condition: service_started
     restart: unless-stopped
@@ -451,6 +435,10 @@ services:
         create_topic aurora.zone.metadata.queries.v1 6
         create_topic aurora.zone.reports.v1 6
         create_topic aurora.storage.sizes.v1 6
+        create_topic aurora.storage.usage.reports.v1 6
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$$BOOTSTRAP" \
+          --entity-type topics --entity-name aurora.storage.usage.reports.v1 \
+          --alter --add-config retention.ms=604800000
         create_topic aurora.iam.account-verification.v1 6
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" \
           --create --if-not-exists \
@@ -496,8 +484,6 @@ services:
       - "14318:4318" # Cổng nhận OpenTelemetry HTTP Traces & Metrics
     depends_on:
       victoriatraces:
-        condition: service_started
-      clickhouse:
         condition: service_started
     restart: unless-stopped
 
@@ -771,8 +757,6 @@ volumes:
     name: controlplane_controlplane_timeline_scylla_data
   controlplane_kafka_1_data:
     name: controlplane_controlplane_kafka_1_data
-  clickhouse_data:
-    name: controlplane_clickhouse_data
   billing_psql_data:
     name: controlplane_billing_psql_data
 

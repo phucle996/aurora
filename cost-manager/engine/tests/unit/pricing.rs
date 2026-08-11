@@ -87,3 +87,25 @@ fn positive_fractional_micro_unit_rounds_once_at_charge_boundary() {
     };
     assert_eq!(snapshot.charge_micro_units_for_bytes(1).unwrap(), 1);
 }
+
+#[test]
+fn storage_gb_hour_fixed_point_uses_decimal_gb_ranges() {
+    let snapshot = TierPricingSnapshot {
+        tier_version_id: Uuid::nil(),
+        version_number: 1,
+        effective_from: Utc::now(),
+        effective_to: None,
+        checksum: String::new(),
+        ranges: vec![TierRange {
+            range_start: 0,
+            range_end: 0,
+            base_unit_price: 12_000,
+        }],
+    };
+    assert_eq!(
+        snapshot
+            .charge_micro_units_for_storage_gb_hours_micros(1_000_000)
+            .unwrap(),
+        12_000
+    );
+}

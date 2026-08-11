@@ -10,7 +10,7 @@ import (
 type ServiceType string
 
 const (
-	ServiceTypeStorage    ServiceType = "STORAGE"     // Dịch vụ lưu trữ dữ liệu (MB)
+	ServiceTypeStorage    ServiceType = "STORAGE"     // Dịch vụ lưu trữ theo GB-hour
 	ServiceTypeNetworkIn  ServiceType = "NETWORK_IN"  // Băng thông mạng inbound truyền vào (MB)
 	ServiceTypeNetworkOut ServiceType = "NETWORK_OUT" // Băng thông mạng outbound truyền ra (MB)
 	ServiceTypeVM         ServiceType = "VM"          // Dịch vụ máy chủ ảo tính theo giờ
@@ -26,9 +26,9 @@ type Tier struct {
 	ServiceType     ServiceType // Loại dịch vụ (VD: STORAGE | NETWORK_IN | NETWORK_OUT)
 	MetadataVersion int         // OCC token dành riêng cho display metadata
 	PricingVersion  int         // Immutable pricing version đang hiển thị
-	RangeStart      int64       // Mốc bắt đầu tính bằng Megabytes (MB)
-	RangeEnd        int64       // Mốc kết thúc (MB), 0 = không giới hạn
-	BaseUnitPrice   int64       // Giá gốc (USD Micro-units/MB/Hour)
+	RangeStart      int64       // Mốc bắt đầu theo đơn vị của service (GB-hour cho STORAGE)
+	RangeEnd        int64       // Mốc kết thúc theo service, 0 = không giới hạn
+	BaseUnitPrice   int64       // Giá gốc theo đơn vị của pricing snapshot
 	CreatedAt       time.Time   // Thời điểm tạo của nấc cước
 	UpdatedAt       time.Time   // Thời điểm cập nhật biểu giá gốc
 }

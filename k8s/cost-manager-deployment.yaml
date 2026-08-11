@@ -80,8 +80,6 @@ spec:
                 secretKeyRef:
                   name: cost-manager-secrets
                   key: database-url
-            - name: CLICKHOUSE_URL
-              value: "http://clickhouse-server.controlplane.svc.cluster.local:8123"
             # [COMMENT]: Cost chỉ kết nối L2 Cache/Business Cache, không kết nối Redis Security-State của ACR
             - name: CACHE_REDIS_URL
               valueFrom:

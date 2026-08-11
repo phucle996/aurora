@@ -139,10 +139,18 @@ pub async fn run_bucket_sizes_listener(
             }
 
             for (user_id, sizes) in user_changed_buckets {
+                let sizes_mb = sizes
+                    .into_iter()
+                    .map(|(bucket_name, size_bytes)| {
+                        let whole = size_bytes / 1_048_576;
+                        let fraction_micros = (size_bytes % 1_048_576) * 1_000_000 / 1_048_576;
+                        (bucket_name, format!("{whole}.{fraction_micros:06}"))
+                    })
+                    .collect::<HashMap<_, _>>();
                 let envelope = serde_json::to_vec(&serde_json::json!({
                     "kind": "storage",
                     "user_id": user_id,
-                    "payload": { "sizes": sizes }
+                    "payload": { "unit": "MB", "sizes": sizes_mb }
                 }))?;
                 // UI wake-up is soft state. PostgreSQL is already authoritative,
                 // so Redis Pub/Sub failure must not replay durable bucket updates.

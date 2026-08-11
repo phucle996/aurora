@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	storageBytesPerMB            int64 = 1_048_576
+	storageBytesPerDecimalGB     int64 = 1_000_000_000
+	storageMicrosPerGB           int64 = 1_000_000
 	storageEstimateHoursPerMonth int64 = 730
 )
 
@@ -60,29 +61,32 @@ func (s *tierService) GetTierDetail(ctx context.Context, code string, serviceTyp
 	return s.tierRepo.GetTierDetail(ctx, code, serviceType)
 }
 
-// EstimateStorage uses the same effective progressive ranges as the billing engine, then scales one hourly
-// charge by the documented 730-hour month. The estimate never writes wallet/ledger state.
+// EstimateStorage uses the same effective progressive decimal GB-hour ranges
+// as the billing engine, then scales one hourly charge by the documented
+// 730-hour month. The estimate never writes wallet/ledger state.
 func (s *tierService) EstimateStorage(ctx context.Context, capacityBytes int64) (*entity.StorageEstimate, error) {
 	snapshot, err := s.pricingCache.get(ctx, entity.ServiceTypeStorage)
 	if err != nil {
 		return nil, err
 	}
-	// Handler đã validate capacity_bytes. Giữ phép tính tại boundary này để pricing flow không phụ thuộc helper
-	// rải ở service package; 1 MiB là mẫu số cố định nên uint128 đủ chính xác và không cần float/big.Rat.
-	wholeMB := capacityBytes / storageBytesPerMB
-	remainderBytes := capacityBytes % storageBytesPerMB
+	// The engine reports fixed-point GB-hours: one micro-unit is 1,000 bytes
+	// for a one-hour capacity observation. Floor here to match the wire
+	// contract; the pricing snapshot performs the final integer rounding.
+	capacityMicros := capacityBytes / (storageBytesPerDecimalGB / storageMicrosPerGB)
+	wholeGB := capacityMicros / storageMicrosPerGB
+	remainderMicros := capacityMicros % storageMicrosPerGB
 	var numeratorHigh, numeratorLow uint64
 	for _, tierRange := range snapshot.Ranges {
-		if tierRange.RangeStart > wholeMB || (tierRange.RangeStart == wholeMB && remainderBytes == 0) {
+		if tierRange.RangeStart > wholeGB || (tierRange.RangeStart == wholeGB && remainderMicros == 0) {
 			break
 		}
-		startBytes := tierRange.RangeStart * storageBytesPerMB
-		upperBytes := capacityBytes
-		if tierRange.RangeEnd != 0 && tierRange.RangeEnd <= wholeMB {
-			upperBytes = tierRange.RangeEnd * storageBytesPerMB
+		startMicros := tierRange.RangeStart * storageMicrosPerGB
+		upperMicros := capacityMicros
+		if tierRange.RangeEnd != 0 && tierRange.RangeEnd <= wholeGB {
+			upperMicros = tierRange.RangeEnd * storageMicrosPerGB
 		}
-		unitsBytes := upperBytes - startBytes
-		productHigh, productLow := bits.Mul64(uint64(unitsBytes), uint64(tierRange.BaseUnitPrice))
+		unitsMicros := upperMicros - startMicros
+		productHigh, productLow := bits.Mul64(uint64(unitsMicros), uint64(tierRange.BaseUnitPrice))
 		var carry uint64
 		numeratorLow, carry = bits.Add64(numeratorLow, productLow, 0)
 		var overflow uint64
@@ -91,13 +95,18 @@ func (s *tierService) EstimateStorage(ctx context.Context, capacityBytes int64) 
 			return nil, fmt.Errorf("pricing charge exceeds uint128 capacity")
 		}
 	}
-	quotientHigh := numeratorHigh >> 20
-	quotientLow := numeratorLow>>20 | numeratorHigh<<44
+	const storageMicrosDivisor uint64 = 1_000_000
+	if numeratorHigh >= storageMicrosDivisor {
+		return nil, fmt.Errorf("pricing charge exceeds BIGINT capacity")
+	}
+	highQuotient, highRemainder := bits.Div64(0, numeratorHigh, storageMicrosDivisor)
+	quotientHigh := highQuotient
+	quotientLow, remainder := bits.Div64(highRemainder, numeratorLow, storageMicrosDivisor)
 	const maxInt64 = uint64(^uint64(0) >> 1)
 	if quotientHigh != 0 || quotientLow > maxInt64 {
 		return nil, fmt.Errorf("pricing charge exceeds BIGINT capacity")
 	}
-	if numeratorLow&uint64(storageBytesPerMB-1) != 0 {
+	if remainder != 0 {
 		if quotientLow == maxInt64 {
 			return nil, fmt.Errorf("pricing charge exceeds BIGINT capacity")
 		}

@@ -32,8 +32,6 @@ flowchart LR
     NATS["NATS Core"]
     Cost["Cost Manager\nGo API + Rust Engine"]
     BillingDB[("Billing PostgreSQL")]
-    ClickHouse[("Central ClickHouse
-    current metering")]
     Notify["Notification Service"]
     Scylla[("Scylla")]
     Centrifugo["Centrifugo"]
@@ -64,7 +62,6 @@ flowchart LR
     NATS <--> ZoneBoundary
 
     Cost --> BillingDB
-    Cost --> ClickHouse
     Cost --> AuthRedis
     Cost --> SharedRedis
     Cost --> Vault
@@ -80,15 +77,13 @@ flowchart LR
     Notify --> OTel
 ```
 
-Storage metering is being moved to a Zone-local journal and a versioned report
-transport. Public Edge emits the generic `log_type=metering` envelope with a
-bounded module and versioned schema; each module still owns its projection and
-report contract. The staged path is `Zone Public Edge -> Zone OTel -> Zone
-ClickHouse -> Zone Control report outbox -> Kafka -> Job Orchestrator -> Shared
-Redis -> Cost Engine -> Billing PostgreSQL`. The Zone Control publisher and
-Cost Engine relay are implemented but remain opt-in; until the settlement and
-reconciliation gates pass, the Central ClickHouse edge above remains the
-current billing dependency and the new path must not run concurrently with it.
+Storage metering is Zone-owned. Public Edge emits the generic
+`log_type=metering` envelope with a bounded module and versioned schema. The
+storage path is `Zone Public Edge -> Zone OTel/Victoria -> Zone ClickHouse ->
+Zone Control hourly report outbox -> Kafka -> Job Orchestrator -> Shared Redis
+-> Cost Engine -> Billing PostgreSQL`. Central has no ClickHouse billing
+dependency: Zone ClickHouse is a local journal/aggregation input only, while
+Billing PostgreSQL remains the sole money authority.
 
 ### Components and ownership
 
@@ -100,7 +95,7 @@ current billing dependency and the new path must not run concurrently with it.
 | Job Orchestrator | WAL changefeed, command dispatch, result settlement, repair, and reconciliation | Zone private keys, Zone KV, or workload side effects |
 | Notification Service | Self-user timeline/inbox projection and realtime publish adapter | IAM, job lifecycle, or resource aggregates |
 | Cost Manager | Pricing, plans, wallet, ledger, payment, ownership projection, and usage rating | Controlplane PostgreSQL |
-| Zone Control | Distributed work-unit assignment/rebalance, transfer tickets, and opt-in closed-window storage report outbox/Kafka relay | Wallet mutation, payer inference, Central ClickHouse billing |
+| Zone Control | Distributed work-unit assignment/rebalance, transfer tickets, hourly capacity shards, and storage report outbox/Kafka relay | Wallet mutation, payer inference, Central billing database |
 | Vault | Workload bootstrap identity, connection records, and Transit keys | User or resource business state |
 
 ### Request plane
@@ -197,8 +192,8 @@ Cost Manager API and Engine use a separate Billing PostgreSQL:
 - The Go API runs migrations, REST workflows, the authorization projection, and
   the Redis consumer.
 - The Go API starts the Rust Engine with a separate Vault identity.
-- The Engine reads usage from ClickHouse, pins an immutable pricing version, and
-  writes the wallet/ledger.
+- The Engine consumes versioned Zone reports from Shared Redis, pins an
+  immutable pricing version for each usage kind, and writes the wallet/ledger.
 - A Redis lease, durable fencing, a wallet row lock, and a deterministic ledger
   ID prevent duplicate debits.
 
@@ -213,7 +208,7 @@ Cost Manager API and Engine use a separate Billing PostgreSQL:
 | Kafka | Durable Central↔Zone command/result/report transport |
 | NATS Core | Central↔Zone soft-state transport; JetStream is not enabled |
 | Scylla | Durable self-user timeline/inbox projection |
-| ClickHouse | Usage/OLAP input for billing |
+| Zone ClickHouse | Zone-local usage/OLAP journal input; never a Central money authority |
 | Victoria stack | Diagnostic telemetry, not business state |
 
 ### Current deployment state

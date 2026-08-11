@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use async_nats::jetstream::{
     self,
@@ -59,6 +59,7 @@ struct Settings {
     late_grace: Duration,
     poll_interval: Duration,
     max_backfill_windows: u32,
+    storage_scan_shards: u16,
 }
 
 impl Settings {
@@ -68,7 +69,12 @@ impl Settings {
         if zone_id.is_nil() {
             return Err("ZONE_ID must be non-nil for storage metering".to_string());
         }
-        let window_seconds = parse_env("METERING_WINDOW_SECONDS", 3_600_u64)?.clamp(60, 86_400);
+        let window_seconds = parse_env("METERING_WINDOW_SECONDS", 3_600_u64)?;
+        if window_seconds != 3_600 {
+            return Err(
+                "METERING_WINDOW_SECONDS must be exactly 3600 for hourly settlement".to_string(),
+            );
+        }
         let late_grace_seconds =
             parse_env("METERING_LATE_GRACE_SECONDS", 300_u64)?.clamp(30, 3_600);
         if late_grace_seconds >= window_seconds {
@@ -91,6 +97,7 @@ impl Settings {
                 parse_env("METERING_PUBLISH_INTERVAL_SECONDS", 30_u64)?.clamp(5, 3_600),
             ),
             max_backfill_windows: parse_env("METERING_MAX_BACKFILL_WINDOWS", 24_u32)?.clamp(1, 168),
+            storage_scan_shards: parse_env("ZONE_CONTROL_ASSIGNMENT_SHARDS", 16_u16)?.clamp(1, 256),
         })
     }
 
@@ -109,6 +116,17 @@ struct AccessAggregateRow {
     upload_bytes: u64,
     download_bytes: u64,
     request_count: u64,
+}
+
+#[derive(Debug, Deserialize, clickhouse::Row)]
+struct CapacityAggregateRow {
+    bucket_name: String,
+    storage_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, clickhouse::Row)]
+struct CapacityShardCountRow {
+    completed_shards: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -368,8 +386,17 @@ async fn publish_closed_windows(
             .ok_or_else(|| "closed metering window start is invalid".to_string())?;
         let window_end = DateTime::<Utc>::from_timestamp_millis(end_ms)
             .ok_or_else(|| "closed metering window end is invalid".to_string())?;
-        let aggregates =
-            read_closed_window(clickhouse, settings.zone_id, window_start, window_end).await?;
+        let Some(aggregates) = read_closed_window(
+            clickhouse,
+            settings.zone_id,
+            window_start,
+            window_end,
+            settings.storage_scan_shards,
+        )
+        .await?
+        else {
+            continue;
+        };
         if aggregates.is_empty() {
             continue;
         }
@@ -420,8 +447,26 @@ async fn read_closed_window(
     zone_id: Uuid,
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
-) -> Result<Vec<StorageUsageAggregateV1>, String> {
-    let query = format!(
+    expected_shards: u16,
+) -> Result<Option<Vec<StorageUsageAggregateV1>>, String> {
+    let completion_query = format!(
+        "SELECT countDistinct(shard_id) AS completed_shards \
+         FROM storage.bucket_capacity_scan_completions \
+         WHERE zone_id = toUUID('{}') \
+           AND billing_window_end = toDateTime64('{}', 3, 'UTC')",
+        zone_id,
+        window_end.format("%Y-%m-%d %H:%M:%S%.3f")
+    );
+    let completed = clickhouse
+        .query(&completion_query)
+        .fetch_one::<CapacityShardCountRow>()
+        .await
+        .map_err(|error| format!("read Zone capacity scan completion: {error}"))?;
+    if completed.completed_shards < u64::from(expected_shards) {
+        return Ok(None);
+    }
+
+    let transfer_query = format!(
         "SELECT resource_id, sum(bytes_received) AS upload_bytes, \
          sum(bytes_sent) AS download_bytes, count() AS request_count \
          FROM storage.access_event_journal FINAL \
@@ -441,10 +486,10 @@ async fn read_closed_window(
         window_end.format("%Y-%m-%d %H:%M:%S%.3f")
     );
     let mut cursor = clickhouse
-        .query(&query)
+        .query(&transfer_query)
         .fetch::<AccessAggregateRow>()
         .map_err(|error| format!("read Zone ClickHouse closed window: {error}"))?;
-    let mut result = Vec::new();
+    let mut result = BTreeMap::<String, StorageUsageAggregateV1>::new();
     while let Some(row) = cursor
         .next()
         .await
@@ -453,17 +498,73 @@ async fn read_closed_window(
         if row.resource_id.is_nil() {
             continue;
         }
+        if row.upload_bytes == 0 && row.download_bytes == 0 {
+            continue;
+        }
         if result.len() >= MAX_AGGREGATES {
             return Err("closed window exceeds storage report aggregate limit".to_string());
         }
-        result.push(StorageUsageAggregateV1 {
-            resource_id: row.resource_id.to_string(),
-            upload_bytes: row.upload_bytes,
-            download_bytes: row.download_bytes,
-            request_count: row.request_count,
-        });
+        result.insert(
+            row.resource_id.to_string(),
+            StorageUsageAggregateV1 {
+                resource_id: row.resource_id.to_string(),
+                upload_bytes: row.upload_bytes,
+                download_bytes: row.download_bytes,
+                request_count: row.request_count,
+                resource_name: String::new(),
+                storage_bytes: 0,
+                storage_gb_hours_micros: 0,
+            },
+        );
     }
-    Ok(result)
+    let capacity_query = format!(
+        "SELECT bucket_name, argMax(used_bytes, observed_at) AS storage_bytes \
+         FROM storage.bucket_capacity_journal \
+         WHERE zone_id = toUUID('{}') \
+           AND billing_window_end = toDateTime64('{}', 3, 'UTC') \
+         GROUP BY bucket_name ORDER BY bucket_name ASC",
+        zone_id,
+        window_end.format("%Y-%m-%d %H:%M:%S%.3f")
+    );
+    let mut capacity_cursor = clickhouse
+        .query(&capacity_query)
+        .fetch::<CapacityAggregateRow>()
+        .map_err(|error| format!("read Zone capacity aggregate: {error}"))?;
+    while let Some(row) = capacity_cursor
+        .next()
+        .await
+        .map_err(|error| format!("read Zone capacity aggregate row: {error}"))?
+    {
+        if result.len() >= MAX_AGGREGATES {
+            return Err("closed window exceeds storage report aggregate limit".to_string());
+        }
+        let storage_gb_hours_micros = storage_gb_hours_micros(row.storage_bytes)?;
+        if storage_gb_hours_micros == 0 {
+            continue;
+        }
+        result.insert(
+            format!("name:{}", row.bucket_name),
+            StorageUsageAggregateV1 {
+                resource_id: String::new(),
+                upload_bytes: 0,
+                download_bytes: 0,
+                request_count: 0,
+                resource_name: row.bucket_name,
+                storage_bytes: row.storage_bytes,
+                storage_gb_hours_micros,
+            },
+        );
+    }
+    Ok(Some(result.into_values().collect()))
+}
+
+fn storage_gb_hours_micros(storage_bytes: u64) -> Result<u64, String> {
+    let scaled = u128::from(storage_bytes)
+        .checked_mul(1_000_000)
+        .ok_or_else(|| "storage capacity fixed-point quantity overflow".to_string())?
+        / 1_000_000_000;
+    u64::try_from(scaled)
+        .map_err(|_| "storage capacity fixed-point quantity exceeds u64".to_string())
 }
 
 async fn relay_loop(
@@ -626,24 +727,42 @@ fn validate_report_shape(report: &StorageUsageReportV1) -> Result<(), &'static s
     {
         return Err("STORAGE_USAGE_REPORT_TIME_INVALID");
     }
-    let mut last_resource = None;
+    let mut last_key: Option<String> = None;
     for aggregate in &report.aggregates {
-        let resource_id = Uuid::parse_str(&aggregate.resource_id)
-            .map_err(|_| "STORAGE_USAGE_REPORT_RESOURCE_INVALID")?;
-        if resource_id.is_nil() {
+        let key = if !aggregate.resource_id.is_empty() {
+            let resource_id = Uuid::parse_str(&aggregate.resource_id)
+                .map_err(|_| "STORAGE_USAGE_REPORT_RESOURCE_INVALID")?;
+            if resource_id.is_nil() {
+                return Err("STORAGE_USAGE_REPORT_RESOURCE_INVALID");
+            }
+            format!("id:{resource_id}")
+        } else if !aggregate.resource_name.is_empty() {
+            if aggregate.resource_name.len() > 255
+                || (!aggregate.resource_name.starts_with("ws-")
+                    && !aggregate.resource_name.starts_with("tn-"))
+            {
+                return Err("STORAGE_USAGE_REPORT_RESOURCE_NAME_INVALID");
+            }
+            format!("name:{}", aggregate.resource_name)
+        } else {
             return Err("STORAGE_USAGE_REPORT_RESOURCE_INVALID");
-        }
-        if let Some(previous) = last_resource {
-            if resource_id <= previous {
+        };
+        if let Some(previous) = last_key.as_ref() {
+            if &key <= previous {
                 return Err("STORAGE_USAGE_REPORT_RESOURCE_ORDER_INVALID");
             }
         }
-        last_resource = Some(resource_id);
+        last_key = Some(key);
         if i64::try_from(aggregate.download_bytes).is_err()
             || i64::try_from(aggregate.upload_bytes).is_err()
             || i64::try_from(aggregate.request_count).is_err()
+            || i64::try_from(aggregate.storage_bytes).is_err()
+            || i64::try_from(aggregate.storage_gb_hours_micros).is_err()
         {
             return Err("STORAGE_USAGE_REPORT_NUMERIC_INVALID");
+        }
+        if aggregate.storage_gb_hours_micros > 0 && aggregate.resource_name.is_empty() {
+            return Err("STORAGE_USAGE_REPORT_STORAGE_NAME_REQUIRED");
         }
     }
     Ok(())
@@ -708,6 +827,9 @@ mod tests {
                 upload_bytes: 2,
                 download_bytes: 42,
                 request_count: 1,
+                resource_name: String::new(),
+                storage_bytes: 0,
+                storage_gb_hours_micros: 0,
             }],
             report_sha256: vec![0; 32],
             correction_of_report_id: String::new(),
@@ -739,6 +861,9 @@ mod tests {
             upload_bytes: 0,
             download_bytes: 1,
             request_count: 1,
+            resource_name: String::new(),
+            storage_bytes: 0,
+            storage_gb_hours_micros: 0,
         };
         report.aggregates.push(second);
         assert_eq!(
@@ -754,6 +879,16 @@ mod tests {
         assert_eq!(
             validate_report_shape(&report),
             Err("STORAGE_USAGE_REPORT_CONTRACT_INVALID")
+        );
+    }
+
+    #[test]
+    fn report_rejects_cross_zone_identity() {
+        let report = report();
+        let expected_zone = Uuid::new_v4();
+        assert_eq!(
+            validate_report(&report, expected_zone),
+            Err("STORAGE_USAGE_REPORT_ZONE_MISMATCH")
         );
     }
 }

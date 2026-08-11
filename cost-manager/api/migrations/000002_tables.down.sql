@@ -1,4 +1,6 @@
 -- Migration 000002 Down: Drop toàn bộ các bảng billing module
+DROP TABLE IF EXISTS billing.storage_usage_line_inbox CASCADE;
+DROP TABLE IF EXISTS billing.storage_usage_report_inbox CASCADE;
 DROP TABLE IF EXISTS billing.personal_referral_redemptions CASCADE;
 DROP TABLE IF EXISTS billing.payment_webhook_inbox CASCADE;
 DROP TABLE IF EXISTS billing.payment_intents CASCADE;

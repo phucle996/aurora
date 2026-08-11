@@ -29,7 +29,7 @@ export type MailRuntimePayload = Record<string, unknown> & {
   expires_at: string;
 };
 
-export type BucketSizesPayload = { sizes: Record<string, number> };
+export type BucketSizesPayload = { unit: "MB"; sizes: Record<string, string> };
 
 export type EventMap = {
   "job.notification": JobNotificationPayload;
@@ -47,14 +47,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function decodeEvent<T extends EventType>(eventType: T, value: unknown): EventMap[T] | null {
   if (!isRecord(value)) return null;
   if (eventType === "storage.bucket.sizes.sync") {
+    if (value.unit !== "MB") return null;
     const sizes = value.sizes;
     if (!isRecord(sizes) || Object.keys(sizes).length > 2_000) return null;
-    const normalized: Record<string, number> = {};
+    const normalized: Record<string, string> = {};
     for (const [key, size] of Object.entries(sizes)) {
-      if (typeof size !== "number" || !Number.isFinite(size) || size < 0) return null;
+      if (typeof size !== "string" || !/^\d+\.\d{6}$/.test(size) || size.length > 32) return null;
       normalized[key] = size;
     }
-    return { sizes: normalized } as EventMap[T];
+    return { unit: "MB", sizes: normalized } as EventMap[T];
   }
   if (eventType === "mail.consumer.runtime.changed") {
     const required = [

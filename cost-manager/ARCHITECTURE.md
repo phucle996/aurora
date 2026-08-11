@@ -21,7 +21,7 @@ Cloud / Cost Console
                                                         |             |
                      IAM wallet-provision outbox -------+             |
                                                                       v
-                                                        Cost Engine -> ClickHouse
+                                                        Cost Engine <- Zone report relay
                                                             -> wallet/ledger
 ```
 
@@ -46,44 +46,39 @@ Cloud / Cost Console
 IAM activation/tenant creation -> owner-specific outbox -> Shared Redis Stream
   -> Cost provision consumer -> inbox + PENDING_ACTIVATION wallet transaction
 
-Storage job result -> Controlplane storage outbox -> Job Orchestrator
-  -> Shared Redis ownership stream -> Cost ownership projection transaction
-  -> Cost Engine ClickHouse usage read -> wallet + ledger transaction
+Zone hourly usage report -> Job Orchestrator Kafka relay -> Shared Redis
+  -> Cost Engine fenced settlement -> wallet + ledger transaction
 
 Tier version transaction + pricing outbox -> relay -> Redis PubSub
   -> Engine checksum-validated preload -> safe-boundary COW activation
 ```
 
-## Storage metering transition
+## Storage metering runtime
 
-The current engine still reads the Central ClickHouse `hourly_metering_agg`
-projection for its charge-producing storage egress loop by default. An opt-in
-report-driven replacement is implemented for controlled migration, but it is
-not enabled unless `STORAGE_REPORT_SETTLEMENT_ENABLED=true` is explicitly set:
+The Engine no longer reads a Central ClickHouse projection. Zone-local
+metering journals are aggregated into a versioned report and relayed through
+Kafka and Shared Redis:
 
 ```text
 Zone Public Edge -> Zone OTel -> Zone ClickHouse request journal
   -> Zone Control closed-window report outbox
   -> Kafka storage.usage.reports.v1
   -> Job Orchestrator validation -> Shared Redis stream
-  -> Cost Engine report consumer (opt-in) -> Billing PostgreSQL wallet/ledger
+  -> Cost Engine report consumer -> Billing PostgreSQL wallet/ledger
 ```
 
 The canonical input is
 [`StorageUsageReportV1`](../proto/cost-manager/engine/storage_usage_report.proto).
 Zone ClickHouse is local journal/aggregation state and does not choose a payer.
-The Job Orchestrator relay is shadow-mode infrastructure; it validates size,
-window, UUID, correction lineage and SHA-256 before a report reaches the Redis
-handoff. When the opt-in worker is enabled, it validates the report again,
-persists report/line inbox state, resolves ownership and pricing in Billing
-PostgreSQL, and atomically mutates the wallet plus immutable ledger. Replays are
-idempotent and ACK/XDEL occurs only after commit and an intact billing fence.
-Correction reports are quarantined as `DEAD` until the signed adjustment policy
-is approved. The two charge-producing paths must never run at the same time;
-the default remains the legacy ClickHouse path until the God Plan cutover gates
-are explicitly closed.
+JO validates size, window, identity, correction lineage and SHA-256 before a
+report reaches Redis. The Engine validates again, opens one pricing run for
+each of `NETWORK_IN`, `NETWORK_OUT` and `STORAGE`, resolves ownership in
+Billing PostgreSQL, and atomically mutates wallet plus immutable ledger.
+Replays are idempotent and ACK/XDEL occurs only after commit and an intact
+billing fence. Corrections are quarantined as `DEAD` until the signed
+adjustment policy is approved.
 
 Each public or ACR-local HTTP workflow is documented independently in
-[`god_view/billing/README.md`](../god_view/billing/README.md). Runtime contracts
+[`god_view/billing/`](../god_view/billing/). Runtime contracts
 are included in the terminal phase of the workflow that triggers them; they are
 not standalone generic God Views.

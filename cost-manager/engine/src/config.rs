@@ -25,8 +25,6 @@ pub struct VaultConfig {
 /// Cấu hình hệ thống Cost Manager Engine đọc từ các biến môi trường
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// URL kết nối tới ClickHouse (lưu trữ logs metering)
-    pub clickhouse_url: String,
     /// URL kết nối tới Redis (cache chặn keys và quản lý locks/checkpoint)
     pub redis_url: String,
     /// Số lượng connection tối đa trong PostgreSQL pool
@@ -35,15 +33,8 @@ pub struct Config {
     pub pg_min_connections: u32,
     /// Thời gian chờ tối đa để lấy connection từ pool
     pub pg_acquire_timeout: Duration,
-    /// Chu kỳ quét dữ liệu tính cước định kỳ
-    pub scan_interval: Duration,
     /// Thời gian sống (TTL) của Distributed Lock trên Redis nhằm tránh tranh chấp giữa các Replica
     pub lock_ttl_secs: u64,
-    /// Thời gian sống (TTL) của block key trên Redis khi ví của tài khoản bị khóa
-    pub block_key_ttl_secs: u64,
-    /// Opt-in report-driven storage settlement.  False keeps the legacy
-    /// ClickHouse path active during the controlled shadow/cutover phases.
-    pub storage_report_settlement_enabled: bool,
 
     // --- CẤU HÌNH BẢO MẬT KẾT NỐI (TLS/mTLS) ---
     /// PostgreSQL SSL Mode (`disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`)
@@ -98,8 +89,6 @@ impl Config {
     /// Identity-bearing endpoints and security modes are required. Only
     /// bounded performance/retention controls keep local defaults.
     pub fn from_env() -> Result<Self, String> {
-        let clickhouse_url = required_env("CLICKHOUSE_URL")?;
-
         // Đọc Redis URL cho control plane
         let redis_url = String::new();
 
@@ -122,34 +111,11 @@ impl Config {
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(5));
 
-        // Chu kỳ quét cước, mặc định 30 giây một lần
-        let scan_interval = env::var("SCAN_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .map(Duration::from_secs)
-            .unwrap_or(Duration::from_secs(30));
-
         // TTL cho lock chạy đơn bản ghi (HA Distributed Lock), mặc định 25 giây
         let lock_ttl_secs = env::var("LOCK_TTL_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(25);
-
-        // TTL block key Redis, mặc định rất dài (30 ngày) để đảm bảo khóa tài khoản cho đến khi có can thiệp/nạp tiền
-        let block_key_ttl_secs = env::var("BLOCK_KEY_TTL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2592000); // 30 ngày = 30 * 24 * 3600
-
-        let storage_report_settlement_enabled = match env::var("STORAGE_REPORT_SETTLEMENT_ENABLED")
-        {
-            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" => true,
-                "0" | "false" | "no" => false,
-                _ => return Err("STORAGE_REPORT_SETTLEMENT_ENABLED is invalid".to_owned()),
-            },
-            Err(_) => false,
-        };
 
         // --- Đọc cấu hình TLS/mTLS từ biến môi trường ---
 
@@ -165,15 +131,11 @@ impl Config {
         let pg_ssl_client_key = env::var("PG_SSL_CLIENT_KEY").ok();
 
         Ok(Self {
-            clickhouse_url,
             redis_url,
             pg_max_connections,
             pg_min_connections,
             pg_acquire_timeout,
-            scan_interval,
             lock_ttl_secs,
-            block_key_ttl_secs,
-            storage_report_settlement_enabled,
             pg_ssl_mode,
             pg_ssl_root_cert,
             pg_ssl_client_cert,

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -439,7 +440,7 @@ pub fn start(config: Config, shutdown: CancellationToken) {
         let mut mail_probe_task: Option<WorkflowTask> = None;
         let mut hypervisor_probe_task: Option<WorkflowTask> = None;
         let mut zone_report_task: Option<WorkflowTask> = None;
-        let mut storage_scan_task: Option<WorkflowTask> = None;
+        let mut storage_scan_tasks: HashMap<u16, WorkflowTask> = HashMap::new();
         let mut worker_scale_task: Option<WorkflowTask> = None;
         loop {
             tokio::select! {
@@ -462,7 +463,7 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                         stop_workflow(&mut mail_probe_task).await;
                         stop_workflow(&mut hypervisor_probe_task).await;
                         stop_workflow(&mut zone_report_task).await;
-                        stop_workflow(&mut storage_scan_task).await;
+                        stop_workflows(&mut storage_scan_tasks).await;
                         stop_workflow(&mut worker_scale_task).await;
                         continue;
                     }
@@ -489,7 +490,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                     let mail_probe_unit = WorkUnit { class: WorkClass::MailProbe, shard: 0 };
                     let hypervisor_probe_unit = WorkUnit { class: WorkClass::HypervisorProbe, shard: 0 };
                     let zone_report_unit = WorkUnit { class: WorkClass::ZoneReport, shard: 0 };
-                    let storage_scan_unit = WorkUnit { class: WorkClass::StorageScan, shard: 0 };
                     let worker_scale_unit = WorkUnit { class: WorkClass::WorkerScale, shard: 0 };
                     let now_ms = unix_time_ms();
                     let owns = |assignment: Option<AssignmentRecord>| {
@@ -502,7 +502,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                     let mail_probe_assignment = coordinator.assignment_for(mail_probe_unit).await.ok().flatten();
                     let hypervisor_probe_assignment = coordinator.assignment_for(hypervisor_probe_unit).await.ok().flatten();
                     let zone_report_assignment = coordinator.assignment_for(zone_report_unit).await.ok().flatten();
-                    let storage_scan_assignment = coordinator.assignment_for(storage_scan_unit).await.ok().flatten();
                     let worker_scale_assignment = coordinator.assignment_for(worker_scale_unit).await.ok().flatten();
                     let owns_report_unit = owns(report_assignment.clone());
                     let owns_metadata_unit = owns(metadata_assignment.clone());
@@ -511,7 +510,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                     let owns_mail_probe = owns(mail_probe_assignment.clone());
                     let owns_hypervisor_probe = owns(hypervisor_probe_assignment.clone());
                     let owns_zone_report = owns(zone_report_assignment.clone());
-                    let owns_storage_scan = owns(storage_scan_assignment.clone());
                     let owns_worker_scale = owns(worker_scale_assignment.clone());
 
                     sync_workflow(&mut metadata_task, owns_metadata_unit, "metadata_projection", metadata_assignment.map_or(0, |value| value.assignment_epoch), {
@@ -578,16 +576,38 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                             })
                         }
                     }).await;
-                    sync_workflow(&mut storage_scan_task, owns_storage_scan, "storage_bucket_scan", storage_scan_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
-                        let config = config.clone();
-                        let state = state.clone();
-                        let kafka = kafka.clone();
-                        move |task_shutdown, assignment_epoch| {
-                            tokio::spawn(async move {
-                                crate::zone_storage::run_bucket_scanner(config, state, kafka, task_shutdown, assignment_epoch).await
-                            })
-                        }
-                    }).await;
+                    for shard in 0..config.control_assignment_shards as u16 {
+                        let storage_scan_unit = WorkUnit { class: WorkClass::StorageScan, shard };
+                        let storage_scan_assignment = coordinator.assignment_for(storage_scan_unit).await.ok().flatten();
+                        let should_run = owns(storage_scan_assignment.clone());
+                        let assignment_epoch = storage_scan_assignment.as_ref().map_or(0, |value| value.assignment_epoch);
+                        sync_sharded_workflow(
+                            &mut storage_scan_tasks,
+                            shard,
+                            should_run,
+                            "storage_bucket_scan",
+                            assignment_epoch,
+                            {
+                                let config = config.clone();
+                                let state = state.clone();
+                                let kafka = kafka.clone();
+                                move |task_shutdown, assignment_epoch| {
+                                    tokio::spawn(async move {
+                                        crate::zone_storage::run_bucket_scanner(
+                                            config,
+                                            state,
+                                            kafka,
+                                            task_shutdown,
+                                            assignment_epoch,
+                                            shard,
+                                        )
+                                        .await
+                                    })
+                                }
+                            },
+                        )
+                        .await;
+                    }
                     sync_workflow(&mut worker_scale_task, owns_worker_scale, "worker_scale", worker_scale_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
                         let config = config.clone();
                         let state = state.clone();
@@ -607,7 +627,7 @@ pub fn start(config: Config, shutdown: CancellationToken) {
         stop_workflow(&mut mail_probe_task).await;
         stop_workflow(&mut hypervisor_probe_task).await;
         stop_workflow(&mut zone_report_task).await;
-        stop_workflow(&mut storage_scan_task).await;
+        stop_workflows(&mut storage_scan_tasks).await;
         stop_workflow(&mut worker_scale_task).await;
         tracing::info!(
             event_code = "ZONE_CONTROL_DISTRIBUTED_SCHEDULER_STOPPED",
@@ -676,6 +696,39 @@ async fn stop_workflow(task: &mut Option<WorkflowTask>) {
     {
         handle.abort();
         let _ = handle.await;
+    }
+}
+
+async fn sync_sharded_workflow<F>(
+    tasks: &mut HashMap<u16, WorkflowTask>,
+    shard: u16,
+    should_run: bool,
+    name: &'static str,
+    assignment_epoch: u64,
+    start: F,
+) where
+    F: FnOnce(CancellationToken, u64) -> JoinHandle<Result<(), String>>,
+{
+    let mut task = tasks.remove(&shard);
+    sync_workflow(&mut task, should_run, name, assignment_epoch, start).await;
+    if let Some(task) = task {
+        tasks.insert(shard, task);
+    }
+}
+
+async fn stop_workflows(tasks: &mut HashMap<u16, WorkflowTask>) {
+    let mut pending = std::mem::take(tasks);
+    for task in pending.values_mut() {
+        task.shutdown.cancel();
+    }
+    for (_, mut task) in pending {
+        if tokio::time::timeout(Duration::from_secs(5), &mut task.handle)
+            .await
+            .is_err()
+        {
+            task.handle.abort();
+            let _ = task.handle.await;
+        }
     }
 }
 

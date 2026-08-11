@@ -1,189 +1,271 @@
 # Storage Usage Report Publish — God View
 
-This is the Zone-owned background workflow that turns completed storage
-transfers into a bounded report for Central billing. It is not an HTTP API and
-has no ACR phase. The browser ticket remains an authorization capability only;
-it is never copied into telemetry or a billing report. The report describes
-observed bytes for a stable resource reference inside one Zone and one closed
-UTC window.
+This is the Zone-owned hourly metering workflow for storage transfer and
+occupied capacity. It converts trusted Zone observations into a bounded
+`StorageUsageReportV1`; it never infers a payer and never mutates a wallet.
+The report is the only billable hand-off from a Zone to Central for these
+three usage kinds:
 
-**Implementation status:** the reviewed generic metering envelope, storage
-module projection, Zone-local journal,
-canonical report contract, closed-window publisher and durable JetStream outbox
-are implemented behind `ZONE_CONTROL_METERING_ENABLED=false` by default. The
-publisher runs only while the `storage_report` work unit is assigned to the
-current Zone Control replica, with an assignment epoch and cancellation fence;
-it relays to Kafka and never mutates a wallet. Until the flag and the Cost
-cutover gates are approved, the existing Central ClickHouse polling path remains
-the only charge-producing billing runtime.
+- `NETWORK_IN`: successful upload bytes (`bytes_received`)
+- `NETWORK_OUT`: successful download bytes (`bytes_sent`)
+- `STORAGE`: end-of-hour occupied capacity represented as fixed-point
+  `GB_HOUR_MICRO` (`1_000_000` units = one decimal GB-hour)
+
+This is a background workflow, not HTTP, so it has no ACR phase. Tickets,
+cookies, access keys, authorization headers and object paths are excluded at
+the Public Edge boundary and never enter any journal or report.
 
 ## Scope and ownership
 
 | Item | Contract |
 | --- | --- |
-| Owner | Zone Control metering workflow, `storage_report` work-unit assignment |
-| Input | Post-upstream generic metering event from Zone Public Edge |
-| Billable fields | `resource_id`, `bytes_sent` for `NETWORK_OUT`; `bytes_received` is retained for the approved upload branch |
-| Identity | Zone UUID plus stable resource UUID; no payer is inferred in Zone |
-| Window | UTC half-open `[window_start, window_end)` with a maximum of 24 hours |
-| Durable local state | Zone ClickHouse access-event journal and JetStream File outbox `AURORA_ZONE_STORAGE_USAGE_OUTBOX` |
-| Transport | Kafka topic `{prefix}.storage.usage.reports.v1`, keyed by Zone UUID |
-| Output | `StorageUsageReportV1` protobuf, at-least-once |
+| Owner | Zone Control: `storage_scan.<shard>` capacity workers and `storage_report.0` publisher |
+| Input | Successful storage transfer access event plus MinIO bucket capacity observations |
+| Window | UTC half-open hourly window `[window_start, window_end)`; five-minute late-event grace |
+| Zone stores | Zone OTel/Victoria for diagnostics; Zone ClickHouse for metering journals; Zone JetStream File for report outbox |
+| Central transport | Kafka `{topic_prefix}.storage.usage.reports.v1`, keyed by Zone UUID |
+| Output | `StorageUsageReportV1`, at-least-once; report identity is deterministic for Zone/window/sequence |
+| Payer authority | Central Billing PostgreSQL ownership projection; never Zone ClickHouse or Zone Control |
 
-## Phase 1 — Public Edge emits a reviewed access event
+## Phase 1 — Public Edge emits the trusted access event
 
-The event exists only after the Public Authorizer has consumed the ticket and
-Envoy has received a successful upstream result. The authorizer injects the
-trusted resource header; the client cannot choose it. Envoy records transfer
-counters and status, but the access log intentionally omits the ticket,
-cookie, Authorization value, access key and object path.
+The event is emitted only after the ticket has been accepted by the embedded
+Public Authorizer and the upstream request has completed. Envoy owns the byte
+counters and final status. The client cannot select `resource_id` or any
+metering classification.
 
 ```mermaid
 sequenceDiagram
     participant C as Browser or SDK
     participant E as Zone Public Edge Envoy
-    participant A as Zone Public Authorizer
-    participant M as Zone MinIO or Runtime Stream
+    participant A as Embedded Public Authorizer
+    participant K as Zone KV ticket state
+    participant M as MinIO or runtime stream
     participant L as Envoy access logger
 
-    C->>E: GET or PUT public storage route with transfer capability
-    E->>A: ExtAuthz CheckRequest with method path and trusted headers
-    A->>A: Decode ticket and read Zone KV
-    A->>A: Check state expiry method path content metadata and one time CAS
-    alt denied or store unavailable
-        A-->>E: Denied or unavailable response
-        E-->>C: No upstream request
+    C->>E: GET/PUT public route plus transfer ticket
+    E->>A: ExtAuthz CheckRequest(method, path, headers, metadata)
+    A->>A: Decode ticket signature and expiry
+    A->>K: Read ticket state and consume one-time state when required
+    K-->>A: Ticket status, resource UUID, operation and route binding
+    alt ticket invalid, expired, replayed or KV unavailable
+        A-->>E: Deny or fail-closed unavailable decision
+        E-->>C: Error; no upstream request and no metering event
     else authorized
-        A-->>E: Allow plus resource operation and actor headers
-        E->>M: Forward only the sanitized upstream request
-        M-->>E: Final status and byte counters
-        E-->>C: Storage response
-        E->>L: Emit generic metering envelope
+        A-->>E: Allow; remove client identity and inject trusted resource headers
+        E->>M: Sanitized method/path/body with trusted resource context
+        M-->>E: Final status and transfer counters
+        E-->>C: Upstream response
+        E->>L: Generic metering envelope after response completion
     end
 ```
 
-The event fields are:
+The logger records only the fields needed by the Zone projection:
 
-| Field | Source | Rule |
-| --- | --- | --- |
-| `log_type` | Generic envelope discriminator | Exactly `metering` |
-| `module` | Generic envelope module | Exactly `storage` for this projection |
-| `metering_schema` | Module contract version | Exactly `storage.access.completed.v1` |
-| `event_id` | `X-REQUEST-ID` | Generic event identity; generated by the edge if absent |
-| `request_id` | `event_id` compatibility projection | Required for storage deduplication during migration |
-| `resource_id` | Authorizer mutation `X-AURORA-RESOURCE-ID` | Trusted UUID only; empty events are rejected by the journal view |
-| `method` | HTTP method | `GET` or `PUT` for the browser transfer branch |
-| `status` | Final response code | Only successful statuses enter the future billable aggregate |
-| `bytes_received` | Envoy counter | Upload observation |
-| `bytes_sent` | Envoy counter | Download or `NETWORK_OUT` observation |
-| `duration_ms` | Envoy duration | Diagnostic, never a price input |
+| Field | Source and invariant |
+| --- | --- |
+| `log_type` | Exactly `metering` |
+| `module` | Exactly `storage` |
+| `metering_schema` | Exactly `storage.access.completed.v1` |
+| `event_id` | Trusted request identity; generated by Envoy if absent |
+| `request_id` | Compatibility alias of `event_id` during journal migration |
+| `zone_id` | Zone configuration, not a client header |
+| `resource_id` | Authorizer-injected `X-AURORA-RESOURCE-ID`, non-nil UUID |
+| `method` | `GET` or `PUT` |
+| `status` | Final HTTP status; only 2xx rows are billable |
+| `bytes_received` | Envoy upload counter, input to `NETWORK_IN` |
+| `bytes_sent` | Envoy download counter, input to `NETWORK_OUT` |
+| `duration_ms` | Diagnostic only; never a price input |
 
-## Phase 2 — Zone OTel and local journal
+No ticket, cookie, `Authorization`, access secret, object key or raw path is
+written to the access event.
 
-The Zone collector reads the Docker access log once using persistent file
-offsets. The normal logs pipeline sends the event to Zone VictoriaLogs. A
-second generic `logs/metering` pipeline selects `log_type=metering` without a
-module-specific collector rule and sends it to the Zone ClickHouse
-`otlp.otel_logs` table. A storage-owned materialized view accepts only
-`module=storage` plus `metering_schema=storage.access.completed.v1` and copies
-the bounded fields to `storage.access_event_journal` keyed by
-`(resource_id, request_id)`.
+## Phase 2 — Zone OTel routes diagnostic and metering copies
+
+Zone OTel reads the access stream using persistent file offsets. It sends all
+bounded records to the Zone Victoria stack for diagnostics and sends only the
+generic `log_type=metering` envelope to Zone ClickHouse. The collector does
+not contain a storage-specific pricing rule.
 
 ```mermaid
 sequenceDiagram
-    participant E as Public Edge stdout
+    participant L as Public Edge stdout
     participant O as Zone OTel Collector
-    participant V as Zone VictoriaLogs
-    participant C as Zone ClickHouse otlp logs
-    participant J as Zone access event journal
+    participant V as Zone VictoriaLogs/Metrics/Traces
+    participant R as Zone ClickHouse otlp.otel_logs
+    participant J as storage.access_event_journal MV
 
-    E-->>O: Docker JSON access event
-    O->>O: Persistent file offset and JSON parse
-    O->>O: Zone identity filter and storage event filter
-    par diagnostic pipeline
-        O->>V: Zone logs with bounded labels
-    and metering pipeline
-        O->>C: generic metering envelope
-        C->>J: Materialized view extracts trusted counters
+    L-->>O: Docker JSON log record
+    O->>O: Resume file offset and parse JSON
+    O->>O: Drop Central/foreign identity and non-metering records
+    par diagnostic branch
+        O->>V: Structured Zone diagnostic record
+    and metering branch
+        O->>R: Generic metering envelope
+        R->>J: Materialized view extracts bounded storage fields
     end
+    J-->>O: At-least-once journal insert acknowledgement
 ```
 
-The journal is `ReplacingMergeTree` rather than a direct summing table. The
-future publisher must query the deduplicated request identity before creating
-an aggregate. OTel retry or collector restart therefore cannot be treated as
-an additional billable request.
+`storage.access_event_journal` is a `ReplacingMergeTree` keyed by the trusted
+resource/request identity. The publisher queries `FINAL` and never treats an
+OTel retry as another billable transfer. Unknown modules or schemas remain in
+raw Zone telemetry and do not enter the storage projection.
 
-## Phase 3 — Closed-window aggregation and report outbox
+## Phase 3 — Zone Control scans capacity by shard
 
-After the window close time and a bounded late-event grace period, the assigned
-Zone Control work unit reads the deduplicated journal. It groups by resource and
-direction, validates numeric limits, computes the canonical checksum with
-`report_sha256` cleared, and writes the complete protobuf to the local
-JetStream File outbox before contacting Kafka. The report identity is UUIDv5 of
-Zone plus window and sequence, so a retry cannot append a second report. The
-assignment epoch is checked before the workflow starts; losing assignment
-cancels the task and the durable outbox/idempotent report identity bounds any
-in-flight replay. A worker restart resumes the durable outbox consumer; it does
-not create a new identity.
+Capacity is not read from Central and is not scanned every few seconds. Zone
+Control creates `ZONE_CONTROL_ASSIGNMENT_SHARDS` independent work units. Each
+replica owns zero or more `assignment.storage_scan.<shard>` units through the
+NATS KV membership/assignment coordinator. A shard scans only bucket names whose
+stable SHA-256 rendezvous maps to that shard.
+
+The default cadence is one scan at the next UTC hour boundary and then once per
+hour. Every shard lists its buckets, processes them in bounded batches, pauses
+between batches, and checks its assignment epoch before the next batch and
+before publishing. A lost assignment cancels the scan without publishing a
+partial completion.
 
 ```mermaid
 sequenceDiagram
-    participant O as Assigned Zone Control metering worker
-    participant L as Zone access event journal
-    participant Q as JetStream File report outbox
-    participant K as Kafka storage report topic
+    participant C as Zone Control replica
+    participant A as NATS KV assignment.storage_scan.shard
+    participant S as Zone Control shard worker
+    participant M as MinIO catalog
+    participant O as MinIO object paginator
+    participant J as Zone CH capacity journal
+    participant B as Zone CH completion barrier
+    participant U as Zone storage-size Kafka topic
 
-    O->>O: Check current assignment epoch and closed UTC window
-    O->>L: Read request-deduplicated events for one resource window
-    L-->>O: Counters and request count
-    O->>O: Validate bounds and build StorageUsageReportV1
-    O->>O: Compute SHA-256 over canonical protobuf with checksum empty
-    O->>Q: Publish report with Nats-Msg-Id=report_id and await ACK
-    alt Kafka unavailable
-        Q-->>O: Keep pending; the durable outbox has no Kafka side effect yet
-    else Kafka available
-        O->>K: Publish with idempotent producer, acks=all and Zone key
-        K-->>O: Durable acknowledgement
-        O->>Q: ACK outbox message after Kafka acknowledgement
+    C->>A: Heartbeat capacity and reconcile weighted shard assignment
+    A-->>C: member and assignment epoch
+    C->>S: Start storage_scan.<shard> with epoch
+    S->>S: Wait for hourly boundary and verify Zone storage is active
+    S->>M: List bucket catalog
+    M-->>S: Bucket names; retain only this shard's names
+    loop bounded batch with configured pause
+        S->>A: Verify assignment epoch is still current
+        S->>O: List object pages for one bucket batch
+        O-->>S: Object sizes and pagination state
+    end
+    S->>J: Insert observed bytes, window end, bucket and shard
+    S->>B: Insert one completion marker for this shard generation
+    S->>A: Verify assignment before side effects
+    S->>U: Publish UI snapshot only after journal/completion success
+```
+
+The completion marker is the barrier for billing. A report publisher must see
+all configured shard IDs for the same hourly `billing_window_end`; otherwise
+the window remains pending and no partial storage charge is emitted.
+
+## Phase 4 — Zone Control closes the hourly window and writes the outbox
+
+The single `assignment.storage_report.0` worker runs every few seconds only to
+check eligibility; it does not rescan storage. After the five-minute grace
+period it reads the transfer journal and the capacity journal for each closed
+hour. It skips a window until every capacity shard completion marker exists.
+
+```mermaid
+sequenceDiagram
+    participant W as Zone Control storage_report.0
+    participant A as Assignment KV
+    participant T as storage.access_event_journal FINAL
+    participant C as capacity journal and completion barrier
+    participant P as Report protobuf builder
+    participant Q as Zone JetStream File outbox
+
+    W->>A: Check assignment.storage_report.0 epoch
+    W->>C: Count completed shard IDs for closed hour
+    alt capacity barrier incomplete
+        C-->>W: Fewer than configured shard count
+        W-->>W: Leave window pending; retry/backfill later
+    else barrier complete
+        W->>T: Sum bytes_received/bytes_sent and request count by resource UUID
+        T-->>W: NETWORK_IN and NETWORK_OUT observations
+        W->>C: Read argMax occupied bytes by bucket name
+        C-->>W: STORAGE observations and fixed-point GB-hour quantity
+        W->>P: Validate bounds, identities and hourly window
+        P->>P: SHA-256 canonical payload with report_sha256 empty
+        P->>Q: Publish Nats-Msg-Id=report_id and await JetStream ACK
     end
 ```
+
+The report may contain multiple aggregates for one hour. Transfer aggregates
+use `resource_id`; capacity aggregates use a validated `resource_name` and a
+deterministic synthetic line identity downstream. `storage_bytes` is retained
+for audit/diagnostics; `storage_gb_hours_micros` is the billable quantity.
+
+## Phase 5 — Durable Zone outbox relay to Kafka
+
+The relay is a separate outbox consumer. It never calls Billing PostgreSQL and
+does not create an outbox in the Zone database (a Zone has no billing Postgres).
+
+```mermaid
+sequenceDiagram
+    participant Q as Zone JetStream report outbox
+    participant R as Zone Control relay
+    participant K as Kafka storage.usage.reports.v1
+    participant J as Job Orchestrator consumer
+
+    R->>Q: Pull pending report
+    Q-->>R: Payload, report ID and delivery attempt
+    R->>R: Recheck assignment and validate protobuf/checksum
+    alt Kafka unavailable or publish rejected
+        R-->>Q: Leave message pending; retry same report ID
+    else Kafka acks all
+        R->>K: Publish keyed by zone_id with idempotent producer
+        K-->>R: Durable acknowledgement
+        R->>Q: ACK report after Kafka acknowledgement
+        K->>J: Consumer receives the same versioned report
+    end
+```
+
+Job Orchestrator validates the report again, writes the payload to the shared
+Redis stream, and commits Kafka only after `XADD` succeeds. The Cost Engine is
+the next workflow owner: it opens the three pricing runs and atomically settles
+wallet/ledger lines in Billing PostgreSQL. Central ClickHouse is not involved.
 
 ## Contract and key table
 
 | Key or contract | Value |
 | --- | --- |
 | Protobuf | `proto/cost-manager/engine/storage_usage_report.proto` |
+| Usage kinds | `NETWORK_IN/BYTE`, `NETWORK_OUT/BYTE`, `STORAGE/GB_HOUR_MICRO` |
 | Kafka topic | `{topic_prefix}.storage.usage.reports.v1` |
 | Kafka key | `zone_id` |
-| Report identity | `report_id` UUID plus `zone_id`, window and `sequence` |
-| Correction identity | `correction=true` and `correction_of_report_id`; append-only |
-| Local journal identity | `(resource_id, request_id)` |
+| Report identity | UUIDv5 of Zone, hourly start/end and sequence |
+| Transfer journal identity | `(resource_id, request_id)` |
+| Capacity journal identity | `(zone_id, billing_window_end, bucket_name, scan_generation, shard_id)` |
+| Capacity barrier | `storage.bucket_capacity_scan_completions`, all configured shard IDs required |
+| Assignment keys | `assignment.storage_scan.<shard>` and `assignment.storage_report.0` |
 | Generic envelope | `log_type=metering`, `module=storage`, `metering_schema=storage.access.completed.v1` |
-| Outbox state | `PENDING -> PUBLISHED`, never delete before retention/audit boundary |
-| JetStream outbox | Stream `AURORA_ZONE_STORAGE_USAGE_OUTBOX`, subject `aurora.zone.storage.usage.report.<zone_uuid>`, durable consumer `zone-control-storage-report-kafka-v1` |
-| Quarantine | Stream `AURORA_ZONE_STORAGE_USAGE_DLQ`, sanitized reason plus payload SHA-256 only |
+| Report outbox | `AURORA_ZONE_STORAGE_USAGE_OUTBOX`, subject `aurora.zone.storage.usage.report.<zone_uuid>` |
+| Quarantine | `AURORA_ZONE_STORAGE_USAGE_DLQ`, sanitized reason and checksum only |
 
 ## Failure and security rules
 
 | Failure | Behavior |
 | --- | --- |
-| Authorizer denial | No upstream call and no billable event |
-| OTel restart or retry | Journal may receive a duplicate; publisher deduplicates request ID |
-| Invalid resource or oversized event | Reject and expose a bounded metric; do not report |
-| Unknown metering module/schema | Keep in generic raw telemetry only; no storage projection or billing report |
-| Existing ClickHouse volume during envelope migration | Apply the re-runnable journal/view migration before collector restart; keep the legacy storage event accepted only for the bounded transition window |
-| ClickHouse unavailable | Keep collector queue pending; no report is closed from partial input |
-| Zone Control loses assignment or membership heartbeat | Assignment-scoped metering task is cancelled; no new aggregation/outbox/Kafka side effect is started |
-| Kafka publish fails | Keep outbox pending and retry with the same report ID |
-| Correction | Publish a new report lineage; never edit a settled report or ledger |
-| Secret leakage attempt | Ticket, cookie, Authorization, access secret and object path are excluded at the Envoy schema boundary |
+| Authorizer denial or upstream non-2xx | No billable access row |
+| OTel retry/restart | Replacing journal plus `FINAL` query prevents duplicate billing |
+| Unknown module/schema | Raw Zone diagnostics only; no storage projection |
+| MinIO list/page error | Shard scan retries; no completion marker for the failed generation |
+| Shard assignment loss | Cancel before next batch or publish; another replica rebalances the shard |
+| Incomplete shard barrier | Keep the hourly report pending; never charge a partial capacity snapshot |
+| Zone ClickHouse unavailable | Keep collector/scan/report work retryable; do not publish a partial report |
+| Kafka unavailable | JetStream outbox remains pending with the same report ID |
+| Job Orchestrator/Redis unavailable | Kafka offset is not committed until the Redis `XADD` succeeds |
+| Report replay | Deterministic report/line identities and Billing inbox make replay idempotent |
+| Correction | Append-only lineage; no mutation of a settled report or ledger |
+| Secret leakage attempt | Ticket, cookie, Authorization, access secret, object path and payer identity are absent from the envelope |
 
 ## Code and deployment map
 
 - `zone-public-edge-gateway/envoy.yaml`
 - `dev/zone/otel/otel-collector.yml`
 - `dev/zone/clickhouse/init.sql`
+- `zone-control/src/zone_storage.rs` (hourly sharded capacity scanner)
+- `zone-control/src/metering.rs` (closed-window report builder and relay)
+- `zone-control/src/orchestrator.rs` (assignment, rebalance and lifecycle)
+- `job-orchestrator/src/storage_metering.rs` (Kafka to Shared Redis relay)
 - `proto/cost-manager/engine/storage_usage_report.proto`
-- `zone-control/src/metering.rs` (opt-in closed-window publisher and Kafka relay)
-- `zone-control/src/orchestrator.rs` (membership, assignment epoch, rebalance and metering lifecycle)
-- Future God Plan: `cost-manager/tmp/zone-local-storage-metering-refactor-plan.md`

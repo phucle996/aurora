@@ -3,6 +3,8 @@ package storageHandler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,19 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// formatUsedMegabytes is the UI read contract. Durable storage keeps exact
+// bytes; the HTTP boundary emits a fixed-point decimal string so JavaScript
+// never has to represent a potentially unsafe integer.
+func formatUsedMegabytes(bytes int64) string {
+	if bytes <= 0 {
+		return "0.000000"
+	}
+	const bytesPerMegabyte int64 = 1024 * 1024
+	whole := bytes / bytesPerMegabyte
+	fractionMicros := (bytes % bytesPerMegabyte) * 1_000_000 / bytesPerMegabyte
+	return strconv.FormatInt(whole, 10) + "." + fmt.Sprintf("%06d", fractionMicros)
+}
 
 // [COMMENT]: PersonalBucketHandler xử lý các HTTP request quản trị Bucket của người dùng cá nhân/workspace.
 type PersonalBucketHandler struct {
@@ -143,7 +158,7 @@ func (h *PersonalBucketHandler) Get(c *gin.Context) {
 		"id":                   bucket.ID.String(),
 		"name":                 bucket.Name,
 		"capacity_quota_bytes": bucket.CapacityQuotaBytes,
-		"used_bytes":           bucket.UsedBytes,
+		"used_mb":              formatUsedMegabytes(bucket.UsedBytes),
 		"created_at":           bucket.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at":           bucket.UpdatedAt.UTC().Format(time.RFC3339),
 	}, "get bucket details success")
@@ -184,7 +199,7 @@ func (h *PersonalBucketHandler) List(c *gin.Context) {
 			"id":                   b.ID.String(),
 			"name":                 b.Name,
 			"capacity_quota_bytes": b.CapacityQuotaBytes,
-			"used_bytes":           b.UsedBytes,
+			"used_mb":              formatUsedMegabytes(b.UsedBytes),
 			"created_at":           b.CreatedAt.UTC().Format(time.RFC3339),
 			"updated_at":           b.UpdatedAt.UTC().Format(time.RFC3339),
 		}

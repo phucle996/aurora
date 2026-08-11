@@ -19,7 +19,7 @@ use crate::engine::snapshot::{
 pub(crate) const PRICING_EVENT_CHANNEL: &str = "billing.pricing.tier_version.published";
 
 pub(crate) struct ActivationState {
-    pub(crate) billing_in_progress: bool,
+    pub(crate) billing_in_progress: usize,
     pub(crate) activation_blocked: bool,
     pub(crate) pending: Option<Arc<CatalogSnapshot>>,
 }
@@ -69,7 +69,7 @@ impl PricingRuntime {
             version_cache,
             active: ArcSwap::from_pointee(catalog),
             state: Mutex::new(ActivationState {
-                billing_in_progress: false,
+                billing_in_progress: 0,
                 activation_blocked: incomplete_run_exists,
                 pending: None,
             }),
@@ -96,7 +96,7 @@ impl PricingRuntime {
         }
 
         let mut state = self.state.lock().await;
-        if state.billing_in_progress || state.activation_blocked {
+        if state.billing_in_progress > 0 || state.activation_blocked {
             state.pending = Some(catalog);
         } else {
             self.active.store(catalog);
@@ -114,14 +114,8 @@ impl PricingRuntime {
     ) -> Result<BillingPricingLease, PricingError> {
         let parsed_service = ServiceType::parse(service_type)?;
         let mut state = self.state.lock().await;
-        if state.billing_in_progress {
-            return Err(PricingError(
-                "a local billing run is already in progress".into(),
-            ));
-        }
-
-        if let Some((run_id, version_id, window_start, window_end)) = sqlx::query_as::<_, (Uuid, Uuid, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, tier_version_id, window_start, window_end FROM billing.billing_runs \
+        if let Some((run_id, version_id)) = sqlx::query_as::<_, (Uuid, Uuid)>(
+            "SELECT id, tier_version_id FROM billing.billing_runs \
              WHERE service_type = $1::billing.service_type AND status IN ('RUNNING','RETRYING') ORDER BY started_at LIMIT 1"
         ).bind(parsed_service.as_str()).fetch_optional(&self.db).await? {
             let snapshot = self.version_cache.get(&version_id).await
@@ -129,14 +123,18 @@ impl PricingRuntime {
                 .ok_or_else(|| PricingError(format!("pinned pricing version {version_id} is unavailable")))?;
             sqlx::query("UPDATE billing.billing_runs SET status='RETRYING', fencing_token=$1, updated_at=NOW() WHERE id=$2")
                 .bind(fencing_token).bind(run_id).execute(&self.db).await?;
-            state.billing_in_progress = true;
+            state.billing_in_progress = state.billing_in_progress.saturating_add(1);
             state.activation_blocked = true;
-            return Ok(BillingPricingLease { billing_run_id: run_id, snapshot, window_start, window_end });
+            return Ok(BillingPricingLease { billing_run_id: run_id, snapshot });
         }
 
-        // [COMMENT]: Không còn durable run dở nghĩa là gate cũ đã được complete bởi replica khác.
-        state.activation_blocked = false;
-        if let Some(pending) = state.pending.take() {
+        // Apply a catalog published while no local run was active. Once the
+        // first service run starts, all subsequent service runs in the same
+        // report share the same immutable active catalog.
+        if state.billing_in_progress == 0
+            && !state.activation_blocked
+            && let Some(pending) = state.pending.take()
+        {
             self.active.store(pending);
         }
         let snapshot = self
@@ -162,13 +160,11 @@ impl PricingRuntime {
         .bind(fencing_token)
         .execute(&self.db)
         .await?;
-        state.billing_in_progress = true;
+        state.billing_in_progress = state.billing_in_progress.saturating_add(1);
         state.activation_blocked = true;
         Ok(BillingPricingLease {
             billing_run_id: run_id,
             snapshot,
-            window_start: requested_start,
-            window_end: requested_end,
         })
     }
 
@@ -189,10 +185,12 @@ impl PricingRuntime {
         }
 
         let mut state = self.state.lock().await;
-        state.billing_in_progress = false;
-        state.activation_blocked = false;
-        if let Some(pending) = state.pending.take() {
-            self.active.store(pending);
+        state.billing_in_progress = state.billing_in_progress.saturating_sub(1);
+        if state.billing_in_progress == 0 {
+            state.activation_blocked = false;
+            if let Some(pending) = state.pending.take() {
+                self.active.store(pending);
+            }
         }
         Ok(())
     }
@@ -207,7 +205,7 @@ impl PricingRuntime {
         .execute(&self.db)
         .await?;
         let mut state = self.state.lock().await;
-        state.billing_in_progress = false;
+        state.billing_in_progress = state.billing_in_progress.saturating_sub(1);
         if result.rows_affected() == 1 {
             state.activation_blocked = true;
         } else {
@@ -217,9 +215,11 @@ impl PricingRuntime {
                     .fetch_optional(&self.db)
                     .await?;
             if status.as_deref() == Some("COMPLETED") {
-                state.activation_blocked = false;
-                if let Some(pending) = state.pending.take() {
-                    self.active.store(pending);
+                if state.billing_in_progress == 0 {
+                    state.activation_blocked = false;
+                    if let Some(pending) = state.pending.take() {
+                        self.active.store(pending);
+                    }
                 }
             } else {
                 return Err(PricingError(format!(

@@ -93,3 +93,15 @@ CREATE INDEX IF NOT EXISTS idx_payment_intents_actor_created
 CREATE INDEX IF NOT EXISTS idx_payment_intents_pending_expiry
     ON billing.payment_intents (expires_at)
     WHERE status='PENDING';
+
+-- 14. Indexes cho storage usage settlement inboxes
+CREATE INDEX IF NOT EXISTS idx_storage_report_inbox_pending
+    ON billing.storage_usage_report_inbox(status, received_at, report_id)
+    WHERE status IN ('RECEIVED', 'PROCESSING', 'UNRATED');
+
+CREATE INDEX IF NOT EXISTS idx_storage_usage_line_resource_window
+    ON billing.storage_usage_line_inbox(zone_id, resource_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_storage_usage_line_resource_name
+    ON billing.storage_usage_line_inbox(zone_id, resource_name, created_at)
+    WHERE resource_name IS NOT NULL;

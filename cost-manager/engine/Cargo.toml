@@ -5,8 +5,7 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1.43", features = ["full"] }
-clickhouse = { version = "0.13", features = ["uuid", "chrono", "time"] }
-sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "chrono", "uuid", "bigdecimal"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "bigdecimal"] }
 # [COMMENT]: Đồng nhất với các service khác (dataplane, job-orchestrator). TLS Redis do infrastructure (mesh/proxy) xử lý.
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -25,3 +24,4 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [build-dependencies]
 prost-build = "0.12"
+protoc-bin-vendored = "3"

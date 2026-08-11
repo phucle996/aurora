@@ -37,7 +37,7 @@ contract AS-IS, không phải page API.
 
 | Status | `data` |
 |---|---|
-| `200` | Array ordered `created_at DESC`, each `id`, `name`, `capacity_quota_bytes`, `used_bytes`, `created_at`, `updated_at` |
+| `200` | Array ordered `created_at DESC`, each `id`, `name`, `capacity_quota_bytes`, `used_mb` (fixed-point decimal string), `created_at`, `updated_at` |
 | `403` | Session, context or compiled permission failure |
 | `500` | Database list failure |
 
@@ -47,7 +47,7 @@ contract AS-IS, không phải page API.
 |---|---|---|
 | Trinity session in Auth-State Redis | ACR lookup | User, platform tenant, Zone and active workspace selection. |
 | `user_role:{user_id}` cache entry | Read by `Authorize` | Compiled read grant. |
-| `storage.personal_buckets` plus `hierarchy.personal_workspaces` | Ordered PostgreSQL SELECT | Durable catalogue and last `used_bytes` projection. |
+| `storage.personal_buckets` plus `hierarchy.personal_workspaces` | Ordered PostgreSQL SELECT | Durable catalogue and last `used_bytes` projection; handler serializes it as `used_mb`. |
 | `aurora.storage.sizes.v1` | Not read synchronously | It updates `used_bytes` in a separate runtime workflow only. |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -100,6 +100,7 @@ sequenceDiagram
     R->>PG: SELECT owner scoped bucket rows ORDER BY created_at DESC
     PG-->>R: all matching rows
     R-->>H: bucket projections
+    H->>H: Convert each used_bytes value to fixed-point used_mb string
     H-->>E: 200 array envelope
 ```
 

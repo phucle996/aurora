@@ -9,6 +9,7 @@ pub struct Config {
     pub public_base_url: String,
     pub ticket_ttl: Duration,
     pub nats_zone_url: String,
+    pub clickhouse_url: String,
     pub kafka_bootstrap_servers: String,
     pub kafka_security_protocol: String,
     pub kafka_username: Option<String>,
@@ -36,6 +37,9 @@ pub struct Config {
     pub control_capacity_weight: u32,
     pub min_workers: usize,
     pub max_workers: usize,
+    pub storage_scan_interval: Duration,
+    pub storage_scan_batch_size: usize,
+    pub storage_scan_batch_pause: Duration,
 }
 
 impl Config {
@@ -77,17 +81,27 @@ impl Config {
         }
         let min_workers = parsed("MIN_WORKERS", 1_usize)?.clamp(1, 512);
         let max_workers = parsed("MAX_WORKERS", 32_usize)?.clamp(min_workers, 2_048);
+        let storage_scan_interval_seconds = parsed("STORAGE_SCAN_INTERVAL_SECONDS", 3_600_u64)?;
+        if storage_scan_interval_seconds != 3_600 {
+            return Err(
+                "STORAGE_SCAN_INTERVAL_SECONDS must be exactly 3600 for hourly billing".to_string(),
+            );
+        }
+        let storage_scan_batch_size = parsed("STORAGE_SCAN_BATCH_SIZE", 32_usize)?.clamp(1, 1_000);
+        let storage_scan_batch_pause_ms =
+            parsed("STORAGE_SCAN_BATCH_PAUSE_MS", 250_u64)?.clamp(0, 60_000);
         Ok(Self {
             listen_addr,
             // Gate B is complete: Zone Control must own every Zone-wide control
             // workflow. An explicit switch lets a deployment fail fast instead
             // of silently reintroducing a legacy owner.
             orchestrator_enabled: parsed_bool("ZONE_CONTROL_ORCHESTRATOR_ENABLED", true)?,
-            metering_enabled: parsed_bool("ZONE_CONTROL_METERING_ENABLED", false)?,
+            metering_enabled: parsed_bool("ZONE_CONTROL_METERING_ENABLED", true)?,
             zone_id,
             public_base_url,
             ticket_ttl: Duration::from_secs(ticket_ttl_seconds),
             nats_zone_url: required("NATS_ZONE_URL")?,
+            clickhouse_url: required("CLICKHOUSE_URL")?,
             kafka_bootstrap_servers: required("KAFKA_BOOTSTRAP_SERVERS")?,
             kafka_security_protocol: required("KAFKA_SECURITY_PROTOCOL")?.to_ascii_lowercase(),
             kafka_username: optional("KAFKA_USERNAME"),
@@ -120,6 +134,9 @@ impl Config {
             control_capacity_weight,
             min_workers,
             max_workers,
+            storage_scan_interval: Duration::from_secs(storage_scan_interval_seconds),
+            storage_scan_batch_size,
+            storage_scan_batch_pause: Duration::from_millis(storage_scan_batch_pause_ms),
         })
     }
 }

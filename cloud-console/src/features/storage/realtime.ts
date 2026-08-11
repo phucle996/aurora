@@ -4,10 +4,10 @@ import { useEffect, useRef } from "react";
 import { useRealtime, type BucketSizesPayload } from "@/realtime/provider";
 
 export const useBucketSizesSync = (
-  onSync: (sizes: Record<string, number>) => void
+  onSync: (sizes: Record<string, string>) => void
 ) => {
   const { subscribeToStream } = useRealtime();
-  const pendingRef = useRef<Record<string, number>>({});
+  const pendingRef = useRef<Record<string, string>>({});
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {

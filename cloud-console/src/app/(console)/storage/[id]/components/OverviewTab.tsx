@@ -15,13 +15,15 @@ function bytesToGB(bytes: number): number {
   return Math.round(bytes / (1024 * 1024 * 1024));
 }
 
-// [COMMENT]: Định dạng bytes sang đơn vị trực quan tương ứng (Bytes, KB, MB, GB, TB)
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+// [COMMENT]: Usage arrives as a fixed-point MB string so large byte counts
+// never cross the JavaScript unsafe-integer boundary.
+function formatUsageMegabytes(value: string | undefined): string {
+  const megabytes = Number(value ?? "0");
+  if (!Number.isFinite(megabytes) || megabytes <= 0) return "0 KB";
+  if (megabytes < 1) return `${(megabytes * 1024).toFixed(2)} KB`;
+  if (megabytes < 1024) return `${megabytes.toFixed(2)} MB`;
+  if (megabytes < 1024 * 1024) return `${(megabytes / 1024).toFixed(2)} GB`;
+  return `${(megabytes / (1024 * 1024)).toFixed(2)} TB`;
 }
 
 export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
@@ -36,9 +38,10 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
   const [copiedId, setCopiedId] = useState(false);
 
-  // [COMMENT]: Sử dụng dung lượng thực tế (used_bytes) thay thế cho mock dữ liệu tĩnh
-  const usedBytes = bucket.used_bytes || 0;
-  const usedGB = usedBytes / (1024 * 1024 * 1024);
+  // [COMMENT]: Usage is an MB string from the UI contract; quota remains bytes
+  // because it is also used as the mutation input boundary.
+  const usedMegabytes = Number(bucket.used_mb ?? "0");
+  const usedGB = usedMegabytes / 1024;
   const totalGB = bucket.capacity_quota_bytes / (1024 * 1024 * 1024);
   const usagePercentage = totalGB > 0 ? Math.min((usedGB / totalGB) * 100, 100) : 0;
 
@@ -128,7 +131,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-500">Allocated Quota Limit</span>
               <span className="font-mono font-bold text-slate-800 dark:text-slate-100 text-sm">
-                {formatBytes(usedBytes)} of {totalGB.toFixed(0)} GB used
+                {formatUsageMegabytes(bucket.used_mb)} of {totalGB.toFixed(0)} GB used
               </span>
             </div>
             {/* Progress bar */}
@@ -140,7 +143,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             </div>
             <div className="flex items-center justify-between text-[10px] text-muted-foreground font-semibold">
               <span>{usagePercentage.toFixed(2)}% Usage</span>
-              <span>{formatBytes(Math.max(0, bucket.capacity_quota_bytes - usedBytes))} Available</span>
+              <span>{formatUsageMegabytes(String(Math.max(0, totalGB * 1024 - usedMegabytes)))} Available</span>
             </div>
           </div>
         </div>

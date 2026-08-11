@@ -1,4 +1,4 @@
--- Migration 000006: Seed dữ liệu mẫu cho billing schema
+-- Migration 000006: Seed dữ liệu mẫu và storage settlement schema cho billing
 
 -- 1. Seed biểu giá cơ sở Tiers. Production admin phải được provision qua IAM,
 -- không seed credential có private key biết trước vào baseline migration.
@@ -15,11 +15,11 @@ INSERT INTO billing.tier_versions (id, tier_id, version_number, status, effectiv
 ('d33aa15e-0421-4185-658b-f0b8132c1723', '019f3d3e-9990-7894-9236-c5122634cb60', 1, 'ACTIVE', '2026-07-18 10:11:25.589234+00', '60f4293c62a9e6a46766d661a8cf739e125ffc4426419a57bf4a2f911c324924', 'Initial seeding', NULL)
 ON CONFLICT (id) DO NOTHING;
 
--- 3. Seed Pricing Version Ranges (MB format)
+-- 3. Seed Pricing Version Ranges. NETWORK_* use MB; STORAGE uses decimal GB_HOUR.
 INSERT INTO billing.tier_version_ranges (id, tier_version_id, range_start, range_end, base_unit_price) VALUES
--- STORAGE Ranges (0 - 50GB @15000, >50GB @12000)
-('755b2b3d-de1d-fe8f-1171-365216565645', 'b33aa15e-0421-4185-658b-f0b8132c1723', 0, 51200, 15000),
-('9d43c699-6dfa-a17e-32ca-08b67e41b411', 'b33aa15e-0421-4185-658b-f0b8132c1723', 51200, 0, 12000),
+-- STORAGE Ranges (0 - 50 GB_HOUR @15000, >50 GB_HOUR @12000)
+('755b2b3d-de1d-fe8f-1171-365216565645', 'b33aa15e-0421-4185-658b-f0b8132c1723', 0, 50, 15000),
+('9d43c699-6dfa-a17e-32ca-08b67e41b411', 'b33aa15e-0421-4185-658b-f0b8132c1723', 50, 0, 12000),
 
 -- NETWORK_IN Ranges (0 - 100GB @0, >100GB @5000)
 ('c67f0739-1907-6080-56b0-6b89c6fbe387', 'c33aa15e-0421-4185-658b-f0b8132c1723', 0, 102400, 0),

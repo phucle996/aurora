@@ -15,7 +15,7 @@ export type BucketItem = {
   workspace_id: string;
   // [COMMENT]: status đã bị bỏ — bucket tồn tại trong DB là đủ để xác định active
   capacity_quota_bytes: number;
-  used_bytes?: number; // Dung lượng thực tế đã sử dụng
+  used_mb?: string; // Dung lượng thực tế cho UI, fixed-point decimal MB
   created_at: string;
   updated_at: string;
 };

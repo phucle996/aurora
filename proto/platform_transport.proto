@@ -81,8 +81,8 @@ message BucketSizeV1 {
   int64 size_bytes = 2;
 }
 
-// Mỗi fenced scanner cycle tạo một snapshot đầy đủ. JO giữ previous snapshot
-// trong RAM để tính delta; PostgreSQL vẫn là business SoT.
+// Mỗi fenced Zone Control shard cycle tạo một fragment. JO chỉ áp dụng các
+// bucket xuất hiện trong fragment; PostgreSQL vẫn là business SoT.
 message StorageBucketSizesSnapshotV1 {
   bytes event_id = 1;
   bytes zone_id = 2;

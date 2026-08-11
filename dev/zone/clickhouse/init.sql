@@ -47,6 +47,34 @@ PARTITION BY toYYYYMM(timestamp)
 ORDER BY (resource_id, request_id)
 TTL toDateTime(timestamp) + INTERVAL 30 DAY DELETE;
 
+-- Hourly capacity observations written by the sharded Zone Control scanner.
+-- This is a local metering journal, not a billing ledger.  The billing report
+-- publisher only consumes rows whose complete shard generation has a matching
+-- completion marker below.
+CREATE TABLE IF NOT EXISTS storage.bucket_capacity_journal (
+    observed_at DateTime64(3, 'UTC'),
+    billing_window_end DateTime64(3, 'UTC'),
+    zone_id UUID,
+    bucket_name String,
+    used_bytes UInt64,
+    scan_generation String,
+    shard_id UInt16
+) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(observed_at)
+ORDER BY (zone_id, billing_window_end, bucket_name, observed_at, scan_generation)
+TTL toDateTime(observed_at) + INTERVAL 90 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS storage.bucket_capacity_scan_completions (
+    completed_at DateTime64(3, 'UTC'),
+    billing_window_end DateTime64(3, 'UTC'),
+    zone_id UUID,
+    scan_generation String,
+    shard_id UInt16
+) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(completed_at)
+ORDER BY (zone_id, billing_window_end, shard_id, completed_at, scan_generation)
+TTL toDateTime(completed_at) + INTERVAL 90 DAY DELETE;
+
 -- Keep a manually re-runnable migration path for an existing Zone volume. The
 -- Docker init hook runs only on a fresh volume, so operators must still apply
 -- this file during an in-place upgrade before restarting the collector.

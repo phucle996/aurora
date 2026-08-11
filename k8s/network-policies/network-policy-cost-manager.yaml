@@ -29,7 +29,7 @@ spec:
         - protocol: TCP
           port: 9094
 
-  # [COMMENT]: Egress Rule: Cost chỉ tới Billing DB, Shared L2 Redis, ClickHouse và DNS.
+  # [COMMENT]: Egress Rule: Cost chỉ tới Billing DB, Shared L2 Redis và DNS.
   egress:
     # 1. DNS Resolution
     - ports:
@@ -45,15 +45,7 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
-    # 3. ClickHouse Olap Metrics (Port 8123)
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: clickhouse
-      ports:
-        - protocol: TCP
-          port: 8123
-    # 4. Cache Redis L2 (Port 6379) — Không được phép truy cập ACR Security-State Redis
+    # 3. Cache Redis L2 (Port 6379) — Không được phép truy cập ACR Security-State Redis
     - to:
         - podSelector:
             matchLabels:

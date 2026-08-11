@@ -74,18 +74,36 @@ impl TierPricingSnapshot {
     // [COMMENT]: Progressive charge: mỗi đoạn quantity nằm trong [start,end) nhân giá của range đó.
     pub fn charge_micro_units_for_bytes(&self, quantity_bytes: u64) -> Result<i64, PricingError> {
         let quantity_mb = BigDecimal::from(quantity_bytes) / BigDecimal::from(1_048_576_u64);
+        self.charge_micro_units_for_catalog_quantity(quantity_mb)
+    }
+
+    /// Storage is reported as fixed-point GB_HOUR (one million units per
+    /// GB_HOUR).  Storage tier ranges are expressed in decimal GB_HOUR, while
+    /// network ranges continue to use MB through `charge_micro_units_for_bytes`.
+    pub fn charge_micro_units_for_storage_gb_hours_micros(
+        &self,
+        quantity_micros: u64,
+    ) -> Result<i64, PricingError> {
+        let quantity_gb_hours = BigDecimal::from(quantity_micros) / BigDecimal::from(1_000_000_u64);
+        self.charge_micro_units_for_catalog_quantity(quantity_gb_hours)
+    }
+
+    fn charge_micro_units_for_catalog_quantity(
+        &self,
+        quantity: BigDecimal,
+    ) -> Result<i64, PricingError> {
         let mut total_micro_units = BigDecimal::from(0);
         for tier_range in &self.ranges {
             let start = BigDecimal::from(tier_range.range_start);
-            if quantity_mb <= start {
+            if quantity <= start {
                 break;
             }
             let upper = if tier_range.range_end == 0 {
-                quantity_mb.clone()
+                quantity.clone()
             } else {
                 let finite_end = BigDecimal::from(tier_range.range_end);
-                if quantity_mb < finite_end {
-                    quantity_mb.clone()
+                if quantity < finite_end {
+                    quantity.clone()
                 } else {
                     finite_end
                 }
@@ -146,6 +164,4 @@ impl CatalogSnapshot {
 pub struct BillingPricingLease {
     pub billing_run_id: Uuid,
     pub snapshot: Arc<TierPricingSnapshot>,
-    pub window_start: DateTime<Utc>,
-    pub window_end: DateTime<Utc>,
 }

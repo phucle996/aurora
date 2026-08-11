@@ -141,6 +141,17 @@ not implied unless a separate program has been published.
   timestamp window, and use an idempotency key.
 - Money uses fixed integer micro-units; floating point is not used for
   settlement.
+- Storage metering is Zone-local: Public Edge emits only the bounded
+  `log_type=metering`/`module=storage` envelope after upstream completion.
+  The event contains no ticket, cookie, access secret, Authorization header, or
+  object key.
+- Zone ClickHouse is a journal/aggregation store, not a payer authority. The
+  only charge-producing path is Zone report outbox -> Kafka -> Job Orchestrator
+  -> Shared Redis -> Cost Engine -> Billing PostgreSQL.
+- A report is bound to one Zone and one closed UTC hour. Cost Engine resolves
+  ownership and pins pricing in Billing PostgreSQL, then mutates wallet and
+  immutable ledger atomically. Duplicate delivery is replay-safe; unsigned
+  corrections are quarantined and never rewrite settled history.
 
 ### Telemetry and projection
 

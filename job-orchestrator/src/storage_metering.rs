@@ -125,7 +125,20 @@ fn decode_report(payload: &[u8]) -> Result<StorageUsageReportV1, &'static str> {
         return Err("STORAGE_USAGE_REPORT_CONTRACT_INVALID");
     }
     if report.aggregates.iter().any(|aggregate| {
-        uuid::Uuid::parse_str(&aggregate.resource_id).is_err() || aggregate.resource_id.is_empty()
+        let valid_id = !aggregate.resource_id.is_empty()
+            && uuid::Uuid::parse_str(&aggregate.resource_id)
+                .is_ok_and(|resource_id| !resource_id.is_nil());
+        let valid_name = !aggregate.resource_name.is_empty()
+            && aggregate.resource_name.len() <= 255
+            && (aggregate.resource_name.starts_with("ws-")
+                || aggregate.resource_name.starts_with("tn-"));
+        (!valid_id && !valid_name)
+            || (aggregate.storage_gb_hours_micros > 0 && !valid_name)
+            || (aggregate.upload_bytes == 0
+                && aggregate.download_bytes == 0
+                && aggregate.storage_gb_hours_micros == 0)
+            || i64::try_from(aggregate.storage_bytes).is_err()
+            || i64::try_from(aggregate.storage_gb_hours_micros).is_err()
     }) {
         return Err("STORAGE_USAGE_REPORT_RESOURCE_INVALID");
     }
@@ -168,6 +181,9 @@ mod tests {
                     upload_bytes: 0,
                     download_bytes: 42,
                     request_count: 1,
+                    resource_name: String::new(),
+                    storage_bytes: 0,
+                    storage_gb_hours_micros: 0,
                 },
             ],
             report_sha256: Vec::new(),
