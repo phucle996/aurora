@@ -10,7 +10,7 @@ CENTRAL_COMPOSE := docker compose --env-file dev/central/.env -f dev/central/com
 ZONE_COMPOSE := docker compose --env-file dev/zone/.env -f dev/zone/compose.yml
 
 CENTRAL_INFRA_SERVICES := \
-	clickhouse psql changefeed-init billing-psql pbouncer psql-exporter \
+	psql changefeed-init billing-psql pbouncer psql-exporter \
 	redis-exporter acr-redis cp-redis nats kafka-1 kafka-init kafka-ui \
 	otel-collector victoriatraces victoriametrics victorialogs grafana \
 	centrifugo scylla vault
