@@ -132,18 +132,16 @@ func (h *TierHandler) EstimateStorage(c *gin.Context) {
 	}
 
 	apires.RespondSuccess(c, gin.H{
-		"capacity_bytes":               strconv.FormatInt(estimate.CapacityBytes, 10),
-		"hourly_estimate_micro_units":  strconv.FormatInt(estimate.HourlyMicroUnits, 10),
-		"monthly_estimate_micro_units": strconv.FormatInt(estimate.MonthlyMicroUnits, 10),
-		"billing_hours_per_month":      estimate.BillingHoursPerMonth,
-		"currency":                     estimate.Currency,
-		"tier_code":                    estimate.TierCode,
-		"tier_id":                      estimate.TierID.String(),
-		"tier_version_id":              estimate.TierVersionID.String(),
-		"pricing_version":              estimate.PricingVersion,
-		"pricing_checksum":             estimate.PricingChecksum,
-		"pricing_effective_from":       estimate.PricingEffectiveFrom,
-		"estimated_at":                 estimate.EstimatedAt,
+		"capacity_bytes":              strconv.FormatInt(estimate.CapacityBytes, 10),
+		"hourly_estimate_micro_units": strconv.FormatInt(estimate.HourlyMicroUnits, 10),
+		"currency":                    estimate.Currency,
+		"tier_code":                   estimate.TierCode,
+		"tier_id":                     estimate.TierID.String(),
+		"tier_version_id":             estimate.TierVersionID.String(),
+		"pricing_version":             estimate.PricingVersion,
+		"pricing_checksum":            estimate.PricingChecksum,
+		"pricing_effective_from":      estimate.PricingEffectiveFrom,
+		"estimated_at":                estimate.EstimatedAt,
 	}, "storage estimate")
 }
 

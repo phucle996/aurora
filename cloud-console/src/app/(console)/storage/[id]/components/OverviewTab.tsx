@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { updateBucketQuota, deleteBucket, type BucketItem } from "@/features/storage/api";
+
+const BYTES_PER_DECIMAL_GB = 1_000_000_000;
 
 interface OverviewTabProps {
   bucket: BucketItem;
@@ -12,7 +14,7 @@ interface OverviewTabProps {
 
 // [COMMENT]: Chuyển đổi dung lượng bytes sang GB
 function bytesToGB(bytes: number): number {
-  return Math.round(bytes / (1024 * 1024 * 1024));
+  return Math.round(bytes / BYTES_PER_DECIMAL_GB);
 }
 
 // [COMMENT]: Usage arrives as a fixed-point MB string so large byte counts
@@ -42,32 +44,8 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   // because it is also used as the mutation input boundary.
   const usedMegabytes = Number(bucket.used_mb ?? "0");
   const usedGB = usedMegabytes / 1024;
-  const totalGB = bucket.capacity_quota_bytes / (1024 * 1024 * 1024);
+  const totalGB = bucket.capacity_quota_bytes / BYTES_PER_DECIMAL_GB;
   const usagePercentage = totalGB > 0 ? Math.min((usedGB / totalGB) * 100, 100) : 0;
-
-  // [COMMENT]: Khởi tạo state cho chi phí tích lũy theo thời gian thực (Live ticking cost)
-  const [liveCost, setLiveCost] = useState("0.000000");
-
-  useEffect(() => {
-    if (!bucket.created_at) return;
-
-    // Quy đổi đơn giá $0.015 / GB / tháng sang giờ và giây
-    const createdTime = new Date(bucket.created_at).getTime();
-    const hourlyRatePerGB = 0.015 / 720;
-    const ratePerSecond = (totalGB * hourlyRatePerGB) / 3600;
-
-    const updateCost = () => {
-      const nowTime = new Date().getTime();
-      const ageInSeconds = Math.max(0, (nowTime - createdTime) / 1000);
-      const cost = ageInSeconds * ratePerSecond;
-      // [COMMENT]: Hiển thị với 6 số thập phân để thấy chi phí tăng dần trực quan theo từng giây
-      setLiveCost(cost.toFixed(6));
-    };
-
-    updateCost();
-    const interval = setInterval(updateCost, 1000);
-    return () => clearInterval(interval);
-  }, [bucket.created_at, totalGB]);
 
   const copyId = () => {
     // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
@@ -85,7 +63,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
     setUpdatingQuota(true);
     try {
-      const quotaBytes = newQuotaGB * 1024 * 1024 * 1024;
+      const quotaBytes = newQuotaGB * BYTES_PER_DECIMAL_GB;
       await updateBucketQuota(bucket.id, quotaBytes);
       toast.success("Storage quota limit updated successfully");
       setShowEditQuota(false);
@@ -320,25 +298,25 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             </span>
             <div className="flex items-baseline mt-1.5 text-foreground select-all font-mono">
               <span className="text-xs font-bold text-muted-foreground mr-1">$</span>
-              <span className="text-2xl font-black tracking-tight">{liveCost}</span>
+              <span className="text-2xl font-black tracking-tight">PAYG</span>
             </div>
             <span className="text-[9px] text-muted-foreground mt-1 font-medium">
-              Real-time billing since creation
+              Final charge comes from hourly metered usage
             </span>
           </div>
 
           <div className="space-y-2.5 pt-2 text-[11px]">
             <div className="flex justify-between items-center border-b border-border/30 pb-2">
-              <span className="text-muted-foreground font-medium">Monthly Rate</span>
-              <span className="font-semibold text-foreground font-mono">${(totalGB * 0.015).toFixed(3)} / mo</span>
+              <span className="text-muted-foreground font-medium">Capacity</span>
+              <span className="font-semibold text-foreground font-mono">{totalGB.toFixed(0)} GB</span>
             </div>
             <div className="flex justify-between items-center border-b border-border/30 pb-2">
-              <span className="text-muted-foreground font-medium">Allocated Space</span>
-              <span className="font-semibold text-foreground font-mono">{totalGB} GB</span>
+              <span className="text-muted-foreground font-medium">Pricing model</span>
+              <span className="font-semibold text-foreground font-mono">Hourly PAYG</span>
             </div>
             <div className="flex justify-between items-center pb-1">
-              <span className="text-muted-foreground font-medium">Standard Rate</span>
-              <span className="font-semibold text-foreground font-mono">$0.015 / GB / mo</span>
+              <span className="text-muted-foreground font-medium">Usage dimensions</span>
+              <span className="font-semibold text-foreground font-mono">Capacity + transfer</span>
             </div>
           </div>
         </div>

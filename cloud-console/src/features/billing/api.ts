@@ -14,8 +14,6 @@ export type PersonalWalletSummary = {
 export type StorageEstimate = {
   capacity_bytes: string;
   hourly_estimate_micro_units: string;
-  monthly_estimate_micro_units: string;
-  billing_hours_per_month: number;
   currency: string;
   tier_code: string;
   tier_id: string;
@@ -65,8 +63,6 @@ function decodeStorageEstimate(value: unknown): StorageEstimate {
   return {
     capacity_bytes: requiredString(value, "capacity_bytes"),
     hourly_estimate_micro_units: requiredString(value, "hourly_estimate_micro_units"),
-    monthly_estimate_micro_units: requiredString(value, "monthly_estimate_micro_units"),
-    billing_hours_per_month: requiredFiniteNumber(value, "billing_hours_per_month"),
     currency: requiredString(value, "currency"),
     tier_code: requiredString(value, "tier_code"),
     tier_id: requiredString(value, "tier_id"),

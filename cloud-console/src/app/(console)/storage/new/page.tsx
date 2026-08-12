@@ -15,6 +15,8 @@ import { BillingCalculator } from "./components/BillingCalculator";
 import { CreatedBucketResultView } from "./components/CreatedBucketResultView";
 import { CreateBucketForm } from "./components/CreateBucketForm";
 
+const BYTES_PER_DECIMAL_GB = 1_000_000_000;
+
 const getReadWritePolicy = () => `{
   "Version": "2012-10-17",
   "Statement": [
@@ -146,7 +148,7 @@ function CreateBucketContent() {
       return;
     }
 
-    const quotaBytes = quotaGB * 1024 * 1024 * 1024;
+    const quotaBytes = quotaGB * BYTES_PER_DECIMAL_GB;
     
     let policy = "";
     if (selectedPolicyTemplate === "readwrite") {

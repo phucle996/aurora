@@ -18,9 +18,8 @@ import (
 )
 
 const (
-	storageBytesPerDecimalGB     int64 = 1_000_000_000
-	storageMicrosPerGB           int64 = 1_000_000
-	storageEstimateHoursPerMonth int64 = 730
+	storageBytesPerDecimalGB int64 = 1_000_000_000
+	storageMicrosPerGB       int64 = 1_000_000
 )
 
 type tierService struct {
@@ -61,9 +60,8 @@ func (s *tierService) GetTierDetail(ctx context.Context, code string, serviceTyp
 	return s.tierRepo.GetTierDetail(ctx, code, serviceType)
 }
 
-// EstimateStorage uses the same effective progressive decimal GB-hour ranges
-// as the billing engine, then scales one hourly charge by the documented
-// 730-hour month. The estimate never writes wallet/ledger state.
+// EstimateStorage returns a read-only hourly capacity quote. It never writes
+// wallet/ledger state and never projects a monthly commitment.
 func (s *tierService) EstimateStorage(ctx context.Context, capacityBytes int64) (*entity.StorageEstimate, error) {
 	snapshot, err := s.pricingCache.get(ctx, entity.ServiceTypeStorage)
 	if err != nil {
@@ -113,15 +111,9 @@ func (s *tierService) EstimateStorage(ctx context.Context, capacityBytes int64) 
 		quotientLow++
 	}
 	hourly := int64(quotientLow)
-	if hourly > 0 && uint64(hourly) > maxInt64/uint64(storageEstimateHoursPerMonth) {
-		return nil, fmt.Errorf("storage estimate exceeds BIGINT capacity")
-	}
-	monthly := hourly * storageEstimateHoursPerMonth
 	return &entity.StorageEstimate{
 		CapacityBytes:        capacityBytes,
 		HourlyMicroUnits:     hourly,
-		MonthlyMicroUnits:    monthly,
-		BillingHoursPerMonth: storageEstimateHoursPerMonth,
 		Currency:             snapshot.Currency,
 		TierCode:             snapshot.Code,
 		TierID:               snapshot.TierID,

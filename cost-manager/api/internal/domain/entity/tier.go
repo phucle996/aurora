@@ -112,8 +112,6 @@ type PricingSnapshot struct {
 type StorageEstimate struct {
 	CapacityBytes        int64
 	HourlyMicroUnits     int64
-	MonthlyMicroUnits    int64
-	BillingHoursPerMonth int64
 	Currency             string
 	TierCode             string
 	TierID               uuid.UUID

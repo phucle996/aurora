@@ -59,7 +59,7 @@ func TestEstimateStorageUsesActivePricingAndL1Cache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second estimate: %v", err)
 	}
-	if first.HourlyMicroUnits != 764_412 || first.MonthlyMicroUnits != 558_020_760 {
+	if first.HourlyMicroUnits != 764_412 {
 		t.Fatalf("estimate = %#v", first)
 	}
 	if second.TierVersionID != first.TierVersionID || repo.calls.Load() != 1 {
