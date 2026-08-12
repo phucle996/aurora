@@ -43,7 +43,7 @@ export function ConsoleCommandPalette({ kind, open, onOpenChange }: { kind: Cons
         toast.error("Cost Console is not configured for this deployment.");
         return;
       }
-      window.location.assign(target);
+      window.open(target, "_blank", "noopener,noreferrer");
       return;
     }
     if (item.path && item.path !== pathname) router.push(item.path);

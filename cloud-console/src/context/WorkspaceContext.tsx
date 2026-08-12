@@ -89,7 +89,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [activeWorkspaceID, setActiveWorkspaceID] = useState<string | null>(
     () => getCookieWorkspaceID(),
   );
-  const [loading, setLoading] = useState(false);
+  // Workspace is a prerequisite for every owner workflow. Start closed so a
+  // page cannot issue an authorized request before the initializer has
+  // verified the current Zone/context and selected a durable workspace.
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // [COMMENT]: Ref để cancel inflight request khi context thay đổi nhanh (zone/tenant switch race)
@@ -119,7 +122,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setCatalog(items);
 
         if (items.length === 0) {
-          // [COMMENT]: Không có workspace trong context này — để client redirect đến create workspace
+          // [COMMENT]: Không có workspace là context không hợp lệ; the initializer
+          // terminates the session instead of mounting an owner workflow.
           setActiveWorkspaceID(null);
           return;
         }

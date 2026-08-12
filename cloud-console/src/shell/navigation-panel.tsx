@@ -74,7 +74,10 @@ export function NavigationPanel({
   const items = kind === "personal"
     ? personalConsoleNavigation(checkPermission)
     : tenantConsoleNavigation(checkPermission);
-  const active = activeNavigation(pathname, items);
+  const consoleItems = items.filter((item) => item.external !== "billing" && item.id !== "context");
+  const billingItem = items.find((item) => item.external === "billing");
+  const contextItem = items.find((item) => item.id === "context");
+  const active = activeNavigation(pathname, items.filter((item) => item.external !== "billing"));
 
   const navigate = (item: NavigationItem) => {
     if (item.external === "billing") {
@@ -83,7 +86,8 @@ export function NavigationPanel({
         toast.error("Cost Console is not configured for this deployment.");
         return;
       }
-      window.location.assign(target);
+      window.open(target, "_blank", "noopener,noreferrer");
+      onNavigate?.();
       return;
     }
     if (item.path && item.path !== pathname) router.push(item.path);
@@ -115,7 +119,7 @@ export function NavigationPanel({
           </div>
         )}
         <div className="space-y-[2px]">
-          {items.map((item) => (
+          {consoleItems.map((item) => (
             <NavigationButton
               key={item.id}
               item={item}
@@ -126,6 +130,18 @@ export function NavigationPanel({
           ))}
         </div>
       </nav>
+
+      {(billingItem || contextItem) && (
+        <div className="shrink-0 border-t border-sidebar-console-border px-3 py-3">
+          {!collapsed && (
+            <div className="mb-1 px-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Platform
+            </div>
+          )}
+          {contextItem && <NavigationButton item={contextItem} active={active.id === contextItem.id} collapsed={collapsed} onSelect={() => navigate(contextItem)} />}
+          {billingItem && <NavigationButton item={billingItem} active={false} collapsed={collapsed} onSelect={() => navigate(billingItem)} />}
+        </div>
+      )}
 
       <div className="shrink-0 border-t border-sidebar-console-border bg-[#0B0F19]/50 p-3">
         {!collapsed && (

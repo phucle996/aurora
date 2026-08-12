@@ -8,6 +8,7 @@ import { listPermissions, getRoleDetails, updateRole, type PermissionItem, type 
 import RouteGuard from "@/components/route-guard";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
+import { useWorkspace } from "@/context/WorkspaceContext";
 
 // Sub-components import
 import RoleDetailsCard from "./components/RoleDetailsCard";
@@ -19,6 +20,8 @@ function EditRoleContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
   const queryScope = useConsoleQueryScope();
+  const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
+  const workspaceReady = !workspaceLoading && Boolean(activeWorkspaceID);
 
   // [COMMENT]: State cho các trường thông tin của Role và audit metadata
   const [name, setName] = useState("");
@@ -49,6 +52,7 @@ function EditRoleContent() {
   } = useQuery<PermissionItem[]>({
     queryKey: [...queryScope, "rbac", "permissions"],
     queryFn: () => listPermissions(),
+    enabled: workspaceReady,
   });
 
   // [COMMENT]: Sử dụng useQuery từ TanStack Query để tải chi tiết Role
@@ -66,7 +70,7 @@ function EditRoleContent() {
         return null;
       }
     },
-    enabled: !!id,
+    enabled: !!id && workspaceReady,
   });
 
   const loading = loadingPerms || loadingRole;

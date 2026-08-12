@@ -21,6 +21,7 @@ import { getRoleDetails } from "@/features/rbac/api";
 import RouteGuard from "@/components/route-guard";
 import { useQuery } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
+import { useWorkspace } from "@/context/WorkspaceContext";
 
 // [COMMENT]: Định dạng ngày tháng hiển thị thông minh
 function formatDate(dateStr: string): string {
@@ -73,6 +74,8 @@ function ViewRoleContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
   const queryScope = useConsoleQueryScope();
+  const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
+  const workspaceReady = !workspaceLoading && Boolean(activeWorkspaceID);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
@@ -94,7 +97,7 @@ function ViewRoleContent() {
         return null;
       }
     },
-    enabled: !!id,
+    enabled: !!id && workspaceReady,
   });
 
   // Mặc định expand tất cả các Module có trong quyền được gán sau khi roleData được load

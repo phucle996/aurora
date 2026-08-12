@@ -463,6 +463,27 @@ func (r *RbacPlatformRepository) GetUserRolePermissions(ctx context.Context, use
 	return mergedBytes, nil
 }
 
+func (r *RbacPlatformRepository) ResolvePersonalRoleLevel(ctx context.Context, userID uuid.UUID) (int32, error) {
+	var level int32
+	query := fmt.Sprintf(`
+		SELECT ur.role_level
+		FROM %s.users u
+		JOIN %s.user_role ur ON ur.user_id = u.id
+		JOIN %s.platform_roles role ON role.id = ur.role_id
+		WHERE u.id = $1 AND u.status = 'active'
+		  AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'::uuid
+		ORDER BY ur.role_level ASC
+		LIMIT 1
+	`, r.schema, r.schema, r.schema)
+	if err := r.db.QueryRow(ctx, query, userID).Scan(&level); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, iamTaxonomy.ErrUserNotFound
+		}
+		return 0, fmt.Errorf("rbac platform repo: resolve personal role level: %w", err)
+	}
+	return level, nil
+}
+
 // [COMMENT]: DeleteRolePlatform xóa vai trò platform nếu callerLevel < roleLevel và không còn user/tenant nào được gán
 func (r *RbacPlatformRepository) DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error {
 	query := fmt.Sprintf(`

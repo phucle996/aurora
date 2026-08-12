@@ -27,6 +27,7 @@ type RbacPlatformService interface {
 
 	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user theo user id
 	GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error)
+	ResolvePersonalRoleLevel(ctx context.Context, userID uuid.UUID) (int32, error)
 
 	// [COMMENT]: DeleteRolePlatform xóa vai trò platform nếu callerLevel < roleLevel và không còn user/tenant nào được gán
 	DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error

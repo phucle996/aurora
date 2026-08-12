@@ -58,7 +58,12 @@ export function WalletBalance() {
 
   if (!costConsoleURL) return content;
   return (
-    <a href={costConsoleURL} aria-label={`${label}. Open Cost Management`}>
+    <a
+      href={costConsoleURL}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={`${label}. Open Cost Management`}
+    >
       {content}
     </a>
   );

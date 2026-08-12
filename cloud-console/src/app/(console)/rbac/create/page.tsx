@@ -22,10 +22,13 @@ import { listPermissions, createRole, type PermissionItem, type CreateRoleInput 
 import RouteGuard from "@/components/route-guard";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
+import { useWorkspace } from "@/context/WorkspaceContext";
 
 function CreateRoleContent() {
   const router = useRouter();
   const scope = useConsoleQueryScope();
+  const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
+  const workspaceReady = !workspaceLoading && Boolean(activeWorkspaceID);
   // [COMMENT]: Khởi tạo state cho các trường thông tin của Role và tìm kiếm
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -49,6 +52,7 @@ function CreateRoleContent() {
   } = useQuery<PermissionItem[]>({
     queryKey: [...scope, "rbac", "permissions"],
     queryFn: () => listPermissions(),
+    enabled: workspaceReady,
   });
 
   // Mặc định expand tất cả các Module khi hiển thị lần đầu sau khi permissions load xong

@@ -18,6 +18,7 @@ export function NotificationsDrawer() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [view, setView] = useState<"notifications" | "activity">("notifications");
   const notifRef = useRef<HTMLDivElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const scope = useConsoleQueryScope();
   const notificationKey = useMemo(() => [...scope, "notifications", "history"] as const, [scope]);
@@ -51,7 +52,12 @@ export function NotificationsDrawer() {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        notifRef.current &&
+        !notifRef.current.contains(target) &&
+        !drawerRef.current?.contains(target)
+      ) {
         setNotifOpen(false);
       }
     };
@@ -92,6 +98,7 @@ export function NotificationsDrawer() {
           />
 
           <div
+            ref={drawerRef}
             className="fixed top-0 right-0 h-full w-80 sm:w-96 bg-white dark:bg-slate-900 shadow-2xl border-l border-slate-200 dark:border-slate-800 z-50 flex flex-col transition-all duration-300 ease-in-out animate-in slide-in-from-right duration-250"
           >
             <div className="flex items-center justify-between px-4 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">

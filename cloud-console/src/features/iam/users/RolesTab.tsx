@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { getUserRole, listRoles, assignUserRole, type PlatformRoleItem } from "@/features/rbac/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
+import { useWorkspace } from "@/context/WorkspaceContext";
 import type { ExtendedUser } from "./UserTable";
 
 interface RolesTabProps {
@@ -17,6 +18,8 @@ interface RolesTabProps {
 export function RolesTab({ selectedUser, getAvatarColors }: RolesTabProps) {
   const queryClient = useQueryClient();
   const scope = useConsoleQueryScope();
+  const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
+  const workspaceReady = !workspaceLoading && Boolean(activeWorkspaceID);
   const [showAssignForm, setShowAssignForm] = useState(false);
   const [selectedRoleID, setSelectedRoleID] = useState("");
 
@@ -40,7 +43,7 @@ export function RolesTab({ selectedUser, getAvatarColors }: RolesTabProps) {
   } = useQuery<PlatformRoleItem | null>({
     queryKey: [...scope, "iam", "user-role", selectedUser?.id],
     queryFn: () => getUserRole(selectedUser.id),
-    enabled: !!selectedUser?.id,
+    enabled: !!selectedUser?.id && workspaceReady,
     retry: false,
   });
 
@@ -51,7 +54,7 @@ export function RolesTab({ selectedUser, getAvatarColors }: RolesTabProps) {
   } = useQuery<PlatformRoleItem[]>({
     queryKey: [...scope, "rbac", "roles"],
     queryFn: () => listRoles(),
-    enabled: !!selectedUser?.id,
+    enabled: !!selectedUser?.id && workspaceReady,
   });
 
   const loadingRole = loadingUserRole || loadingRolesList;

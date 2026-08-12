@@ -54,6 +54,7 @@ type IAMModule struct {
 	authRedisHandler                 *iamPubsubHandler.AuthRedisHandler
 	deviceRedisHandler               *iamPubsubHandler.DeviceRedisHandler
 	tenantAccessRedisHandler         *iamPubsubHandler.TenantAccessRedisHandler
+	personalAccessRedisHandler       *iamPubsubHandler.PersonalAccessRedisHandler
 }
 
 func (m *IAMModule) NotifyBillingOutbox() {
@@ -315,6 +316,10 @@ func NewModule(
 	if err != nil {
 		return nil, fmt.Errorf("iam module: failed to initialize tenant access Redis handler: %w", err)
 	}
+	personalAccessRedisHandler, err := iamPubsubHandler.NewPersonalAccessRedisHandler(rds, rbacPlatformSvc)
+	if err != nil {
+		return nil, fmt.Errorf("iam module: failed to initialize personal access Redis handler: %w", err)
+	}
 
 	// [COMMENT]: Khởi tạo các HTTP handlers phục vụ định tuyến API platform/tenant RBAC
 	rbacPlatformHandler := iamHandler.NewRbacPlatformHandler(rbacPlatformSvc)
@@ -366,5 +371,6 @@ func NewModule(
 		authRedisHandler:                 authRedisHandler,
 		deviceRedisHandler:               deviceRedisHandler,
 		tenantAccessRedisHandler:         tenantAccessRedisHandler,
+		personalAccessRedisHandler:       personalAccessRedisHandler,
 	}, nil
 }

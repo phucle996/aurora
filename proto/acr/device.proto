@@ -4,22 +4,13 @@ package iam.rpc;
 
 option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
 
-// [COMMENT]: DeviceService – chỉ phục vụ các thao tác liên quan đến thiết bị (Device).
-// Lưu ý: ReleaseTrinitySession đã được chuyển sang internal function trong ACR,
-// không còn là RPC nữa. File này đổi tên từ session.proto sang device.proto để phản ánh
-// đúng ngữ cảnh: chỉ chứa các RPC liên quan đến quản lý thiết bị.
-service DeviceService {
-  // [COMMENT]: RPC thu hồi session runtime L2 thuộc các thiết bị của một user cụ thể
-  rpc RevokeUserSessionsByDevices (RevokeUserSessionsByDevicesRequest) returns (RevokeUserSessionsByDevicesResponse);
-}
-
-// [COMMENT]: Request payload cho việc thu hồi session theo thiết bị
+// [COMMENT]: Request payload cho lệnh thu hồi session qua Shared Redis Stream.
 message RevokeUserSessionsByDevicesRequest {
   string user_id = 1;              // UUID của user
   repeated string client_device_ids = 2;  // Danh sách client_device_id cần thu hồi session
 }
 
-// [COMMENT]: Response trả về số lượng session đã được thu hồi thành công
+// [COMMENT]: Response trả về số lượng session đã được thu hồi thành công.
 message RevokeUserSessionsByDevicesResponse {
   int64 revoked_count = 1;         // Tổng số session đã được chuyển sang grace period
 }

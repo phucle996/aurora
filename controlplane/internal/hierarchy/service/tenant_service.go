@@ -77,3 +77,15 @@ func (s *TenantService) CreateTenant(ctx context.Context, in *hierarchyEntity.Cr
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }
+
+func (s *TenantService) ListTenantsForUser(ctx context.Context, userID uuid.UUID) (out []hierarchyEntity.TenantCatalogItem, err error) {
+	startedAt := time.Now()
+	defer func() {
+		result, reason := observability.ResultFailure, observability.ReasonInternal
+		if err == nil {
+			result, reason = observability.ResultSuccess, observability.ReasonNone
+		}
+		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
+	}()
+	return s.repo.ListTenantsForUser(ctx, userID)
+}

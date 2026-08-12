@@ -125,11 +125,15 @@ fn every_owner_prefixed_business_route_is_internal() {
 fn tenant_switch_is_an_acr_local_control_route_not_a_downstream_owner_route() {
     assert!(is_acr_local_owner_control_path(
         "POST",
-        "/api/v1/tenant/go-to-tenant"
+        "/api/v1/context/go-to-tenant"
+    ));
+    assert!(is_acr_local_owner_control_path(
+        "POST",
+        "/api/v1/context/go-to-personal"
     ));
     assert!(!is_acr_local_owner_control_path(
         "GET",
-        "/api/v1/tenant/go-to-tenant"
+        "/api/v1/context/go-to-tenant"
     ));
     assert!(!is_acr_local_owner_control_path(
         "POST",
@@ -140,7 +144,7 @@ fn tenant_switch_is_an_acr_local_control_route_not_a_downstream_owner_route() {
 #[test]
 fn tenant_creation_is_a_personal_only_neutral_workflow() {
     assert!(is_personal_only_neutral_path("POST", "/api/v1/tenants"));
-    assert!(!is_personal_only_neutral_path("GET", "/api/v1/tenants"));
+    assert!(is_personal_only_neutral_path("GET", "/api/v1/tenants"));
     assert!(!is_personal_only_neutral_path(
         "POST",
         "/api/v1/tenants/other"

@@ -10,6 +10,7 @@ import {
   Mail,
   Server,
   Users,
+  ArrowLeftRight,
 } from "lucide-react";
 
 export type NavigationId =
@@ -21,7 +22,8 @@ export type NavigationId =
   | "compute"
   | "mail"
   | "managed-services"
-  | "billing";
+  | "billing"
+  | "context";
 
 export type NavigationItem = {
   id: NavigationId;
@@ -116,6 +118,7 @@ export function personalConsoleNavigation(checkPermission: PermissionCheck): Nav
       breadcrumb: ["Console", "Cost Management"],
       external: "billing",
     },
+    { id: "context", label: "Window Context", path: "/personal/context", icon: ArrowLeftRight, breadcrumb: ["Platform", "Window Context"] },
   ];
 
   return items.filter((item) => {
@@ -185,6 +188,7 @@ export function tenantConsoleNavigation(checkPermission: PermissionCheck): Navig
       breadcrumb: ["Tenant Console", "Cost Management"],
       external: "billing",
     },
+    { id: "context", label: "Window Context", path: "/tenant/context", icon: ArrowLeftRight, breadcrumb: ["Platform", "Window Context"] },
   ];
 
   return items.filter((item) => {

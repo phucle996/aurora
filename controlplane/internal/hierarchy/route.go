@@ -65,6 +65,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	// calls the corresponding neutral route and cannot select this branch.
 	personalGroup := router.Group("/api/v1/personal")
 	{
+		personalGroup.GET("/tenants", module.TenantHandler.ListTenants)
 		personalGroup.POST("/hierarchy/workspaces",
 			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
 			module.WorkspacePersonalHandler.CreateWorkspacePersonal,

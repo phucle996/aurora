@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useUserSession } from "@/session/use-session";
+import { useWorkspace } from "@/context/WorkspaceContext";
 import { ConsoleCommandPalette } from "@/shell/command-palette";
 import { ContextSwitcher } from "@/shell/context-switcher";
 import { ConsoleHeader } from "@/shell/header";
@@ -56,6 +57,14 @@ function SessionUnavailable({ message, retry }: { message: string; retry: () => 
 export function ConsoleShell({ kind, children }: { kind: ConsoleKind; children: ReactNode }) {
   const router = useRouter();
   const { status, error, refreshSession, renderContext } = useUserSession();
+  const {
+    activeWorkspaceID,
+    catalog,
+    loading: workspaceLoading,
+    error: workspaceError,
+  } = useWorkspace();
+  const pathname = usePathname();
+  const workspaceContinuePath = `/${kind}/workspaces/continue`;
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -67,11 +76,37 @@ export function ConsoleShell({ kind, children }: { kind: ConsoleKind; children: 
     router.replace(renderContext.kind === "personal" ? "/personal" : "/tenant");
   }, [kind, renderContext, router, status]);
 
+  useEffect(() => {
+    if (
+      status !== "authenticated" ||
+      workspaceLoading ||
+      workspaceError ||
+      activeWorkspaceID ||
+      catalog.length === 0 ||
+      pathname === workspaceContinuePath
+    ) {
+      return;
+    }
+    router.replace(`/${kind}/workspaces/continue`);
+  }, [activeWorkspaceID, catalog.length, kind, pathname, router, status, workspaceContinuePath, workspaceError, workspaceLoading]);
+
   if (status === "verifying" || status === "unauthenticated") return <ConsoleSkeleton />;
   if (status === "error") {
     return <SessionUnavailable message={error} retry={() => void refreshSession()} />;
   }
   if (!renderContext || renderContext.kind !== kind) return <ConsoleSkeleton />;
+  if (workspaceError) {
+    return <SessionUnavailable message="Workspace context could not be verified. Retry when the control plane is available." retry={() => window.location.reload()} />;
+  }
+  if (workspaceLoading) {
+    return <ConsoleSkeleton />;
+  }
+  if (pathname === workspaceContinuePath) {
+    // Workspace selection is the only allowed owner-less screen. Do not mount
+    // the regular shell because its header/navigation can issue owner reads.
+    return <main className="min-h-[100svh] bg-background px-3 py-4 sm:px-6 sm:py-5">{children}</main>;
+  }
+  if (!activeWorkspaceID) return <ConsoleSkeleton />;
 
   return (
     <div

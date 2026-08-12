@@ -171,3 +171,33 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 
 	return out, nil
 }
+
+func (r *TenantRepoImpl) ListTenantsForUser(ctx context.Context, userID uuid.UUID) ([]hierarchyEntity.TenantCatalogItem, error) {
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
+		SELECT t.id, t.code, t.name, d.domain, COALESCE(mr.role_name, ''), COALESCE(mr.role_level, 99)
+		FROM %s.tenant_memberships m
+		JOIN %s.tenants t ON t.id = m.tenant_id AND t.status = 'active'
+		JOIN %s.tenant_domains d ON d.tenant_id = t.id AND d.is_primary = true
+		LEFT JOIN %s.membership_role mr ON mr.membership_id = m.id
+			AND mr.workspace_id = '00000000-0000-0000-0000-000000000000'::uuid
+		WHERE m.user_id = $1 AND m.status = 'active'
+		ORDER BY lower(t.name), t.id
+	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema), userID)
+	if err != nil {
+		return nil, fmt.Errorf("tenant repo: list user tenant catalog: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]hierarchyEntity.TenantCatalogItem, 0)
+	for rows.Next() {
+		var item hierarchyEntity.TenantCatalogItem
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.PrimaryDomain, &item.RoleName, &item.RoleLevel); err != nil {
+			return nil, fmt.Errorf("tenant repo: scan user tenant catalog: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tenant repo: iterate user tenant catalog: %w", err)
+	}
+	return out, nil
+}

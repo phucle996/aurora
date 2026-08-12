@@ -28,3 +28,15 @@ type CreateTenant struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
+
+// TenantCatalogItem is the verified user's personal tenant switch catalog.
+// The catalog is intentionally read-only and contains only durable tenant
+// identity needed by the ACR switch workflow.
+type TenantCatalogItem struct {
+	ID            uuid.UUID
+	Code          string
+	Name          string
+	PrimaryDomain string
+	RoleName      string
+	RoleLevel     int
+}

@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"fmt"
 )
 
 // Bootstrap khởi tạo runtime side-effects của IAM module.
@@ -27,6 +28,11 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	if m.tenantAccessRedisHandler != nil {
 		if err := m.tenantAccessRedisHandler.Start(); err != nil {
 			return err
+		}
+	}
+	if m.personalAccessRedisHandler != nil {
+		if err := m.personalAccessRedisHandler.Start(); err != nil {
+			return fmt.Errorf("iam bootstrap: start personal access Redis handler: %w", err)
 		}
 	}
 	// [COMMENT]: Khởi động Shared Redis PubSub subscriber để lắng nghe và điều phối luồng Auth
@@ -61,6 +67,9 @@ func (m *IAMModule) Stop() {
 	}
 	if m.tenantAccessRedisHandler != nil {
 		m.tenantAccessRedisHandler.Stop()
+	}
+	if m.personalAccessRedisHandler != nil {
+		m.personalAccessRedisHandler.Stop()
 	}
 	if m.billingOutboxRelay != nil {
 		m.billingOutboxRelay.Stop()

@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef } from "react";
+import { authAPI } from "@/features/auth/api";
 import { useUserSession } from "@/session/use-session";
 import { useWorkspace } from "@/context/WorkspaceContext";
 
@@ -36,11 +37,19 @@ function readCookie(name: string): string | null {
 // sau đó resolve zone_id từ catalog và gọi initWorkspaceContext.
 // Dùng ref để tránh gọi lại trùng khi session re-render không đổi.
 export function WorkspaceInitializer({ kind }: { kind: "personal" | "tenant" }) {
-  const { authenticated, loading, profile, renderContext } = useUserSession();
-  const { initWorkspaceContext, clearWorkspaceContext } = useWorkspace();
+  const { authenticated, loading, profile, renderContext, clearSession } = useUserSession();
+  const {
+    catalog,
+    activeWorkspaceID,
+    loading: workspaceLoading,
+    error: workspaceError,
+    initWorkspaceContext,
+    clearWorkspaceContext,
+  } = useWorkspace();
 
   // [COMMENT]: Track context key (zone_code:tenant) để detect thay đổi và tránh double-init
   const lastContextRef = useRef<string | null>(null);
+  const invalidContextRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (loading) return;
@@ -49,6 +58,7 @@ export function WorkspaceInitializer({ kind }: { kind: "personal" | "tenant" }) 
       // [COMMENT]: Logout hoặc session hết hạn → dọn sạch workspace state và reset key
       lastContextRef.current = null;
       clearWorkspaceContext();
+      invalidContextRef.current = null;
       return;
     }
 
@@ -59,13 +69,23 @@ export function WorkspaceInitializer({ kind }: { kind: "personal" | "tenant" }) 
     // [COMMENT]: Đọc zone_code từ cookie do ACR set sau khi login
     // Cookie name "zone_code" phải khớp với ACR session cookie
     const zoneCode = readCookie("zone_code");
-    if (!zoneCode) return;
+    const owner = renderContext.kind === "tenant" ? `tenant:${renderContext.tenant_id}` : "personal";
+    if (!zoneCode) {
+      const invalidContextKey = `missing-zone:${owner}`;
+      if (invalidContextRef.current === invalidContextKey) return;
+      invalidContextRef.current = invalidContextKey;
+      void authAPI.logout().finally(() => {
+        clearWorkspaceContext();
+        clearSession("logout");
+      });
+      return;
+    }
 
     // [COMMENT]: Context key để detect khi zone thay đổi (switch zone → cookie thay đổi)
-    const owner = renderContext.kind === "tenant" ? `tenant:${renderContext.tenant_id}` : "personal";
     const contextKey = `${zoneCode}:${owner}`;
     if (lastContextRef.current === contextKey) return;
     lastContextRef.current = contextKey;
+    invalidContextRef.current = null;
 
     // The backend derives actor and Zone from the verified session/cookie; the
     // Console never forwards those values as authorization claims.
@@ -76,7 +96,48 @@ export function WorkspaceInitializer({ kind }: { kind: "personal" | "tenant" }) 
         console.error("[WorkspaceInitializer] Failed to init workspace context:", err);
       }
     })();
-  }, [authenticated, loading, profile, renderContext, kind, initWorkspaceContext, clearWorkspaceContext]);
+  }, [authenticated, loading, profile, renderContext, kind, initWorkspaceContext, clearWorkspaceContext, clearSession]);
+
+  // Account activation guarantees at least one workspace per active Zone. An
+  // empty catalog is therefore an invalid principal context, not an onboarding
+  // state. Logout terminates any query/re-render loop instead of repeatedly
+  // sending owner requests that can only receive 403.
+  useEffect(() => {
+    if (
+      !authenticated ||
+      loading ||
+      workspaceLoading ||
+      workspaceError ||
+      !renderContext ||
+      renderContext.kind !== kind ||
+      activeWorkspaceID ||
+      catalog.length > 0
+    ) {
+      return;
+    }
+
+    const zoneCode = readCookie("zone_code") ?? "missing-zone";
+    const owner = renderContext.kind === "tenant" ? `tenant:${renderContext.tenant_id}` : "personal";
+    const invalidContextKey = `${zoneCode}:${owner}`;
+    if (invalidContextRef.current === invalidContextKey) return;
+    invalidContextRef.current = invalidContextKey;
+
+    void authAPI.logout().finally(() => {
+      clearWorkspaceContext();
+      clearSession("logout");
+    });
+  }, [
+    activeWorkspaceID,
+    authenticated,
+    catalog.length,
+    clearSession,
+    clearWorkspaceContext,
+    kind,
+    loading,
+    renderContext,
+    workspaceError,
+    workspaceLoading,
+  ]);
 
   // [COMMENT]: Không render gì — chỉ là side-effect manager
   return null;

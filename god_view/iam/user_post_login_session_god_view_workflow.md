@@ -37,7 +37,7 @@ never grants platform or tenant authority.
 | `/me/**` self-user route | Preserve `:path`; do not set `x-original-path`; never choose an owner branch or rewrite to `/personal` or `/tenant` | Target comes only from verified `x-user-id`. No permission/level `Authorize` middleware; a critical self route additionally requires session proof. |
 | Neutral platform route | Select the verified personal branch, overwrite `:path` with internal `/api/v1/personal/**`, and set `x-original-path` | `middleware.Authorize` loads the platform `user_role`, enforces the route permission and required level, then the repository rechecks durable facts. |
 | Neutral tenant route | Select the verified concrete tenant branch, overwrite `:path` with internal `/api/v1/tenant/**`, and set `x-original-path` | `middleware.Authorize` loads the tenant `membership_role`, enforces tenant/workspace permission and required level, then the repository rechecks membership and hierarchy facts. |
-| Direct owner-prefixed browser route | Deny external `/personal/**` and `/tenant/**` owner paths | No upstream request. `POST /api/v1/tenant/go-to-tenant` remains its documented ACR-local exception. |
+| Direct owner-prefixed browser route | Deny external `/personal/**` and `/tenant/**` owner paths | No upstream request. Neutral context switches under `/api/v1/context/**` remain documented ACR-local exceptions. |
 
 `/auth/**` and other documented ACR-local or public routes are excluded from
 owner rewriting. ACR overwrites every trusted identity/context header in every

@@ -16,8 +16,8 @@ use crate::pkg::header::*;
 use crate::sre::claims::SreTokenManager;
 use crate::token::TokenManager;
 use crate::user::claims::Claims;
+use crate::user::context_switch::{handle_tenant_switch, resolve_and_verify_tenant};
 use crate::user::revoke::handle_logout;
-use crate::user::tenant::{handle_tenant_switch, resolve_and_verify_tenant};
 use crate::user::verify::verify_edge_session;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckRequestExt, CheckResponseExt};
@@ -109,7 +109,11 @@ fn is_acr_local_owner_control_path(method: &str, path: &str) -> bool {
     // This endpoint changes the verified session context inside ACR; it is not
     // an owner-selected Controlplane route. Every other owner prefix remains
     // an internal rewrite target.
-    method == "POST" && path == "/api/v1/tenant/go-to-tenant"
+    method == "POST"
+        && matches!(
+            path,
+            "/api/v1/context/go-to-tenant" | "/api/v1/context/go-to-personal"
+        )
 }
 
 fn rewrite_render_context_path(path: &str, tenant_id: Option<&str>) -> Option<String> {
@@ -133,7 +137,7 @@ fn rewrite_render_context_path(path: &str, tenant_id: Option<&str>) -> Option<St
 }
 
 fn is_personal_only_neutral_path(method: &str, path: &str) -> bool {
-    method == "POST" && path == "/api/v1/tenants"
+    (path == "/api/v1/tenants" && (method == "GET" || method == "POST"))
 }
 
 fn rewrite_neutral_owner_path(path: &str, tenant_id: Option<&str>) -> Option<String> {
@@ -677,8 +681,22 @@ impl Authorization for ExtAuthzService {
             return res;
         }
 
-        // 7. Tenant Switch: POST /api/v1/tenant/go-to-tenant
+        // 7. Context Switch: POST /api/v1/context/go-to-tenant
         if let Some(res) = handle_tenant_switch(
+            &self.session_mgr,
+            &self.token_mgr,
+            &self.shared_redis,
+            &self.config,
+            client_headers,
+            method,
+            path,
+        )
+        .await
+        {
+            return res;
+        }
+
+        if let Some(res) = crate::user::context_switch::handle_personal_switch(
             &self.session_mgr,
             &self.token_mgr,
             &self.shared_redis,

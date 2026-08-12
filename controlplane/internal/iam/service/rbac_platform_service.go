@@ -174,6 +174,10 @@ func (s *RbacPlatformService) GetUserRolePermissions(ctx context.Context, userID
 	return s.repo.GetUserRolePermissions(ctx, userID)
 }
 
+func (s *RbacPlatformService) ResolvePersonalRoleLevel(ctx context.Context, userID uuid.UUID) (level int32, err error) {
+	return s.repo.ResolvePersonalRoleLevel(ctx, userID)
+}
+
 // [COMMENT]: DeleteRolePlatform thực hiện xóa vai trò platform thông qua repository
 func (s *RbacPlatformService) DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) (err error) {
 	startedAt := time.Now()

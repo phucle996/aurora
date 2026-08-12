@@ -15,6 +15,30 @@ export type CreateTenantResponse = {
 	primary_domain: string;
 };
 
+export type TenantCatalogItem = {
+	id: string;
+	code: string;
+	name: string;
+	primary_domain: string;
+	role_name: string;
+	role_level: number;
+};
+
+export async function listTenants(signal?: AbortSignal): Promise<TenantCatalogItem[]> {
+	const response = await fetchJSON<{ data?: { tenants?: TenantCatalogItem[] } }>("/api/v1/tenants", { signal });
+	return Array.isArray(response.data?.tenants) ? response.data.tenants : [];
+}
+
+export async function switchToTenant(tenant: TenantCatalogItem): Promise<void> {
+	await fetchJSON("/api/v1/context/go-to-tenant?tenant_id=" + encodeURIComponent(tenant.id) + "&tenant_domain=" + encodeURIComponent(tenant.primary_domain), {
+		method: "POST",
+	});
+}
+
+export async function switchToPersonal(): Promise<void> {
+	await fetchJSON("/api/v1/context/go-to-personal", { method: "POST" });
+}
+
 export async function createTenant(payload: CreateTenantPayload) {
 	const response = await fetchJSON<{ data?: CreateTenantResponse }>("/api/v1/tenants", {
 		method: "POST",

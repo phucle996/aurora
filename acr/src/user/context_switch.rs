@@ -1,5 +1,5 @@
 // ======================================================================================================
-// 📂 user/tenant.rs — Xác thực Tenant context tại Edge (Tenant Resolution + Tenant Switch)
+// 📂 user/context_switch.rs — Owner-context verification and context transitions at Edge
 //
 // Đây là merge của service/tenant/tenant_resolution.rs và service/tenant/tenant_switch.rs.
 // ======================================================================================================
@@ -93,6 +93,11 @@ pub struct TenantSwitchSuccessResponse {
 }
 
 #[derive(Serialize)]
+pub struct PersonalSwitchSuccessResponse {
+    pub context: &'static str,
+}
+
+#[derive(Serialize)]
 struct ErrorResponse {
     error_message: String,
 }
@@ -137,7 +142,7 @@ fn parse_tenant_id(path: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// [COMMENT]: Intercept POST /api/v1/tenant/go-to-tenant — xác thực Trinity và re-issue JWT với tenant_id mới.
+/// [COMMENT]: Intercept POST /api/v1/context/go-to-tenant — xác thực Trinity và re-issue JWT với tenant_id mới.
 pub async fn handle_tenant_switch(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
@@ -153,7 +158,7 @@ pub async fn handle_tenant_switch(
     // the security-sensitive tenant-switch workflow just because it shares a prefix.
     if method != "POST"
         || path.split_once('?').map(|(value, _)| value).unwrap_or(path)
-            != "/api/v1/tenant/go-to-tenant"
+            != "/api/v1/context/go-to-tenant"
     {
         return None;
     }
@@ -284,6 +289,27 @@ pub async fn handle_tenant_switch(
             ))));
         }
     };
+
+    // Context transitions are a two-step state machine. A concrete tenant
+    // session must return to Personal before another tenant can be selected;
+    // never resolve Tenant B while Tenant A is still the verified source.
+    if claims
+        .tenant_id
+        .as_deref()
+        .is_some_and(|tenant_id| !tenant_id.is_empty() && tenant_id != "platform")
+    {
+        Logger::authz_log(
+            &claims.uid,
+            method,
+            path,
+            "DENIED",
+            "Direct tenant-to-tenant switching is not allowed; return to personal first",
+        );
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Conflict,
+            "Return to Personal before selecting another tenant",
+        ))));
+    }
 
     let user_uuid = match uuid::Uuid::parse_str(&claims.uid) {
         Ok(value) if !value.is_nil() => value,
@@ -444,6 +470,202 @@ pub async fn handle_tenant_switch(
     Some(Ok(Response::new(response)))
 }
 
+/// Intercept POST /api/v1/context/go-to-personal. The verified tenant session
+/// is replaced only after Controlplane resolves the user's durable platform
+/// role; clearing a cookie alone would leave a tenant-scoped JWT active.
+pub async fn handle_personal_switch(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<TokenManager>,
+    shared_redis: &Arc<SharedRedisBus>,
+    config: &Config,
+    client_headers: &HashMap<String, String>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    use crate::gateway::ext_authz::extract_cookie_value;
+    if method != "POST"
+        || path.split_once('?').map(|(value, _)| value).unwrap_or(path)
+            != "/api/v1/context/go-to-personal"
+    {
+        return None;
+    }
+    let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+    let auth_result = async {
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
+            .ok_or("Missing access_token cookie")?;
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
+            .ok_or("Missing access_key cookie")?;
+        let mut claims = token_mgr
+            .verify_token(&jwt_token)
+            .await
+            .map_err(|_| "Invalid access_token")?;
+        if claims.access_key != access_key {
+            return Err("Access Key Mismatch");
+        }
+        let tenant_id = claims
+            .tenant_id
+            .as_deref()
+            .unwrap_or("platform")
+            .to_string();
+        if tenant_id == "platform" {
+            return Err("Already in Personal context");
+        }
+        let session = session_mgr
+            .get_session(
+                claims.zone_id.as_deref().unwrap_or("global"),
+                &tenant_id,
+                &claims.uid,
+                &access_key,
+            )
+            .await
+            .map_err(|_| "Authentication service unavailable")?
+            .ok_or("Session Expired or Revoked")?;
+        let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
+            .ok_or("Missing access_secret cookie")?;
+        if session.ash != sha256_hash(&access_secret) {
+            return Err("Access Secret Mismatch");
+        }
+        Ok((claims, access_key, session))
+    }
+    .await;
+    let (mut claims, access_key, source_session) = match auth_result {
+        Ok(value) => value,
+        Err(message) => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::Unauthorized,
+                message,
+            ))));
+        }
+    };
+    let user_uuid = match uuid::Uuid::parse_str(&claims.uid) {
+        Ok(value) if !value.is_nil() => value,
+        _ => {
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::Unauthorized,
+                "Unauthorized",
+            ))))
+        }
+    };
+    let mut request = Vec::with_capacity(16);
+    request.extend_from_slice(user_uuid.as_bytes());
+    let response = match shared_redis
+        .request(
+            "iam.personal.access.resolve",
+            "iam.personal.access.reply.",
+            request,
+            Duration::from_millis(900),
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            Logger::sys_error(
+                "user.personal.switch",
+                "Personal authority unavailable",
+                &error,
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::ServiceUnavailable,
+                "Personal context unavailable",
+            ))));
+        }
+    };
+    if response.first() != Some(&1) || response.len() != 5 {
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Forbidden,
+            "Personal context unavailable",
+        ))));
+    }
+    claims.tenant_id = None;
+    claims.lvl = i32::from_be_bytes(
+        response[1..5]
+            .try_into()
+            .expect("personal access level wire has fixed width"),
+    );
+    let new_jwt = match token_mgr.generate_token(&claims).await {
+        Ok(value) => value,
+        Err(error) => {
+            Logger::sys_error(
+                "user.personal.switch",
+                "Failed to re-issue personal JWT",
+                &error.to_string(),
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Personal context unavailable",
+            ))));
+        }
+    };
+    if let Err(error) = session_mgr
+        .register_session(RegisterSessionCommand {
+            zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+            tenant_id: "platform",
+            user_id: &claims.uid,
+            access_key: &access_key,
+            access_secret_hash: &source_session.ash,
+            device_id: &source_session.tdid,
+            client_proof_public_key: &source_session.client_proof_public_key,
+        })
+        .await
+    {
+        Logger::sys_error(
+            "user.personal.switch",
+            "Failed to bind personal session scope",
+            &error.to_string(),
+        );
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::ServiceUnavailable,
+            "Personal context unavailable",
+        ))));
+    }
+    let domain = if config.app_public_domain.trim().is_empty() {
+        String::new()
+    } else {
+        format!("; Domain={}", config.app_public_domain.trim())
+    };
+    let body = serde_json::to_string(&PersonalSwitchSuccessResponse {
+        context: "personal",
+    })
+    .unwrap_or_default();
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(HttpStatusCode::Ok);
+    builder.add_header("content-type", "application/json", None, false);
+    builder.set_body(")]}',\n".to_string() + &body);
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+            COOKIE_ACCESS_TOKEN, new_jwt, config.session_ttl_secs, domain
+        ),
+        None,
+        false,
+    );
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
+            COOKIE_TENANT_ID, domain
+        ),
+        None,
+        false,
+    );
+    builder.add_header(
+        "set-cookie",
+        &format!(
+            "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
+            COOKIE_TENANT_DOMAIN, domain
+        ),
+        None,
+        false,
+    );
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated(
+        "Personal context switch completed successfully",
+    ));
+    response.set_http_response(builder);
+    Some(Ok(Response::new(response)))
+}
+
 #[cfg(test)]
-#[path = "../../tests/unit/user/tenant.rs"]
+#[path = "../../tests/unit/user/context_switch.rs"]
 mod tests;

@@ -33,13 +33,26 @@ function FeatureInDevelopment() {
 function CostDashboardShell() {
   // State quản lý loại tiền tệ chính (VND / USD)
   const [currency, setCurrency] = useState('VND');
-  const { checkPermission, renderContext } = useAuthStore();
+  const { checkPermission, renderContext, isLoading, error } = useAuthStore();
   const hasAdminDashboard = [
     ['billing:tier', 'publish'],
     ['billing:credit', 'adjust'],
   ].some(([key, action]) => checkPermission(key, action));
 
-  if (!renderContext) return null;
+  if (!renderContext) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-300">
+        <div className="max-w-md rounded-lg border border-slate-800 bg-slate-900 p-8 text-center">
+          <h1 className="text-lg font-semibold text-white">
+            {isLoading ? 'Restoring Cost Console session…' : 'Cost Console context unavailable'}
+          </h1>
+          <p className="mt-2 text-sm text-slate-400">
+            {error || 'IAM did not return a valid billing render context.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-200 overflow-hidden">

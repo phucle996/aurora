@@ -1,8 +1,7 @@
-const BASE_URL = import.meta.env.VITE_API_BASE_URL;
-
-if (BASE_URL === undefined) {
-  throw new Error("VITE_API_BASE_URL is not defined in environment variables. Please check your .env file.");
-}
+// Cost Console and Cost Manager share the same Envoy origin. Keep the API
+// prefix explicit so an omitted local env value cannot crash the SPA during
+// module evaluation or accidentally route `/billing/*` back to the frontend.
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || "/api/v1").replace(/\/+$/, "");
 
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;

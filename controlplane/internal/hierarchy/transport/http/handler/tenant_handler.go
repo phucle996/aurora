@@ -34,6 +34,33 @@ type TenantHandler struct {
 	tenantSvc hierarchySvcInterface.TenantService
 }
 
+// ListTenants returns only active tenant memberships for the verified personal
+// principal. ACR rewrites the neutral route to this personal owner route.
+func (h *TenantHandler) ListTenants(c *gin.Context) {
+	const op = "hierarchy.tenant.list_personal"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	tenantCatalog, err := h.tenantSvc.ListTenantsForUser(ctx, userID)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+	items := make([]gin.H, 0, len(tenantCatalog))
+	for _, tenant := range tenantCatalog {
+		items = append(items, gin.H{
+			"id": tenant.ID, "code": tenant.Code, "name": tenant.Name,
+			"primary_domain": tenant.PrimaryDomain,
+			"role_name":      tenant.RoleName, "role_level": tenant.RoleLevel,
+		})
+	}
+	apires.RespondSuccess(c, gin.H{"tenants": items}, "tenant catalog loaded")
+}
+
 // [COMMENT]: NewTenantHandler tạo instance handler mới với tenant service dependency
 func NewTenantHandler(tenantSvc hierarchySvcInterface.TenantService) *TenantHandler {
 	return &TenantHandler{

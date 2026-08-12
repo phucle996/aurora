@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { listRoles, deleteRole, type PlatformRoleItem } from "@/features/rbac/api";
 import { cn } from "@/lib/utils";
 import { useUserSession } from "@/session/use-session";
+import { useWorkspace } from "@/context/WorkspaceContext";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
 
@@ -102,6 +103,8 @@ export function AccessControlScreen() {
   const queryClient = useQueryClient();
   const { checkPermission } = useUserSession();
   const scope = useConsoleQueryScope();
+  const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
+  const workspaceReady = !workspaceLoading && Boolean(activeWorkspaceID);
 
   // Local Filtering states
   const [searchQuery, setSearchQuery] = useState("");
@@ -122,6 +125,7 @@ export function AccessControlScreen() {
   } = useQuery<PlatformRoleItem[]>({
     queryKey: [...scope, "rbac", "roles"],
     queryFn: () => listRoles(),
+    enabled: workspaceReady,
   });
 
   // [COMMENT]: Mutation xóa Role và tự động cập nhật local query cache (Zero-Request UI update)

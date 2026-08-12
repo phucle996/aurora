@@ -113,10 +113,42 @@ sequenceDiagram
 |---|---|
 | standard response headers only | no workflow-specific response header is emitted |
 
-An empty Zone catalog is a valid `200`. Missing or malformed trusted actor/Zone
-context fails before the query; authorization failure is `403`; database or
-unexpected service failure is `500`. This read has no outbox, job, or retry
-settlement phase because PostgreSQL is the only durable owner.
+The controlplane still returns `200` with an empty `data` array when the durable
+catalog is empty. That response is not a valid authenticated Console context:
+account activation guarantees at least one workspace per active Zone. The
+Console therefore does not mount any owner workflow for an empty catalog (or a
+missing `workspace_id`); it performs a best-effort session logout, clears the
+workspace cookie and client session, then returns to sign-in. This terminates
+the invalid-context retry loop instead of repeatedly sending owner requests
+that can only receive `403 missing workspace context`.
+
+Missing or malformed trusted actor/Zone context fails before the query;
+authorization failure is `403`; database or unexpected service failure is
+`500`, and remains retryable without forced logout. This read has no outbox,
+job, or retry settlement phase because PostgreSQL is the only durable owner.
+
+## Invalid-context recovery (Console boundary)
+
+```mermaid
+sequenceDiagram
+    participant CP as Controlplane
+    participant B as Browser Console
+    participant A as ACR
+    participant S as Session service
+
+    CP-->>B: 200 catalog with data=[]
+    B->>B: Keep owner shell closed; do not mount owner queries
+    B->>A: POST /api/v1/auth/logout (best effort)
+    A->>S: Revoke runtime session and refresh token
+    S-->>A: Logout result (success or already expired)
+    A-->>B: Logout response
+    B->>B: Clear workspace_id, session cache, and redirect /signin
+```
+
+When the catalog request itself fails, the Console shows a retry boundary and
+does not log out; the failure may be transient. When `zone_code` is absent
+before catalog initialization, the same logout/clear-session path runs locally
+without issuing the personal catalog request.
 
 ## Current implementation discrepancies
 

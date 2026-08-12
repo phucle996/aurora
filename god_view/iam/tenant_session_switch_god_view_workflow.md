@@ -1,6 +1,6 @@
 # Tenant Session Switch — God View
 
-Workflow này chuyển session đã xác minh từ personal sang một concrete tenant.
+Workflow này chuyển session đã xác minh từ Personal sang một concrete tenant.
 Đây là ACR-local control API, không phải `/personal`, `/tenant` hay `/me`
 business route và không forward HTTP xuống Controlplane.
 
@@ -8,11 +8,17 @@ business route và không forward HTTP xuống Controlplane.
 
 | Part | Contract |
 |---|---|
-| Method/path | `POST /api/v1/tenant/go-to-tenant` |
+| Method/path | `POST /api/v1/context/go-to-tenant` |
 | Input | Trinity cookies, `tenant_id` UUID và `tenant_domain` query fields |
 | Trusted input | Không có role ID, level, user ID hoặc tenant header nào từ browser |
 | Output | Replacement Trinity JWT/cookies scoped to verified tenant, hoặc `400`, `401`, `403`, `503` |
 | Authorization | ACR sends verified user plus requested tenant/domain to IAM. IAM rechecks active user, tenant, domain, membership and current role. No `Authorize` HTTP middleware exists because no CP HTTP business route is entered. |
+
+Precondition: the source JWT must be Personal (`tenant_id` absent or `platform`).
+If the source is already a concrete tenant, ACR returns local `409` and does not
+publish `iam.tenant.access.resolve`; the user must complete the separate
+Tenant → Personal workflow first. The target tenant is never selected from a
+client authority header.
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -29,11 +35,13 @@ sequenceDiagram
     participant V as Vault
     participant AR as Auth-State Redis
 
-    B->>E: POST go-to-tenant plus Trinity cookies and tenant query
+    B->>E: POST /api/v1/context/go-to-tenant plus Trinity cookies and tenant query
     E->>A: ExtAuthz CheckRequest
     A->>V: Verify source JWT
     A->>AR: Verify access key secret and device session
-    alt malformed route or invalid source session
+    alt source is concrete Tenant A
+        A-->>E: Local 409; no resolver or cookie mutation
+    else malformed route or invalid source session
         A-->>E: 400 or 401 local response
     else verified source session
         A->>A: Bound decode requested tenant and domain
@@ -87,4 +95,3 @@ level, and returns tenant cookies. It does not forward the original request.
 | `iam:user_session:{zone}:{tenant}:{user}:{access_key}` | Auth-State Redis runtime session checked before and rebound after switch |
 | `iam.tenant.access.resolve` request/reply | Bounded Shared Redis transport only, never membership SoT |
 | PostgreSQL tenant membership and `membership_role` | Durable authority for issued tenant context |
-

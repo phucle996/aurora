@@ -11,7 +11,6 @@ mod gateway;
 mod infra;
 mod observability;
 pub mod pkg;
-mod rpc;
 mod sre;
 mod storage;
 mod token;
@@ -27,9 +26,7 @@ use crate::gateway::ext_authz::ExtAuthzService;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
-use crate::rpc::session::DeviceRpcHandler;
 use crate::token::TokenManager;
-use crate::user::device::device_proto::device_service_server::DeviceServiceServer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -141,8 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         oauth_service,
     );
 
-    let device_service = DeviceRpcHandler::new(session_mgr.clone());
-
     // [COMMENT]: Mọi ACR↔Central request/event dùng Shared Redis; startup chỉ ready
     // sau khi auth/device/zone subscriptions và security stream group đã tồn tại.
     let _shared_redis_router = match crate::transport::redis::SharedRedisRouter::start(
@@ -196,7 +191,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(AuthorizationServer::new(ext_authz_service))
-        .add_service(DeviceServiceServer::new(device_service))
         .serve(addr)
         .await?;
 
