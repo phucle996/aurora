@@ -186,6 +186,10 @@ wallet or settled history.
 - `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - `cost-manager/engine/src/engine/snapshot.rs`
 - `cost-manager/api/migrations/000008_storage_usage_contract.up.sql` (current
-  storage settlement contract and indexes; historical migrations remain
-  checksum-immutable)
+  storage settlement contract)
+- `cost-manager/api/migrations/000009_metering_pricing_contract.up.sql` (decimal
+  GB_HOUR catalog thresholds and storage indexes)
+- `cost-manager/api/migrations/000010_storage_pricing_checksum.up.sql` (pricing
+  snapshot checksum synchronized with the new thresholds; historical
+  migrations remain checksum-immutable)
 - `cost-manager/tmp/zone-local-storage-metering-refactor-plan.md`
