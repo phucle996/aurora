@@ -1,7 +1,4 @@
 -- Migration 000003 Down: Drop tất cả các indexes trong billing schema
-DROP INDEX IF EXISTS billing.idx_storage_usage_line_resource_name;
-DROP INDEX IF EXISTS billing.idx_storage_usage_line_resource_window;
-DROP INDEX IF EXISTS billing.idx_storage_report_inbox_pending;
 DROP INDEX IF EXISTS billing.idx_payment_intents_pending_expiry;
 DROP INDEX IF EXISTS billing.idx_payment_intents_actor_created;
 DROP INDEX IF EXISTS billing.idx_payment_intents_owner_created;
