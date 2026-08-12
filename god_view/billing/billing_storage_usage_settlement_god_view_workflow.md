@@ -185,6 +185,7 @@ wallet or settled history.
 - `proto/cost-manager/engine/storage_usage_report.proto`
 - `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - `cost-manager/engine/src/engine/snapshot.rs`
-- `cost-manager/api/migrations/000002_tables.up.sql` (storage settlement tables)
-- `cost-manager/api/migrations/000003_indexes.up.sql` (storage settlement indexes)
+- `cost-manager/api/migrations/000008_storage_usage_contract.up.sql` (current
+  storage settlement contract and indexes; historical migrations remain
+  checksum-immutable)
 - `cost-manager/tmp/zone-local-storage-metering-refactor-plan.md`
