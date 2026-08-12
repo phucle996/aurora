@@ -405,14 +405,16 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 	}
 
 	var walletStatus string
+	var restrictionReason *string
 	var cashBalance, promotionalBalance int64
 	err = tx.QueryRow(ctx, `
-		SELECT status, cash_balance, promotional_balance
+		SELECT status, restriction_reason, cash_balance, promotional_balance
 		FROM billing.wallets
 		WHERE id=$1 AND owner_id=$2 AND owner_type='PERSONAL'::billing.owner_type
 		FOR UPDATE
 	`, intent.WalletID, intent.OwnerID).Scan(
 		&walletStatus,
+		&restrictionReason,
 		&cashBalance,
 		&promotionalBalance,
 	)
@@ -471,19 +473,46 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 
 	cashBalance += settlement.Amount
 	nextWalletStatus := walletStatus
-	walletActivated := walletStatus == entity.WalletStatusPendingActivation
+	walletActivated := walletStatus == entity.WalletStatusSuspended && restrictionReason != nil && *restrictionReason == "CREDIT_EXHAUSTED"
 	if walletActivated {
 		nextWalletStatus = entity.WalletStatusActive
 	}
 	// [COMMENT]: Provider settlement can credit suspended funds but must never
 	// remove an administrative suspension.
-	if _, err = tx.Exec(ctx, `
+	var walletVersion int64
+	if err = tx.QueryRow(ctx, `
 		UPDATE billing.wallets
 		SET cash_balance=$1, status=$2::billing.wallet_lifecycle_status,
+		    restriction_reason=CASE WHEN $2='ACTIVE' THEN NULL ELSE restriction_reason END,
+		    status_changed_at=CASE WHEN status::text IS DISTINCT FROM $2 THEN NOW() ELSE status_changed_at END,
 		    version=version+1, updated_at=NOW()
 		WHERE id=$3
-	`, cashBalance, nextWalletStatus, intent.WalletID); err != nil {
+		RETURNING version
+	`, cashBalance, nextWalletStatus, intent.WalletID).Scan(&walletVersion); err != nil {
 		return nil, fmt.Errorf("personal payment repo: credit cash: %w", err)
+	}
+	if walletStatus == entity.WalletStatusPendingActivation {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO billing.storage_pending_activation_reconcile
+				(wallet_id, owner_id, owner_type, target_wallet_version, status, updated_at)
+			VALUES ($1,$2,'PERSONAL',$3,'PENDING',NOW())
+			ON CONFLICT (wallet_id) DO UPDATE
+			SET owner_id=EXCLUDED.owner_id, owner_type=EXCLUDED.owner_type,
+				target_wallet_version=EXCLUDED.target_wallet_version,
+				status='PENDING', last_error=NULL, updated_at=NOW()
+		`, intent.WalletID, intent.OwnerID, walletVersion); err != nil {
+			return nil, fmt.Errorf("personal payment repo: queue storage activation reconciliation: %w", err)
+		}
+	}
+	admissionMode := "SUSPEND_BILLABLE"
+	var admissionReason any = "ADMINISTRATIVE"
+	if nextWalletStatus == entity.WalletStatusActive {
+		admissionMode = "ALLOW"
+		admissionReason = nil
+	} else if walletStatus == entity.WalletStatusPendingActivation {
+		admissionReason = "NOT_ACTIVATED"
+	} else if restrictionReason != nil && *restrictionReason == "CREDIT_EXHAUSTED" {
+		admissionReason = "CREDIT_EXHAUSTED"
 	}
 
 	topUpLedgerID := uuid.NewSHA1(personalTopUpLedgerNamespace, intent.ID[:])
@@ -498,6 +527,13 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 		cashBalance, promotionalBalance, settlement.Currency,
 		settlement.ProviderPaymentID, settlement.SettledAt); err != nil {
 		return nil, fmt.Errorf("personal payment repo: insert top-up ledger: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO billing.wallet_admission_outbox
+			(event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
+		VALUES ($1,$2,$3,'PERSONAL',$4,$5,$6,NOW())
+	`, uuid.New(), intent.WalletID, intent.OwnerID, walletVersion, admissionMode, admissionReason); err != nil {
+		return nil, fmt.Errorf("personal payment repo: write wallet admission outbox: %w", err)
 	}
 
 	result := &entity.SettlementResult{
@@ -588,12 +624,31 @@ func (r *personalPaymentRepository) ApplyPersonalSettlement(
 
 			if grantInserted {
 				promotionalBalance += reservation.GrantAmountMicroUnits
-				if _, err = tx.Exec(ctx, `
+				var referralWalletVersion int64
+				if err = tx.QueryRow(ctx, `
 					UPDATE billing.wallets
 					SET promotional_balance=$1, version=version+1, updated_at=NOW()
 					WHERE id=$2
-				`, promotionalBalance, intent.WalletID); err != nil {
+					RETURNING version
+				`, promotionalBalance, intent.WalletID).Scan(&referralWalletVersion); err != nil {
 					return nil, fmt.Errorf("personal payment repo: credit referral promotion: %w", err)
+				}
+				referralAdmissionMode := "SUSPEND_BILLABLE"
+				var referralAdmissionReason any = "ADMINISTRATIVE"
+				if nextWalletStatus == entity.WalletStatusActive {
+					referralAdmissionMode = "ALLOW"
+					referralAdmissionReason = nil
+				} else if walletStatus == entity.WalletStatusPendingActivation {
+					referralAdmissionReason = "NOT_ACTIVATED"
+				} else if restrictionReason != nil && *restrictionReason == "CREDIT_EXHAUSTED" {
+					referralAdmissionReason = "CREDIT_EXHAUSTED"
+				}
+				if _, err = tx.Exec(ctx, `
+					INSERT INTO billing.wallet_admission_outbox
+						(event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
+					VALUES ($1,$2,$3,'PERSONAL',$4,$5,$6,NOW())
+				`, uuid.New(), intent.WalletID, intent.OwnerID, referralWalletVersion, referralAdmissionMode, referralAdmissionReason); err != nil {
+					return nil, fmt.Errorf("personal payment repo: write referral wallet admission outbox: %w", err)
 				}
 
 				referralLedgerID := uuid.NewSHA1(referralLedgerNamespace, reservation.ID[:])

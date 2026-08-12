@@ -68,7 +68,7 @@ export function BillingCalculator({ quotaGB }: BillingCalculatorProps) {
           </div>
           <span className="text-[9px] text-muted-foreground/80 mt-1 font-semibold text-center">
             {estimate
-              ? `Cost Manager snapshot · ${estimate.tier_code} · hourly PAYG`
+              ? `Cost Manager schedule · ${estimate.pricing_schedule_code} · hourly PAYG`
               : `Based on ${quotaGB} GB allocated storage`}
           </span>
         </div>
@@ -79,9 +79,9 @@ export function BillingCalculator({ quotaGB }: BillingCalculatorProps) {
           </span>
           <div className="flex flex-col gap-2">
             <div className="flex justify-between items-center border-b border-border/30 pb-2 gap-3">
-              <span className="text-[11px] font-semibold text-muted-foreground">Pricing tier</span>
+              <span className="text-[11px] font-semibold text-muted-foreground">Pricing schedule</span>
               <span className="font-semibold text-foreground font-mono text-right">
-                {estimate ? `${estimate.tier_code} · v${estimate.pricing_version}` : "—"}
+                {estimate ? `${estimate.pricing_schedule_code} · v${estimate.pricing_version}` : "—"}
               </span>
             </div>
             <div className="flex justify-between items-center border-b border-border/30 pb-2 gap-3">

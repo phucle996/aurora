@@ -1,5 +1,6 @@
 use std::error::Error;
 
+mod admission;
 mod metering;
 mod orchestrator;
 mod transfer_ticket;
@@ -20,6 +21,10 @@ pub mod transport_proto {
 
 pub mod zone_report_proto {
     include!(concat!(env!("OUT_DIR"), "/zone.rs"));
+}
+
+pub mod wallet_admission_proto {
+    include!(concat!(env!("OUT_DIR"), "/billing.wallet.v1.rs"));
 }
 
 #[tokio::main]

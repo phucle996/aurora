@@ -29,13 +29,15 @@ type App struct {
 	authRedisClient *redis.Client
 	module          *Module
 
-	httpServer         *http.Server
-	grpcServer         *googlegrpc.Server
-	rustCmd            *exec.Cmd
-	outboxCancel       context.CancelFunc
-	outboxDone         chan struct{}
-	pricingCacheCancel context.CancelFunc
-	pricingCacheDone   chan struct{}
+	httpServer            *http.Server
+	grpcServer            *googlegrpc.Server
+	rustCmd               *exec.Cmd
+	outboxCancel          context.CancelFunc
+	outboxDone            chan struct{}
+	walletAdmissionCancel context.CancelFunc
+	walletAdmissionDone   chan struct{}
+	pricingCacheCancel    context.CancelFunc
+	pricingCacheDone      chan struct{}
 }
 
 func NewApp() *App {
@@ -143,14 +145,28 @@ func (a *App) Start() error {
 		close(a.outboxDone)
 	}
 
+	// Wallet admission relay publishes only committed, versioned wallet
+	// transitions. Billing PostgreSQL remains the replay authority.
+	walletAdmissionCtx, walletAdmissionCancel := context.WithCancel(context.Background())
+	a.walletAdmissionCancel = walletAdmissionCancel
+	a.walletAdmissionDone = make(chan struct{})
+	if a.module != nil && a.module.WalletAdmissionOutboxRelay != nil {
+		go func() {
+			defer close(a.walletAdmissionDone)
+			a.module.WalletAdmissionOutboxRelay.Run(walletAdmissionCtx)
+		}()
+	} else {
+		close(a.walletAdmissionDone)
+	}
+
 	// Pricing cache invalidation is a best-effort Pub/Sub hint; TTL/cold-start remains the recovery path.
 	pricingCacheCtx, pricingCacheCancel := context.WithCancel(context.Background())
 	a.pricingCacheCancel = pricingCacheCancel
 	a.pricingCacheDone = make(chan struct{})
-	if a.module != nil && a.module.TierService != nil {
+	if a.module != nil && a.module.PricingScheduleService != nil {
 		go func() {
 			defer close(a.pricingCacheDone)
-			a.module.TierService.RunPricingCacheInvalidation(pricingCacheCtx)
+			a.module.PricingScheduleService.RunPricingCacheInvalidation(pricingCacheCtx)
 		}()
 	} else {
 		close(a.pricingCacheDone)
@@ -244,6 +260,17 @@ func (a *App) Stop() {
 		case <-a.outboxDone:
 		case <-time.After(3 * time.Second):
 			logger.SysWarn(op, "Timed out waiting for pricing outbox relay")
+		}
+	}
+
+	if a.walletAdmissionCancel != nil {
+		a.walletAdmissionCancel()
+	}
+	if a.walletAdmissionDone != nil {
+		select {
+		case <-a.walletAdmissionDone:
+		case <-time.After(3 * time.Second):
+			logger.SysWarn(op, "Timed out waiting for wallet admission relay")
 		}
 	}
 

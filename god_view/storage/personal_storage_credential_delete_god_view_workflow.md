@@ -171,3 +171,22 @@ sequenceDiagram
 - `controlplane/internal/storage/repository/personal_credential_repo.go`
 - `dataplane/src/executor/storage/credential.rs`
 - `job-orchestrator/src/results/storage/credential.rs`
+
+## Wallet admission rule
+
+Credential delete is outside the billable-expansion gate. The workflow still
+enforces verified personal ownership, the bucket/credential fence and the
+protected outbox transaction, but it does not require `ALLOW`. This preserves a
+cleanup path after `SUSPEND_BILLABLE`.
+
+```mermaid
+sequenceDiagram
+    participant S as PersonalCredentialService
+    participant R as PersonalCredentialRepository
+    participant DB as Controlplane PostgreSQL
+
+    S->>R: Delete owned credential
+    R->>DB: Verify owner and write delete outbox
+    DB-->>R: Commit
+    R-->>S: Durable revoke command
+```

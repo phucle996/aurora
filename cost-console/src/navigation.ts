@@ -22,14 +22,11 @@ export interface NavigationItem {
 export const navigationItems: NavigationItem[] = [
   { id: "dashboard", name: "Dashboard", path: "/", icon: LayoutDashboard },
   {
-    id: "plans",
-    name: "Gói Cước & Giá",
-    path: "/plan",
+    id: "pricing-schedules",
+    name: "Pricing Schedules",
+    path: "/pricing-schedules",
     icon: Coins,
-    anyPermission: [
-      { key: "billing:plan", action: "read" },
-      { key: "billing:tier", action: "read" },
-    ],
+    permission: { key: "billing:pricing_schedule", action: "read" },
   },
   {
     id: "invoices",

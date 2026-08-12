@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // [COMMENT]: Bootstrap pricing fail-closed trước khi bất kỳ billing worker nào được phép chạy.
     let pricing_runtime = engine::PricingRuntime::bootstrap(pg_pool.clone()).await?;
-    println!("Đã bootstrap immutable Tier pricing catalog vào L1!");
+    println!("Đã bootstrap immutable PAYG pricing schedule catalog vào L1!");
 
     // [COMMENT]: 3. Khởi tạo kết nối Redis multiplexed connection qua infra
     let redis_conn = infra::redis::init_redis_conn(&vault, &app_config).await?;

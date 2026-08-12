@@ -107,6 +107,8 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		case errors.Is(createErr, storageTaxonomy.ErrInvalidBucketName):
 			logger.HandlerWarn(c, op, createErr, "invalid bucket name format")
 			apires.RespondBadRequest(c, "invalid bucket name format")
+		case errors.Is(createErr, storageTaxonomy.ErrWalletAdmissionDenied):
+			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
 		default:
 			logger.HandlerError(c, op, createErr)
 			apires.RespondInternalError(c, "internal_error")
@@ -275,6 +277,10 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 			apires.RespondBadRequest(c, "requested quota must leave at least 1GB of free space above current usage")
 			return
 		}
+		if errors.Is(updateErr, storageTaxonomy.ErrWalletAdmissionDenied) {
+			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
+			return
+		}
 		logger.HandlerError(c, op, updateErr)
 		apires.RespondInternalError(c, "internal_error")
 		return
@@ -436,6 +442,10 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 	}
 	session.BucketName = bucket.Name
 	if err := h.personalSvc.CreateStorageAccessSession(ctx, session); err != nil {
+		if errors.Is(err, storageTaxonomy.ErrWalletAdmissionDenied) {
+			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
+			return
+		}
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return

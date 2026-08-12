@@ -17,6 +17,18 @@ pub(crate) struct ZoneMetadata {
     pub updated_at: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct StorageAdmission {
+    pub resource_id: String,
+    pub resource_name: String,
+    pub wallet_version: i64,
+    pub admission_mode: String,
+    pub restriction_reason: Option<String>,
+    pub effective_at_unix_seconds: i64,
+    pub valid_until_unix_seconds: Option<i64>,
+    pub source_event_id: String,
+}
+
 impl Default for ZoneMetadata {
     fn default() -> Self {
         Self {
@@ -33,6 +45,7 @@ pub(crate) struct ZoneControlState {
     health: kv::Store,
     coordination: kv::Store,
     assignments: kv::Store,
+    admission: kv::Store,
 }
 
 impl ZoneControlState {
@@ -86,12 +99,105 @@ impl ZoneControlState {
             64 * 1024,
         )
         .await?;
+        let admission_store = get_or_create_store(
+            &js,
+            config,
+            "AURORA_ZONE_ADMISSION",
+            "Aurora Storage wallet admission projection",
+            Duration::ZERO,
+            64 * 1024,
+        )
+        .await?;
         Ok(Arc::new(Self {
             config: config_store,
             health: health_store,
             coordination: coordination_store,
             assignments: assignments_store,
+            admission: admission_store,
         }))
+    }
+
+    pub(crate) async fn update_storage_admission(
+        &self,
+        resource_id: &str,
+        next: StorageAdmission,
+    ) -> Result<(), String> {
+        for _ in 0..5 {
+            let current = self
+                .admission
+                .entry(resource_id.to_string())
+                .await
+                .map_err(|error| format!("read Storage admission revision: {error}"))?;
+            if let Some(entry) = current.as_ref() {
+                if let Ok(existing) = serde_json::from_slice::<StorageAdmission>(&entry.value) {
+                    if existing.wallet_version >= next.wallet_version {
+                        return Ok(());
+                    }
+                }
+            }
+            let value = Bytes::from(
+                serde_json::to_vec(&next)
+                    .map_err(|error| format!("encode Storage admission: {error}"))?,
+            );
+            let applied = match current {
+                Some(entry) => self
+                    .admission
+                    .update(resource_id, value, entry.revision)
+                    .await
+                    .is_ok(),
+                None => self
+                    .admission
+                    .create(resource_id.to_string(), value)
+                    .await
+                    .is_ok(),
+            };
+            if applied {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "Storage admission CAS contention for {resource_id}"
+        ))
+    }
+
+    pub(crate) async fn update_storage_admission_name_index(
+        &self,
+        resource_name: &str,
+        next: StorageAdmission,
+    ) -> Result<(), String> {
+        let key = format!("name/{resource_name}");
+        for _ in 0..5 {
+            let current = self
+                .admission
+                .entry(key.clone())
+                .await
+                .map_err(|error| format!("read Storage admission name revision: {error}"))?;
+            if let Some(entry) = current.as_ref() {
+                if let Ok(existing) = serde_json::from_slice::<StorageAdmission>(&entry.value) {
+                    if existing.wallet_version >= next.wallet_version {
+                        return Ok(());
+                    }
+                }
+            }
+            let value = Bytes::from(
+                serde_json::to_vec(&next)
+                    .map_err(|error| format!("encode Storage admission name: {error}"))?,
+            );
+            let applied = match current {
+                Some(entry) => self
+                    .admission
+                    .update(&key, value, entry.revision)
+                    .await
+                    .is_ok(),
+                None => self.admission.create(key.clone(), value).await.is_ok(),
+            };
+            if applied {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "Storage admission name CAS contention for {resource_name}"
+        ))
     }
 
     pub(crate) async fn read_metadata(&self) -> Result<ZoneMetadata, String> {

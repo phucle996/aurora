@@ -27,6 +27,7 @@ const TRANSFER_TICKET_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone)]
 struct TicketStore {
     store: jetstream::kv::Store,
+    admission: jetstream::kv::Store,
     timeout: Duration,
 }
 
@@ -35,6 +36,18 @@ struct PublicAuthorizer {
     store: TicketStore,
     zone_id: String,
     inflight: Arc<Semaphore>,
+}
+
+#[derive(serde::Deserialize)]
+struct AdmissionRecord {
+    #[serde(default)]
+    resource_id: String,
+    #[serde(default)]
+    resource_name: String,
+    wallet_version: i64,
+    admission_mode: String,
+    effective_at_unix_seconds: i64,
+    valid_until_unix_seconds: Option<i64>,
 }
 
 #[tonic::async_trait]
@@ -59,9 +72,103 @@ impl Authorization for PublicAuthorizer {
             .and_then(|value| value.request.as_ref())
             .and_then(|value| value.http.as_ref())
             .ok_or_else(|| Status::permission_denied("HTTP context missing"))?;
-        let token = headers
-            .get("x-aurora-transfer-ticket")
-            .ok_or_else(|| Status::permission_denied("Transfer ticket missing"))?;
+        let token = headers.get("x-aurora-transfer-ticket");
+        let Some(token) = token else {
+            // S3 metadata/list/cleanup operations do not add billable object
+            // bytes. They remain available while a wallet is suspended so a
+            // customer can inspect and remove data. CORS preflight must also
+            // pass before it reaches MinIO.
+            let path = http
+                .path
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches('/');
+            let query = http
+                .path
+                .split_once('?')
+                .map(|(_, query)| query)
+                .unwrap_or_default();
+            let has_list_query = query.split('&').any(|parameter| {
+                let key = parameter.split('=').next().unwrap_or_default();
+                matches!(key, "list-type" | "prefix")
+            });
+            let path_segments = path
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .count();
+            let is_list_get = http.method == "GET"
+                && (path_segments == 1 || path.ends_with('/') || has_list_query);
+            if matches!(http.method.as_str(), "OPTIONS" | "HEAD" | "DELETE") || is_list_get {
+                let mut response = CheckResponse::with_status(Status::ok("authorized"));
+                response.set_http_response(
+                    envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
+                );
+                return Ok(Response::new(response));
+            }
+            if !matches!(http.method.as_str(), "GET" | "PUT") {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("SDK method denied"),
+                )));
+            }
+            let bucket_name = path
+                .split('/')
+                .next()
+                .filter(|value| !value.is_empty() && value.len() <= 255)
+                .ok_or_else(|| Status::permission_denied("SDK bucket path missing"))?;
+            let admission_entry = tokio::time::timeout(
+                self.store.timeout,
+                self.store.admission.entry(format!("name/{bucket_name}")),
+            )
+            .await
+            .map_err(|_| Status::unavailable("Storage admission unavailable"))?
+            .map_err(|_| Status::unavailable("Storage admission unavailable"))?;
+            let Some(admission_entry) = admission_entry else {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("Storage wallet admission missing"),
+                )));
+            };
+            let admission: AdmissionRecord = serde_json::from_slice(&admission_entry.value)
+                .map_err(|_| Status::unavailable("Storage admission record corrupt"))?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| Status::unavailable("System clock unavailable"))?
+                .as_secs() as i64;
+            if admission.wallet_version <= 0
+                || admission.resource_name != bucket_name
+                || admission.admission_mode != "ALLOW"
+                || admission.effective_at_unix_seconds > now
+                || admission
+                    .valid_until_unix_seconds
+                    .is_some_and(|until| until <= now)
+            {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("Storage wallet admission suspended"),
+                )));
+            }
+            let mut response = CheckResponse::with_status(Status::ok("authorized"));
+            response.set_http_response(
+                envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
+            );
+            if let Some(
+                envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse::OkResponse(
+                    ok,
+                ),
+            ) = response.http_response.as_mut()
+            {
+                use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
+                ok.headers.push(HeaderValueOption {
+                    header: Some(HeaderValue {
+                        key: "x-aurora-resource-id".to_string(),
+                        value: admission.resource_id,
+                        ..Default::default()
+                    }),
+                    append_action: 2,
+                    ..Default::default()
+                });
+            }
+            return Ok(Response::new(response));
+        };
         let (ticket_id, secret) = token
             .split_once('.')
             .ok_or_else(|| Status::permission_denied("Transfer ticket invalid"))?;
@@ -84,10 +191,33 @@ impl Authorization for PublicAuthorizer {
         };
         let mut ticket = transfer_proto::TransferTicketV1::decode(entry.value.as_ref())
             .map_err(|_| Status::unavailable("Transfer ticket store corrupt"))?;
+        let admission_entry = tokio::time::timeout(
+            self.store.timeout,
+            self.store.admission.entry(ticket.resource_id.clone()),
+        )
+        .await
+        .map_err(|_| Status::unavailable("Storage admission unavailable"))?
+        .map_err(|_| Status::unavailable("Storage admission unavailable"))?;
+        let admission = admission_entry
+            .ok_or_else(|| Status::permission_denied("Storage wallet admission missing"))?;
+        let admission: AdmissionRecord = serde_json::from_slice(&admission.value)
+            .map_err(|_| Status::unavailable("Storage admission record corrupt"))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| Status::unavailable("System clock unavailable"))?
             .as_secs();
+        if admission.wallet_version <= 0
+            || admission.resource_id != ticket.resource_id
+            || admission.admission_mode != "ALLOW"
+            || admission.effective_at_unix_seconds > now as i64
+            || admission
+                .valid_until_unix_seconds
+                .is_some_and(|until| until <= now as i64)
+        {
+            return Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Storage wallet admission suspended"),
+            )));
+        }
         let actual_hash = format!("{:x}", Sha256::digest(secret.as_bytes()));
         let length = headers
             .get("content-length")
@@ -187,8 +317,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     let client =
         tokio::time::timeout(timeout, options.connect(required("NATS_ZONE_URL")?)).await??;
-    let store = jetstream::new(client)
+    let store = jetstream::new(client.clone())
         .get_key_value("AURORA_ZONE_TRANSFER")
+        .await?;
+    let admission = jetstream::new(client)
+        .get_key_value("AURORA_ZONE_ADMISSION")
         .await?;
     let status = store.status().await?;
     if status.history() != 1
@@ -197,8 +330,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         return Err("Zone transfer KV durability contract mismatch".into());
     }
+    let admission_status = admission.status().await?;
+    if admission_status.history() != 1
+        || admission_status.info.config.storage != StorageType::File
+        || admission_status.info.config.num_replicas < replicas
+    {
+        return Err("Zone admission KV durability contract mismatch".into());
+    }
     let service = PublicAuthorizer {
-        store: TicketStore { store, timeout },
+        store: TicketStore {
+            store,
+            admission,
+            timeout,
+        },
         zone_id,
         inflight: Arc::new(Semaphore::new(parsed(
             "ZONE_PUBLIC_AUTHORIZER_MAX_INFLIGHT",

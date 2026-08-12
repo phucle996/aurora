@@ -26,9 +26,10 @@ import (
 
 // [COMMENT]: PersonalBucketServiceImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Cá nhân.
 type PersonalBucketSvcImpl struct {
-	repo    storageRepoInterface.PersonalBucketRepo
-	authRds *goredis.Client
-	metrics observability.WorkflowRecorder
+	repo      storageRepoInterface.PersonalBucketRepo
+	admission storageRepoInterface.WalletAdmissionRepo
+	authRds   *goredis.Client
+	metrics   observability.WorkflowRecorder
 }
 
 // NewPersonalBucketService wires the repository and the dedicated
@@ -36,10 +37,11 @@ type PersonalBucketSvcImpl struct {
 // not accepted here: an access session is an authz projection, not a cache.
 func NewPersonalBucketService(
 	repo storageRepoInterface.PersonalBucketRepo,
+	admission storageRepoInterface.WalletAdmissionRepo,
 	authRds *goredis.Client,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalBucketService {
-	return &PersonalBucketSvcImpl{repo: repo, authRds: authRds, metrics: metrics}
+	return &PersonalBucketSvcImpl{repo: repo, admission: admission, authRds: authRds, metrics: metrics}
 }
 
 // [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
@@ -58,6 +60,10 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+	if err := s.admission.RequireOwnerAdmission(ctx, param.UserID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
+		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		return nil, apperr.Wrap(err, err, "wallet_admission_denied")
+	}
 
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
@@ -252,6 +258,12 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 		}
 		return apperr.Wrap(err, err, "get_failed")
 	}
+	if quotaBytes > bucket.CapacityQuotaBytes {
+		if err := s.admission.RequireOwnerAdmission(ctx, userID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+			return apperr.Wrap(err, err, "wallet_admission_denied")
+		}
+	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
@@ -384,6 +396,10 @@ func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, 
 	if param == nil || param.AccessSessionID == uuid.Nil || param.ResourceID == uuid.Nil || param.ActorID == uuid.Nil {
 		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return apperr.Wrap(fmt.Errorf("access session identity is incomplete"), nil, "invalid_access_session")
+	}
+	if err := s.admission.RequireOwnerAdmission(ctx, param.ActorID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
+		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		return apperr.Wrap(err, err, "wallet_admission_denied")
 	}
 	if param.ExpiresAtUnixSeconds <= uint64(time.Now().Unix()) {
 		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument

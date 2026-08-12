@@ -191,3 +191,33 @@ assertion.
 - `zone-control/src/transfer_ticket/store.rs`
 - `proto/zone/transfer_ticket.proto`
 - `zone-public-edge-gateway/authorizer/src/main.rs`
+
+## Wallet admission rule
+
+Ticket issue is a billable transfer capability and is denied by Zone Control
+when `AURORA_ZONE_ADMISSION/{resource_id}` is missing, expired or not `ALLOW`.
+The version fence prevents an older `ALLOW` from resurrecting after a newer
+`SUSPEND_BILLABLE`. Revoke skips this gate so cleanup remains possible while a
+wallet is restricted; Zone Control never queries Billing synchronously.
+
+```mermaid
+sequenceDiagram
+    participant E as Zone Control Envoy
+    participant A as Zone Control Authorizer
+    participant KV as AURORA_ZONE_ADMISSION
+    participant T as AURORA_ZONE_TRANSFER
+
+    E->>A: Forward issue or revoke assertion
+    alt issue
+        A->>KV: Read resource admission
+        alt missing/expired/suspended
+            A-->>E: 403 before ticket write
+        else ALLOW
+            A->>T: CAS create one-time ticket
+            A-->>E: ticket response
+        end
+    else revoke
+        A->>T: CAS revoke ticket
+        A-->>E: 204 or 404
+    end
+```

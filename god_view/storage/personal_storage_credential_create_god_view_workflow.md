@@ -186,3 +186,28 @@ sequenceDiagram
 - `controlplane/internal/storage/repository/personal_credential_repo.go`
 - `dataplane/src/executor/storage/credential.rs`
 - `job-orchestrator/src/results/storage/credential.rs`
+
+## Wallet admission gate
+
+Creating a credential adds a billable access path. The personal owner projection
+must be effective and `ALLOW` before the repository locks the owned bucket and
+writes the credential/protected-outbox transaction. Missing, stale or suspended
+admission returns `503 STORAGE_WALLET_ADMISSION_UNAVAILABLE`; revoke remains
+available for cleanup.
+
+```mermaid
+sequenceDiagram
+    participant S as PersonalCredentialService
+    participant W as WalletAdmissionRepository
+    participant R as PersonalCredentialRepository
+    participant DB as Controlplane PostgreSQL
+
+    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
+    W->>DB: Read owner admission projection
+    alt denied or stale
+        W-->>S: ErrWalletAdmissionDenied
+    else ALLOW
+        S->>R: Create credential and protected Zone command
+        R->>DB: Lock bucket and commit credential/outbox
+    end
+```

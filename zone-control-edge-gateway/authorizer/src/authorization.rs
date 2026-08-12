@@ -76,6 +76,11 @@ impl ZoneControlAuthorizer {
                 .get(&verified.access_session_id)
                 .await?
                 .ok_or(AuthzError::NotReady("ZONE_ACCESS_RECORD_MISSING"))?;
+            if method == "POST" {
+                self.access
+                    .require_billable_admission(&verified.resource_id)
+                    .await?;
+            }
             let grant = storage_object_grant(&verified, &record, method, path, body)?;
             return Ok((verified, Some(grant)));
         }

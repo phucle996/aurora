@@ -44,8 +44,8 @@ static_resources:
                                 regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
                             - exact: "http://localhost:3000"
                             - exact: "http://localhost:5173"
-                          allow_methods: "GET, PUT, OPTIONS"
-                          allow_headers: "Accept, Content-Type, X-Aurora-Transfer-Ticket"
+                          allow_methods: "GET, PUT, HEAD, DELETE, OPTIONS"
+                          allow_headers: "Accept, Authorization, Content-Type, X-Amz-Content-Sha256, X-Amz-Date, X-Amz-Security-Token, X-Aurora-Transfer-Ticket"
                           expose_headers: "ETag, Content-Length, Content-Type"
                           allow_credentials:
                             value: false
@@ -65,10 +65,6 @@ static_resources:
                             cluster: minio
                             timeout: 0s
                             idle_timeout: 900s
-                          typed_per_filter_config:
-                            envoy.filters.http.ext_authz:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                              disabled: true
                 http_filters:
                   - name: envoy.filters.http.lua
                     typed_config:

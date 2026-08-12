@@ -2,7 +2,9 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 
+	kafkainfra "controlplane/infra/kafka"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/observability"
@@ -39,10 +41,11 @@ type StorageModule struct {
 	PersonalCredentialService storageSvcInterface.PersonalCredentialService
 
 	// Repositories
-	TenantBucketRepo       storageRepoInterface.TenantBucketRepo
-	PersonalBucketRepo     storageRepoInterface.PersonalBucketRepo
-	TenantCredentialRepo   storageRepoInterface.TenantCredentialRepo
-	PersonalCredentialRepo storageRepoInterface.PersonalCredentialRepo
+	TenantBucketRepo          storageRepoInterface.TenantBucketRepo
+	PersonalBucketRepo        storageRepoInterface.PersonalBucketRepo
+	TenantCredentialRepo      storageRepoInterface.TenantCredentialRepo
+	PersonalCredentialRepo    storageRepoInterface.PersonalCredentialRepo
+	WalletAdmissionProjection *WalletAdmissionProjection
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -75,6 +78,7 @@ func NewModule(
 	cacheEngine *cacheengine.CacheRegistry,
 	otel *observability.OTel,
 	protector jobpayload.Protector,
+	kafkaProducer *kafkainfra.Producer,
 ) (*StorageModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -122,22 +126,30 @@ func NewModule(
 	if personalCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal credential repository")
 	}
+	walletAdmissionProjection, err := NewWalletAdmissionProjection(db, rds, kafkaProducer, cfg.SchemaSQL.Storage, cfg.Kafka.TopicPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("storage module: failed to construct wallet admission projection: %w", err)
+	}
+	walletAdmissionRepo := storageRepoImpl.NewWalletAdmissionRepo(db, cfg)
+	if walletAdmissionRepo == nil {
+		return nil, errors.New("storage module: failed to construct wallet admission repository")
+	}
 
 	// 2. Khởi tạo services tách biệt theo scope
 	workflowMetrics := otel.WorkflowRecorder("storage")
-	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, workflowMetrics)
+	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, walletAdmissionRepo, workflowMetrics)
 	if tenantBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant bucket service")
 	}
-	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, authRds, workflowMetrics)
+	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, walletAdmissionRepo, authRds, workflowMetrics)
 	if personalBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket service")
 	}
-	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, workflowMetrics)
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, walletAdmissionRepo, workflowMetrics)
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, workflowMetrics)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, walletAdmissionRepo, workflowMetrics)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}
@@ -178,5 +190,6 @@ func NewModule(
 		TenantBucketHandler:       tenantBucketHandler,
 		PersonalCredentialHandler: personalCredentialHandler,
 		TenantCredentialHandler:   tenantCredentialHandler,
+		WalletAdmissionProjection: walletAdmissionProjection,
 	}, nil
 }

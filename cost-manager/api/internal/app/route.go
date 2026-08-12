@@ -21,11 +21,10 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 	// Đăng ký các endpoints phiên bản v1
 	v1 := billing.Group("")
 	{
-		v1.GET("/plans", middleware.Authorize(m.AuthorizationResolver, "billing:plan:read", false), m.PlanHandler.ListPlans)
-		v1.GET("/tiers", middleware.Authorize(m.AuthorizationResolver, "billing:tier:read", false), m.TierHandler.ListTiers)
-		v1.GET("/tiers/:service_type/:code", middleware.Authorize(m.AuthorizationResolver, "billing:tier:read", false), m.TierHandler.GetTierDetail)
-		v1.PATCH("/critical/tiers/:service_type/:code/metadata", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:tier:publish", true), m.TierHandler.UpdateTierMetadata)
-		v1.POST("/critical/tiers/:service_type/:code/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:tier:publish", true), m.TierHandler.CreateTierVersion)
+		v1.GET("/pricing-schedules", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.PricingScheduleHandler.ListPricingSchedules)
+		v1.GET("/pricing-schedules/:code", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.PricingScheduleHandler.GetPricingScheduleDetail)
+		v1.PATCH("/critical/pricing-schedules/:code/metadata", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.UpdatePricingScheduleMetadata)
+		v1.POST("/critical/pricing-schedules/:code/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.CreatePricingScheduleVersion)
 		v1.GET("/referrals", middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", false), m.PersonalAccountHandler.ListReferralCampaigns)
 		v1.POST("/critical/referrals", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.CreateReferralCampaign)
 		v1.PATCH("/critical/referrals/:id/status", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.UpdateReferralCampaignStatus)
@@ -42,7 +41,7 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 	personal.POST("/wallet/referral", m.PersonalAccountHandler.ReserveReferral)
 	personal.POST("/wallet/top-ups", m.PersonalPaymentHandler.CreateTopUp)
 	personal.GET("/wallet/top-ups/:id", m.PersonalPaymentHandler.GetTopUp)
-	personal.GET("/wallet/estimate/storage", m.TierHandler.EstimateStorage)
+	personal.GET("/wallet/estimate/storage", m.PricingScheduleHandler.EstimateStorage)
 
 	tenant := ownerAPI.Group("/tenant/billing")
 	tenant.GET(

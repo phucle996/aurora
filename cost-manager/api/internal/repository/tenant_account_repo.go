@@ -63,13 +63,31 @@ func (r *tenantAccountRepository) ApplyTenantWalletProvision(
 
 	// The owner tuple is the second fence when create-tenant delivery is retried
 	// with a different event ID after a relay crash.
-	if _, err = tx.Exec(ctx, `
+	var walletID uuid.UUID
+	walletCreated := true
+	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.wallets
-			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
-		VALUES ($1, $2, 'TENANT', 'USD', 0, 0, 'PENDING_ACTIVATION')
+			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status, restriction_reason, status_changed_at)
+		VALUES ($1, $2, 'TENANT', 'USD', 0, 0, 'PENDING_ACTIVATION', 'NOT_ACTIVATED', NOW())
 		ON CONFLICT (owner_id, owner_type, currency) DO NOTHING
-	`, uuid.New(), tenantID); err != nil {
+		RETURNING id
+	`, uuid.New(), tenantID).Scan(&walletID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		walletCreated = false
+		err = tx.QueryRow(ctx, `SELECT id FROM billing.wallets WHERE owner_id=$1 AND owner_type='TENANT' AND currency='USD' FOR UPDATE`, tenantID).Scan(&walletID)
+	}
+	if err != nil {
 		return fmt.Errorf("tenant account repo: create pending wallet: %w", err)
+	}
+	if walletCreated {
+		if _, err = tx.Exec(ctx, `
+		INSERT INTO billing.wallet_admission_outbox
+			(event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
+		VALUES ($1,$2,$3,'TENANT',1,'SUSPEND_BILLABLE','NOT_ACTIVATED',NOW())
+		ON CONFLICT (event_id) DO NOTHING
+	`, uuid.New(), walletID, tenantID); err != nil {
+			return fmt.Errorf("tenant account repo: write pending wallet admission: %w", err)
+		}
 	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE billing.tenant_wallet_provision_inbox

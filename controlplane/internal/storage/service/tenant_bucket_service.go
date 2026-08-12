@@ -22,15 +22,17 @@ import (
 
 // [COMMENT]: TenantBucketSvcImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Doanh nghiệp.
 type TenantBucketSvcImpl struct {
-	repo    storageRepoInterface.TenantBucketRepo
-	metrics observability.WorkflowRecorder
+	repo      storageRepoInterface.TenantBucketRepo
+	admission storageRepoInterface.WalletAdmissionRepo
+	metrics   observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewTenantBucketService khởi tạo instance thực thi TenantBucketService.
-func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo, metrics observability.WorkflowRecorder) storageSvcInterface.TenantBucketService {
+func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo, admission storageRepoInterface.WalletAdmissionRepo, metrics observability.WorkflowRecorder) storageSvcInterface.TenantBucketService {
 	return &TenantBucketSvcImpl{
-		repo:    repo,
-		metrics: metrics,
+		repo:      repo,
+		admission: admission,
+		metrics:   metrics,
 	}
 }
 
@@ -51,13 +53,16 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+	if err := s.admission.RequireOwnerAdmission(ctx, param.TenantID.String(), string(storageEntity.StorageOwnerTypeTenant)); err != nil {
+		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		return nil, apperr.Wrap(err, err, "wallet_admission_denied")
+	}
 
 	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
-
 	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của TenantID
 	physicalName := fmt.Sprintf("tn-%s-%s", param.TenantID.String()[:8], param.Name)
 
@@ -209,6 +214,12 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
 		}
 		return apperr.Wrap(err, err, "get_failed")
+	}
+	if quotaBytes > bucket.CapacityQuotaBytes {
+		if err := s.admission.RequireOwnerAdmission(ctx, bucket.TenantID.String(), string(storageEntity.StorageOwnerTypeTenant)); err != nil {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+			return apperr.Wrap(err, err, "wallet_admission_denied")
+		}
 	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing

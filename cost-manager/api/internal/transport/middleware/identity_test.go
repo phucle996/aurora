@@ -56,12 +56,12 @@ func TestRequireIdentityAndAuthorize(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(ContextInjector())
-	resolver := fakeAuthorizationResolver{permissions: map[string]struct{}{"billing:tier:read": {}}}
-	router.GET("/tiers", Authorize(resolver, "billing:tier:read", false), func(c *gin.Context) {
+	resolver := fakeAuthorizationResolver{permissions: map[string]struct{}{"billing:pricing_schedule:read": {}}}
+	router.GET("/pricing-schedules", Authorize(resolver, "billing:pricing_schedule:read", false), func(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 	})
 
-	request := httptest.NewRequest(http.MethodGet, "/tiers", nil)
+	request := httptest.NewRequest(http.MethodGet, "/pricing-schedules", nil)
 	request.Header.Set("x-user-id", "00000000-0000-0000-0000-000000000005")
 	request.Header.Set("x-user-name", "billing_admin")
 	request.Header.Set("x-zone-id", "019f3d3e-997d-7894-9236-c5122634cb4f")
@@ -76,11 +76,11 @@ func TestAuthorizeRejectsMissingPermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(ContextInjector())
-	router.GET("/tiers", Authorize(fakeAuthorizationResolver{permissions: map[string]struct{}{"billing:plan:read": {}}}, "billing:tier:read", false), func(c *gin.Context) {
+	router.GET("/pricing-schedules", Authorize(fakeAuthorizationResolver{permissions: map[string]struct{}{}}, "billing:pricing_schedule:read", false), func(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 	})
 
-	request := httptest.NewRequest(http.MethodGet, "/tiers", nil)
+	request := httptest.NewRequest(http.MethodGet, "/pricing-schedules", nil)
 	request.Header.Set("x-user-id", "00000000-0000-0000-0000-000000000005")
 	request.Header.Set("x-user-name", "billing_admin")
 	request.Header.Set("x-zone-id", "019f3d3e-997d-7894-9236-c5122634cb4f")

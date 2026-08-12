@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package billing.wallet.v1;
+
+option go_package = "cost-manager/api/internal/genproto/billing/wallet/v1;walletv1";
+
+message StorageAdmissionTargetV1 {
+  string resource_id = 1;
+  string resource_name = 2;
+  string zone_id = 3;
+}
+
+// WalletAdmissionChangedV1 carries only the versioned admission projection.
+// Balance, ledger amounts, credentials and secrets never cross this boundary.
+message WalletAdmissionChangedV1 {
+  string event_id = 1;
+  string wallet_id = 2;
+  string owner_id = 3;
+  string owner_type = 4;
+  int64 wallet_version = 5;
+  string admission_mode = 6;
+  string restriction_reason = 7;
+  string effective_at = 8;
+  string valid_until = 9;
+  repeated StorageAdmissionTargetV1 storage_targets = 10;
+}

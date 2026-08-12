@@ -27,9 +27,9 @@ Charge Kind Registry row.
 
 | Item | Contract |
 |---|---|
-| Method/path | `POST /api/v1/billing/critical/pricing-schedules/{charge_kind}/versions` |
+| Method/path | `POST /api/v1/billing/critical/pricing-schedules/{code}/versions` |
 | Headers used | Billing Alias cookie, exact session-proof headers, `Origin`, CSRF signal, `traceparent` |
-| JSON | `expected_latest_version`, `effective_from`, `change_reason`, and typed `brackets` for `PROGRESSIVE_UNIT` or canonical `definition` for an enabled bundle model |
+| JSON | `expected_latest_version`, `effective_from`, `change_reason`, and typed `brackets` for the enabled Storage `PROGRESSIVE_UNIT` schedules. `FIXED_BUNDLE`/`definition` is rejected until a Hypervisor workflow registers its validator. |
 | Authority | Alias session, verified operator identity and verified Zone injected by ACR; never caller `x-user-id`, `x-zone-id` or workspace header |
 
 `brackets` use raw quantity units from the registry. Every progressive version
@@ -203,5 +203,5 @@ transport, wallet settlement, Zone runtime or a shared application context.
 The relay and Engine loader are separate workflow owners with their own input
 types and failure boundaries.
 
-The legacy Tier God View remains historical until the replacement workflow and
-code are complete; it must not be used as runtime authority after cutover.
+The removed legacy catalog workflow must not be used as runtime authority after
+the PAYG cutover; this schedule workflow is the only pricing mutation path.

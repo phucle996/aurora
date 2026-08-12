@@ -4,7 +4,7 @@ MAP: BILLING SERVICE LAYER - PRICING OUTBOX RELAY
 ============================================================================
 CONTRACT:
 1. Điều phối PricingOutboxRepository để quét outbox rows và phát hint sang Shared Redis
-   PubSub channel `billing.pricing.tier_version.published`.
+   PubSub channel `billing.pricing.schedule.version.published`.
 2. Không thực thi SQL trực tiếp tại Service Layer.
 3. Thực thi đợt relay batch inline trực tiếp trong vòng lặp ticker của Run().
 ============================================================================
@@ -26,7 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const pricingVersionPublishedChannel = "billing.pricing.tier_version.published"
+const pricingVersionPublishedChannel = "billing.pricing.schedule.version.published"
 
 // PricingOutboxRelay điều phối công việc relay outbox sang Shared Redis PubSub.
 type PricingOutboxRelay struct {
@@ -65,7 +65,7 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 
 		var relayErr error
 		if refreshStatuses {
-			if err := r.repo.RefreshTierVersionStatuses(ctx); err != nil {
+			if err := r.repo.RefreshPricingScheduleVersionStatuses(ctx); err != nil {
 				relayErr = fmt.Errorf("refresh pricing version statuses failed: %w", err)
 			}
 		}
@@ -83,15 +83,21 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 
 			// DB outbox vẫn là SoT; Engine cold-start/reconciler tự load lại nếu PubSub bị lỡ.
 			for _, row := range batch {
-				payload, marshalErr := proto.Marshal(&pricingv1.TierVersionPublished{
-					EventId:             row.ID.String(),
-					TierId:              row.TierID.String(),
-					TierVersionId:       row.TierVersionID.String(),
-					VersionNumber:       row.VersionNumber,
-					ServiceType:         string(row.ServiceType),
-					EffectiveFromUnixMs: row.EffectiveFrom.UnixMilli(),
-					Checksum:            row.Checksum,
-					OccurredAtUnixMs:    row.OccurredAt.UnixMilli(),
+				zoneID := ""
+				if row.ZoneID != nil {
+					zoneID = row.ZoneID.String()
+				}
+				payload, marshalErr := proto.Marshal(&pricingv1.PricingScheduleVersionPublished{
+					EventId:                  row.ID.String(),
+					PricingScheduleId:        row.PricingScheduleID.String(),
+					PricingScheduleVersionId: row.VersionID.String(),
+					VersionNumber:            row.VersionNumber,
+					ChargeKindCode:           string(row.ChargeKindCode),
+					EffectiveFromUnixMs:      row.EffectiveFrom.UnixMilli(),
+					Checksum:                 row.Checksum,
+					OccurredAtUnixMs:         row.OccurredAt.UnixMilli(),
+					ScopeType:                string(row.ScopeType),
+					ZoneId:                   zoneID,
 				})
 				if marshalErr != nil {
 					relayErr = fmt.Errorf("marshal outbox event %s failed: %w", row.ID, marshalErr)
@@ -100,14 +106,8 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 
 				// [COMMENT]: Không mark published khi không có listener nào nhận hint.
 				// Engine có thể đang rolling restart; row sẽ được retry ở reconciliation sau đó.
-				listeners, publishErr := r.sharedRedis.Publish(ctx, pricingVersionPublishedChannel, payload).Result()
+				_, publishErr := r.sharedRedis.Publish(ctx, pricingVersionPublishedChannel, payload).Result()
 				if publishErr != nil {
-					_ = r.repo.RecordOutboxError(ctx, row.ID, publishErr.Error())
-					relayErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, publishErr)
-					break
-				}
-				if listeners == 0 {
-					publishErr = fmt.Errorf("no pricing listener subscribed to %s", pricingVersionPublishedChannel)
 					_ = r.repo.RecordOutboxError(ctx, row.ID, publishErr.Error())
 					relayErr = fmt.Errorf("publish outbox event %s failed: %w", row.ID, publishErr)
 					break

@@ -149,7 +149,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// [COMMENT]: Khởi tạo phân hệ Storage (Tier 2). Hỗ trợ chạy ở chế độ suy giảm (Degraded Mode).
-	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine, otel, payloadProtector)
+	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine, otel, payloadProtector, kafkaProducer)
 	if err != nil {
 		logger.SysError("graceful.degradation.storage", fmt.Sprintf("Failed to initialize storage module: %v. Running in degraded mode.", err))
 		storageModule = storage.NewDegradedModule(err)

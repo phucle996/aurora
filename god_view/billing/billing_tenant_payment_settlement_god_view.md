@@ -93,7 +93,7 @@ sequenceDiagram
 
 ## Phase 3 — Serializable tenant inbox, wallet and ledger settlement
 
-`TenantPaymentRepository` starts a serializable transaction. It inserts the webhook inbox first, locks a duplicate inbox when the event ID already exists, then locks the TENANT intent, checks provider/amount/currency and provider-payment uniqueness, and locks the tenant wallet. On success it credits cash, transitions only PENDING_ACTIVATION to ACTIVE, writes one deterministic TOP_UP ledger entry, marks intent SETTLED and inbox APPLIED, then commits all state together.
+`TenantPaymentRepository` starts a serializable transaction. It inserts the webhook inbox first, locks a duplicate inbox when the event ID already exists, then locks the TENANT intent, checks provider/amount/currency and provider-payment uniqueness, and locks the tenant wallet. On success it credits cash, keeps `PENDING_ACTIVATION/NOT_ACTIVATED` pending until Storage historical reconciliation (or reopens only `CREDIT_EXHAUSTED`), writes one deterministic TOP_UP ledger entry plus the admission transition, marks intent SETTLED and inbox APPLIED, then commits all state together.
 
 ```mermaid
 sequenceDiagram
@@ -110,7 +110,13 @@ sequenceDiagram
     R->>DB: lock TENANT payment intent
     R->>DB: compare provider amount currency and provider payment uniqueness
     R->>DB: lock tenant wallet FOR UPDATE
-    R->>DB: credit cash and preserve or activate lifecycle
+    R->>DB: credit cash and preserve pending or reopen credit-exhausted lifecycle
+    opt wallet was PENDING_ACTIVATION
+        R->>DB: INSERT storage_pending_activation_reconcile request
+        R->>DB: INSERT SUSPEND_BILLABLE admission outbox
+    else credit-exhausted suspension
+        R->>DB: INSERT ALLOW admission outbox
+    end
     R->>DB: INSERT deterministic TOP_UP ledger entry
     R->>DB: mark intent SETTLED and inbox APPLIED
     R->>DB: COMMIT
@@ -121,7 +127,8 @@ sequenceDiagram
 | webhook inbox | unique `(provider, provider_event_id)` fences replay with stored payload hash, TENANT owner type and intent ID |
 | duplicate success | only same hash/owner/intent and same settled provider payment is replay success; otherwise conflict |
 | intent | must be `owner_type=TENANT` and match provider, amount and currency; a provider payment ID cannot be reused by another intent |
-| wallet | locked by ID plus tenant owner/type; CLOSED/invalid lifecycle rejects; PENDING_ACTIVATION becomes ACTIVE; a SUSPENDED wallet accepts paid cash but stays SUSPENDED |
+| wallet | locked by ID plus tenant owner/type; CLOSED/invalid lifecycle rejects; PENDING_ACTIVATION stays pending until historical Storage reconciliation; only CREDIT_EXHAUSTED suspension can reopen; administrative suspension remains suspended |
+| admission | wallet version/reason and durable `wallet_admission_outbox` row commit with the wallet transition; pending top-up never emits ALLOW |
 | ledger | deterministic SHA1-derived TOP_UP ID records post-credit balances and avoids a second credit |
 | atomicity | inbox, intent, wallet and ledger are one commit or all roll back |
 | referral | no personal reservation, grant, redemption or promotional mutation is queried here |
@@ -135,9 +142,36 @@ sequenceDiagram
 | committed compatible duplicate | inbox remains/gets APPLIED, no new ledger | success response prevents retry storm money duplication |
 | timeline Redis error | settlement commit remains valid | log only; never ask provider to replay money |
 
-## Phase 4 — Best-effort actor timeline projection
+## Phase 4 — Storage activation handoff
 
-For a new committed result only, `TenantPaymentService` appends a 150 ms detached Shared Redis user-activity event for the verified tenant actor. It carries `billing.wallet.top_up` or `billing.wallet.activate`, resource `tenant_wallet`, provider event operation ID, tenant ID, amount/currency and activation metadata. It is a UX projection and is not the tenant wallet ledger.
+The pending tenant wallet is handed to the Storage-owned reconciliation worker
+through the committed request row; a webhook cannot grant admission by itself.
+The worker replays historical lines against their pinned schedule and only then
+emits a versioned admission transition.
+
+```mermaid
+sequenceDiagram
+    participant DB as Billing PostgreSQL
+    participant E as Storage pending-activation worker
+    participant L as Tenant wallet ledger
+    participant O as Wallet admission outbox
+
+    DB-->>E: storage_pending_activation_reconcile(owner_type=TENANT)
+    E->>DB: lock tenant wallet, owner projection and pending lines
+    E->>DB: load pinned pricing version at original metering boundary
+    alt all historical lines settle and balance remains positive
+        E->>L: append deterministic usage charges
+        E->>DB: mark evidence terminal and wallet ACTIVE
+        E->>O: append ALLOW with monotonic wallet version
+    else evidence is unresolved or credit is exhausted
+        E->>DB: retain BLOCKED or SUSPENDED(CREDIT_EXHAUSTED)
+        E->>O: append SUSPEND_BILLABLE if lifecycle changes
+    end
+```
+
+## Phase 5 — Best-effort actor timeline projection
+
+For a new committed result only, `TenantPaymentService` appends a 150 ms detached Shared Redis user-activity event for the verified tenant actor. It carries `billing.wallet.top_up` or `billing.wallet.activate` (only a credit-exhausted suspension reopening), resource `tenant_wallet`, provider event operation ID, tenant ID, amount/currency and bounded admission metadata. Pending activation is projected by the Storage reconciliation workflow, not by the webhook. It is a UX projection and is not the tenant wallet ledger.
 
 ```mermaid
 sequenceDiagram

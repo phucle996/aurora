@@ -234,3 +234,34 @@ sequenceDiagram
 - `controlplane/internal/storage/repository/personal_bucket_repo.go`
 - `job-orchestrator/src/changefeed/dispatch.rs` and `job-orchestrator/src/results/storage/bucket.rs`
 - `dataplane/src/executor/storage/bucket.rs`
+
+## Wallet admission gate
+
+The personal owner admission projection is a local Controlplane read model. The
+service requires `(owner_id=user_id, owner_type=PERSONAL)` to be effective,
+unexpired and `ALLOW` before opening the bucket CTE. A missing, stale,
+`SUSPEND_BILLABLE`, corrupt or unavailable projection returns
+`503 STORAGE_WALLET_ADMISSION_UNAVAILABLE`; it never queries Billing inline and
+never creates a bucket fail-open.
+
+```mermaid
+sequenceDiagram
+    participant H as PersonalBucketHandler
+    participant S as PersonalBucketService
+    participant W as WalletAdmissionRepository
+    participant R as PersonalBucketRepository
+    participant DB as Controlplane PostgreSQL
+
+    H->>S: CreateBucket(user_id, workspace_id, request)
+    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
+    W->>DB: Read local owner projection
+    alt missing, expired or suspended
+        W-->>S: ErrWalletAdmissionDenied
+        S-->>H: 503 STORAGE_WALLET_ADMISSION_UNAVAILABLE
+    else current ALLOW
+        S->>R: Create bucket + credential + protected outbox
+        R->>DB: Commit ownership/business/outbox transaction
+        R-->>S: Durable desired state
+        S-->>H: 201
+    end
+```

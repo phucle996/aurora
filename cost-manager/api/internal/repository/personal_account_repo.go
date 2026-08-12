@@ -65,14 +65,31 @@ func (r *personalAccountRepository) ApplyPersonalWalletProvision(
 
 	// The owner tuple is a second idempotency boundary when upstream emits two
 	// different event IDs for the same verified IAM principal.
-	_, err = tx.Exec(ctx, `
+	var walletID uuid.UUID
+	walletCreated := true
+	err = tx.QueryRow(ctx, `
 		INSERT INTO billing.wallets
-			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
-		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'PENDING_ACTIVATION')
+			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status, restriction_reason, status_changed_at)
+		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'PENDING_ACTIVATION', 'NOT_ACTIVATED', NOW())
 		ON CONFLICT (owner_id, owner_type, currency) DO NOTHING
-	`, uuid.New(), ownerID)
+		RETURNING id
+	`, uuid.New(), ownerID).Scan(&walletID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		walletCreated = false
+		err = tx.QueryRow(ctx, `SELECT id FROM billing.wallets WHERE owner_id=$1 AND owner_type='PERSONAL' AND currency='USD' FOR UPDATE`, ownerID).Scan(&walletID)
+	}
 	if err != nil {
 		return fmt.Errorf("personal account repo: create pending wallet: %w", err)
+	}
+	if walletCreated {
+		if _, err = tx.Exec(ctx, `
+		INSERT INTO billing.wallet_admission_outbox
+			(event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
+		VALUES ($1,$2,$3,'PERSONAL',1,'SUSPEND_BILLABLE','NOT_ACTIVATED',NOW())
+		ON CONFLICT (event_id) DO NOTHING
+	`, uuid.New(), walletID, ownerID); err != nil {
+			return fmt.Errorf("personal account repo: write pending wallet admission: %w", err)
+		}
 	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE billing.personal_wallet_provision_inbox

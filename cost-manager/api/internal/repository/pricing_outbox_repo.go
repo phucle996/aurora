@@ -30,8 +30,8 @@ func NewPricingOutboxRepository(db *pgxpool.Pool) billingRepoInterface.PricingOu
 	return &pricingOutboxRepository{db: db}
 }
 
-// [COMMENT]: RefreshTierVersionStatuses tính toán và cập nhật trạng thái của các phiên bản bảng giá (ACTIVE/SCHEDULED/SUPERSEDED).
-func (r *pricingOutboxRepository) RefreshTierVersionStatuses(ctx context.Context) error {
+// [COMMENT]: RefreshPricingScheduleVersionStatuses cập nhật trạng thái các phiên bản schedule.
+func (r *pricingOutboxRepository) RefreshPricingScheduleVersionStatuses(ctx context.Context) error {
 	_, err := r.db.Exec(ctx, `
 		WITH projected AS (
 			SELECT id, CASE
@@ -39,10 +39,10 @@ func (r *pricingOutboxRepository) RefreshTierVersionStatuses(ctx context.Context
 				WHEN effective_from <= NOW() AND (effective_to IS NULL OR NOW() < effective_to) THEN 'ACTIVE'
 				ELSE 'SCHEDULED'
 			END AS desired_status
-			FROM billing.tier_versions
+			FROM billing.pricing_schedule_versions
 			WHERE status <> 'CANCELLED'
 		)
-		UPDATE billing.tier_versions version
+		UPDATE billing.pricing_schedule_versions version
 		SET status = projected.desired_status
 		FROM projected
 		WHERE version.id = projected.id AND version.status IS DISTINCT FROM projected.desired_status
@@ -57,10 +57,12 @@ func (r *pricingOutboxRepository) RefreshTierVersionStatuses(ctx context.Context
 func (r *pricingOutboxRepository) GetUnpublishedOutboxBatch(ctx context.Context, limit int) ([]*entity.PricingOutboxRow, error) {
 
 	rows, err := r.db.Query(ctx, `
-		SELECT id, tier_id, tier_version_id, version_number, service_type, effective_from, checksum, occurred_at
-		FROM billing.pricing_outbox
-		WHERE published_at IS NULL
-		ORDER BY occurred_at, id
+		SELECT o.id, o.pricing_schedule_id, o.version_id, v.version_number, o.module_code,
+		       o.charge_kind_code, o.scope_type, o.zone_id, o.effective_from, o.checksum, o.occurred_at
+		FROM billing.pricing_outbox o
+		JOIN billing.pricing_schedule_versions v ON v.id=o.version_id
+		WHERE o.published_at IS NULL
+		ORDER BY o.occurred_at, o.id
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1
 	`, limit)
@@ -72,20 +74,21 @@ func (r *pricingOutboxRepository) GetUnpublishedOutboxBatch(ctx context.Context,
 	var batch []*entity.PricingOutboxRow
 	for rows.Next() {
 		var row entity.PricingOutboxRow
-		var rawServiceType string
 		if err := rows.Scan(
 			&row.ID,
-			&row.TierID,
-			&row.TierVersionID,
+			&row.PricingScheduleID,
+			&row.VersionID,
 			&row.VersionNumber,
-			&rawServiceType,
+			&row.ModuleCode,
+			&row.ChargeKindCode,
+			&row.ScopeType,
+			&row.ZoneID,
 			&row.EffectiveFrom,
 			&row.Checksum,
 			&row.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("pricing outbox repo: scan row failed: %w", err)
 		}
-		row.ServiceType = entity.ServiceType(rawServiceType)
 		batch = append(batch, &row)
 	}
 	return batch, nil

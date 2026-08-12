@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -11,15 +10,14 @@ import (
 	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	"cost-manager/api/pkg/logger"
-
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
 const (
-	pricingCacheInvalidationChannel = "billing.pricing.tier_cache.invalidate"
-	pricingCacheKeyPrefix           = "cost-manager:pricing:active:v1"
+	pricingCacheInvalidationChannel = "billing.pricing.schedule_cache.invalidate"
+	pricingCacheKeyPrefix           = "cost-manager:pricing:schedule:v2"
 	pricingCacheL1TTL               = time.Minute
 	pricingCacheL2TTL               = 5 * time.Minute
 )
@@ -29,174 +27,89 @@ type pricingCacheItem struct {
 	expiresAt time.Time
 }
 
-// pricingCache tăng tốc read-only estimate nhưng không trở thành pricing SoT.
-// L1 mất khi pod restart; L2 mất thì repository vẫn rebuild từ PostgreSQL.
 type pricingCache struct {
-	repo        billingRepoInterface.TierRepository
+	repo        billingRepoInterface.PricingScheduleRepository
 	redisClient *redis.Client
 	sfGroup     singleflight.Group
 
-	mu sync.RWMutex
-	l1 map[entity.ServiceType]pricingCacheItem
-	// generation fences an in-flight old DB/L2 read from repopulating L1 after invalidation.
+	mu         sync.RWMutex
+	l1         map[string]pricingCacheItem
 	generation uint64
 }
 
 type pricingCachePayload struct {
-	TierID        string                  `json:"tier_id"`
-	TierVersionID string                  `json:"tier_version_id"`
-	Code          string                  `json:"code"`
-	ServiceType   string                  `json:"service_type"`
-	VersionNumber int                     `json:"version_number"`
-	EffectiveFrom time.Time               `json:"effective_from"`
-	EffectiveTo   *time.Time              `json:"effective_to,omitempty"`
-	Checksum      string                  `json:"checksum"`
-	Currency      string                  `json:"currency"`
-	Ranges        []entity.TierRangeInput `json:"ranges"`
+	PricingScheduleID string                      `json:"pricing_schedule_id"`
+	VersionID         string                      `json:"version_id"`
+	Code              string                      `json:"code"`
+	ChargeKindCode    string                      `json:"charge_kind_code"`
+	ModuleCode        string                      `json:"module_code"`
+	PricingModel      entity.PricingModel         `json:"pricing_model"`
+	ScopeType         entity.PricingScope         `json:"scope_type"`
+	ZoneID            string                      `json:"zone_id,omitempty"`
+	RawInputUnit      string                      `json:"raw_input_unit"`
+	VersionNumber     int                         `json:"version_number"`
+	EffectiveFrom     time.Time                   `json:"effective_from"`
+	EffectiveTo       *time.Time                  `json:"effective_to,omitempty"`
+	Checksum          string                      `json:"checksum"`
+	Currency          string                      `json:"currency"`
+	Brackets          []entity.ScalarBracketInput `json:"brackets"`
 }
 
-// get returns a shared immutable snapshot. Callers must never mutate Ranges; this keeps the L1 hit path
-// to one RLock/map lookup without allocating a defensive copy for every estimate.
-func (c *pricingCache) get(ctx context.Context, serviceType entity.ServiceType) (*entity.PricingSnapshot, error) {
-	now := time.Now()
+func (c *pricingCache) get(ctx context.Context, chargeKind entity.ChargeKindCode, zoneID *uuid.UUID, at time.Time) (*entity.PricingSnapshot, error) {
+	lookupKey := pricingLookupKey(chargeKind, zoneID)
+	now := time.Now().UTC()
 	c.mu.RLock()
-	item, ok := c.l1[serviceType]
+	item, ok := c.l1[lookupKey]
 	c.mu.RUnlock()
-	if ok && now.Before(item.expiresAt) && item.snapshot != nil && !item.snapshot.EffectiveFrom.After(now) &&
-		(item.snapshot.EffectiveTo == nil || now.Before(*item.snapshot.EffectiveTo)) {
+	if ok && now.Before(item.expiresAt) && snapshotEffectiveAt(item.snapshot, at) {
 		return item.snapshot, nil
 	}
 
-	cacheKey := fmt.Sprintf("%s:%s", pricingCacheKeyPrefix, serviceType)
-	value, err, _ := c.sfGroup.Do(cacheKey, func() (any, error) {
-		// A caller may have missed L1 immediately before the previous singleflight completed.
-		// Re-check inside the flight and fill L1 before returning to close that stampede window.
-		currentTime := time.Now()
+	value, err, _ := c.sfGroup.Do(lookupKey, func() (any, error) {
+		loadGeneration := func() uint64 {
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+			return c.generation
+		}()
+		current := time.Now().UTC()
 		c.mu.RLock()
-		currentItem, l1Ready := c.l1[serviceType]
-		loadGeneration := c.generation
+		cached, ready := c.l1[lookupKey]
 		c.mu.RUnlock()
-		if l1Ready && currentTime.Before(currentItem.expiresAt) && currentItem.snapshot != nil &&
-			!currentItem.snapshot.EffectiveFrom.After(currentTime) &&
-			(currentItem.snapshot.EffectiveTo == nil || currentTime.Before(*currentItem.snapshot.EffectiveTo)) {
-			return currentItem.snapshot, nil
+		if ready && current.Before(cached.expiresAt) && snapshotEffectiveAt(cached.snapshot, at) {
+			return cached.snapshot, nil
 		}
-		// Re-check after joining singleflight: another local request may have filled L2.
+
+		cacheKey := fmt.Sprintf("%s:%s", pricingCacheKeyPrefix, lookupKey)
 		if c.redisClient != nil {
 			if raw, redisErr := c.redisClient.Get(ctx, cacheKey).Bytes(); redisErr == nil {
-				var payload pricingCachePayload
-				if decodeErr := json.Unmarshal(raw, &payload); decodeErr == nil {
-					tierID, tierIDErr := uuid.Parse(payload.TierID)
-					versionID, versionIDErr := uuid.Parse(payload.TierVersionID)
-					snapshot := &entity.PricingSnapshot{
-						TierID: tierID, TierVersionID: versionID, Code: payload.Code,
-						ServiceType: entity.ServiceType(payload.ServiceType), VersionNumber: payload.VersionNumber,
-						EffectiveFrom: payload.EffectiveFrom, EffectiveTo: payload.EffectiveTo,
-						Checksum: payload.Checksum, Currency: payload.Currency,
-						Ranges: append([]entity.TierRangeInput(nil), payload.Ranges...),
+				if snapshot, decodeErr := decodePricingSnapshot(raw); decodeErr == nil && snapshot.ChargeKindCode == chargeKind && snapshotEffectiveAt(snapshot, at) {
+					c.mu.Lock()
+					if c.generation == loadGeneration {
+						c.l1[lookupKey] = pricingCacheItem{snapshot: snapshot, expiresAt: current.Add(pricingCacheL1TTL)}
 					}
-					cacheValid := tierIDErr == nil && versionIDErr == nil && tierID != uuid.Nil && versionID != uuid.Nil &&
-						snapshot.Code != "" && snapshot.Currency != "" && snapshot.VersionNumber >= 1 &&
-						!snapshot.EffectiveFrom.IsZero() && (len(snapshot.Checksum) == 32 || len(snapshot.Checksum) == 64) &&
-						(snapshot.EffectiveTo == nil || snapshot.EffectiveTo.After(snapshot.EffectiveFrom))
-					switch snapshot.ServiceType {
-					case entity.ServiceTypeStorage, entity.ServiceTypeNetworkIn, entity.ServiceTypeNetworkOut, entity.ServiceTypeVM:
-					default:
-						cacheValid = false
-					}
-					// Đây là integrity fence cho Shared L2 bytes, không phải request validation.
-					// Range phải phủ liên tục [0, infinity) trước khi bytes cache được dùng để báo giá.
-					if len(snapshot.Ranges) == 0 || snapshot.Ranges[0].RangeStart != 0 {
-						cacheValid = false
-					}
-					for index, tierRange := range snapshot.Ranges {
-						if tierRange.RangeStart < 0 || tierRange.BaseUnitPrice < 0 ||
-							(tierRange.RangeEnd != 0 && tierRange.RangeEnd <= tierRange.RangeStart) {
-							cacheValid = false
-							break
-						}
-						if index == len(snapshot.Ranges)-1 {
-							if tierRange.RangeEnd != 0 {
-								cacheValid = false
-							}
-							continue
-						}
-						if tierRange.RangeEnd == 0 || tierRange.RangeEnd != snapshot.Ranges[index+1].RangeStart {
-							cacheValid = false
-							break
-						}
-					}
-					if cacheValid && len(snapshot.Checksum) == 64 {
-						checksum := sha256.New()
-						_, _ = fmt.Fprintf(checksum, "%s\x00%s\x00", snapshot.Code, string(snapshot.ServiceType))
-						for _, tierRange := range snapshot.Ranges {
-							_, _ = fmt.Fprintf(checksum, "%d:%d:%d;", tierRange.RangeStart, tierRange.RangeEnd, tierRange.BaseUnitPrice)
-						}
-						cacheValid = fmt.Sprintf("%x", checksum.Sum(nil)) == snapshot.Checksum
-					}
-					effectiveNow := time.Now()
-					if cacheValid && snapshot.ServiceType == serviceType &&
-						!snapshot.EffectiveFrom.After(effectiveNow) &&
-						(snapshot.EffectiveTo == nil || effectiveNow.Before(*snapshot.EffectiveTo)) {
-						ttl := pricingCacheL1TTL
-						if snapshot.EffectiveTo != nil && snapshot.EffectiveTo.Sub(effectiveNow) < ttl {
-							ttl = snapshot.EffectiveTo.Sub(effectiveNow)
-						}
-						retained := false
-						if ttl > 0 {
-							c.mu.Lock()
-							if c.generation == loadGeneration {
-								c.l1[serviceType] = pricingCacheItem{snapshot: snapshot, expiresAt: effectiveNow.Add(ttl)}
-								retained = true
-							}
-							c.mu.Unlock()
-						}
-						if retained {
-							return snapshot, nil
-						}
-					}
+					c.mu.Unlock()
+					return snapshot, nil
 				}
 			}
 		}
-		snapshot, repoErr := c.repo.GetActivePricingSnapshot(ctx, serviceType)
+
+		snapshot, repoErr := c.repo.GetActivePricingSnapshot(ctx, chargeKind, zoneID, at)
 		if repoErr != nil {
 			return nil, repoErr
 		}
-		c.mu.RLock()
-		generationCurrent := c.generation == loadGeneration
-		c.mu.RUnlock()
-		if c.redisClient != nil && generationCurrent {
-			payload, marshalErr := json.Marshal(pricingCachePayload{
-				TierID: snapshot.TierID.String(), TierVersionID: snapshot.TierVersionID.String(),
-				Code: snapshot.Code, ServiceType: string(snapshot.ServiceType), VersionNumber: snapshot.VersionNumber,
-				EffectiveFrom: snapshot.EffectiveFrom, EffectiveTo: snapshot.EffectiveTo, Checksum: snapshot.Checksum,
-				Currency: snapshot.Currency, Ranges: snapshot.Ranges,
-			})
-			if marshalErr == nil {
-				// Cache write is best effort; PostgreSQL remains authoritative on failure.
-				now := time.Now()
-				ttl := pricingCacheL2TTL
-				if snapshot.EffectiveTo != nil && snapshot.EffectiveTo.Sub(now) < ttl {
-					ttl = snapshot.EffectiveTo.Sub(now)
-				}
-				if ttl > 0 {
-					_ = c.redisClient.Set(ctx, cacheKey, payload, ttl).Err()
-				}
+		if err := validateCachedSnapshot(snapshot); err != nil {
+			return nil, err
+		}
+		if c.redisClient != nil && loadGeneration == c.currentGeneration() {
+			if payload, marshalErr := json.Marshal(pricingCachePayloadFromSnapshot(snapshot)); marshalErr == nil {
+				_ = c.redisClient.Set(ctx, cacheKey, payload, pricingCacheL2TTL).Err()
 			}
 		}
-		// If invalidation raced this load, serve the already-started request but do not retain stale L1 state.
-		now = time.Now()
-		ttl := pricingCacheL1TTL
-		if snapshot.EffectiveTo != nil && snapshot.EffectiveTo.Sub(now) < ttl {
-			ttl = snapshot.EffectiveTo.Sub(now)
+		c.mu.Lock()
+		if c.generation == loadGeneration {
+			c.l1[lookupKey] = pricingCacheItem{snapshot: snapshot, expiresAt: time.Now().UTC().Add(pricingCacheL1TTL)}
 		}
-		if ttl > 0 {
-			c.mu.Lock()
-			if c.generation == loadGeneration {
-				c.l1[serviceType] = pricingCacheItem{snapshot: snapshot, expiresAt: now.Add(ttl)}
-			}
-			c.mu.Unlock()
-		}
+		c.mu.Unlock()
 		return snapshot, nil
 	})
 	if err != nil {
@@ -209,26 +122,105 @@ func (c *pricingCache) get(ctx context.Context, serviceType entity.ServiceType) 
 	return snapshot, nil
 }
 
+func pricingLookupKey(chargeKind entity.ChargeKindCode, zoneID *uuid.UUID) string {
+	if zoneID == nil || *zoneID == uuid.Nil {
+		return string(chargeKind) + ":global"
+	}
+	return string(chargeKind) + ":zone:" + zoneID.String()
+}
+
+func snapshotEffectiveAt(snapshot *entity.PricingSnapshot, at time.Time) bool {
+	return snapshot != nil && !snapshot.EffectiveFrom.After(at) && (snapshot.EffectiveTo == nil || at.Before(*snapshot.EffectiveTo))
+}
+
+func (c *pricingCache) currentGeneration() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.generation
+}
+
+func pricingCachePayloadFromSnapshot(snapshot *entity.PricingSnapshot) pricingCachePayload {
+	zoneID := ""
+	if snapshot.ZoneID != nil {
+		zoneID = snapshot.ZoneID.String()
+	}
+	return pricingCachePayload{
+		PricingScheduleID: snapshot.PricingScheduleID.String(), VersionID: snapshot.VersionID.String(),
+		Code: snapshot.Code, ChargeKindCode: string(snapshot.ChargeKindCode), ModuleCode: snapshot.ModuleCode,
+		PricingModel: snapshot.PricingModel, ScopeType: snapshot.ScopeType, ZoneID: zoneID,
+		RawInputUnit: snapshot.RawInputUnit, VersionNumber: snapshot.VersionNumber,
+		EffectiveFrom: snapshot.EffectiveFrom, EffectiveTo: snapshot.EffectiveTo, Checksum: snapshot.Checksum,
+		Currency: snapshot.Currency, Brackets: append([]entity.ScalarBracketInput(nil), snapshot.Brackets...),
+	}
+}
+
+func decodePricingSnapshot(raw []byte) (*entity.PricingSnapshot, error) {
+	var payload pricingCachePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	scheduleID, err := uuid.Parse(payload.PricingScheduleID)
+	if err != nil {
+		return nil, err
+	}
+	versionID, err := uuid.Parse(payload.VersionID)
+	if err != nil {
+		return nil, err
+	}
+	var zoneID *uuid.UUID
+	if payload.ZoneID != "" {
+		parsed, parseErr := uuid.Parse(payload.ZoneID)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		zoneID = &parsed
+	}
+	snapshot := &entity.PricingSnapshot{
+		PricingScheduleID: scheduleID, VersionID: versionID, Code: payload.Code,
+		ChargeKindCode: entity.ChargeKindCode(payload.ChargeKindCode), ModuleCode: payload.ModuleCode,
+		PricingModel: payload.PricingModel, ScopeType: payload.ScopeType, ZoneID: zoneID,
+		RawInputUnit: payload.RawInputUnit, VersionNumber: payload.VersionNumber,
+		EffectiveFrom: payload.EffectiveFrom, EffectiveTo: payload.EffectiveTo, Checksum: payload.Checksum,
+		Currency: payload.Currency, Brackets: append([]entity.ScalarBracketInput(nil), payload.Brackets...),
+	}
+	if err := validateCachedSnapshot(snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func validateCachedSnapshot(snapshot *entity.PricingSnapshot) error {
+	if snapshot == nil || snapshot.PricingScheduleID == uuid.Nil || snapshot.VersionID == uuid.Nil || snapshot.Code == "" || snapshot.Currency == "" || snapshot.VersionNumber < 1 || snapshot.PricingModel != entity.PricingModelProgressiveUnit {
+		return fmt.Errorf("pricing snapshot is incomplete")
+	}
+	if err := validateScalarBrackets(snapshot.Brackets); err != nil {
+		return err
+	}
+	schedule := entity.PricingSchedule{Code: snapshot.Code, ChargeKindCode: snapshot.ChargeKindCode, PricingModel: snapshot.PricingModel, ScopeType: snapshot.ScopeType, ZoneID: snapshot.ZoneID, Currency: snapshot.Currency}
+	if pricingScheduleChecksum(schedule, snapshot.VersionNumber, snapshot.EffectiveFrom, snapshot.Brackets) != snapshot.Checksum {
+		return fmt.Errorf("pricing snapshot checksum mismatch")
+	}
+	return nil
+}
+
 func (c *pricingCache) invalidate(ctx context.Context) {
 	c.mu.Lock()
 	c.generation++
-	c.l1 = make(map[entity.ServiceType]pricingCacheItem)
+	c.l1 = make(map[string]pricingCacheItem)
 	c.mu.Unlock()
-	if c.redisClient != nil {
-		for _, serviceType := range []entity.ServiceType{
-			entity.ServiceTypeStorage,
-			entity.ServiceTypeNetworkIn,
-			entity.ServiceTypeNetworkOut,
-			entity.ServiceTypeVM,
-		} {
-			if err := c.redisClient.Del(ctx, fmt.Sprintf("%s:%s", pricingCacheKeyPrefix, serviceType)).Err(); err != nil && ctx.Err() == nil {
+	if c.redisClient == nil {
+		return
+	}
+	for _, chargeKind := range []entity.ChargeKindCode{entity.ChargeKindStorageCapacity, entity.ChargeKindStorageNetworkIn, entity.ChargeKindStorageNetworkOut} {
+		keys, _ := c.redisClient.Keys(ctx, fmt.Sprintf("%s:%s*", pricingCacheKeyPrefix, chargeKind)).Result()
+		if len(keys) > 0 {
+			if err := c.redisClient.Del(ctx, keys...).Err(); err != nil && ctx.Err() == nil {
 				logger.SysWarn("billing.pricing.cache.invalidate", err.Error())
 			}
 		}
 	}
 }
 
-// RunInvalidation consumes a non-durable latency hint. TTL/cold-start rebuilds correctness when PubSub is missed.
 func (c *pricingCache) runInvalidation(ctx context.Context) {
 	if c.redisClient == nil {
 		return
@@ -248,7 +240,6 @@ func (c *pricingCache) runInvalidation(ctx context.Context) {
 				continue
 			}
 		}
-
 		messages := pubsub.Channel()
 		for {
 			select {
@@ -258,16 +249,10 @@ func (c *pricingCache) runInvalidation(ctx context.Context) {
 			case _, ok := <-messages:
 				if !ok {
 					_ = pubsub.Close()
-					goto reconnect
+					break
 				}
 				c.invalidate(ctx)
 			}
-		}
-	reconnect:
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Second):
 		}
 	}
 }

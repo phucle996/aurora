@@ -28,6 +28,14 @@ pub async fn run_services(
         ),
     );
 
+    let storage_activation_handle = tokio::spawn(
+        crate::service::storage::pending_activation_reconcile::run_pending_activation_reconciliation(
+            pg_pool.clone(),
+            pricing_runtime.clone(),
+            shutdown_rx.clone(),
+        ),
+    );
+
     // [COMMENT]: Mỗi replica subscribe Shared Redis broadcast để L1 luôn warm và failover
     // không phải đợi reload lạnh; periodic DB reconcile vẫn là safety net.
     let pricing_listener_handle = tokio::spawn(crate::engine::run_pricing_listener(
@@ -48,6 +56,12 @@ pub async fn run_services(
             match res {
                 Ok(_) => println!("Pricing Listener đã dừng."),
                 Err(e) => eprintln!("Lỗi nghiêm trọng tại Pricing Listener: {:?}", e),
+            }
+        }
+        res = storage_activation_handle => {
+            match res {
+                Ok(_) => println!("Storage pending activation reconciliation đã dừng."),
+                Err(e) => eprintln!("Lỗi nghiêm trọng tại Storage pending activation reconciliation: {:?}", e),
             }
         }
         _ = shutdown_rx.changed() => {

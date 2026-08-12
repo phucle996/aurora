@@ -173,3 +173,29 @@ sequenceDiagram
 - `controlplane/internal/storage/repository/personal_bucket_repo.go`
 - `dataplane/src/executor/storage/resize.rs`
 - `job-orchestrator/src/results/storage/bucket.rs`
+
+## Wallet admission gate
+
+Quota increase is a billable expansion and requires the local personal owner
+projection to be current `ALLOW`. The service checks this before the repository
+locks `used_bytes`; missing, expired or suspended admission maps to `503
+STORAGE_WALLET_ADMISSION_UNAVAILABLE`. Quota decrease remains a cleanup and
+footprint-reduction action and does not use this gate.
+
+```mermaid
+sequenceDiagram
+    participant S as PersonalBucketService
+    participant W as WalletAdmissionRepository
+    participant R as PersonalBucketRepository
+    participant DB as Controlplane PostgreSQL
+
+    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
+    W->>DB: Read effective owner projection
+    alt not admitted
+        W-->>S: ErrWalletAdmissionDenied
+    else ALLOW
+        S->>R: UpdateQuota after direction check
+        R->>DB: Lock bucket, compare used_bytes, update quota and outbox
+        DB-->>R: Commit
+    end
+```

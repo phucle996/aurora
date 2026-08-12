@@ -138,3 +138,9 @@ retry decision; the same ticket cannot be replayed.
 - zone-public-edge-gateway/envoy.yaml
 - zone-public-edge-gateway/authorizer/src/main.rs
 - proto/zone/transfer_ticket.proto
+
+Before the ticket CAS, Public Authorizer reads
+`AURORA_ZONE_ADMISSION/{resource_id}`. A missing, expired or non-`ALLOW` record
+returns `403` and the ticket stays `Issued`; MinIO never receives the PUT. The
+check is repeated at the public edge so a ticket cannot outlive a wallet
+suspension.

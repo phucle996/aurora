@@ -15,9 +15,9 @@ export type StorageEstimate = {
   capacity_bytes: string;
   hourly_estimate_micro_units: string;
   currency: string;
-  tier_code: string;
-  tier_id: string;
-  tier_version_id: string;
+  pricing_schedule_code: string;
+  pricing_schedule_id: string;
+  pricing_schedule_version_id: string;
   pricing_version: number;
   pricing_checksum: string;
   pricing_effective_from: string;
@@ -64,9 +64,9 @@ function decodeStorageEstimate(value: unknown): StorageEstimate {
     capacity_bytes: requiredString(value, "capacity_bytes"),
     hourly_estimate_micro_units: requiredString(value, "hourly_estimate_micro_units"),
     currency: requiredString(value, "currency"),
-    tier_code: requiredString(value, "tier_code"),
-    tier_id: requiredString(value, "tier_id"),
-    tier_version_id: requiredString(value, "tier_version_id"),
+    pricing_schedule_code: requiredString(value, "pricing_schedule_code"),
+    pricing_schedule_id: requiredString(value, "pricing_schedule_id"),
+    pricing_schedule_version_id: requiredString(value, "pricing_schedule_version_id"),
     pricing_version: requiredFiniteNumber(value, "pricing_version"),
     pricing_checksum: requiredString(value, "pricing_checksum"),
     pricing_effective_from: requiredString(value, "pricing_effective_from"),

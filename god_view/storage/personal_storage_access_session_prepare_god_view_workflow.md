@@ -239,3 +239,30 @@ sequenceDiagram
 - `dataplane/src/executor/storage/access.rs`
 - `dataplane/src/infra/zone_kv.rs`
 - `job-orchestrator/src/results/storage/access.rs`
+
+## Wallet admission gate
+
+Preparing an access session enables billable object operations. The personal
+bucket service therefore requires the local owner projection to be effective,
+unexpired and `ALLOW` before writing the access record or prepare outbox.
+Missing/stale/suspended admission returns `503
+STORAGE_WALLET_ADMISSION_UNAVAILABLE`; the service never calls Billing inline.
+
+```mermaid
+sequenceDiagram
+    participant S as PersonalBucketService
+    participant W as WalletAdmissionRepository
+    participant R as PersonalBucketRepository
+    participant DB as Controlplane PostgreSQL
+    participant AR as Auth-State Redis
+
+    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
+    W->>DB: Read owner projection
+    alt denied
+        W-->>S: ErrWalletAdmissionDenied
+    else ALLOW
+        S->>R: Prepare access record and protected outbox
+        R->>DB: Commit access-session intent
+        S->>AR: Persist short-lived access binding
+    end
+```

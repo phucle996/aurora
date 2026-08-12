@@ -114,3 +114,8 @@ retrying.
 - zone-public-edge-gateway/envoy.yaml
 - zone-public-edge-gateway/authorizer/src/main.rs
 - proto/zone/transfer_ticket.proto
+
+Public Authorizer also reads `AURORA_ZONE_ADMISSION/{resource_id}` before it
+CASes the ticket to `Consuming`. Missing, expired or suspended admission is a
+`403` with no MinIO request; only a current `ALLOW` record reaches the signed
+upstream GET.

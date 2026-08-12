@@ -48,13 +48,9 @@ type Module struct {
 	PersonalPaymentHandler *handler.PersonalPaymentHandler
 	TenantPaymentHandler   *handler.TenantPaymentHandler
 
-	PlanRepo    billingRepoInterface.PlanRepository
-	PlanService billingSvcInterface.PlanService
-	PlanHandler *handler.PlanHandler
-
-	TierRepo    billingRepoInterface.TierRepository
-	TierService billingSvcInterface.TierService
-	TierHandler *handler.TierHandler
+	PricingScheduleRepo    billingRepoInterface.PricingScheduleRepository
+	PricingScheduleService billingSvcInterface.PricingScheduleService
+	PricingScheduleHandler *handler.PricingScheduleHandler
 
 	ReconcilerRepo    billingRepoInterface.ReconcilerRepository
 	ReconcilerService service.ReconcilerService
@@ -66,6 +62,9 @@ type Module struct {
 
 	PricingOutboxRepo  billingRepoInterface.PricingOutboxRepository
 	PricingOutboxRelay *service.PricingOutboxRelay
+
+	WalletAdmissionOutboxRepo  billingRepoInterface.WalletAdmissionOutboxRepository
+	WalletAdmissionOutboxRelay *service.WalletAdmissionOutboxRelay
 
 	AuthorizationResolver *service.AuthorizationResolver
 }
@@ -182,23 +181,8 @@ func NewModule(
 	personalPaymentHandler := handler.NewPersonalPaymentHandler(personalPaymentService, paymentPolicy)
 	tenantPaymentHandler := handler.NewTenantPaymentHandler(tenantPaymentService, paymentPolicy)
 
-	// 2. Plan Domain DI
-	planRepo := repository.NewPlanRepository(dbPool)
-	if planRepo == nil {
-		return nil, fmt.Errorf("failed to initialize PlanRepository: instance is nil")
-	}
-
-	planService := service.NewPlanService(planRepo, redisClient)
-	if planService == nil {
-		return nil, fmt.Errorf("failed to initialize PlanService: instance is nil")
-	}
-
-	planHandler := handler.NewPlanHandler(planService)
-	if planHandler == nil {
-		return nil, fmt.Errorf("failed to initialize PlanHandler: instance is nil")
-	}
-
-	// 3. Pricing relay được tạo trước Tier service để producer có thể wake relay ngay sau commit.
+	// Pricing relay is created before schedule service so the immutable version
+	// transaction can wake the relay after commit.
 	pricingOutboxRepo := repository.NewPricingOutboxRepository(dbPool)
 	if pricingOutboxRepo == nil {
 		return nil, fmt.Errorf("failed to initialize PricingOutboxRepository: instance is nil")
@@ -208,21 +192,29 @@ func NewModule(
 	if pricingOutboxRelay == nil {
 		return nil, fmt.Errorf("failed to initialize PricingOutboxRelay: instance is nil")
 	}
-
-	// 4. Tier Domain DI
-	tierRepo := repository.NewTierRepository(dbPool)
-	if tierRepo == nil {
-		return nil, fmt.Errorf("failed to initialize TierRepository: instance is nil")
+	walletAdmissionOutboxRepo := repository.NewWalletAdmissionOutboxRepository(dbPool)
+	if walletAdmissionOutboxRepo == nil {
+		return nil, fmt.Errorf("failed to initialize WalletAdmissionOutboxRepository: instance is nil")
+	}
+	walletAdmissionOutboxRelay := service.NewWalletAdmissionOutboxRelay(walletAdmissionOutboxRepo, redisClient)
+	if walletAdmissionOutboxRelay == nil {
+		return nil, fmt.Errorf("failed to initialize WalletAdmissionOutboxRelay: instance is nil")
 	}
 
-	tierService := service.NewTierService(tierRepo, redisClient, pricingOutboxRelay.Notify)
-	if tierService == nil {
-		return nil, fmt.Errorf("failed to initialize TierService: instance is nil")
+	// Pricing schedule domain DI.
+	pricingScheduleRepo := repository.NewPricingScheduleRepository(dbPool)
+	if pricingScheduleRepo == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleRepository: instance is nil")
 	}
 
-	tierHandler := handler.NewTierHandler(tierService)
-	if tierHandler == nil {
-		return nil, fmt.Errorf("failed to initialize TierHandler: instance is nil")
+	pricingScheduleService := service.NewPricingScheduleService(pricingScheduleRepo, redisClient, pricingOutboxRelay.Notify)
+	if pricingScheduleService == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleService: instance is nil")
+	}
+
+	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingScheduleService)
+	if pricingScheduleHandler == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleHandler: instance is nil")
 	}
 
 	// 5. Reconciler Worker DI (gRPC)
@@ -280,12 +272,9 @@ func NewModule(
 		TenantPaymentService:            tenantPaymentService,
 		PersonalPaymentHandler:          personalPaymentHandler,
 		TenantPaymentHandler:            tenantPaymentHandler,
-		PlanRepo:                        planRepo,
-		PlanService:                     planService,
-		PlanHandler:                     planHandler,
-		TierRepo:                        tierRepo,
-		TierService:                     tierService,
-		TierHandler:                     tierHandler,
+		PricingScheduleRepo:             pricingScheduleRepo,
+		PricingScheduleService:          pricingScheduleService,
+		PricingScheduleHandler:          pricingScheduleHandler,
 		ReconcilerRepo:                  reconcilerRepo,
 		ReconcilerService:               reconcilerService,
 		ReconcilerWorker:                reconcilerWorker,
@@ -294,6 +283,8 @@ func NewModule(
 		ResourceOwnershipConsumer:       ownershipConsumer,
 		PricingOutboxRepo:               pricingOutboxRepo,
 		PricingOutboxRelay:              pricingOutboxRelay,
+		WalletAdmissionOutboxRepo:       walletAdmissionOutboxRepo,
+		WalletAdmissionOutboxRelay:      walletAdmissionOutboxRelay,
 		AuthorizationResolver:           authorizationResolver,
 	}, nil
 }

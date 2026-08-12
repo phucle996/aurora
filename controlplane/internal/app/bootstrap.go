@@ -65,5 +65,11 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 		}
 	}
 
+	if modules.Storage != nil {
+		if err := modules.Storage.Bootstrap(ctx); err != nil {
+			return fmt.Errorf("app bootstrap: storage module: %w", err)
+		}
+	}
+
 	return nil
 }

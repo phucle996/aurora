@@ -24,4 +24,6 @@ var (
 
 	// [COMMENT]: Dung lượng resize mới quá nhỏ so với used_bytes hiện tại (cần trống ít nhất 1GB).
 	ErrResizeLimitTooLow = errors.New("storage: requested quota must leave at least 1GB of free space above current usage")
+
+	ErrWalletAdmissionDenied = errors.New("storage: wallet admission denied or projection is stale")
 )

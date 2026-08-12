@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Header } from './components/Header';
 import { RouteGuard } from './components/RouteGuard';
-import PlanPage from './page/plan/page';
+import PricingSchedulesPage from './page/pricing-schedules/page';
 import DashboardPage from './page/dashboard/page';
 import { ReferralCampaigns } from './page/referrals/ReferralCampaigns';
 import { queryClient } from './lib/queryClient';
@@ -35,7 +35,7 @@ function CostDashboardShell() {
   const [currency, setCurrency] = useState('VND');
   const { checkPermission, renderContext, isLoading, error } = useAuthStore();
   const hasAdminDashboard = [
-    ['billing:tier', 'publish'],
+    ['billing:pricing_schedule', 'publish'],
     ['billing:credit', 'adjust'],
   ].some(([key, action]) => checkPermission(key, action));
 
@@ -66,22 +66,18 @@ function CostDashboardShell() {
       <main className="flex-1 flex flex-col overflow-hidden">
         <section className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
           <Routes>
-            {/* Route chính /plan cho trang Quản lý Gói Cước & Giá */}
+            {/* Controlled PAYG pricing schedule catalog. Legacy plans/tiers are removed. */}
             <Route
-              path="/plan"
+              path="/pricing-schedules"
               element={
                 <RouteGuard
-                  customCheck={(check) =>
-                    check('billing:plan', 'read')
-                    || check('billing:tier', 'read')
-                  }
+                  requiredKey="billing:pricing_schedule"
+                  requiredAction="read"
                 >
-                  <PlanPage />
+                  <PricingSchedulesPage />
                 </RouteGuard>
               }
             />
-            {/* Alias redirect từ /plans về /plan để nhất quán */}
-            <Route path="/plans" element={<Navigate to="/plan" replace />} />
 
             {/* Route trang chủ / và /dashboard */}
             <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.kind === "personal"} />} />

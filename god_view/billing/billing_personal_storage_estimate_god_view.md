@@ -85,7 +85,7 @@ but cannot become pricing Source of Truth.
 | Input | Validation/use |
 |---|---|
 | `capacity_bytes` | integer in inclusive range `1..1<<60` |
-| service type | fixed internally to `STORAGE`; caller cannot request another type |
+| charge kind | fixed internally to `storage.capacity.gb_hour`; caller cannot request another metric |
 | L1 snapshot | in-process, one-minute TTL, immutable, current effective window required |
 | L2 snapshot | Shared Redis key during migration, five-minute maximum TTL, fully revalidated before use |
 | DB fallback | Scoped Pricing Schedule repository is durable authority after schedule cutover |
@@ -132,7 +132,7 @@ which quote was observed; that lineage is not a future billing reservation.
 | `capacity_bytes` | requested capacity |
 | `hourly_estimate_micro_units` | rounded-up progressive hourly charge |
 | `currency` | snapshot currency |
-| `tier_code`, `tier_id`, `tier_version_id` | immutable effective pricing identity |
+| `pricing_schedule_code`, `pricing_schedule_id`, `pricing_schedule_version_id` | immutable effective schedule identity |
 | `pricing_version`, `pricing_checksum`, `pricing_effective_from` | audit/display lineage |
 | `estimated_at` | UTC calculation time |
 
@@ -140,7 +140,7 @@ which quote was observed; that lineage is not a future billing reservation.
 |---|---|---|
 | valid snapshot and arithmetic | `200` estimate payload | none |
 | invalid capacity or invalid durable range | `400` | none |
-| no effective storage tier or cache/DB timeout/error | `503` | none |
+| no effective storage schedule or cache/DB timeout/error | `503` | none |
 
 ```mermaid
 sequenceDiagram
@@ -160,10 +160,10 @@ sequenceDiagram
 |---|---|
 | Cloud Trinity session or `iam:domain_alias:billing:{alias_id}` | ACR self-context binding; Cost Alias rechecks source IAM session |
 | process L1 pricing map | one-minute performance cache, generation-fenced |
-| `cost-manager:pricing:active:v1:STORAGE` | Shared Redis five-minute performance cache; must pass full integrity checks |
+| `cost-manager:pricing:schedule:v2:storage.capacity.gb_hour:zone:{zone_id}` | Shared Redis five-minute performance cache; must pass full integrity checks |
 | effective Pricing Schedule/version/brackets in Billing PostgreSQL | durable pricing SoT |
 | `billing.wallets`, `payment_intents`, ledger | intentionally untouched by quote workflow |
 
 ## Code map
 
-[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/http/handler/tier_handler.go`](../../cost-manager/api/internal/transport/http/handler/tier_handler.go), [`cost-manager/api/internal/service/tier_service.go`](../../cost-manager/api/internal/service/tier_service.go), and [`cost-manager/api/internal/service/pricing_cache.go`](../../cost-manager/api/internal/service/pricing_cache.go).
+[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/http/handler/pricing_schedule_handler.go`](../../cost-manager/api/internal/transport/http/handler/pricing_schedule_handler.go), [`cost-manager/api/internal/service/pricing_schedule_service.go`](../../cost-manager/api/internal/service/pricing_schedule_service.go), and [`cost-manager/api/internal/service/pricing_cache.go`](../../cost-manager/api/internal/service/pricing_cache.go).

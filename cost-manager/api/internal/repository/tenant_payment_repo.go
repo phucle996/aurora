@@ -356,14 +356,16 @@ func (r *tenantPaymentRepository) ApplyTenantSettlement(
 	}
 
 	var walletStatus string
+	var restrictionReason *string
 	var cashBalance, promotionalBalance int64
 	err = tx.QueryRow(ctx, `
-		SELECT status, cash_balance, promotional_balance
+		SELECT status, restriction_reason, cash_balance, promotional_balance
 		FROM billing.wallets
 		WHERE id=$1 AND owner_id=$2 AND owner_type='TENANT'::billing.owner_type
 		FOR UPDATE
 	`, intent.WalletID, intent.OwnerID).Scan(
 		&walletStatus,
+		&restrictionReason,
 		&cashBalance,
 		&promotionalBalance,
 	)
@@ -422,19 +424,46 @@ func (r *tenantPaymentRepository) ApplyTenantSettlement(
 
 	cashBalance += settlement.Amount
 	nextWalletStatus := walletStatus
-	walletActivated := walletStatus == entity.WalletStatusPendingActivation
+	walletActivated := walletStatus == entity.WalletStatusSuspended && restrictionReason != nil && *restrictionReason == "CREDIT_EXHAUSTED"
 	if walletActivated {
 		nextWalletStatus = entity.WalletStatusActive
 	}
 	// [COMMENT]: A provider callback can credit an administratively suspended
 	// wallet, but it must never lift the suspension.
-	if _, err = tx.Exec(ctx, `
+	var walletVersion int64
+	if err = tx.QueryRow(ctx, `
 		UPDATE billing.wallets
 		SET cash_balance=$1, status=$2::billing.wallet_lifecycle_status,
+		    restriction_reason=CASE WHEN $2='ACTIVE' THEN NULL ELSE restriction_reason END,
+		    status_changed_at=CASE WHEN status::text IS DISTINCT FROM $2 THEN NOW() ELSE status_changed_at END,
 		    version=version+1, updated_at=NOW()
 		WHERE id=$3
-	`, cashBalance, nextWalletStatus, intent.WalletID); err != nil {
+		RETURNING version
+	`, cashBalance, nextWalletStatus, intent.WalletID).Scan(&walletVersion); err != nil {
 		return nil, fmt.Errorf("tenant payment repo: credit cash: %w", err)
+	}
+	if walletStatus == entity.WalletStatusPendingActivation {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO billing.storage_pending_activation_reconcile
+				(wallet_id, owner_id, owner_type, target_wallet_version, status, updated_at)
+			VALUES ($1,$2,'TENANT',$3,'PENDING',NOW())
+			ON CONFLICT (wallet_id) DO UPDATE
+			SET owner_id=EXCLUDED.owner_id, owner_type=EXCLUDED.owner_type,
+				target_wallet_version=EXCLUDED.target_wallet_version,
+				status='PENDING', last_error=NULL, updated_at=NOW()
+		`, intent.WalletID, intent.OwnerID, walletVersion); err != nil {
+			return nil, fmt.Errorf("tenant payment repo: queue storage activation reconciliation: %w", err)
+		}
+	}
+	admissionMode := "SUSPEND_BILLABLE"
+	var admissionReason any = "ADMINISTRATIVE"
+	if nextWalletStatus == entity.WalletStatusActive {
+		admissionMode = "ALLOW"
+		admissionReason = nil
+	} else if walletStatus == entity.WalletStatusPendingActivation {
+		admissionReason = "NOT_ACTIVATED"
+	} else if restrictionReason != nil && *restrictionReason == "CREDIT_EXHAUSTED" {
+		admissionReason = "CREDIT_EXHAUSTED"
 	}
 
 	topUpLedgerID := uuid.NewSHA1(tenantTopUpLedgerNamespace, intent.ID[:])
@@ -449,6 +478,13 @@ func (r *tenantPaymentRepository) ApplyTenantSettlement(
 		settlement.Amount, cashBalance, promotionalBalance, settlement.Currency,
 		settlement.ProviderPaymentID, settlement.SettledAt); err != nil {
 		return nil, fmt.Errorf("tenant payment repo: insert top-up ledger: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO billing.wallet_admission_outbox
+			(event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
+		VALUES ($1,$2,$3,'TENANT',$4,$5,$6,NOW())
+	`, uuid.New(), intent.WalletID, intent.OwnerID, walletVersion, admissionMode, admissionReason); err != nil {
+		return nil, fmt.Errorf("tenant payment repo: write wallet admission outbox: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE billing.payment_intents

@@ -81,6 +81,8 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 			apires.RespondNotFound(c, "bucket not found")
 		} else if errors.Is(err, storageTaxonomy.ErrInvalidPolicy) {
 			apires.RespondBadRequest(c, err.Error())
+		} else if errors.Is(err, storageTaxonomy.ErrWalletAdmissionDenied) {
+			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
 		} else {
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
