@@ -1,0 +1,119 @@
+-- Settlement evidence and immutable financial projections.
+
+CREATE TABLE billing.storage_usage_report_inbox (
+    report_id                 UUID PRIMARY KEY,
+    zone_id                   UUID NOT NULL,
+    window_start              TIMESTAMPTZ NOT NULL,
+    window_end                TIMESTAMPTZ NOT NULL,
+    sequence                  BIGINT NOT NULL,
+    correction                BOOLEAN NOT NULL DEFAULT FALSE,
+    correction_of_report_id   UUID,
+    payload_sha256            BYTEA NOT NULL,
+    payload                   BYTEA NOT NULL,
+    status                    VARCHAR(16) NOT NULL DEFAULT 'RECEIVED',
+    retry_count               INT NOT NULL DEFAULT 0,
+    last_error                TEXT,
+    received_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    settled_at                TIMESTAMPTZ,
+    CONSTRAINT ck_storage_report_window CHECK (window_end > window_start),
+    CONSTRAINT ck_storage_report_checksum CHECK (octet_length(payload_sha256) = 32),
+    CONSTRAINT ck_storage_report_payload_size CHECK (octet_length(payload) <= 4194304),
+    CONSTRAINT ck_storage_report_status CHECK (status IN ('RECEIVED', 'PROCESSING', 'SETTLED', 'UNRATED', 'DEAD')),
+    CONSTRAINT ck_storage_report_retry_non_negative CHECK (retry_count >= 0),
+    CONSTRAINT ck_storage_report_correction_parent CHECK (
+        (correction = FALSE AND correction_of_report_id IS NULL)
+        OR (correction = TRUE AND correction_of_report_id IS NOT NULL AND correction_of_report_id <> report_id)
+    )
+);
+
+CREATE TABLE billing.storage_usage_line_inbox (
+    line_id                       UUID PRIMARY KEY,
+    report_id                     UUID NOT NULL REFERENCES billing.storage_usage_report_inbox(report_id) ON DELETE RESTRICT,
+    zone_id                       UUID NOT NULL,
+    resource_id                   UUID NOT NULL,
+    resource_name                 VARCHAR(255),
+    direction                     VARCHAR(16) NOT NULL,
+    usage_quantity                BIGINT NOT NULL,
+    usage_unit                    VARCHAR(24) NOT NULL,
+    request_count                 BIGINT NOT NULL DEFAULT 0,
+    amount_micro_units            BIGINT,
+    owner_id                      UUID,
+    owner_type                    billing.owner_type,
+    module_code                   TEXT NOT NULL DEFAULT 'storage',
+    charge_kind_code              TEXT NOT NULL REFERENCES billing.charge_kind_catalog(code) ON DELETE RESTRICT,
+    usage_settlement_run_id       UUID REFERENCES billing.usage_settlement_runs(id) ON DELETE RESTRICT,
+    pricing_schedule_version_id   UUID NOT NULL REFERENCES billing.pricing_schedule_versions(id) ON DELETE RESTRICT,
+    pricing_checksum              CHAR(64) NOT NULL,
+    status                        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    reason                        VARCHAR(64),
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    settled_at                    TIMESTAMPTZ,
+    CONSTRAINT uq_storage_usage_line_identity UNIQUE (report_id, resource_id, direction),
+    CONSTRAINT ck_storage_usage_line_direction CHECK (direction IN ('NETWORK_IN', 'NETWORK_OUT', 'STORAGE')),
+    CONSTRAINT ck_storage_usage_line_unit CHECK (usage_unit IN ('BYTE', 'GB_HOUR_MICRO')),
+    CONSTRAINT ck_storage_usage_line_direction_unit CHECK (
+        (direction IN ('NETWORK_IN', 'NETWORK_OUT') AND usage_unit = 'BYTE')
+        OR (direction = 'STORAGE' AND usage_unit = 'GB_HOUR_MICRO')
+    ),
+    CONSTRAINT ck_storage_usage_line_resource_reference CHECK (resource_id IS NOT NULL OR resource_name IS NOT NULL),
+    CONSTRAINT ck_storage_usage_line_quantity CHECK (usage_quantity >= 0),
+    CONSTRAINT ck_storage_usage_line_requests CHECK (request_count >= 0),
+    CONSTRAINT ck_storage_usage_line_status CHECK (status IN ('PENDING', 'SETTLED', 'UNRATED', 'DEAD'))
+);
+
+CREATE TABLE billing.wallet_ledger_entries (
+    id                            UUID PRIMARY KEY,
+    wallet_id                     UUID NOT NULL REFERENCES billing.wallets(id) ON DELETE RESTRICT,
+    owner_id                      UUID NOT NULL,
+    owner_type                    billing.owner_type NOT NULL,
+    actor_user_id                 UUID,
+    amount_micro_units            BIGINT NOT NULL,
+    cash_balance_after            BIGINT NOT NULL,
+    promotional_balance_after     BIGINT NOT NULL,
+    currency                      CHAR(3) NOT NULL,
+    entry_type                    billing.ledger_entry_type NOT NULL,
+    module_code                   TEXT,
+    charge_kind_code              TEXT REFERENCES billing.charge_kind_catalog(code) ON DELETE RESTRICT,
+    reference_id                  VARCHAR(255) NOT NULL,
+    description                   TEXT NOT NULL,
+    usage_settlement_run_id       UUID REFERENCES billing.usage_settlement_runs(id) ON DELETE RESTRICT,
+    pricing_schedule_id           UUID REFERENCES billing.pricing_schedules(id) ON DELETE RESTRICT,
+    pricing_schedule_version_id   UUID REFERENCES billing.pricing_schedule_versions(id) ON DELETE RESTRICT,
+    pricing_checksum              CHAR(64),
+    adjustment_of_ledger_entry_id UUID REFERENCES billing.wallet_ledger_entries(id) ON DELETE RESTRICT,
+    adjustment_reason             VARCHAR(64),
+    resource_id                   UUID,
+    resource_type                 VARCHAR(32),
+    usage_quantity                BIGINT,
+    usage_unit                    VARCHAR(24),
+    occurred_at                   TIMESTAMPTZ NOT NULL,
+    source_evidence_hash          CHAR(64),
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_ledger_amount_non_zero CHECK (amount_micro_units <> 0),
+    CONSTRAINT ck_ledger_promo_after_non_negative CHECK (promotional_balance_after >= 0),
+    CONSTRAINT ck_ledger_usage_pair CHECK ((usage_quantity IS NULL) = (usage_unit IS NULL))
+);
+
+CREATE TABLE billing.unrated_usage (
+    id                            UUID PRIMARY KEY,
+    module_code                   TEXT NOT NULL,
+    charge_kind_code              TEXT NOT NULL REFERENCES billing.charge_kind_catalog(code) ON DELETE RESTRICT,
+    resource_type                 VARCHAR(32) NOT NULL,
+    resource_id                   UUID,
+    resource_name                 VARCHAR(255) NOT NULL,
+    metering_hour                 TIMESTAMPTZ NOT NULL,
+    usage_quantity                BIGINT NOT NULL,
+    usage_unit                    VARCHAR(24) NOT NULL,
+    reason                        VARCHAR(64) NOT NULL,
+    source_report_id              UUID,
+    source_evidence_hash          CHAR(64),
+    pricing_schedule_version_id   UUID REFERENCES billing.pricing_schedule_versions(id) ON DELETE RESTRICT,
+    status                        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    retry_count                   INT NOT NULL DEFAULT 0,
+    last_error                    TEXT,
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_unrated_usage_non_negative CHECK (usage_quantity >= 0),
+    CONSTRAINT ck_unrated_retry_non_negative CHECK (retry_count >= 0),
+    CONSTRAINT ck_unrated_status CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'DEAD'))
+);

@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS billing.storage_pending_activation_reconcile CASCADE;
+DROP TABLE IF EXISTS billing.wallet_admission_outbox CASCADE;
+DROP TABLE IF EXISTS billing.personal_referral_redemptions CASCADE;
+DROP TABLE IF EXISTS billing.payment_webhook_inbox CASCADE;
+DROP TABLE IF EXISTS billing.payment_intents CASCADE;
+DROP TABLE IF EXISTS billing.tenant_wallet_provision_inbox CASCADE;
+DROP TABLE IF EXISTS billing.personal_referral_reservations CASCADE;
+DROP TABLE IF EXISTS billing.personal_wallet_provision_inbox CASCADE;
+DROP TABLE IF EXISTS billing.credit_grants CASCADE;
+DROP TABLE IF EXISTS billing.promotion_campaigns CASCADE;
+DROP TABLE IF EXISTS billing.wallets CASCADE;
+DROP TABLE IF EXISTS billing.resource_ownership_head CASCADE;
+DROP TABLE IF EXISTS billing.ownership_event_inbox CASCADE;
+DROP TABLE IF EXISTS billing.credential_bindings CASCADE;
+DROP TABLE IF EXISTS billing.resource_ownership_projection CASCADE;
