@@ -53,6 +53,10 @@ Zone NATS dev bật mTLS thật (`verify: true`). Mọi client dùng CA chung c�
 client certificate riêng và NATS credential scoped; thiếu certificate, CA hoặc
 credential phải làm bootstrap fail-closed.
 
+Zone storage dùng MinIO qua S3-compatible SigV4. Public và Control Edge chỉ
+đọc signer credentials do Zone inject vào Envoy; credential provider chain bị
+giới hạn ở environment provider, không gọi AWS IAM/EC2 metadata.
+
 Dataplane vẫn fail-fast khi Kafka/NATS Core chưa sẵn sàng; `restart:
 unless-stopped` là bounded process recovery của môi trường dev. Compose không
 tạo `depends_on` giả xuyên hai project.

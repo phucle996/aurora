@@ -181,6 +181,13 @@ static_resources:
                 region: us-east-1
                 host_rewrite: minio:9000
                 use_unsigned_payload: true
+                # MinIO implements the S3 SigV4 protocol but is not an AWS
+                # metadata/IAM service. Restrict Envoy to the credentials
+                # injected by the Zone signer Secret so it never probes EC2,
+                # ECS or other AWS metadata endpoints.
+                credential_provider:
+                  custom_credential_provider_chain: true
+                  environment_credential_provider: {}
             - name: envoy.filters.http.upstream_codec
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec

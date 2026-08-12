@@ -215,6 +215,12 @@ static_resources:
                 region: us-east-1
                 host_rewrite: minio:9000
                 use_unsigned_payload: false
+                # S3-compatible MinIO uses SigV4 syntax, not AWS IAM. Limit
+                # the provider chain to the injected Zone signer credentials
+                # and never fall through to AWS instance metadata.
+                credential_provider:
+                  custom_credential_provider_chain: true
+                  environment_credential_provider: {}
             - name: envoy.filters.http.upstream_codec
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec

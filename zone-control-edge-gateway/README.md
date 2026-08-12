@@ -39,8 +39,10 @@ it is not itself a gateway or an ownership database.
   on the Zone Public Edge Gateway.
 - Envoy does not retry a routed control mutation. A retry arrives with a new
   assertion and must be idempotent at the downstream `operation_id` boundary.
-- S3 signing is an upstream filter, after route/path rewrite. The signer
-  credential is Zone-local and is never returned to Central or the client.
+- S3-compatible signing is an upstream SigV4 filter, after route/path rewrite.
+  The signer credential is Zone-local and is never returned to Central or the
+  client. Envoy's provider chain is explicitly restricted to the injected
+  environment credentials; it must not query AWS instance metadata.
 - A non-empty `key_prefix` requires the ListBucket query to contain exactly one
   decoded `prefix` value within that scope. List routes accept only the
   reviewed ListObjectsV2 query fields; S3 subresource queries fail closed.
