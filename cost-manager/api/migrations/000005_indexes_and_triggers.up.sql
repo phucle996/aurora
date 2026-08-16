@@ -1,11 +1,5 @@
 -- Non-table enforcement and lookup paths for the final baseline.
 
-CREATE UNIQUE INDEX uq_pricing_schedule_global_kind
-    ON billing.pricing_schedules(charge_kind_code)
-    WHERE scope_type = 'GLOBAL';
-CREATE UNIQUE INDEX uq_pricing_schedule_zone_kind
-    ON billing.pricing_schedules(charge_kind_code, zone_id)
-    WHERE scope_type = 'ZONE';
 CREATE INDEX idx_pricing_schedule_version_lookup
     ON billing.pricing_schedule_versions(pricing_schedule_id, effective_from DESC);
 CREATE UNIQUE INDEX uq_scalar_bracket_one_infinity
@@ -18,6 +12,15 @@ CREATE INDEX idx_pricing_outbox_unpublished
     WHERE published_at IS NULL;
 CREATE INDEX idx_usage_settlement_retry
     ON billing.usage_settlement_runs(status, updated_at, source_module, charge_kind_code);
+CREATE INDEX idx_storage_zone_adjustment_lookup
+    ON billing.storage_zone_price_adjustment_versions(zone_id, effective_from DESC, version_number DESC)
+    WHERE status <> 'CANCELLED';
+CREATE INDEX idx_hypervisor_zone_adjustment_lookup
+    ON billing.hypervisor_zone_price_adjustment_versions(zone_id, effective_from DESC, version_number DESC)
+    WHERE status <> 'CANCELLED';
+CREATE INDEX idx_mail_zone_adjustment_lookup
+    ON billing.mail_zone_price_adjustment_versions(zone_id, effective_from DESC, version_number DESC)
+    WHERE status <> 'CANCELLED';
 
 CREATE UNIQUE INDEX uq_resource_ownership_active_resource
     ON billing.resource_ownership_projection(resource_type, resource_id)
@@ -72,6 +75,23 @@ CREATE INDEX idx_storage_usage_line_resource_window
 CREATE INDEX idx_storage_usage_line_resource_name
     ON billing.storage_usage_line_inbox(zone_id, resource_name, created_at)
     WHERE resource_name IS NOT NULL;
+CREATE INDEX idx_hypervisor_allocation_interval_window
+    ON billing.hypervisor_allocation_intervals(effective_from, effective_to, resource_id);
+CREATE INDEX idx_hypervisor_allocation_window_claim
+    ON billing.hypervisor_allocation_windows(status, window_start, shard_id)
+    WHERE status IN ('PENDING', 'PROCESSING', 'UNRATED');
+CREATE INDEX idx_hypervisor_allocation_line_pending
+    ON billing.hypervisor_allocation_lines(status, window_id, resource_id)
+    WHERE status IN ('PENDING', 'UNRATED');
+CREATE INDEX idx_hypervisor_network_report_pending
+    ON billing.hypervisor_network_usage_report_inbox(status, received_at, report_id)
+    WHERE status IN ('PROCESSING', 'UNRATED');
+CREATE INDEX idx_hypervisor_network_line_pending
+    ON billing.hypervisor_network_usage_lines(status, report_id, resource_id)
+    WHERE status IN ('PENDING', 'UNRATED');
+CREATE INDEX idx_mail_accepted_usage_pending
+    ON billing.mail_accepted_usage_inbox(status, accepted_at, evidence_id)
+    WHERE status IN ('PROCESSING', 'UNRATED');
 
 CREATE OR REPLACE FUNCTION billing.enforce_pricing_schedule_registry()
 RETURNS trigger

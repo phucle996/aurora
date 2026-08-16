@@ -16,7 +16,7 @@ The browser uses the neutral public route. This is `/personal`: ACR derives the 
 | Browser headers used | `Origin`; Cloud Trinity cookies on Cloud authority or Billing Alias ID/secret cookies on Cost authority |
 | Browser payload | no body; `capacity_bytes` is a base-10 query integer, `1..1<<60` |
 | ACR upstream path | `/api/v1/personal/billing/wallet/estimate/storage?capacity_bytes=...` |
-| Response | current hourly micro-unit estimate with snapshot code/version/checksum lineage |
+| Response | current hourly micro-unit estimate with Global base and Storage Zone adjustment lineage |
 | Durable effect | none |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -88,7 +88,7 @@ but cannot become pricing Source of Truth.
 | charge kind | fixed internally to `storage.capacity.gb_hour`; caller cannot request another metric |
 | L1 snapshot | in-process, one-minute TTL, immutable, current effective window required |
 | L2 snapshot | Shared Redis key during migration, five-minute maximum TTL, fully revalidated before use |
-| DB fallback | Scoped Pricing Schedule repository is durable authority after schedule cutover |
+| DB fallback | Global Pricing Schedule is the base authority; the Storage-owned Zone adjustment table is the module modifier authority |
 
 ```mermaid
 sequenceDiagram
@@ -99,8 +99,8 @@ sequenceDiagram
     participant R as PricingScheduleRepository
     participant DB as Billing PostgreSQL
     H->>H: parse capacity_bytes and set 2s deadline
-    H->>S: EstimateStorage capacity
-    S->>L1: get effective STORAGE snapshot
+    H->>S: EstimateStorage capacity plus trusted Zone
+    S->>L1: get effective Global base snapshot
     alt valid L1 hit
         L1-->>S: immutable snapshot
     else L1 miss
@@ -108,12 +108,14 @@ sequenceDiagram
         alt valid L2 bytes
             L2-->>S: snapshot after schema range checksum validation
         else cache miss invalid or stale
-            S->>R: Get active Storage schedule snapshot
-            R->>DB: select scoped effective schedule version and brackets
+            S->>R: Get active Global Storage base snapshot
+            R->>DB: select effective Global version and brackets
             DB-->>S: immutable snapshot
             S->>L2: best-effort cache write
         end
     end
+    S->>R: resolve Storage-owned adjustment for trusted Zone/time
+    R->>DB: select immutable adjustment; absence means 1/1 inheritance
 ```
 
 ### Cache integrity and recovery
@@ -122,9 +124,10 @@ Before a Redis payload can answer an estimate, the cache validates IDs, service 
 
 ## Phase 3 — Exact progressive quote calculation and response
 
-For each effective range, the storage quote service calculates the covered bytes
-and micro-unit price using checked integer arithmetic, rejects numeric overflow,
-and returns one hourly amount. It returns snapshot lineage so the UI can explain
+For each effective range, the storage quote service uses the requested capacity
+bytes as exact `BYTE_HOUR` quantity, calculates the rational base amount,
+multiplies the Storage-owned Zone rational, and performs one final ceiling to
+BIGINT micro-units. It returns both lineages so the UI can explain
 which quote was observed; that lineage is not a future billing reservation.
 
 | Response payload field | Meaning |
@@ -134,6 +137,8 @@ which quote was observed; that lineage is not a future billing reservation.
 | `currency` | snapshot currency |
 | `pricing_schedule_code`, `pricing_schedule_id`, `pricing_schedule_version_id` | immutable effective schedule identity |
 | `pricing_version`, `pricing_checksum`, `pricing_effective_from` | audit/display lineage |
+| `rate_adjustment_id`, `rate_adjustment_version`, `rate_adjustment_checksum` | nullable immutable Storage adjustment lineage; null means Global inheritance |
+| `rate_adjustment_numerator`, `rate_adjustment_denominator` | decimal-string rational applied to the Global base; `1/1` for inheritance |
 | `estimated_at` | UTC calculation time |
 
 | Result | HTTP response | Durable effect |
@@ -148,9 +153,9 @@ sequenceDiagram
     participant PS as PricingSnapshot
     participant H as StorageQuoteHandler
     S->>PS: iterate continuous progressive ranges
-    S->>S: price decimal-GB capacity using checked integer arithmetic
-    S->>S: return one hourly amount with final rounding
-    S-->>H: estimate plus immutable snapshot lineage
+    S->>S: price decimal-GB capacity as exact rational
+    S->>S: multiply Storage Zone rational then ceiling once
+    S-->>H: estimate plus base and adjustment lineage
     H-->>H: encode 200 payload
 ```
 
@@ -160,8 +165,9 @@ sequenceDiagram
 |---|---|
 | Cloud Trinity session or `iam:domain_alias:billing:{alias_id}` | ACR self-context binding; Cost Alias rechecks source IAM session |
 | process L1 pricing map | one-minute performance cache, generation-fenced |
-| `cost-manager:pricing:schedule:v2:storage.capacity.gb_hour:zone:{zone_id}` | Shared Redis five-minute performance cache; must pass full integrity checks |
-| effective Pricing Schedule/version/brackets in Billing PostgreSQL | durable pricing SoT |
+| `cost-manager:pricing:schedule:v3:storage.capacity.gb_hour` | Shared Redis five-minute cache for the exact `BYTE_HOUR` Global base; must pass full integrity checks |
+| effective Global Pricing Schedule/version/brackets in Billing PostgreSQL | durable base pricing SoT |
+| `billing.storage_zone_price_adjustment_versions` | Storage-owned rational modifier SoT; absence at the boundary is explicit `1/1` inheritance |
 | `billing.wallets`, `payment_intents`, ledger | intentionally untouched by quote workflow |
 
 ## Code map

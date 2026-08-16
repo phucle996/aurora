@@ -16,7 +16,24 @@ DELETE FROM billing.pricing_schedules
 WHERE id IN (
     '019f3d3e-998a-7894-9236-c5122634cb5a',
     '019f3d3e-998d-7894-9236-c5122634cb5d',
-    '019f3d3e-9990-7894-9236-c5122634cb60'
+    '019f3d3e-9990-7894-9236-c5122634cb60',
+    '019f3d3e-9993-7894-9236-c5122634cb63',
+    '019f3d3e-9996-7894-9236-c5122634cb66',
+    '019f3d3e-9999-7894-9236-c5122634cb69',
+    '019f3d3e-999c-7894-9236-c5122634cb6c',
+    '019f3d3e-999f-7894-9236-c5122634cb6f',
+    '019f3d3e-99a2-7894-9236-c5122634cb72'
 );
 DELETE FROM billing.charge_kind_catalog
-WHERE code IN ('storage.network_in.byte', 'storage.network_out.byte', 'storage.capacity.gb_hour', 'hypervisor.vm_shape.duration');
+WHERE code IN (
+    'storage.network_in.byte',
+    'storage.network_out.byte',
+    'storage.capacity.gb_hour',
+    'hypervisor.vcpu.allocated_second',
+    'hypervisor.memory_mib.allocated_second',
+    'hypervisor.disk_gib.allocated_second',
+    'hypervisor.gpu.allocated_second',
+    'hypervisor.network_in.byte',
+    'hypervisor.network_out.byte',
+    'mail.delivery.accepted_recipient'
+);

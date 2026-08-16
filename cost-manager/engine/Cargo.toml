@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1.43", features = ["full"] }
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "bigdecimal"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "bigdecimal", "macros", "migrate"] }
 # [COMMENT]: Đồng nhất với các service khác (dataplane, job-orchestrator). TLS Redis do infrastructure (mesh/proxy) xử lý.
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -13,6 +13,9 @@ serde_json = "1.0"
 uuid = { version = "1.10", features = ["v5", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 bigdecimal = "0.4"
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
 prost = "0.12"
 time = { version = "0.3", features = ["serde"] }
 # [COMMENT]: Moka giữ immutable historical versions; ArcSwap đổi active catalog theo COW tại safe point.

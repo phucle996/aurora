@@ -13,8 +13,9 @@ neutral public route and does not select a wallet, payer, owner, workspace,
 tenant or Zone authority. ACR verifies the Cost Billing Alias session and the
 one-time session proof. Controlplane/Cost API performs fresh
 `billing:pricing_schedule:publish` authorization after the request crosses the
-edge. A Zone schedule may be published only for the verified operator Zone;
-the body cannot override that scope.
+edge. PAYG base schedules are Global-only. Zone, cluster, provider or other
+module pricing context never appears in this workflow; each module owns a
+separate immutable adjustment workflow.
 
 The endpoint does not accept `service_type`, `tier_id`, `plan_id`,
 `monthly_price`, `included_quota`, `zone_multiplier`, discount, tax or formula
@@ -29,19 +30,29 @@ Charge Kind Registry row.
 |---|---|
 | Method/path | `POST /api/v1/billing/critical/pricing-schedules/{code}/versions` |
 | Headers used | Billing Alias cookie, exact session-proof headers, `Origin`, CSRF signal, `traceparent` |
-| JSON | `expected_latest_version`, `effective_from`, `change_reason`, and typed `brackets` for the enabled Storage `PROGRESSIVE_UNIT` schedules. `FIXED_BUNDLE`/`definition` is rejected until a Hypervisor workflow registers its validator. |
-| Authority | Alias session, verified operator identity and verified Zone injected by ACR; never caller `x-user-id`, `x-zone-id` or workspace header |
+| JSON | `expected_latest_version` (`0` only when the catalog schedule has no version yet), UTC `effective_from` ending in `Z`, `change_reason`, and typed `brackets` for enabled `PROGRESSIVE_UNIT` schedules. Every bracket `BIGINT` (`range_start_quantity`, nullable `range_end_quantity`, `price_numerator_micro_units`, `price_denominator_quantity`) is a base-10 JSON string, never a JSON number. `FIXED_BUNDLE`/`definition` remains rejected. |
+| Authority | Alias session and verified operator identity injected by ACR; never caller `x-user-id`, `x-zone-id` or workspace header |
 
 `brackets` use raw quantity units from the registry. Every progressive version
 starts at zero, is contiguous, has one final unbounded range, uses a positive
 denominator and non-negative numerator. The service canonicalizes field order
 and calculates the checksum; it does not trust a client checksum.
 
+The Cost Console labels and interprets its timezone-less `datetime-local`
+control as UTC+0 and emits an RFC3339 `Z` timestamp; it never applies the
+browser's local timezone. Before validation, checksum calculation and insert,
+the API converts `effective_from` to UTC and truncates it to PostgreSQL's
+durable microsecond precision.
+Go and Rust serialize that checksum field with exactly six fractional digits
+(`YYYY-MM-DDTHH:mm:ss.ffffffZ`). Cross-runtime golden tests pin the seed vector,
+so a format or precision change cannot silently make Cost Engine reject a
+committed version.
+
 ### Response
 
 | Status | Payload | Durable effect |
 |---|---|---|
-| `201` | schedule id, version id/number, charge kind, scope, model, unit, effective window, checksum | Version, typed definition/brackets and publish outbox committed atomically |
+| `201` | schedule id, version id/number, charge kind, scope, model, unit, UTC `Z` effective window, checksum; every bracket `BIGINT` is a decimal string | Version, typed definition/brackets and publish outbox committed atomically |
 | `400` | bounded validation code | None |
 | `401/403/429` | edge/proof/authorization error | None |
 | `404` | charge kind or schedule absent | None |
@@ -56,7 +67,7 @@ error. A future read/quote workflow is separate from this publish mutation.
 | Key/table | Owner and invariant |
 |---|---|
 | `billing.charge_kind_catalog` | Controlled registry; disabled/unknown kind cannot publish |
-| `billing.pricing_schedules` | One logical schedule per `(charge_kind_code, scope)` |
+| `billing.pricing_schedules` | One Global logical base schedule per `charge_kind_code` |
 | `billing.pricing_schedule_versions` | Immutable version/checksum/effective interval; exclusion constraint prevents overlap |
 | `billing.pricing_schedule_scalar_brackets` | Typed raw-unit bracket rows; no JSON formula |
 | `billing.pricing_outbox` | PostgreSQL delivery SoT; version row and outbox commit together |
@@ -107,14 +118,22 @@ an outbox. Any ACR dependency failure fails closed.
 The Cost API context injector parses only ACR-trusted headers. The critical
 proof middleware checks the proof marker. Fresh authorization resolves the
 operator permission; an L1/L2 cache hit is not enough for publish. The handler
-binds the named workflow request and passes it to the Schedule service.
+binds only the named Global base-schedule request. It does not read a Zone or
+accept module adjustment policy.
 
-The service locks the Charge Kind Registry row and derives model/unit/scope from
-it. It validates the typed payload, canonicalizes it and computes a checksum.
-The repository locks the schedule row, compares `expected_latest_version`,
-checks the effective window and inserts version, brackets/definition and one
-outbox row in the same transaction. Existing versions are never updated or
-deleted.
+The publish workflow reads its own flat publish-target projection (schedule ID,
+code, charge kind, model and currency); it never calls or consumes the detail
+workflow. The service validates the typed payload, canonicalizes it and
+computes a checksum. The repository locks the Global schedule row, compares
+`expected_latest_version`, checks the effective window and inserts version,
+brackets/definition and one outbox row in the same transaction. Published rate,
+bracket and checksum content is immutable. Publishing a successor may close the
+predecessor's effective window and mark its publication status superseded; it
+never rewrites the predecessor's commercial content or deletes the version.
+
+Catalog migrations may register a schedule without inventing a commercial
+rate. In that state only `expected_latest_version = 0` can append version 1;
+after version 1 exists, normal OCC requires the exact positive latest version.
 
 ```mermaid
 sequenceDiagram
@@ -129,12 +148,13 @@ sequenceDiagram
     CI->>SP: Trusted headers and proof marker
     SP->>AU: Require fresh pricing schedule publish permission
     AU->>H: Authorized workflow request
-    H->>S: Bind charge-kind path and typed JSON
-    S->>DB: Lock controlled charge-kind registry row
-    DB-->>S: Model, unit, scope and enabled state
+    H->>S: Bind Global schedule path and typed JSON
+    S->>R: Read flat publish-target authority projection
+    R->>DB: CTE select active schedule identity/model/currency
+    DB-->>S: Publish target; no detail entity
     S->>S: Validate typed ranges/definition and canonical checksum
     S->>R: Append immutable version command
-    R->>DB: BEGIN; lock schedule; OCC/effective checks
+    R->>DB: BEGIN; lock Global schedule; OCC/effective checks
     R->>DB: INSERT version, brackets/definition and pricing outbox
     alt all invariants hold
         DB-->>R: COMMIT
@@ -162,8 +182,10 @@ before marking published causes a duplicate hint, not a duplicate schedule.
 Cost Engine treats Redis as a latency hint. It loads the exact immutable version
 from Billing PostgreSQL, checks the checksum, validates the typed model and
 preloads its local cache. A running settlement keeps its pinned version; a new
-report resolves the schedule at its closed `window_end` using Zone exact then
-Global fallback.
+report resolves the Global base schedule at its closed `window_end`, while its
+module adapter independently resolves the module-owned adjustment for the same
+window and Zone. There is no Zone-first base-schedule fallback inside the
+kernel.
 
 ```mermaid
 sequenceDiagram
@@ -193,7 +215,7 @@ sequenceDiagram
 | Redis duplicate/loss | Engine reloads immutable version; no duplicate schedule or wallet debit |
 | Invalid checksum/model in Engine | Fail closed for that pricing work; never guess a rate |
 | New version during a running report | Existing run keeps pinned version/checksum |
-| Client sends Zone/owner/model override | Ignored or rejected; trusted registry/context wins |
+| Client sends Zone/owner/model/adjustment override | Rejected; Global registry wins and module adjustment uses another workflow |
 
 ## Code map and implementation boundary
 

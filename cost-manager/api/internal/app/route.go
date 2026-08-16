@@ -23,8 +23,12 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 	{
 		v1.GET("/pricing-schedules", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.PricingScheduleHandler.ListPricingSchedules)
 		v1.GET("/pricing-schedules/:code", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.PricingScheduleHandler.GetPricingScheduleDetail)
+		v1.GET("/mail/zone-price-adjustments", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.MailPricingHandler.ListZonePriceAdjustments)
 		v1.PATCH("/critical/pricing-schedules/:code/metadata", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.UpdatePricingScheduleMetadata)
 		v1.POST("/critical/pricing-schedules/:code/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.CreatePricingScheduleVersion)
+		v1.POST("/critical/storage/zone-price-adjustments/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.CreateStorageZonePriceAdjustment)
+		v1.POST("/critical/hypervisor/zone-price-adjustments/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.HypervisorPricingHandler.CreateZonePriceAdjustment)
+		v1.POST("/critical/mail/zone-price-adjustments/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.MailPricingHandler.CreateZonePriceAdjustment)
 		v1.GET("/referrals", middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", false), m.PersonalAccountHandler.ListReferralCampaigns)
 		v1.POST("/critical/referrals", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.CreateReferralCampaign)
 		v1.PATCH("/critical/referrals/:id/status", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.UpdateReferralCampaignStatus)
@@ -42,6 +46,8 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 	personal.POST("/wallet/top-ups", m.PersonalPaymentHandler.CreateTopUp)
 	personal.GET("/wallet/top-ups/:id", m.PersonalPaymentHandler.GetTopUp)
 	personal.GET("/wallet/estimate/storage", m.PricingScheduleHandler.EstimateStorage)
+	personal.GET("/wallet/estimate/hypervisor", m.HypervisorPricingHandler.Estimate)
+	personal.GET("/wallet/estimate/mail", m.MailPricingHandler.Estimate)
 
 	tenant := ownerAPI.Group("/tenant/billing")
 	tenant.GET(
@@ -58,5 +64,10 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 		"/wallet/top-ups/:id",
 		middleware.AuthorizeTenant(m.AuthorizationResolver, "billing:wallet:read", false),
 		m.TenantPaymentHandler.GetTopUp,
+	)
+	tenant.GET(
+		"/wallet/estimate/mail",
+		middleware.AuthorizeTenant(m.AuthorizationResolver, "billing:wallet:read", false),
+		m.MailPricingHandler.Estimate,
 	)
 }

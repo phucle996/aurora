@@ -20,16 +20,14 @@ CREATE TABLE billing.pricing_schedules (
     display_name      TEXT NOT NULL,
     charge_kind_code  TEXT NOT NULL REFERENCES billing.charge_kind_catalog(code) ON DELETE RESTRICT,
     pricing_model     billing.pricing_model NOT NULL,
-    scope_type        billing.pricing_scope NOT NULL,
-    zone_id           UUID,
     currency          CHAR(3) NOT NULL DEFAULT 'USD',
     metadata_version  INT NOT NULL DEFAULT 1,
     status            TEXT NOT NULL DEFAULT 'ACTIVE',
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_pricing_schedule_id_model UNIQUE (id, pricing_model),
-    CONSTRAINT uq_pricing_schedule_kind_scope UNIQUE (id, charge_kind_code, pricing_model),
-    CONSTRAINT ck_pricing_schedule_scope CHECK ((scope_type = 'GLOBAL' AND zone_id IS NULL) OR (scope_type = 'ZONE' AND zone_id IS NOT NULL)),
+    CONSTRAINT uq_pricing_schedule_kind_model UNIQUE (id, charge_kind_code, pricing_model),
+    CONSTRAINT uq_pricing_schedule_charge_kind UNIQUE (charge_kind_code),
     CONSTRAINT ck_pricing_schedule_currency CHECK (currency = UPPER(currency)),
     CONSTRAINT ck_pricing_schedule_status CHECK (status IN ('ACTIVE', 'DISABLED'))
 );
@@ -90,16 +88,94 @@ CREATE TABLE billing.pricing_outbox (
     version_id            UUID NOT NULL REFERENCES billing.pricing_schedule_versions(id) ON DELETE RESTRICT,
     module_code           TEXT NOT NULL,
     charge_kind_code      TEXT NOT NULL REFERENCES billing.charge_kind_catalog(code) ON DELETE RESTRICT,
-    scope_type            billing.pricing_scope NOT NULL,
-    zone_id               UUID,
     effective_from        TIMESTAMPTZ NOT NULL,
     checksum              CHAR(64) NOT NULL,
     occurred_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     published_at          TIMESTAMPTZ,
     retry_count           INT NOT NULL DEFAULT 0,
     last_error            TEXT,
-    CONSTRAINT ck_schedule_outbox_retry CHECK (retry_count >= 0),
-    CONSTRAINT ck_schedule_outbox_scope CHECK ((scope_type = 'GLOBAL' AND zone_id IS NULL) OR (scope_type = 'ZONE' AND zone_id IS NOT NULL))
+    CONSTRAINT ck_schedule_outbox_retry CHECK (retry_count >= 0)
+);
+
+-- Storage owns this module adjustment workflow. PAYG base schedules remain
+-- Global-only and no other module may infer pricing scope from these rows.
+CREATE TABLE billing.storage_zone_price_adjustment_versions (
+    id                       UUID PRIMARY KEY,
+    zone_id                  UUID NOT NULL,
+    version_number           INT NOT NULL,
+    status                   VARCHAR(16) NOT NULL,
+    effective_from           TIMESTAMPTZ NOT NULL,
+    effective_to             TIMESTAMPTZ,
+    multiplier_numerator     BIGINT NOT NULL,
+    multiplier_denominator   BIGINT NOT NULL,
+    checksum                 CHAR(64) NOT NULL,
+    change_reason            TEXT NOT NULL,
+    created_by               UUID NOT NULL,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_storage_zone_adjustment_version UNIQUE (zone_id, version_number),
+    CONSTRAINT ck_storage_zone_adjustment_version_positive CHECK (version_number > 0),
+    CONSTRAINT ck_storage_zone_adjustment_status CHECK (status IN ('SCHEDULED', 'ACTIVE', 'SUPERSEDED', 'CANCELLED')),
+    CONSTRAINT ck_storage_zone_adjustment_window CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT ck_storage_zone_adjustment_numerator CHECK (multiplier_numerator >= 0),
+    CONSTRAINT ck_storage_zone_adjustment_denominator CHECK (multiplier_denominator > 0),
+    CONSTRAINT ex_storage_zone_adjustment_window EXCLUDE USING gist (
+        zone_id WITH =,
+        tstzrange(effective_from, COALESCE(effective_to, 'infinity'::timestamptz), '[)') WITH &&
+    )
+);
+
+-- Hypervisor owns its Zone multiplier independently from Storage. The generic
+-- PAYG kernel receives only the immutable rational snapshot and lineage.
+CREATE TABLE billing.hypervisor_zone_price_adjustment_versions (
+    id                       UUID PRIMARY KEY,
+    zone_id                  UUID NOT NULL,
+    version_number           INT NOT NULL,
+    status                   VARCHAR(16) NOT NULL,
+    effective_from           TIMESTAMPTZ NOT NULL,
+    effective_to             TIMESTAMPTZ,
+    multiplier_numerator     BIGINT NOT NULL,
+    multiplier_denominator   BIGINT NOT NULL,
+    checksum                 CHAR(64) NOT NULL,
+    change_reason            TEXT NOT NULL,
+    created_by               UUID NOT NULL,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_hypervisor_zone_adjustment_version UNIQUE (zone_id, version_number),
+    CONSTRAINT ck_hypervisor_zone_adjustment_version_positive CHECK (version_number > 0),
+    CONSTRAINT ck_hypervisor_zone_adjustment_status CHECK (status IN ('SCHEDULED', 'ACTIVE', 'SUPERSEDED', 'CANCELLED')),
+    CONSTRAINT ck_hypervisor_zone_adjustment_window CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT ck_hypervisor_zone_adjustment_numerator CHECK (multiplier_numerator >= 0),
+    CONSTRAINT ck_hypervisor_zone_adjustment_denominator CHECK (multiplier_denominator > 0),
+    CONSTRAINT ex_hypervisor_zone_adjustment_window EXCLUDE USING gist (
+        zone_id WITH =,
+        tstzrange(effective_from, COALESCE(effective_to, 'infinity'::timestamptz), '[)') WITH &&
+    )
+);
+
+-- Mail owns its Zone multiplier. Accepted-recipient evidence remains a flat
+-- usage workflow and the generic PAYG kernel receives only this rational lineage.
+CREATE TABLE billing.mail_zone_price_adjustment_versions (
+    id                       UUID PRIMARY KEY,
+    zone_id                  UUID NOT NULL,
+    version_number           INT NOT NULL,
+    status                   VARCHAR(16) NOT NULL,
+    effective_from           TIMESTAMPTZ NOT NULL,
+    effective_to             TIMESTAMPTZ,
+    multiplier_numerator     BIGINT NOT NULL,
+    multiplier_denominator   BIGINT NOT NULL,
+    checksum                 CHAR(64) NOT NULL,
+    change_reason            TEXT NOT NULL,
+    created_by               UUID NOT NULL,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_mail_zone_adjustment_version UNIQUE (zone_id, version_number),
+    CONSTRAINT ck_mail_zone_adjustment_version_positive CHECK (version_number > 0),
+    CONSTRAINT ck_mail_zone_adjustment_status CHECK (status IN ('SCHEDULED', 'ACTIVE', 'SUPERSEDED', 'CANCELLED')),
+    CONSTRAINT ck_mail_zone_adjustment_window CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT ck_mail_zone_adjustment_numerator CHECK (multiplier_numerator >= 0),
+    CONSTRAINT ck_mail_zone_adjustment_denominator CHECK (multiplier_denominator > 0),
+    CONSTRAINT ex_mail_zone_adjustment_window EXCLUDE USING gist (
+        zone_id WITH =,
+        tstzrange(effective_from, COALESCE(effective_to, 'infinity'::timestamptz), '[)') WITH &&
+    )
 );
 
 CREATE TABLE billing.usage_settlement_runs (
@@ -107,12 +183,18 @@ CREATE TABLE billing.usage_settlement_runs (
     source_module                 TEXT NOT NULL,
     source_report_id              UUID NOT NULL,
     charge_kind_code              TEXT NOT NULL REFERENCES billing.charge_kind_catalog(code) ON DELETE RESTRICT,
-    zone_id                       UUID NOT NULL,
     window_start                  TIMESTAMPTZ NOT NULL,
     window_end                    TIMESTAMPTZ NOT NULL,
     pricing_schedule_id           UUID NOT NULL REFERENCES billing.pricing_schedules(id) ON DELETE RESTRICT,
     pricing_schedule_version_id   UUID NOT NULL REFERENCES billing.pricing_schedule_versions(id) ON DELETE RESTRICT,
     pricing_checksum              CHAR(64) NOT NULL,
+    -- Opaque immutable lineage supplied by the module adapter. The kernel
+    -- never joins a module-owned adjustment table.
+    rate_adjustment_id            UUID,
+    rate_adjustment_version       INT,
+    rate_adjustment_checksum      CHAR(64),
+    rate_adjustment_numerator     BIGINT,
+    rate_adjustment_denominator   BIGINT,
     fencing_token                 BIGINT NOT NULL,
     status                        VARCHAR(16) NOT NULL DEFAULT 'RUNNING',
     retry_count                   INT NOT NULL DEFAULT 0,
@@ -121,7 +203,17 @@ CREATE TABLE billing.usage_settlement_runs (
     completed_at                  TIMESTAMPTZ,
     updated_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_usage_settlement_report_kind UNIQUE (source_module, source_report_id, charge_kind_code),
+    CONSTRAINT fk_usage_settlement_module_kind FOREIGN KEY (source_module, charge_kind_code)
+        REFERENCES billing.charge_kind_catalog(module_code, code) ON DELETE RESTRICT,
     CONSTRAINT ck_usage_settlement_window CHECK (window_end > window_start),
     CONSTRAINT ck_usage_settlement_status CHECK (status IN ('RUNNING', 'RETRYING', 'COMPLETED', 'FAILED')),
-    CONSTRAINT ck_usage_settlement_retry CHECK (retry_count >= 0)
+    CONSTRAINT ck_usage_settlement_retry CHECK (retry_count >= 0),
+    CONSTRAINT ck_usage_settlement_fence CHECK (fencing_token > 0),
+    CONSTRAINT ck_usage_settlement_adjustment_shape CHECK (
+        (rate_adjustment_id IS NULL AND rate_adjustment_version IS NULL AND rate_adjustment_checksum IS NULL
+         AND rate_adjustment_numerator IS NULL AND rate_adjustment_denominator IS NULL)
+        OR
+        (rate_adjustment_id IS NOT NULL AND rate_adjustment_version > 0 AND rate_adjustment_checksum IS NOT NULL
+         AND rate_adjustment_numerator >= 0 AND rate_adjustment_denominator > 0)
+    )
 );

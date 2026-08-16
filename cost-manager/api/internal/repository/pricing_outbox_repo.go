@@ -50,6 +50,24 @@ func (r *pricingOutboxRepository) RefreshPricingScheduleVersionStatuses(ctx cont
 	if err != nil {
 		return fmt.Errorf("pricing outbox repo: refresh version statuses failed: %w", err)
 	}
+	_, err = r.db.Exec(ctx, `
+		WITH projected AS (
+			SELECT id, CASE
+				WHEN effective_to IS NOT NULL AND effective_to <= NOW() THEN 'SUPERSEDED'
+				WHEN effective_from <= NOW() AND (effective_to IS NULL OR NOW() < effective_to) THEN 'ACTIVE'
+				ELSE 'SCHEDULED'
+			END AS desired_status
+			FROM billing.storage_zone_price_adjustment_versions
+			WHERE status <> 'CANCELLED'
+		)
+		UPDATE billing.storage_zone_price_adjustment_versions version
+		SET status = projected.desired_status
+		FROM projected
+		WHERE version.id = projected.id AND version.status IS DISTINCT FROM projected.desired_status
+	`)
+	if err != nil {
+		return fmt.Errorf("pricing outbox repo: refresh Storage Zone adjustment statuses failed: %w", err)
+	}
 	return nil
 }
 
@@ -58,7 +76,7 @@ func (r *pricingOutboxRepository) GetUnpublishedOutboxBatch(ctx context.Context,
 
 	rows, err := r.db.Query(ctx, `
 		SELECT o.id, o.pricing_schedule_id, o.version_id, v.version_number, o.module_code,
-		       o.charge_kind_code, o.scope_type, o.zone_id, o.effective_from, o.checksum, o.occurred_at
+		       o.charge_kind_code, o.effective_from, o.checksum, o.occurred_at
 		FROM billing.pricing_outbox o
 		JOIN billing.pricing_schedule_versions v ON v.id=o.version_id
 		WHERE o.published_at IS NULL
@@ -81,8 +99,6 @@ func (r *pricingOutboxRepository) GetUnpublishedOutboxBatch(ctx context.Context,
 			&row.VersionNumber,
 			&row.ModuleCode,
 			&row.ChargeKindCode,
-			&row.ScopeType,
-			&row.ZoneID,
 			&row.EffectiveFrom,
 			&row.Checksum,
 			&row.OccurredAt,

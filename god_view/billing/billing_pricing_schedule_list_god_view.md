@@ -74,7 +74,7 @@ Redis cache is not used as authority for this list.
 
 | Output | Contract |
 |---|---|
-| `200` | schedule id/code/display name, charge kind, model, scope, currency and metadata version |
+| `200` | Global schedule id/code/display name, charge kind, model, currency and metadata version |
 | `401/403/429` | edge or authorization denial; no catalog data |
 | `500` | sanitized PostgreSQL failure; no mutation |
 

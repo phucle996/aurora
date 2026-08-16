@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::signal;
 
@@ -37,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let services_redis_conn = redis_conn.clone();
     let services_pricing_runtime = pricing_runtime.clone();
 
-    let services_handle = tokio::spawn(async move {
+    let mut services_handle = tokio::spawn(async move {
         service::register::run_services(
             services_config,
             services_pg_pool,
@@ -45,11 +46,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             services_pricing_runtime,
             shutdown_rx,
         )
-        .await;
+        .await
     });
 
-    // [COMMENT]: 6. Chờ tín hiệu kết thúc từ hệ điều hành (Ctrl+C hoặc SIGTERM)
-    shutdown_signal().await;
+    let ready_file = std::env::var("AURORA_ENGINE_READY_FILE")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    if let Some(path) = ready_file.as_ref() {
+        let temporary = path.with_extension(format!("ready-{}", std::process::id()));
+        std::fs::write(&temporary, b"ready\n")?;
+        std::fs::rename(&temporary, path)?;
+    }
+
+    // The embedded API treats an unexpected exit as a pod-level failure. The
+    // Engine must therefore also exit if any critical billing workflow stops;
+    // keeping an idle parent alive would make readiness lie about charging.
+    let service_failure = tokio::select! {
+        _ = shutdown_signal() => None,
+        result = &mut services_handle => {
+            Some(match result {
+                Ok(Ok(())) => "critical Cost Engine workflows exited unexpectedly".to_string(),
+                Ok(Err(error)) => error,
+                Err(error) => format!("Cost Engine workflow supervisor panicked: {error}"),
+            })
+        }
+    };
 
     // [COMMENT]: 7. Gửi tín hiệu tắt hệ thống tới các services
     println!("Đang gửi tín hiệu dừng tới các background services...");
@@ -57,13 +80,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // [COMMENT]: 8. Đợi các background tasks kết thúc (Graceful Shutdown)
     println!("Đợi các dịch vụ hoàn thành nốt công việc...");
-    tokio::select! {
-        _ = services_handle => {
-            println!("Các background services đã tắt an toàn.");
+    if service_failure.is_none() {
+        tokio::select! {
+            _ = &mut services_handle => {
+                println!("Các background services đã tắt an toàn.");
+            }
+            _ = tokio::time::sleep(Duration::from_secs(20)) => {
+                services_handle.abort();
+                eprintln!("Cảnh báo: Hết thời gian chờ, Cost Engine supervisor bị hủy.");
+            }
         }
-        _ = tokio::time::sleep(Duration::from_secs(15)) => {
-            eprintln!("Cảnh báo: Hết thời gian chờ (15s), một số service chưa tắt hẳn. Tiến hành ép buộc dừng.");
-        }
+    }
+
+    if let Some(path) = ready_file.as_ref() {
+        let _ = std::fs::remove_file(path);
+    }
+    if let Some(error) = service_failure {
+        return Err(error.into());
     }
 
     println!("Cost Manager Engine đã dừng hoàn toàn.");

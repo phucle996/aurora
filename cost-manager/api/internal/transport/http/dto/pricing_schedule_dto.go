@@ -10,10 +10,10 @@ type ListPricingSchedulesRequest struct {
 }
 
 type CreateScalarBracketRequest struct {
-	RangeStartQuantity       int64  `json:"range_start_quantity"`
-	RangeEndQuantity         *int64 `json:"range_end_quantity"`
-	PriceNumeratorMicroUnits int64  `json:"price_numerator_micro_units"`
-	PriceDenominatorQuantity int64  `json:"price_denominator_quantity"`
+	RangeStartQuantity       string  `json:"range_start_quantity" binding:"required"`
+	RangeEndQuantity         *string `json:"range_end_quantity"`
+	PriceNumeratorMicroUnits string  `json:"price_numerator_micro_units" binding:"required"`
+	PriceDenominatorQuantity string  `json:"price_denominator_quantity" binding:"required"`
 }
 
 type UpdatePricingScheduleMetadataRequest struct {
@@ -22,8 +22,16 @@ type UpdatePricingScheduleMetadataRequest struct {
 }
 
 type CreatePricingScheduleVersionRequest struct {
-	ExpectedLatestVersion int                          `json:"expected_latest_version" binding:"required,min=1"`
+	ExpectedLatestVersion *int                         `json:"expected_latest_version" binding:"required,min=0"`
 	EffectiveFrom         time.Time                    `json:"effective_from" binding:"required"`
 	ChangeReason          string                       `json:"change_reason" binding:"required"`
 	Brackets              []CreateScalarBracketRequest `json:"brackets" binding:"required,min=1,dive"`
+}
+
+type CreateStorageZonePriceAdjustmentRequest struct {
+	ExpectedLatestVersion int       `json:"expected_latest_version"`
+	EffectiveFrom         time.Time `json:"effective_from" binding:"required"`
+	ChangeReason          string    `json:"change_reason" binding:"required"`
+	MultiplierNumerator   string    `json:"multiplier_numerator" binding:"required"`
+	MultiplierDenominator string    `json:"multiplier_denominator" binding:"required"`
 }

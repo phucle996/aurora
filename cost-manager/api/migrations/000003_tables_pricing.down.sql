@@ -1,4 +1,7 @@
 DROP TABLE IF EXISTS billing.usage_settlement_runs CASCADE;
+DROP TABLE IF EXISTS billing.mail_zone_price_adjustment_versions CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_zone_price_adjustment_versions CASCADE;
+DROP TABLE IF EXISTS billing.storage_zone_price_adjustment_versions CASCADE;
 DROP TABLE IF EXISTS billing.pricing_outbox CASCADE;
 DROP TABLE IF EXISTS billing.pricing_schedule_scalar_brackets CASCADE;
 DROP TABLE IF EXISTS billing.pricing_schedule_versions CASCADE;

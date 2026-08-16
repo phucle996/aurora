@@ -33,13 +33,13 @@ import (
 
 // [COMMENT]: Module quản lý tất cả các repository, service và handler của ứng dụng.
 type Module struct {
-	PersonalAccountRepo             billingRepoInterface.PersonalAccountRepository
-	TenantAccountRepo               billingRepoInterface.TenantAccountRepository
-	PersonalAccountService          billingSvcInterface.PersonalAccountService
-	TenantAccountService            billingSvcInterface.TenantAccountService
-	PersonalAccountHandler          *handler.PersonalAccountHandler
-	PersonalWalletProvisionConsumer *redisHandler.PersonalWalletProvisionConsumer
-	TenantWalletProvisionConsumer   *redisHandler.TenantWalletProvisionConsumer
+	PersonalAccountRepo              billingRepoInterface.PersonalAccountRepository
+	TenantAccountRepo                billingRepoInterface.TenantAccountRepository
+	PersonalAccountService           billingSvcInterface.PersonalAccountService
+	TenantAccountService             billingSvcInterface.TenantAccountService
+	PersonalAccountHandler           *handler.PersonalAccountHandler
+	PersonalAccountActivatedConsumer *redisHandler.PersonalAccountActivatedConsumer
+	TenantCreatedConsumer            *redisHandler.TenantCreatedConsumer
 
 	PersonalPaymentRepo    billingRepoInterface.PersonalPaymentRepository
 	TenantPaymentRepo      billingRepoInterface.TenantPaymentRepository
@@ -48,9 +48,12 @@ type Module struct {
 	PersonalPaymentHandler *handler.PersonalPaymentHandler
 	TenantPaymentHandler   *handler.TenantPaymentHandler
 
-	PricingScheduleRepo    billingRepoInterface.PricingScheduleRepository
-	PricingScheduleService billingSvcInterface.PricingScheduleService
-	PricingScheduleHandler *handler.PricingScheduleHandler
+	StorageEstimateService    billingSvcInterface.StorageEstimateService
+	PricingScheduleHandler    *handler.PricingScheduleHandler
+	HypervisorEstimateService billingSvcInterface.HypervisorEstimateService
+	HypervisorPricingHandler  *handler.HypervisorPricingHandler
+	MailEstimateService       billingSvcInterface.MailEstimateService
+	MailPricingHandler        *handler.MailPricingHandler
 
 	ReconcilerRepo    billingRepoInterface.ReconcilerRepository
 	ReconcilerService service.ReconcilerService
@@ -147,19 +150,19 @@ func NewModule(
 	if personalAccountHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PersonalAccountHandler: instance is nil")
 	}
-	personalWalletProvisionConsumer, err := redisHandler.NewPersonalWalletProvisionConsumer(
+	personalAccountActivatedConsumer, err := redisHandler.NewPersonalAccountActivatedConsumer(
 		redisClient,
 		personalAccountService,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionConsumer: %w", err)
+		return nil, fmt.Errorf("failed to initialize PersonalAccountActivatedConsumer: %w", err)
 	}
-	tenantWalletProvisionConsumer, err := redisHandler.NewTenantWalletProvisionConsumer(
+	tenantCreatedConsumer, err := redisHandler.NewTenantCreatedConsumer(
 		redisClient,
 		tenantAccountService,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize TenantWalletProvisionConsumer: %w", err)
+		return nil, fmt.Errorf("failed to initialize TenantCreatedConsumer: %w", err)
 	}
 
 	personalPaymentRepository := repository.NewPersonalPaymentRepository(dbPool)
@@ -207,15 +210,33 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize PricingScheduleRepository: instance is nil")
 	}
 
-	pricingScheduleService := service.NewPricingScheduleService(pricingScheduleRepo, redisClient, pricingOutboxRelay.Notify)
-	if pricingScheduleService == nil {
-		return nil, fmt.Errorf("failed to initialize PricingScheduleService: instance is nil")
-	}
+	pricingListService := service.NewPricingScheduleListService(pricingScheduleRepo)
+	pricingDetailService := service.NewPricingScheduleDetailService(pricingScheduleRepo)
+	storageEstimateService := service.NewStorageEstimateService(pricingScheduleRepo, pricingScheduleRepo, redisClient)
+	pricingMetadataService := service.NewPricingScheduleMetadataService(pricingScheduleRepo)
+	pricingPublishService := service.NewPricingScheduleVersionPublishService(pricingScheduleRepo, pricingOutboxRelay.Notify)
+	storageAdjustmentService := service.NewStorageZoneAdjustmentPublishService(pricingScheduleRepo)
 
-	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingScheduleService)
+	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingListService, pricingDetailService, storageEstimateService, pricingMetadataService, pricingPublishService, storageAdjustmentService)
 	if pricingScheduleHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PricingScheduleHandler: instance is nil")
 	}
+	hypervisorPricingRepo := repository.NewHypervisorPricingRepository(dbPool)
+	if hypervisorPricingRepo == nil {
+		return nil, fmt.Errorf("failed to initialize HypervisorPricingRepository: instance is nil")
+	}
+	hypervisorEstimateService := service.NewHypervisorEstimateService(pricingScheduleRepo, hypervisorPricingRepo, redisClient)
+	hypervisorAdjustmentService := service.NewHypervisorZoneAdjustmentPublishService(hypervisorPricingRepo)
+	hypervisorPricingHandler := handler.NewHypervisorPricingHandler(hypervisorEstimateService, hypervisorAdjustmentService)
+	if hypervisorPricingHandler == nil {
+		return nil, fmt.Errorf("failed to initialize HypervisorPricingHandler: instance is nil")
+	}
+	mailPricingRepo := repository.NewMailPricingRepository(dbPool)
+	mailAdjustmentListRepo := repository.NewMailZoneAdjustmentListRepository(dbPool)
+	mailEstimateService := service.NewMailEstimateService(pricingScheduleRepo, mailPricingRepo, redisClient)
+	mailAdjustmentService := service.NewMailZoneAdjustmentPublishService(mailPricingRepo)
+	mailAdjustmentListService := service.NewMailZoneAdjustmentListService(mailAdjustmentListRepo)
+	mailPricingHandler := handler.NewMailPricingHandler(mailEstimateService, mailAdjustmentService, mailAdjustmentListService)
 
 	// 5. Reconciler Worker DI (gRPC)
 	reconcilerRepo := repository.NewReconcilerRepository(dbPool)
@@ -259,32 +280,35 @@ func NewModule(
 	}
 
 	return &Module{
-		PersonalAccountRepo:             personalAccountRepo,
-		TenantAccountRepo:               tenantAccountRepo,
-		PersonalAccountService:          personalAccountService,
-		TenantAccountService:            tenantAccountService,
-		PersonalAccountHandler:          personalAccountHandler,
-		PersonalWalletProvisionConsumer: personalWalletProvisionConsumer,
-		TenantWalletProvisionConsumer:   tenantWalletProvisionConsumer,
-		PersonalPaymentRepo:             personalPaymentRepository,
-		TenantPaymentRepo:               tenantPaymentRepository,
-		PersonalPaymentService:          personalPaymentService,
-		TenantPaymentService:            tenantPaymentService,
-		PersonalPaymentHandler:          personalPaymentHandler,
-		TenantPaymentHandler:            tenantPaymentHandler,
-		PricingScheduleRepo:             pricingScheduleRepo,
-		PricingScheduleService:          pricingScheduleService,
-		PricingScheduleHandler:          pricingScheduleHandler,
-		ReconcilerRepo:                  reconcilerRepo,
-		ReconcilerService:               reconcilerService,
-		ReconcilerWorker:                reconcilerWorker,
-		ResourceOwnershipRepo:           ownershipRepo,
-		ResourceOwnershipService:        ownershipService,
-		ResourceOwnershipConsumer:       ownershipConsumer,
-		PricingOutboxRepo:               pricingOutboxRepo,
-		PricingOutboxRelay:              pricingOutboxRelay,
-		WalletAdmissionOutboxRepo:       walletAdmissionOutboxRepo,
-		WalletAdmissionOutboxRelay:      walletAdmissionOutboxRelay,
-		AuthorizationResolver:           authorizationResolver,
+		PersonalAccountRepo:              personalAccountRepo,
+		TenantAccountRepo:                tenantAccountRepo,
+		PersonalAccountService:           personalAccountService,
+		TenantAccountService:             tenantAccountService,
+		PersonalAccountHandler:           personalAccountHandler,
+		PersonalAccountActivatedConsumer: personalAccountActivatedConsumer,
+		TenantCreatedConsumer:            tenantCreatedConsumer,
+		PersonalPaymentRepo:              personalPaymentRepository,
+		TenantPaymentRepo:                tenantPaymentRepository,
+		PersonalPaymentService:           personalPaymentService,
+		TenantPaymentService:             tenantPaymentService,
+		PersonalPaymentHandler:           personalPaymentHandler,
+		TenantPaymentHandler:             tenantPaymentHandler,
+		StorageEstimateService:           storageEstimateService,
+		PricingScheduleHandler:           pricingScheduleHandler,
+		HypervisorEstimateService:        hypervisorEstimateService,
+		HypervisorPricingHandler:         hypervisorPricingHandler,
+		MailEstimateService:              mailEstimateService,
+		MailPricingHandler:               mailPricingHandler,
+		ReconcilerRepo:                   reconcilerRepo,
+		ReconcilerService:                reconcilerService,
+		ReconcilerWorker:                 reconcilerWorker,
+		ResourceOwnershipRepo:            ownershipRepo,
+		ResourceOwnershipService:         ownershipService,
+		ResourceOwnershipConsumer:        ownershipConsumer,
+		PricingOutboxRepo:                pricingOutboxRepo,
+		PricingOutboxRelay:               pricingOutboxRelay,
+		WalletAdmissionOutboxRepo:        walletAdmissionOutboxRepo,
+		WalletAdmissionOutboxRelay:       walletAdmissionOutboxRelay,
+		AuthorizationResolver:            authorizationResolver,
 	}, nil
 }

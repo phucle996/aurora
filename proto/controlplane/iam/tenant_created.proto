@@ -1,0 +1,14 @@
+syntax = "proto3";
+package iamproto;
+option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+
+// Hierarchy-owned fact emitted only after the complete Tenant aggregate and
+// creator authority commit. Consumers derive their own projections.
+message TenantCreatedV1 {
+  bytes event_id = 1;
+  int32 schema_version = 2;
+  bytes tenant_id = 3;
+  bytes actor_user_id = 4;
+  reserved 5;
+  string occurred_at = 6;
+}

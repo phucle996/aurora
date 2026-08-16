@@ -3,17 +3,31 @@ package billingSvcInterface
 import (
 	"context"
 	"cost-manager/api/internal/domain/entity"
-	"time"
 
 	"github.com/google/uuid"
 )
 
-type PricingScheduleService interface {
-	GetPricingSchedules(ctx context.Context, page, limit int, chargeKind entity.ChargeKindCode, search string) ([]*entity.PricingSchedule, int64, error)
-	GetPricingScheduleDetail(ctx context.Context, code string) (*entity.PricingScheduleDetail, error)
-	EstimateStorage(ctx context.Context, capacityBytes int64, zoneID uuid.UUID) (*entity.StorageEstimate, error)
-	RunPricingCacheInvalidation(ctx context.Context)
-	UpdatePricingScheduleMetadata(ctx context.Context, update entity.PricingScheduleMetadataUpdate) (*entity.PricingSchedule, error)
-	CreatePricingScheduleVersion(ctx context.Context, create entity.PricingScheduleVersionCreate) (*entity.PricingScheduleVersion, error)
-	ResolveStorageSnapshot(ctx context.Context, zoneID uuid.UUID, at time.Time) (*entity.PricingSnapshot, error)
+type PricingScheduleListService interface {
+	GetPricingSchedules(context.Context, int, int, entity.ChargeKindCode, string) ([]*entity.PricingScheduleListItem, int64, error)
+}
+
+type PricingScheduleDetailService interface {
+	GetPricingScheduleDetail(context.Context, string) (*entity.PricingScheduleDetail, []entity.PricingScheduleDetailBracket, error)
+}
+
+type StorageEstimateService interface {
+	EstimateStorage(context.Context, int64, uuid.UUID) (*entity.StorageEstimate, error)
+	RunPricingCacheInvalidation(context.Context)
+}
+
+type PricingScheduleMetadataService interface {
+	UpdatePricingScheduleMetadata(context.Context, entity.PricingScheduleMetadataCommand) (*entity.PricingScheduleMetadataUpdated, error)
+}
+
+type PricingScheduleVersionPublishService interface {
+	CreatePricingScheduleVersion(context.Context, entity.PricingScheduleVersionPublishCommand, []entity.PricingScheduleVersionPublishBracket) (*entity.PricingScheduleVersionPublished, []entity.PricingScheduleVersionPublishBracket, error)
+}
+
+type StorageZoneAdjustmentPublishService interface {
+	CreateStorageZonePriceAdjustment(context.Context, entity.StorageZoneAdjustmentPublishCommand) (*entity.StorageZoneAdjustmentPublished, error)
 }

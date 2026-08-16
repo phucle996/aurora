@@ -2,13 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -31,7 +30,7 @@ type App struct {
 
 	httpServer            *http.Server
 	grpcServer            *googlegrpc.Server
-	rustCmd               *exec.Cmd
+	costEngine            *costEngineProcess
 	outboxCancel          context.CancelFunc
 	outboxDone            chan struct{}
 	walletAdmissionCancel context.CancelFunc
@@ -52,9 +51,11 @@ func (a *App) Init() error {
 	// The embedded Engine is a separate Vault consumer. Validate its
 	// app-scoped identity before opening any database/Redis connection so a
 	// missing child credential cannot leave a partially initialized API alive.
-	if strings.TrimSpace(os.Getenv("VAULT_ENGINE_TOKEN")) == "" {
-		return fmt.Errorf("VAULT_ENGINE_TOKEN is required for the embedded Cost Engine")
+	costEngine, err := newCostEngineProcess(os.Environ())
+	if err != nil {
+		return err
 	}
+	a.costEngine = costEngine
 	vaultClient, err := infra.NewVaultClient(context.Background(), a.Cfg.Vault)
 	if err != nil {
 		return fmt.Errorf("initialize Vault client: %w", err)
@@ -107,26 +108,26 @@ func (a *App) Start() error {
 
 	// [COMMENT]: Shared Redis consumer group phải sẵn sàng trước HTTP readiness;
 	// pending command sẽ được XAUTOCLAIM khi pod cũ chết hoặc rolling restart.
-	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
-		if err := a.module.PersonalWalletProvisionConsumer.Start(); err != nil {
+	if a.module != nil && a.module.PersonalAccountActivatedConsumer != nil {
+		if err := a.module.PersonalAccountActivatedConsumer.Start(); err != nil {
 			return fmt.Errorf("start personal wallet provision consumer: %w", err)
 		}
 	}
-	if a.module != nil && a.module.TenantWalletProvisionConsumer != nil {
-		if err := a.module.TenantWalletProvisionConsumer.Start(); err != nil {
-			if a.module.PersonalWalletProvisionConsumer != nil {
-				a.module.PersonalWalletProvisionConsumer.Stop()
+	if a.module != nil && a.module.TenantCreatedConsumer != nil {
+		if err := a.module.TenantCreatedConsumer.Start(); err != nil {
+			if a.module.PersonalAccountActivatedConsumer != nil {
+				a.module.PersonalAccountActivatedConsumer.Stop()
 			}
 			return fmt.Errorf("start tenant wallet provision consumer: %w", err)
 		}
 	}
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		if err := a.module.ResourceOwnershipConsumer.Start(); err != nil {
-			if a.module.TenantWalletProvisionConsumer != nil {
-				a.module.TenantWalletProvisionConsumer.Stop()
+			if a.module.TenantCreatedConsumer != nil {
+				a.module.TenantCreatedConsumer.Stop()
 			}
-			if a.module.PersonalWalletProvisionConsumer != nil {
-				a.module.PersonalWalletProvisionConsumer.Stop()
+			if a.module.PersonalAccountActivatedConsumer != nil {
+				a.module.PersonalAccountActivatedConsumer.Stop()
 			}
 			return fmt.Errorf("start resource ownership consumer: %w", err)
 		}
@@ -163,10 +164,40 @@ func (a *App) Start() error {
 	pricingCacheCtx, pricingCacheCancel := context.WithCancel(context.Background())
 	a.pricingCacheCancel = pricingCacheCancel
 	a.pricingCacheDone = make(chan struct{})
-	if a.module != nil && a.module.PricingScheduleService != nil {
+	if a.module != nil && a.module.StorageEstimateService != nil {
 		go func() {
 			defer close(a.pricingCacheDone)
-			a.module.PricingScheduleService.RunPricingCacheInvalidation(pricingCacheCtx)
+			workers := 1
+			done := make(chan struct{}, 5)
+			go func() {
+				a.module.StorageEstimateService.RunPricingCacheInvalidation(pricingCacheCtx)
+				done <- struct{}{}
+			}()
+			if a.module.HypervisorEstimateService != nil {
+				workers += 2
+				go func() {
+					a.module.HypervisorEstimateService.RunPricingCacheInvalidation(pricingCacheCtx)
+					done <- struct{}{}
+				}()
+				go func() {
+					a.module.HypervisorEstimateService.RunPricingReadinessProjection(pricingCacheCtx)
+					done <- struct{}{}
+				}()
+			}
+			if a.module.MailEstimateService != nil {
+				workers += 2
+				go func() {
+					a.module.MailEstimateService.RunPricingCacheInvalidation(pricingCacheCtx)
+					done <- struct{}{}
+				}()
+				go func() {
+					a.module.MailEstimateService.RunPricingReadinessProjection(pricingCacheCtx)
+					done <- struct{}{}
+				}()
+			}
+			for range workers {
+				<-done
+			}
 		}()
 	} else {
 		close(a.pricingCacheDone)
@@ -177,10 +208,16 @@ func (a *App) Start() error {
 		a.module.ReconcilerWorker.Start(context.Background())
 	}
 
-	// 2. Start REST HTTP Server
+	if err := a.costEngine.Start(); err != nil {
+		return err
+	}
+	logger.SysInfo(op, "Rust Engine child process successfully started")
+
+	// 2. Start REST HTTP Server only after the critical child process exists.
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
+	registerCostHealthRoutes(router, a.dbPool, a.redisClient, a.costEngine)
 
 	RegisterRoutes(router, a.module)
 
@@ -197,44 +234,22 @@ func (a *App) Start() error {
 		}
 	}()
 
-	// 3. Start Rust Engine child process
-	rustPath := "cost-manager-engine"
-	if _, err := exec.LookPath(rustPath); err != nil {
-		rustPath = "../engine/target/release/cost-manager-engine"
-		if _, err := os.Stat(rustPath); err != nil {
-			rustPath = "../engine/target/debug/cost-manager-engine"
-		}
-	}
-
-	a.rustCmd = exec.Command(rustPath)
-	a.rustCmd.Stdout = os.Stdout
-	a.rustCmd.Stderr = os.Stderr
-	// The embedded engine is a separate Vault consumer and must not inherit the
-	// API token. Init has already validated the child identity, so this process
-	// boundary only remaps the token and strips the parent's credential.
-	engineToken := strings.TrimSpace(os.Getenv("VAULT_ENGINE_TOKEN"))
-	filteredEnv := make([]string, 0, len(os.Environ()))
-	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "VAULT_ENGINE_TOKEN=") ||
-			strings.HasPrefix(item, "VAULT_TOKEN=") {
-			continue
-		}
-		filteredEnv = append(filteredEnv, item)
-	}
-	a.rustCmd.Env = append(filteredEnv, "VAULT_TOKEN="+engineToken)
-
-	if err := a.rustCmd.Start(); err != nil {
-		logger.SysWarn(op, "Could not start Rust Engine child process: "+err.Error())
-	} else {
-		logger.SysInfo(op, "Rust Engine child process successfully started")
-	}
 	return nil
 }
 
-func (a *App) Wait() {
+func (a *App) Wait() error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	defer signal.Stop(quit)
+	select {
+	case <-quit:
+		return nil
+	case err := <-a.costEngine.Done():
+		if err == nil {
+			return errors.New("embedded Cost Engine exited unexpectedly")
+		}
+		return fmt.Errorf("embedded Cost Engine exited unexpectedly: %w", err)
+	}
 }
 
 func (a *App) Stop() {
@@ -277,11 +292,11 @@ func (a *App) Stop() {
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		a.module.ResourceOwnershipConsumer.Stop()
 	}
-	if a.module != nil && a.module.TenantWalletProvisionConsumer != nil {
-		a.module.TenantWalletProvisionConsumer.Stop()
+	if a.module != nil && a.module.TenantCreatedConsumer != nil {
+		a.module.TenantCreatedConsumer.Stop()
 	}
-	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
-		a.module.PersonalWalletProvisionConsumer.Stop()
+	if a.module != nil && a.module.PersonalAccountActivatedConsumer != nil {
+		a.module.PersonalAccountActivatedConsumer.Stop()
 	}
 
 	if a.module != nil && a.module.ReconcilerWorker != nil {
@@ -291,13 +306,8 @@ func (a *App) Stop() {
 		a.module.AuthorizationResolver.Close()
 	}
 
-	// Terminate Rust Engine child process
-	if a.rustCmd != nil && a.rustCmd.Process != nil {
-		logger.SysInfo(op, "Terminating Rust Engine child process...")
-		_ = a.rustCmd.Process.Signal(syscall.SIGTERM)
-		_ = a.rustCmd.Wait()
-		logger.SysInfo(op, "Rust Engine terminated.")
-	}
+	// Terminate the isolated Cost Engine lifecycle workflow.
+	a.costEngine.Stop()
 
 	// Shutdown HTTP Server
 	if a.httpServer != nil {

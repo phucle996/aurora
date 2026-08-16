@@ -11,23 +11,29 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::engine::storage_usage_report_proto::StorageUsageReportV1;
-use crate::engine::{PricingRuntime, acquire_billing_lease, release_billing_lease};
+use crate::engine::{
+    BillingRunCommand, PricingRuntime, RateAdjustmentSnapshot, UsageChargeCommand,
+    UsageChargeOutcome, acquire_billing_lease, release_billing_lease, settle_usage_charge,
+};
+use crate::service::storage::storage_usage_report_proto::StorageUsageReportV1;
+use crate::service::storage::zone_adjustment_checksum;
 
 const STORAGE_USAGE_STREAM: &str = "aurora:storage:usage:reports";
 const STORAGE_USAGE_GROUP: &str = "cost-engine-storage-metering-v1";
-const STORAGE_USAGE_LOCK: &str = "storage:report:settlement:lock";
+const STORAGE_USAGE_DLQ: &str = "aurora:storage:usage:reports:dlq";
+const STORAGE_USAGE_LOCK_PREFIX: &str = "storage:report:settlement:lock";
 const STORAGE_USAGE_FENCING_COUNTER: &str = "storage:report:settlement:fencing_counter";
 const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_AGGREGATES: usize = 100_000;
-const MAX_REPORT_WINDOW_MS: i64 = 86_400_000;
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1_000;
+const HOURLY_WINDOW_MS: i64 = 3_600_000;
 const NETWORK_IN_CHARGE_KIND: &str = "storage.network_in.byte";
 const NETWORK_OUT_CHARGE_KIND: &str = "storage.network_out.byte";
 const STORAGE_CHARGE_KIND: &str = "storage.capacity.gb_hour";
 const NETWORK_OUT_LINE_NAMESPACE: Uuid = Uuid::from_u128(0x1f8db4f2_1cf4_4d42_8e52_34b7f3f3f9a1);
 const NETWORK_IN_LINE_NAMESPACE: Uuid = Uuid::from_u128(0x3d3ca119_2a2c_44b2_9fb5_31dba6d5e019);
 const STORAGE_LINE_NAMESPACE: Uuid = Uuid::from_u128(0x8c9f7a46_3f03_4ef9_9d9a_1c5d4e8c2a70);
+const REPORT_NAMESPACE: Uuid = Uuid::from_u128(0x5f0a_8e90_46e5_4fbb_8c01_7108_7f8c_1f22);
 
 #[derive(Debug)]
 struct StreamEntry {
@@ -41,6 +47,49 @@ struct StreamEntry {
 enum EntryDisposition {
     Ack,
     Retry(String),
+}
+
+async fn resolve_storage_zone_adjustment(
+    pg_pool: &PgPool,
+    zone_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<Option<RateAdjustmentSnapshot>, String> {
+    let row = sqlx::query_as::<Postgres, (Uuid, i32, DateTime<Utc>, i64, i64, String)>(
+        "SELECT id, version_number, effective_from, multiplier_numerator,
+                multiplier_denominator, checksum
+         FROM billing.storage_zone_price_adjustment_versions
+         WHERE zone_id=$1 AND status <> 'CANCELLED'
+           AND effective_from <= $2 AND (effective_to IS NULL OR $2 < effective_to)
+         ORDER BY version_number DESC
+         LIMIT 1",
+    )
+    .bind(zone_id)
+    .bind(at)
+    .fetch_optional(pg_pool)
+    .await
+    .map_err(|error| format!("resolve Storage Zone price adjustment: {error}"))?;
+    let Some((id, version_number, effective_from, numerator, denominator, checksum)) = row else {
+        return Ok(None);
+    };
+    let computed = zone_adjustment_checksum(
+        zone_id,
+        version_number,
+        effective_from,
+        numerator,
+        denominator,
+    );
+    if checksum != computed {
+        return Err(format!(
+            "Storage Zone price adjustment {id} checksum mismatch"
+        ));
+    }
+    Ok(Some(RateAdjustmentSnapshot {
+        id,
+        version_number,
+        checksum,
+        numerator,
+        denominator,
+    }))
 }
 
 /// Report settlement is intentionally a workflow-local consumer. It owns the
@@ -127,7 +176,16 @@ async fn settle_entry(
     let payload = match entry.payload.as_deref() {
         Some(payload) => payload,
         None => {
-            return EntryDisposition::Retry(format!("stream entry {} has no payload", entry.id));
+            return match quarantine_entry(
+                redis_conn,
+                &entry.id,
+                "STORAGE_USAGE_REPORT_PAYLOAD_MISSING",
+            )
+            .await
+            {
+                Ok(()) => EntryDisposition::Ack,
+                Err(error) => EntryDisposition::Retry(error),
+            };
         }
     };
     let report = match decode_report(payload) {
@@ -137,7 +195,7 @@ async fn settle_entry(
                 "Storage usage report entry {} rejected before settlement: {error}",
                 entry.id
             );
-            return if let Some(report) = decode_report_without_checksum(payload) {
+            return if let Some(report) = recover_dead_report(payload) {
                 match persist_dead_report(pg_pool, &report, payload, error).await {
                     Ok(()) => match acknowledge_entry(redis_conn, &entry.id).await {
                         Ok(()) => EntryDisposition::Ack,
@@ -146,10 +204,10 @@ async fn settle_entry(
                     Err(persist_error) => EntryDisposition::Retry(persist_error),
                 }
             } else {
-                // JO is the durable quarantine owner for malformed protobuf.
-                // Keep the Redis entry pending if the defensive parser cannot
-                // even recover a report identity.
-                EntryDisposition::Retry(error.to_string())
+                match quarantine_entry(redis_conn, &entry.id, error).await {
+                    Ok(()) => EntryDisposition::Ack,
+                    Err(quarantine_error) => EntryDisposition::Retry(quarantine_error),
+                }
             };
         }
     };
@@ -182,9 +240,10 @@ async fn settle_entry(
         };
     }
 
+    let lock_key = format!("{STORAGE_USAGE_LOCK_PREFIX}:{}", report.report_id);
     let Some(lease) = acquire_billing_lease(
         redis_conn,
-        STORAGE_USAGE_LOCK,
+        &lock_key,
         STORAGE_USAGE_FENCING_COUNTER,
         config.lock_ttl_secs,
     )
@@ -229,6 +288,9 @@ async fn settle_report(
     let report_id =
         Uuid::parse_str(&report.report_id).map_err(|_| "invalid report UUID".to_string())?;
     let zone_id = Uuid::parse_str(&report.zone_id).map_err(|_| "invalid Zone UUID".to_string())?;
+    // Zone is trusted Storage report context. Storage owns selection of its
+    // modifier; the PAYG runtime receives only an opaque immutable snapshot.
+    let adjustment = resolve_storage_zone_adjustment(pg_pool, zone_id, window_end).await?;
     let mut pricing_leases: Vec<(&str, crate::engine::BillingPricingLease)> = Vec::new();
     for (charge_kind, has_quantity) in [
         (
@@ -250,28 +312,29 @@ async fn settle_report(
             report
                 .aggregates
                 .iter()
-                .any(|aggregate| aggregate.storage_gb_hours_micros > 0),
+                .any(|aggregate| aggregate.storage_byte_hours > 0),
         ),
     ] {
         if !has_quantity {
             continue;
         }
         match pricing_runtime
-            .begin_billing_run(
-                charge_kind,
-                report_id,
-                zone_id,
-                window_start,
-                window_end,
+            .begin_billing_run(BillingRunCommand {
+                source_module: "storage",
+                charge_kind_code: charge_kind,
+                source_report_id: report_id,
+                requested_start: window_start,
+                requested_end: window_end,
+                adjustment: adjustment.clone(),
                 fencing_token,
-            )
+            })
             .await
         {
             Ok(lease) => pricing_leases.push((charge_kind, lease)),
             Err(error) => {
                 for (_, lease) in &pricing_leases {
                     let _ = pricing_runtime
-                        .mark_billing_run_retrying(lease.billing_run_id)
+                        .mark_billing_run_retrying(lease.billing_run_id, fencing_token)
                         .await;
                 }
                 return Err(error.to_string());
@@ -295,7 +358,7 @@ async fn settle_report(
         Ok(()) => {
             for (_, lease) in &pricing_leases {
                 pricing_runtime
-                    .complete_billing_run(lease.billing_run_id, window_end)
+                    .complete_billing_run(lease.billing_run_id, window_end, fencing_token)
                     .await
                     .map_err(|error| error.to_string())?;
             }
@@ -304,7 +367,7 @@ async fn settle_report(
         Err(error) => {
             for (_, lease) in &pricing_leases {
                 let _ = pricing_runtime
-                    .mark_billing_run_retrying(lease.billing_run_id)
+                    .mark_billing_run_retrying(lease.billing_run_id, fencing_token)
                     .await;
             }
             Err(error)
@@ -372,11 +435,22 @@ async fn settle_report_transaction(
         let _ = tx.rollback().await;
         return Err("storage report ID was reused with a different checksum".to_string());
     }
-    if existing.1 == "SETTLED" || existing.1 == "UNRATED" {
+    if existing.1 == "SETTLED" {
         tx.commit()
             .await
             .map_err(|error| format!("commit idempotent storage report: {error}"))?;
         return Ok(());
+    }
+    if existing.1 == "UNRATED" {
+        sqlx::query(
+            "UPDATE billing.storage_usage_report_inbox
+             SET status='PROCESSING', retry_count=retry_count+1, last_error=NULL
+             WHERE report_id=$1",
+        )
+        .bind(report_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| format!("mark unrated Storage report for replay: {error}"))?;
     }
 
     let mut has_unrated = false;
@@ -398,8 +472,8 @@ async fn settle_report_transaction(
             ),
             (
                 STORAGE_CHARGE_KIND,
-                aggregate.storage_gb_hours_micros,
-                "GB_HOUR_MICRO",
+                aggregate.storage_byte_hours,
+                "BYTE_HOUR",
                 "STORAGE",
                 &STORAGE_LINE_NAMESPACE,
             ),
@@ -425,6 +499,14 @@ async fn settle_report_transaction(
                 .find(|(kind, _)| *kind == charge_kind_code)
                 .map(|(_, lease)| *lease)
                 .ok_or_else(|| format!("missing pricing lease for {charge_kind_code}"))?;
+            if pricing_lease.snapshot.module_code != "storage"
+                || pricing_lease.snapshot.charge_kind_code != charge_kind_code
+                || pricing_lease.snapshot.raw_input_unit != usage_unit
+            {
+                return Err(format!(
+                    "Storage adapter received incompatible pricing snapshot for {charge_kind_code}"
+                ));
+            }
             let line_id = Uuid::new_v5(
                 line_namespace,
                 format!("{report_id}:{resource_id}:{charge_kind_code}").as_bytes(),
@@ -469,8 +551,7 @@ async fn settle_report_transaction(
             .fetch_one(&mut *tx)
             .await
             .map_err(|error| format!("read storage usage line: {error}"))?;
-            if line_status == "SETTLED" || line_status == "UNRATED" {
-                has_unrated |= line_status == "UNRATED";
+            if line_status == "SETTLED" {
                 continue;
             }
 
@@ -543,17 +624,10 @@ async fn settle_report_transaction(
             }
 
             let (owner_resource_id, owner_id, owner_type) = owners[0].clone();
-            let cost = if charge_kind_code == STORAGE_CHARGE_KIND {
-                pricing_lease
-                    .snapshot
-                    .charge_micro_units_for_storage_gb_hours_micros(raw_quantity)
-                    .map_err(|error| error.to_string())?
-            } else {
-                pricing_lease
-                    .snapshot
-                    .charge_micro_units_for_bytes(raw_quantity)
-                    .map_err(|error| error.to_string())?
-            };
+            let cost = pricing_lease
+                .snapshot
+                .charge_micro_units(raw_quantity, pricing_lease.adjustment.as_ref())
+                .map_err(|error| error.to_string())?;
             if cost <= 0 {
                 sqlx::query(
                     "UPDATE billing.storage_usage_line_inbox
@@ -570,237 +644,59 @@ async fn settle_report_transaction(
                 continue;
             }
 
-            let wallet = sqlx::query_as::<Postgres, (Uuid, i64, i64, i64, String, Option<String>)>(
-                "SELECT id, cash_balance, promotional_balance, overdraft_limit, status::text,
-                        restriction_reason
-             FROM billing.wallets
-             WHERE owner_id=$1 AND owner_type=$2::billing.owner_type AND currency='USD'
-             FOR UPDATE",
+            let reference_id =
+                format!("storage-report:{report_id}:{resource_id}:{charge_kind_code}");
+            let description =
+                format!("Storage {charge_kind_code} quantity {quantity} using report {report_id}");
+            match settle_usage_charge(
+                &mut tx,
+                UsageChargeCommand {
+                    ledger_entry_id: line_id,
+                    owner_id,
+                    owner_type: &owner_type,
+                    amount_micro_units: cost,
+                    module_code: "storage",
+                    charge_kind_code,
+                    reference_id: &reference_id,
+                    description: &description,
+                    usage_settlement_run_id: pricing_lease.billing_run_id,
+                    pricing_schedule_id: pricing_lease.snapshot.pricing_schedule_id,
+                    pricing_schedule_version_id: pricing_lease.snapshot.version_id,
+                    pricing_checksum: &pricing_lease.snapshot.checksum,
+                    resource_id: owner_resource_id,
+                    resource_type: "STORAGE_BUCKET",
+                    usage_quantity: quantity,
+                    usage_unit,
+                    occurred_at: window_end,
+                    source_evidence_hash: &source_evidence_hash,
+                },
             )
-            .bind(owner_id)
-            .bind(&owner_type)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|error| format!("lock storage owner wallet: {error}"))?;
-            let Some((
-                wallet_id,
-                cash_balance,
-                promotional_balance,
-                overdraft_limit,
-                status,
-                _restriction_reason,
-            )) = wallet
-            else {
-                has_unrated = true;
-                persist_unrated_line(
-                    &mut tx,
-                    UnratedLine {
-                        line_id,
-                        source_report_id: report_id,
-                        source_evidence_hash: &source_evidence_hash,
-                        pricing_schedule_version_id: pricing_lease.snapshot.version_id,
-                        resource_id,
-                        metering_time: window_end,
-                        quantity,
-                        charge_kind_code,
-                        usage_unit,
-                        resource_name: durable_resource_name.as_str(),
-                        owner_id: Some(owner_id),
-                        owner_type: Some(&owner_type),
-                        reason: "WALLET_MISSING",
-                    },
-                )
-                .await?;
-                continue;
-            };
-            if status == "CLOSED" {
-                has_unrated = true;
-                persist_unrated_line(
-                    &mut tx,
-                    UnratedLine {
-                        line_id,
-                        source_report_id: report_id,
-                        source_evidence_hash: &source_evidence_hash,
-                        pricing_schedule_version_id: pricing_lease.snapshot.version_id,
-                        resource_id,
-                        metering_time: window_end,
-                        quantity,
-                        charge_kind_code,
-                        usage_unit,
-                        resource_name: durable_resource_name.as_str(),
-                        owner_id: Some(owner_id),
-                        owner_type: Some(&owner_type),
-                        reason: "WALLET_CLOSED",
-                    },
-                )
-                .await?;
-                continue;
-            }
-            if status == "PENDING_ACTIVATION" {
-                has_unrated = true;
-                persist_unrated_line(
-                    &mut tx,
-                    UnratedLine {
-                        line_id,
-                        source_report_id: report_id,
-                        source_evidence_hash: &source_evidence_hash,
-                        pricing_schedule_version_id: pricing_lease.snapshot.version_id,
-                        resource_id,
-                        metering_time: window_end,
-                        quantity,
-                        charge_kind_code,
-                        usage_unit,
-                        resource_name: durable_resource_name.as_str(),
-                        owner_id: Some(owner_id),
-                        owner_type: Some(&owner_type),
-                        reason: "WALLET_PENDING_ACTIVATION",
-                    },
-                )
-                .await?;
-                continue;
-            }
-
-            let promo_debit = promotional_balance.min(cost);
-            let new_promotional_balance = promotional_balance - promo_debit;
-            let cash_debit = cost - promo_debit;
-            let new_cash_balance = cash_balance
-                .checked_sub(cash_debit)
-                .ok_or_else(|| "wallet cash balance exceeds BIGINT".to_string())?;
-            let mut new_status = status.clone();
-            if new_cash_balance.saturating_add(overdraft_limit) <= 0 && status == "ACTIVE" {
-                new_status = "SUSPENDED".to_string();
-            }
-
-            // A crash can leave a durable ledger row visible while a future
-            // retry is still looking at a pending inbox line. Reconcile that
-            // identity before touching the wallet; never debit around a
-            // duplicate-ledger conflict.
-            let ledger_already_exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM billing.wallet_ledger_entries WHERE id=$1)",
-            )
-            .bind(line_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|error| format!("check storage usage ledger identity: {error}"))?;
-            if ledger_already_exists {
-                sqlx::query(
-                    "UPDATE billing.storage_usage_line_inbox
-                 SET amount_micro_units=$1, owner_id=$2, owner_type=$3::billing.owner_type,
-                     status='SETTLED', settled_at=NOW()
-                 WHERE line_id=$4",
-                )
-                .bind(cost)
-                .bind(owner_id)
-                .bind(&owner_type)
-                .bind(line_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| format!("reconcile storage usage ledger identity: {error}"))?;
-                continue;
-            }
-
-            let mut wallet_version = 0_i64;
-            sqlx::query(
-                "UPDATE billing.wallets
-             SET cash_balance=$1, promotional_balance=$2,
-                 status=$3::billing.wallet_lifecycle_status,
-                 restriction_reason=CASE WHEN $3='SUSPENDED' AND $4='ACTIVE' THEN 'CREDIT_EXHAUSTED' WHEN $3='ACTIVE' THEN NULL ELSE restriction_reason END,
-                 status_changed_at=CASE WHEN status::text IS DISTINCT FROM $3 THEN NOW() ELSE status_changed_at END,
-                 version=version+1, updated_at=NOW()
-             WHERE id=$5
-             RETURNING version",
-            )
-            .bind(new_cash_balance)
-            .bind(new_promotional_balance)
-            .bind(&new_status)
-            .bind(&status)
-            .bind(wallet_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map(|row: sqlx::postgres::PgRow| {
-                use sqlx::Row;
-                wallet_version = row.get("version");
-            })
-            .map_err(|error| format!("update storage owner wallet: {error}"))?;
-
-            if new_status != status {
-                let admission_mode = if new_status == "ACTIVE" {
-                    "ALLOW"
-                } else {
-                    "SUSPEND_BILLABLE"
-                };
-                let admission_reason = if new_status == "SUSPENDED" {
-                    Some("CREDIT_EXHAUSTED")
-                } else {
-                    None
-                };
-                sqlx::query(
-                    "INSERT INTO billing.wallet_admission_outbox
-                     (event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
-                     VALUES ($1,$2,$3,$4::billing.owner_type,$5,$6,$7,NOW())",
-                )
-                .bind(Uuid::now_v7())
-                .bind(wallet_id)
-                .bind(owner_id)
-                .bind(&owner_type)
-                .bind(wallet_version)
-                .bind(admission_mode)
-                .bind(admission_reason)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| format!("write storage wallet admission outbox: {error}"))?;
-            }
-
-            let ledger_result = sqlx::query(
-                "INSERT INTO billing.wallet_ledger_entries
-             (id, wallet_id, owner_id, owner_type, amount_micro_units,
-              cash_balance_after, promotional_balance_after, currency, entry_type,
-              module_code, charge_kind_code, reference_id, description, usage_settlement_run_id,
-              pricing_schedule_id, pricing_schedule_version_id, pricing_checksum,
-              resource_id, resource_type, usage_quantity,
-              usage_unit, occurred_at, source_evidence_hash)
-             VALUES ($1,$2,$3,$4::billing.owner_type,$5,$6,$7,'USD','USAGE_CHARGE',
-                     'storage',$8,$9,$10,$11,$12,$13,$14,$15,'STORAGE_BUCKET',
-                     $16,$17,$18,$19)",
-            )
-            .bind(line_id)
-            .bind(wallet_id)
-            .bind(owner_id)
-            .bind(&owner_type)
-            .bind(-cost)
-            .bind(new_cash_balance)
-            .bind(new_promotional_balance)
-            .bind(charge_kind_code)
-            .bind(format!(
-                "storage-report:{report_id}:{resource_id}:{charge_kind_code}"
-            ))
-            .bind(format!(
-                "Storage {charge_kind_code} quantity {quantity} using report {report_id}"
-            ))
-            .bind(pricing_lease.billing_run_id)
-            .bind(pricing_lease.snapshot.pricing_schedule_id)
-            .bind(pricing_lease.snapshot.version_id)
-            .bind(&pricing_lease.snapshot.checksum)
-            .bind(owner_resource_id)
-            .bind(quantity)
-            .bind(usage_unit)
-            .bind(window_end)
-            .bind(&source_evidence_hash)
-            .execute(&mut *tx)
-            .await;
-            if let Err(error) = ledger_result {
-                if error
-                    .as_database_error()
-                    .and_then(|database| database.code())
-                    .as_deref()
-                    == Some("23505")
-                {
-                    return Err(
-                        "storage usage ledger identity appeared concurrently; retry transaction"
-                            .to_string(),
-                    );
+            .await?
+            {
+                UsageChargeOutcome::Settled => {}
+                UsageChargeOutcome::Unrated(reason) => {
+                    has_unrated = true;
+                    persist_unrated_line(
+                        &mut tx,
+                        UnratedLine {
+                            line_id,
+                            source_report_id: report_id,
+                            source_evidence_hash: &source_evidence_hash,
+                            pricing_schedule_version_id: pricing_lease.snapshot.version_id,
+                            resource_id,
+                            metering_time: window_end,
+                            quantity,
+                            charge_kind_code,
+                            usage_unit,
+                            resource_name: durable_resource_name.as_str(),
+                            owner_id: Some(owner_id),
+                            owner_type: Some(&owner_type),
+                            reason,
+                        },
+                    )
+                    .await?;
+                    continue;
                 }
-                return Err(format!("insert storage usage ledger: {error}"));
             }
 
             sqlx::query(
@@ -818,6 +714,18 @@ async fn settle_report_transaction(
             .map_err(|error| format!("mark storage usage line settled: {error}"))?;
         }
     }
+
+    sqlx::query(
+        "UPDATE billing.unrated_usage u
+         SET status='RESOLVED', last_error=NULL, updated_at=NOW()
+         FROM billing.storage_usage_line_inbox l
+         WHERE u.id=l.line_id AND l.report_id=$1 AND l.status='SETTLED'
+           AND u.status <> 'RESOLVED'",
+    )
+    .bind(report_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("resolve replayed unrated Storage evidence: {error}"))?;
 
     let (pending, unrated): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*) FILTER (WHERE status='PENDING'),
@@ -849,6 +757,9 @@ async fn settle_report_transaction(
     tx.commit()
         .await
         .map_err(|error| format!("commit storage report settlement: {error}"))?;
+    if report_status == "UNRATED" {
+        return Err("storage report retains unrated lines; replay required".to_string());
+    }
     Ok(())
 }
 
@@ -880,6 +791,7 @@ async fn persist_unrated_line(
          VALUES ($1,'storage',$2,'STORAGE_BUCKET',$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT (id) DO UPDATE
          SET retry_count=billing.unrated_usage.retry_count+1,
+             status='PENDING',
              reason=EXCLUDED.reason,
              source_report_id=EXCLUDED.source_report_id,
              source_evidence_hash=EXCLUDED.source_evidence_hash,
@@ -976,6 +888,29 @@ async fn acknowledge_entry(
     .await
     .map(|_| ())
     .map_err(|error| format!("acknowledge storage usage report entry {entry_id}: {error}"))
+}
+
+async fn quarantine_entry(
+    redis_conn: &mut redis::aio::MultiplexedConnection,
+    entry_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let reason = reason.chars().take(128).collect::<String>();
+    redis::Script::new(
+        "redis.call('XADD',KEYS[2],'MAXLEN','~',10000,'*','source_entry_id',ARGV[2],'reason',ARGV[3]); \
+         local acked=redis.call('XACK',KEYS[1],ARGV[1],ARGV[2]); \
+         if acked == 1 then redis.call('XDEL',KEYS[1],ARGV[2]) end; \
+         return 1",
+    )
+    .key(STORAGE_USAGE_STREAM)
+    .key(STORAGE_USAGE_DLQ)
+    .arg(STORAGE_USAGE_GROUP)
+    .arg(entry_id)
+    .arg(reason)
+    .invoke_async::<_, i32>(redis_conn)
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("quarantine storage usage report entry {entry_id}: {error}"))
 }
 
 async fn next_entries(
@@ -1093,9 +1028,27 @@ fn decode_report(payload: &[u8]) -> Result<StorageUsageReportV1, &'static str> {
     Ok(report)
 }
 
-fn decode_report_without_checksum(payload: &[u8]) -> Option<StorageUsageReportV1> {
+fn recover_dead_report(payload: &[u8]) -> Option<StorageUsageReportV1> {
+    if payload.is_empty() || payload.len() > MAX_REPORT_BYTES {
+        return None;
+    }
     let report = StorageUsageReportV1::decode(payload).ok()?;
-    validate_report_shape(&report).ok()?;
+    let report_id = Uuid::parse_str(&report.report_id).ok()?;
+    let zone_id = Uuid::parse_str(&report.zone_id).ok()?;
+    let window_start = DateTime::<Utc>::from_timestamp_millis(report.window_start_unix_ms)?;
+    let window_end = DateTime::<Utc>::from_timestamp_millis(report.window_end_unix_ms)?;
+    if report_id.is_nil()
+        || zone_id.is_nil()
+        || window_end <= window_start
+        || i64::try_from(report.sequence).is_err()
+        || report.report_sha256.len() != 32
+        || (report.correction
+            && Uuid::parse_str(&report.correction_of_report_id)
+                .ok()
+                .is_none_or(|parent| parent.is_nil() || parent == report_id))
+    {
+        return None;
+    }
     Some(report)
 }
 
@@ -1108,7 +1061,8 @@ fn validate_report_shape(report: &StorageUsageReportV1) -> Result<(), &'static s
         || report_id.is_nil()
         || zone_id.is_nil()
         || report.window_end_unix_ms <= report.window_start_unix_ms
-        || report.window_end_unix_ms - report.window_start_unix_ms > MAX_REPORT_WINDOW_MS
+        || report.window_end_unix_ms - report.window_start_unix_ms != HOURLY_WINDOW_MS
+        || report.window_start_unix_ms.rem_euclid(HOURLY_WINDOW_MS) != 0
         || report.aggregates.is_empty()
         || report.aggregates.len() > MAX_AGGREGATES
         || report.report_sha256.len() != 32
@@ -1121,7 +1075,23 @@ fn validate_report_shape(report: &StorageUsageReportV1) -> Result<(), &'static s
     {
         return Err("STORAGE_USAGE_REPORT_TIME_INVALID");
     }
+    let expected_sequence = u64::try_from(report.window_end_unix_ms.div_euclid(HOURLY_WINDOW_MS))
+        .map_err(|_| "STORAGE_USAGE_REPORT_SEQUENCE_INVALID")?;
+    if !report.correction {
+        let expected_report_id = Uuid::new_v5(
+            &REPORT_NAMESPACE,
+            format!(
+                "{}:{}:{}:{}",
+                zone_id, report.window_start_unix_ms, report.window_end_unix_ms, expected_sequence
+            )
+            .as_bytes(),
+        );
+        if report.sequence != expected_sequence || report_id != expected_report_id {
+            return Err("STORAGE_USAGE_REPORT_SEQUENCE_INVALID");
+        }
+    }
     let mut resources = HashSet::with_capacity(report.aggregates.len());
+    let mut last_identity: Option<String> = None;
     for aggregate in &report.aggregates {
         let identity = if !aggregate.resource_id.is_empty() {
             let resource_id = Uuid::parse_str(&aggregate.resource_id)
@@ -1141,24 +1111,45 @@ fn validate_report_shape(report: &StorageUsageReportV1) -> Result<(), &'static s
         } else {
             return Err("STORAGE_USAGE_REPORT_RESOURCE_INVALID");
         };
-        if !resources.insert(identity) {
+        if !resources.insert(identity.clone()) {
             return Err("STORAGE_USAGE_REPORT_RESOURCE_DUPLICATE");
         }
+        if last_identity
+            .as_ref()
+            .is_some_and(|previous| identity.as_str() <= previous.as_str())
+        {
+            return Err("STORAGE_USAGE_REPORT_RESOURCE_ORDER_INVALID");
+        }
+        last_identity = Some(identity);
         if i64::try_from(aggregate.download_bytes).is_err()
             || i64::try_from(aggregate.upload_bytes).is_err()
             || i64::try_from(aggregate.request_count).is_err()
             || i64::try_from(aggregate.storage_bytes).is_err()
-            || i64::try_from(aggregate.storage_gb_hours_micros).is_err()
+            || i64::try_from(aggregate.storage_byte_hours).is_err()
         {
             return Err("STORAGE_USAGE_REPORT_NUMERIC_INVALID");
         }
-        if aggregate.storage_gb_hours_micros > 0 && aggregate.resource_name.is_empty() {
-            return Err("STORAGE_USAGE_REPORT_RESOURCE_NAME_INVALID");
-        }
-        if aggregate.upload_bytes == 0
-            && aggregate.download_bytes == 0
-            && aggregate.storage_gb_hours_micros == 0
+        let capacity = aggregate.storage_byte_hours > 0;
+        let transfer = aggregate.upload_bytes > 0 || aggregate.download_bytes > 0;
+        if capacity
+            && (aggregate.resource_name.is_empty()
+                || !aggregate.resource_id.is_empty()
+                || transfer
+                || aggregate.request_count != 0
+                || aggregate.storage_bytes != aggregate.storage_byte_hours)
         {
+            return Err("STORAGE_USAGE_REPORT_CAPACITY_INVALID");
+        }
+        if transfer
+            && (aggregate.resource_id.is_empty()
+                || !aggregate.resource_name.is_empty()
+                || aggregate.request_count == 0
+                || aggregate.storage_bytes != 0
+                || aggregate.storage_byte_hours != 0)
+        {
+            return Err("STORAGE_USAGE_REPORT_TRANSFER_INVALID");
+        }
+        if !capacity && !transfer {
             return Err("STORAGE_USAGE_REPORT_QUANTITY_INVALID");
         }
     }

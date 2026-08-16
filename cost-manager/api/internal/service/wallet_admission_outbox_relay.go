@@ -6,15 +6,18 @@ import (
 	"time"
 
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
-	walletv1 "cost-manager/api/internal/genproto/billing/wallet/v1"
+	admissionv1 "cost-manager/api/internal/genproto/billing/admission/v1"
 	"cost-manager/api/pkg/logger"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
-const walletAdmissionStream = "billing.wallet.admission.changed.v1"
-const maxWalletAdmissionTargets = 10_000
+var walletAdmissionStreams = [...]string{
+	"billing.commercial.admission.storage.changed.v1",
+	"billing.commercial.admission.hypervisor.changed.v1",
+	"billing.commercial.admission.mail.changed.v1",
+}
 
 // WalletAdmissionOutboxRelay delivers committed financial admission transitions
 // to module-owned projection consumers. Redis is transport only; PostgreSQL
@@ -42,7 +45,7 @@ func (r *WalletAdmissionOutboxRelay) Run(ctx context.Context) {
 			batch, err := r.repo.ClaimUnpublishedWalletAdmissionBatch(ctx, 100, claimToken)
 			if err != nil {
 				if ctx.Err() == nil {
-					logger.SysError("billing.wallet.admission.relay", err.Error())
+					logger.SysError("billing.commercial.admission.relay", err.Error())
 				}
 				break
 			}
@@ -50,16 +53,6 @@ func (r *WalletAdmissionOutboxRelay) Run(ctx context.Context) {
 				break
 			}
 			for _, row := range batch {
-				targets, targetErr := r.repo.ListActiveStorageAdmissionTargets(ctx, row.OwnerID, row.OwnerType)
-				if targetErr != nil {
-					_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, targetErr.Error())
-					break
-				}
-				if len(targets) > maxWalletAdmissionTargets {
-					err := fmt.Errorf("wallet admission target fanout exceeds %d", maxWalletAdmissionTargets)
-					_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
-					break
-				}
 				restrictionReason := ""
 				if row.RestrictionReason != nil {
 					restrictionReason = *row.RestrictionReason
@@ -68,33 +61,34 @@ func (r *WalletAdmissionOutboxRelay) Run(ctx context.Context) {
 				if row.ValidUntil != nil {
 					validUntil = row.ValidUntil.UTC().Format(time.RFC3339Nano)
 				}
-				wireTargets := make([]*walletv1.StorageAdmissionTargetV1, 0, len(targets))
-				for _, target := range targets {
-					wireTargets = append(wireTargets, &walletv1.StorageAdmissionTargetV1{
-						ResourceId: target.ResourceID.String(), ResourceName: target.ResourceName, ZoneId: target.ZoneID.String(),
-					})
-				}
-				payload, err := proto.Marshal(&walletv1.WalletAdmissionChangedV1{
-					EventId: row.EventID.String(), WalletId: row.WalletID.String(), OwnerId: row.OwnerID.String(),
-					OwnerType: string(row.OwnerType), WalletVersion: row.WalletVersion, AdmissionMode: row.AdmissionMode,
+				payload, err := proto.Marshal(&admissionv1.CommercialAdmissionChangedV1{
+					EventId: row.EventID.String(), OwnerId: row.OwnerID.String(),
+					OwnerType: string(row.OwnerType), PolicyVersion: row.WalletVersion, Decision: row.AdmissionMode,
 					RestrictionReason: restrictionReason, EffectiveAt: row.EffectiveAt.UTC().Format(time.RFC3339Nano),
-					ValidUntil:     validUntil,
-					StorageTargets: wireTargets,
+					ValidUntil: validUntil,
 				})
 				if err != nil {
 					_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
 					break
 				}
-				if err := r.redis.XAdd(ctx, &redis.XAddArgs{Stream: walletAdmissionStream, Values: map[string]any{"event_id": row.EventID.String(), "payload": payload}}).Err(); err != nil {
-					_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
-					break
+				published := true
+				for _, stream := range walletAdmissionStreams {
+					if err := r.redis.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{"event_id": row.EventID.String(), "payload": payload}}).Err(); err != nil {
+						_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
+						published = false
+						break
+					}
+					if err := r.redis.Do(ctx, "WAITAOF", 1, 1, 500).Err(); err != nil {
+						_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
+						published = false
+						break
+					}
 				}
-				if err := r.redis.Do(ctx, "WAITAOF", 1, 1, 500).Err(); err != nil {
-					_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
+				if !published {
 					break
 				}
 				if err := r.repo.MarkWalletAdmissionPublished(ctx, row.EventID, row.ClaimToken); err != nil {
-					logger.SysError("billing.wallet.admission.mark", fmt.Sprintf("%s: %v", row.EventID, err))
+					logger.SysError("billing.commercial.admission.mark", fmt.Sprintf("%s: %v", row.EventID, err))
 					break
 				}
 			}

@@ -8,12 +8,28 @@ import (
 	"github.com/google/uuid"
 )
 
-// PricingScheduleRepository owns the controlled schedule catalog and immutable
-// version transaction. It never resolves owners or mutates wallets.
-type PricingScheduleRepository interface {
-	ListPricingSchedules(ctx context.Context, page, limit int, chargeKind entity.ChargeKindCode, search string) ([]*entity.PricingSchedule, int64, error)
-	GetPricingScheduleDetail(ctx context.Context, code string) (*entity.PricingScheduleDetail, error)
-	GetActivePricingSnapshot(ctx context.Context, chargeKind entity.ChargeKindCode, zoneID *uuid.UUID, at time.Time) (*entity.PricingSnapshot, error)
-	UpdatePricingScheduleMetadata(ctx context.Context, update entity.PricingScheduleMetadataUpdate) (*entity.PricingSchedule, error)
-	CreatePricingScheduleVersion(ctx context.Context, create entity.PricingScheduleVersionCreate) (*entity.PricingScheduleVersion, error)
+type PricingScheduleListRepository interface {
+	ListPricingSchedules(context.Context, int, int, entity.ChargeKindCode, string) ([]*entity.PricingScheduleListItem, int64, error)
+}
+
+type PricingScheduleDetailRepository interface {
+	GetPricingScheduleDetail(context.Context, string) (*entity.PricingScheduleDetail, []entity.PricingScheduleDetailBracket, error)
+}
+
+type PricingSnapshotRepository interface {
+	GetActivePricingSnapshot(context.Context, entity.ChargeKindCode, time.Time) (*entity.PricingSnapshot, error)
+}
+
+type PricingScheduleMetadataRepository interface {
+	UpdatePricingScheduleMetadata(context.Context, entity.PricingScheduleMetadataCommand) (*entity.PricingScheduleMetadataUpdated, error)
+}
+
+type PricingScheduleVersionPublishRepository interface {
+	GetPricingScheduleVersionPublishTarget(context.Context, string) (*entity.PricingScheduleVersionPublishTarget, error)
+	CreatePricingScheduleVersion(context.Context, entity.PricingScheduleVersionPublishCommand, []entity.PricingScheduleVersionPublishBracket) (*entity.PricingScheduleVersionPublished, error)
+}
+
+type StorageZoneAdjustmentRepository interface {
+	GetActiveStorageZonePriceAdjustment(context.Context, uuid.UUID, time.Time) (*entity.StorageZoneAdjustmentSnapshot, error)
+	CreateStorageZonePriceAdjustment(context.Context, entity.StorageZoneAdjustmentPublishCommand) (*entity.StorageZoneAdjustmentPublished, error)
 }

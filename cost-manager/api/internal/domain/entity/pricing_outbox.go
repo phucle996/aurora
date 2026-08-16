@@ -23,8 +23,6 @@ type PricingOutboxRow struct {
 	VersionNumber     int32
 	ModuleCode        string
 	ChargeKindCode    ChargeKindCode
-	ScopeType         PricingScope
-	ZoneID            *uuid.UUID
 	EffectiveFrom     time.Time
 	Checksum          string
 	OccurredAt        time.Time

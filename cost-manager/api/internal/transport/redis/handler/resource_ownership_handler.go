@@ -177,7 +177,7 @@ func (s *ResourceOwnershipConsumer) process(ctx context.Context, message goredis
 		eventTypeText != wire.GetEventType() || resourceID == uuid.Nil ||
 		ownerID == uuid.Nil || zoneID == uuid.Nil || sourceJobID == uuid.Nil ||
 		wire.GetSchemaVersion() != 1 || wire.GetSourceVersion() <= 0 ||
-		wire.GetResourceType() != "STORAGE_BUCKET" ||
+		(wire.GetResourceType() != "STORAGE_BUCKET" && wire.GetResourceType() != "HYPERVISOR_VM" && wire.GetResourceType() != "MAIL_CONSUMER") ||
 		strings.TrimSpace(wire.GetResourceName()) == "" ||
 		len(wire.GetResourceName()) > 255 || !validTraceparent(wire.GetTraceparent()) ||
 		!validEventType || !validOwnerType {

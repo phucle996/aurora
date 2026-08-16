@@ -20,7 +20,9 @@ func main() {
 		logger.SysFatal(op, "Application startup failed: "+err.Error())
 	}
 
-	application.Wait()
-
+	if err := application.Wait(); err != nil {
+		application.Stop()
+		logger.SysFatal(op, err.Error())
+	}
 	application.Stop()
 }

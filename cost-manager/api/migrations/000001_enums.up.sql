@@ -23,7 +23,4 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'billing'::regnamespace AND typname = 'pricing_model') THEN
         CREATE TYPE billing.pricing_model AS ENUM ('PROGRESSIVE_UNIT', 'FIXED_BUNDLE');
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'billing'::regnamespace AND typname = 'pricing_scope') THEN
-        CREATE TYPE billing.pricing_scope AS ENUM ('GLOBAL', 'ZONE');
-    END IF;
 END $$;

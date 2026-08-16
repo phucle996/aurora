@@ -1,0 +1,13 @@
+syntax = "proto3";
+package iamproto;
+option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+
+// IAM-owned fact emitted only after account activation commits. Consumers may
+// derive their own projections; IAM does not prescribe wallet or currency.
+message PersonalAccountActivatedV1 {
+  bytes event_id = 1;
+  int32 schema_version = 2;
+  bytes user_id = 3;
+  reserved 4, 5;
+  string occurred_at = 6;
+}

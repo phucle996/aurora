@@ -83,10 +83,6 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 
 			// DB outbox vẫn là SoT; Engine cold-start/reconciler tự load lại nếu PubSub bị lỡ.
 			for _, row := range batch {
-				zoneID := ""
-				if row.ZoneID != nil {
-					zoneID = row.ZoneID.String()
-				}
 				payload, marshalErr := proto.Marshal(&pricingv1.PricingScheduleVersionPublished{
 					EventId:                  row.ID.String(),
 					PricingScheduleId:        row.PricingScheduleID.String(),
@@ -96,8 +92,6 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 					EffectiveFromUnixMs:      row.EffectiveFrom.UnixMilli(),
 					Checksum:                 row.Checksum,
 					OccurredAtUnixMs:         row.OccurredAt.UnixMilli(),
-					ScopeType:                string(row.ScopeType),
-					ZoneId:                   zoneID,
 				})
 				if marshalErr != nil {
 					relayErr = fmt.Errorf("marshal outbox event %s failed: %w", row.ID, marshalErr)

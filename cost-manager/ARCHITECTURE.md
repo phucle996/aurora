@@ -82,7 +82,7 @@ Zone ClickHouse is local journal/aggregation state and does not choose a payer.
 JO validates size, window, identity, correction lineage and SHA-256 before a
 report reaches Redis. The Engine validates again, opens one pricing run for
 each nonzero `storage.network_in.byte`, `storage.network_out.byte` and
-`storage.capacity.gb_hour` line, resolves ownership in
+`storage.capacity.gb_hour` `BYTE_HOUR` line, resolves ownership in
 Billing PostgreSQL, and atomically mutates wallet plus immutable ledger.
 Replays are idempotent and ACK/XDEL occurs only after commit and an intact
 billing fence. Corrections are quarantined as `DEAD` until the signed

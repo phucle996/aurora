@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::engine::pricing_event_proto;
 use crate::engine::snapshot::{
-    BillingPricingLease, CatalogSnapshot, ChargeKind, PricingError, PricingScheduleSnapshot,
-    ScalarBracket,
+    BillingPricingLease, BillingRunCommand, CatalogSnapshot, PricingError, PricingScheduleSnapshot,
+    RateAdjustmentSnapshot, ScalarBracket,
 };
 
 pub(crate) const PRICING_EVENT_CHANNEL: &str = "billing.pricing.schedule.version.published";
@@ -33,8 +33,8 @@ struct PricingRow {
     code: String,
     charge_kind: String,
     module_code: String,
-    scope_type: String,
-    zone_id: Option<Uuid>,
+    pricing_model: String,
+    raw_input_unit: String,
     effective_from: DateTime<Utc>,
     effective_to: Option<DateTime<Utc>>,
     checksum: String,
@@ -71,12 +71,12 @@ impl PricingRuntime {
         expected: Option<(Uuid, String)>,
     ) -> Result<(), PricingError> {
         let catalog = Arc::new(load_catalog(&self.db).await?);
-        if let Some((version_id, checksum)) = expected {
-            if !catalog.contains_version(version_id, &checksum) {
-                return Err(PricingError(format!(
-                    "published pricing version {version_id} missing or checksum mismatch"
-                )));
-            }
+        if let Some((version_id, checksum)) = expected
+            && !catalog.contains_version(version_id, &checksum)
+        {
+            return Err(PricingError(format!(
+                "published pricing version {version_id} missing or checksum mismatch"
+            )));
         }
         for version in catalog.versions_by_kind.values().flatten() {
             self.version_cache
@@ -99,24 +99,41 @@ impl PricingRuntime {
 
     pub async fn begin_billing_run(
         &self,
-        charge_kind: &str,
-        source_report_id: Uuid,
-        zone_id: Uuid,
-        requested_start: DateTime<Utc>,
-        requested_end: DateTime<Utc>,
-        fencing_token: i64,
+        command: BillingRunCommand<'_>,
     ) -> Result<BillingPricingLease, PricingError> {
-        let kind = ChargeKind::parse(charge_kind)?;
-        if let Some((run_id, version_id, status)) = sqlx::query_as::<_, (Uuid, Uuid, String)>(
-			"SELECT id, pricing_schedule_version_id, status FROM billing.usage_settlement_runs WHERE source_module='storage' AND source_report_id=$1 AND charge_kind_code=$2 FOR UPDATE",
+        if command.source_module.trim().is_empty()
+            || command.charge_kind_code.trim().is_empty()
+            || command.source_report_id.is_nil()
+            || command.requested_end <= command.requested_start
+            || command.fencing_token <= 0
+            || command
+                .adjustment
+                .as_ref()
+                .is_some_and(|value| value.numerator < 0 || value.denominator <= 0)
+        {
+            return Err(PricingError("billing run command is invalid".into()));
+        }
+        if let Some((run_id, version_id, status, pinned_fencing_token, adjustment_id, adjustment_version, adjustment_checksum, adjustment_numerator, adjustment_denominator)) = sqlx::query_as::<_, (Uuid, Uuid, String, i64, Option<Uuid>, Option<i32>, Option<String>, Option<i64>, Option<i64>)>(
+			"SELECT id, pricing_schedule_version_id, status, fencing_token, rate_adjustment_id, rate_adjustment_version, rate_adjustment_checksum, rate_adjustment_numerator, rate_adjustment_denominator FROM billing.usage_settlement_runs WHERE source_module=$1 AND source_report_id=$2 AND charge_kind_code=$3 FOR UPDATE",
 		)
-		.bind(source_report_id).bind(kind.as_str()).fetch_optional(&self.db).await? {
+		.bind(command.source_module).bind(command.source_report_id).bind(command.charge_kind_code).fetch_optional(&self.db).await? {
 			let snapshot = self.version_cache.get(&version_id).await.or_else(|| self.active.load_full().find_version(version_id)).ok_or_else(|| PricingError(format!("pinned pricing version {version_id} is unavailable")))?;
+			let adjustment = match (adjustment_id, adjustment_version, adjustment_checksum, adjustment_numerator, adjustment_denominator) {
+				(Some(id), Some(version_number), Some(checksum), Some(numerator), Some(denominator)) => Some(RateAdjustmentSnapshot { id, version_number, checksum, numerator, denominator }),
+				(None, None, None, None, None) => None,
+				_ => return Err(PricingError(format!("billing run {run_id} has incomplete rate adjustment lineage"))),
+			};
 			if status != "COMPLETED" {
-				sqlx::query("UPDATE billing.usage_settlement_runs SET status='RETRYING', fencing_token=$1, updated_at=NOW() WHERE id=$2")
-					.bind(fencing_token).bind(run_id).execute(&self.db).await?;
+				if command.fencing_token < pinned_fencing_token {
+					return Err(PricingError(format!("billing run {run_id} rejected stale fencing token")));
+				}
+				let updated = sqlx::query("UPDATE billing.usage_settlement_runs SET status='RETRYING', fencing_token=$1, updated_at=NOW() WHERE id=$2 AND fencing_token <= $1")
+					.bind(command.fencing_token).bind(run_id).execute(&self.db).await?;
+				if updated.rows_affected() != 1 {
+					return Err(PricingError(format!("billing run {run_id} lost its fencing race")));
+				}
 			}
-			return Ok(BillingPricingLease { billing_run_id: run_id, snapshot });
+			return Ok(BillingPricingLease { billing_run_id: run_id, snapshot, adjustment });
 		}
         // A new monetary run must resolve against PostgreSQL at its historical
         // boundary. The in-memory catalog and Redis hint are performance
@@ -124,10 +141,11 @@ impl PricingRuntime {
         // expired schedule version.
         let durable_catalog = load_catalog(&self.db).await?;
         let snapshot = durable_catalog
-            .resolve(kind, zone_id, requested_end)
+            .resolve(command.charge_kind_code, command.requested_end)
             .ok_or_else(|| {
                 PricingError(format!(
-                    "no pricing schedule for {charge_kind} at billing boundary {requested_end}"
+                    "no pricing schedule for {} at billing boundary {}",
+                    command.charge_kind_code, command.requested_end
                 ))
             })?;
         let run_id = Uuid::now_v7();
@@ -135,11 +153,13 @@ impl PricingRuntime {
         self.version_cache
             .insert(snapshot.version_id, snapshot.clone())
             .await;
-        sqlx::query("INSERT INTO billing.usage_settlement_runs (id, source_module, source_report_id, charge_kind_code, zone_id, window_start, window_end, pricing_schedule_id, pricing_schedule_version_id, pricing_checksum, fencing_token, status) VALUES ($1,'storage',$2,$3,$4,$5,$6,$7,$8,$9,$10,'RUNNING')")
-			.bind(run_id).bind(source_report_id).bind(kind.as_str()).bind(zone_id).bind(requested_start).bind(requested_end).bind(snapshot.pricing_schedule_id).bind(snapshot.version_id).bind(&snapshot.checksum).bind(fencing_token).execute(&self.db).await?;
+        sqlx::query("INSERT INTO billing.usage_settlement_runs (id, source_module, source_report_id, charge_kind_code, window_start, window_end, pricing_schedule_id, pricing_schedule_version_id, pricing_checksum, rate_adjustment_id, rate_adjustment_version, rate_adjustment_checksum, rate_adjustment_numerator, rate_adjustment_denominator, fencing_token, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'RUNNING')")
+			.bind(run_id).bind(command.source_module).bind(command.source_report_id).bind(command.charge_kind_code).bind(command.requested_start).bind(command.requested_end).bind(snapshot.pricing_schedule_id).bind(snapshot.version_id).bind(&snapshot.checksum)
+			.bind(command.adjustment.as_ref().map(|value| value.id)).bind(command.adjustment.as_ref().map(|value| value.version_number)).bind(command.adjustment.as_ref().map(|value| value.checksum.as_str())).bind(command.adjustment.as_ref().map(|value| value.numerator)).bind(command.adjustment.as_ref().map(|value| value.denominator)).bind(command.fencing_token).execute(&self.db).await?;
         Ok(BillingPricingLease {
             billing_run_id: run_id,
             snapshot,
+            adjustment: command.adjustment,
         })
     }
 
@@ -147,8 +167,9 @@ impl PricingRuntime {
         &self,
         run_id: Uuid,
         checkpoint: DateTime<Utc>,
+        fencing_token: i64,
     ) -> Result<(), PricingError> {
-        let result = sqlx::query("UPDATE billing.usage_settlement_runs SET status='COMPLETED', checkpoint=$1, completed_at=NOW(), updated_at=NOW() WHERE id=$2 AND status IN ('RUNNING','RETRYING')").bind(checkpoint).bind(run_id).execute(&self.db).await?;
+        let result = sqlx::query("UPDATE billing.usage_settlement_runs SET status='COMPLETED', checkpoint=$1, completed_at=NOW(), updated_at=NOW() WHERE id=$2 AND fencing_token=$3 AND status IN ('RUNNING','RETRYING')").bind(checkpoint).bind(run_id).bind(fencing_token).execute(&self.db).await?;
         if result.rows_affected() != 1 {
             let status: Option<String> =
                 sqlx::query_scalar("SELECT status FROM billing.usage_settlement_runs WHERE id=$1")
@@ -165,8 +186,12 @@ impl PricingRuntime {
         Ok(())
     }
 
-    pub async fn mark_billing_run_retrying(&self, run_id: Uuid) -> Result<(), PricingError> {
-        let result = sqlx::query("UPDATE billing.usage_settlement_runs SET status='RETRYING', retry_count=retry_count+1, updated_at=NOW() WHERE id=$1 AND status IN ('RUNNING','RETRYING')").bind(run_id).execute(&self.db).await?;
+    pub async fn mark_billing_run_retrying(
+        &self,
+        run_id: Uuid,
+        fencing_token: i64,
+    ) -> Result<(), PricingError> {
+        let result = sqlx::query("UPDATE billing.usage_settlement_runs SET status='RETRYING', retry_count=retry_count+1, updated_at=NOW() WHERE id=$1 AND fencing_token=$2 AND status IN ('RUNNING','RETRYING')").bind(run_id).bind(fencing_token).execute(&self.db).await?;
         if result.rows_affected() != 1 {
             let status: Option<String> =
                 sqlx::query_scalar("SELECT status FROM billing.usage_settlement_runs WHERE id=$1")
@@ -185,7 +210,7 @@ impl PricingRuntime {
 
 pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, PricingError> {
     let rows = sqlx::query_as::<_, PricingRow>(
-		"SELECT s.id AS pricing_schedule_id, v.id AS version_id, v.version_number, s.code, s.charge_kind_code, c.module_code, s.scope_type::text, s.zone_id, v.effective_from, v.effective_to, v.checksum, s.currency, b.range_start_quantity, b.range_end_quantity, b.price_numerator_micro_units, b.price_denominator_quantity FROM billing.pricing_schedules s JOIN billing.charge_kind_catalog c ON c.code=s.charge_kind_code JOIN billing.pricing_schedule_versions v ON v.pricing_schedule_id=s.id AND v.status <> 'CANCELLED' JOIN billing.pricing_schedule_scalar_brackets b ON b.pricing_schedule_version_id=v.id WHERE s.status='ACTIVE' AND c.status='ENABLED' ORDER BY s.charge_kind_code, v.version_number, b.range_start_quantity",
+		"SELECT s.id AS pricing_schedule_id, v.id AS version_id, v.version_number, s.code, s.charge_kind_code AS charge_kind, c.module_code, s.pricing_model::text, c.raw_input_unit, v.effective_from, v.effective_to, v.checksum, s.currency, b.range_start_quantity, b.range_end_quantity, b.price_numerator_micro_units, b.price_denominator_quantity FROM billing.pricing_schedules s JOIN billing.charge_kind_catalog c ON c.code=s.charge_kind_code JOIN billing.pricing_schedule_versions v ON v.pricing_schedule_id=s.id AND v.status <> 'CANCELLED' JOIN billing.pricing_schedule_scalar_brackets b ON b.pricing_schedule_version_id=v.id WHERE s.status='ACTIVE' AND c.status='ENABLED' ORDER BY s.charge_kind_code, v.version_number, b.range_start_quantity",
 	).fetch_all(db).await?;
     let mut grouped: HashMap<Uuid, (PricingRow, Vec<ScalarBracket>)> = HashMap::new();
     for row in rows {
@@ -203,13 +228,6 @@ pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, Pricing
     let mut catalog = CatalogSnapshot::default();
     for (_, (row, brackets)) in grouped {
         validate_brackets(&brackets)?;
-        let kind = ChargeKind::parse(&row.charge_kind)?;
-        if row.module_code != "storage" {
-            return Err(PricingError(format!(
-                "unsupported pricing module {} for version {}",
-                row.module_code, row.version_id
-            )));
-        }
         if row.currency != "USD" {
             return Err(PricingError(format!(
                 "unsupported pricing currency {} for version {}",
@@ -218,9 +236,8 @@ pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, Pricing
         }
         let computed = checksum(
             &row.code,
-            kind,
-            &row.scope_type,
-            row.zone_id,
+            &row.charge_kind,
+            &row.pricing_model,
             &row.currency,
             row.version_number,
             row.effective_from,
@@ -235,9 +252,10 @@ pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, Pricing
         let snapshot = Arc::new(PricingScheduleSnapshot {
             pricing_schedule_id: row.pricing_schedule_id,
             version_id: row.version_id,
-            charge_kind: kind,
-            scope_type: row.scope_type,
-            zone_id: row.zone_id,
+            module_code: row.module_code,
+            charge_kind_code: row.charge_kind.clone(),
+            pricing_model: row.pricing_model,
+            raw_input_unit: row.raw_input_unit,
             version_number: row.version_number,
             effective_from: row.effective_from,
             effective_to: row.effective_to,
@@ -246,7 +264,7 @@ pub(crate) async fn load_catalog(db: &PgPool) -> Result<CatalogSnapshot, Pricing
         });
         catalog
             .versions_by_kind
-            .entry(kind)
+            .entry(row.charge_kind)
             .or_default()
             .push(snapshot);
     }
@@ -287,9 +305,8 @@ pub(crate) fn validate_brackets(brackets: &[ScalarBracket]) -> Result<(), Pricin
 
 pub(crate) fn checksum(
     code: &str,
-    kind: ChargeKind,
-    scope: &str,
-    zone_id: Option<Uuid>,
+    charge_kind: &str,
+    pricing_model: &str,
     currency: &str,
     version: i32,
     effective_from: DateTime<Utc>,
@@ -301,14 +318,12 @@ pub(crate) fn checksum(
         hasher.update(value.as_bytes());
     };
     write(code);
-    write(kind.as_str());
-    write("PROGRESSIVE_UNIT");
-    write(scope);
-    if let Some(zone_id) = zone_id.filter(|zone_id| *zone_id != Uuid::nil()) {
-        write(&zone_id.to_string());
-    }
+    write(charge_kind);
+    write(pricing_model);
     write(currency);
-    write(&effective_from.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+    // Billing PostgreSQL persists timestamptz at microsecond precision. The Go
+    // publisher uses the same fixed-width UTC representation before hashing.
+    write(&effective_from.to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
     write(&version.to_string());
     for bracket in brackets {
         write(&bracket.range_start_quantity.to_string());

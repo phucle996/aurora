@@ -33,8 +33,6 @@ type PricingScheduleVersionPublished struct {
 	EffectiveFromUnixMs      int64                  `protobuf:"varint,6,opt,name=effective_from_unix_ms,json=effectiveFromUnixMs,proto3" json:"effective_from_unix_ms,omitempty"`
 	Checksum                 string                 `protobuf:"bytes,7,opt,name=checksum,proto3" json:"checksum,omitempty"`
 	OccurredAtUnixMs         int64                  `protobuf:"varint,8,opt,name=occurred_at_unix_ms,json=occurredAtUnixMs,proto3" json:"occurred_at_unix_ms,omitempty"`
-	ScopeType                string                 `protobuf:"bytes,9,opt,name=scope_type,json=scopeType,proto3" json:"scope_type,omitempty"`
-	ZoneId                   string                 `protobuf:"bytes,10,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -125,25 +123,11 @@ func (x *PricingScheduleVersionPublished) GetOccurredAtUnixMs() int64 {
 	return 0
 }
 
-func (x *PricingScheduleVersionPublished) GetScopeType() string {
-	if x != nil {
-		return x.ScopeType
-	}
-	return ""
-}
-
-func (x *PricingScheduleVersionPublished) GetZoneId() string {
-	if x != nil {
-		return x.ZoneId
-	}
-	return ""
-}
-
 var File_billing_pricing_v1_pricing_schedule_proto protoreflect.FileDescriptor
 
 const file_billing_pricing_v1_pricing_schedule_proto_rawDesc = "" +
 	"\n" +
-	")billing/pricing/v1/pricing_schedule.proto\x12\x12billing.pricing.v1\"\xb4\x03\n" +
+	")billing/pricing/v1/pricing_schedule.proto\x12\x12billing.pricing.v1\"\x9d\x03\n" +
 	"\x1fPricingScheduleVersionPublished\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12.\n" +
 	"\x13pricing_schedule_id\x18\x02 \x01(\tR\x11pricingScheduleId\x12=\n" +
@@ -152,11 +136,10 @@ const file_billing_pricing_v1_pricing_schedule_proto_rawDesc = "" +
 	"\x10charge_kind_code\x18\x05 \x01(\tR\x0echargeKindCode\x123\n" +
 	"\x16effective_from_unix_ms\x18\x06 \x01(\x03R\x13effectiveFromUnixMs\x12\x1a\n" +
 	"\bchecksum\x18\a \x01(\tR\bchecksum\x12-\n" +
-	"\x13occurred_at_unix_ms\x18\b \x01(\x03R\x10occurredAtUnixMs\x12\x1d\n" +
-	"\n" +
-	"scope_type\x18\t \x01(\tR\tscopeType\x12\x17\n" +
-	"\azone_id\x18\n" +
-	" \x01(\tR\x06zoneIdBAZ?cost-manager/api/internal/genproto/billing/pricing/v1;pricingv1b\x06proto3"
+	"\x13occurred_at_unix_ms\x18\b \x01(\x03R\x10occurredAtUnixMsJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\n" +
+	"scope_typeR\azone_idBAZ?cost-manager/api/internal/genproto/billing/pricing/v1;pricingv1b\x06proto3"
 
 var (
 	file_billing_pricing_v1_pricing_schedule_proto_rawDescOnce sync.Once

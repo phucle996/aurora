@@ -6,7 +6,8 @@ use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::engine::PricingRuntime;
+use crate::engine::{PricingRuntime, RateAdjustmentSnapshot};
+use crate::service::storage::zone_adjustment_checksum;
 
 #[derive(Debug, FromRow)]
 struct PendingActivation {
@@ -27,8 +28,16 @@ struct PendingLine {
     usage_unit: String,
     metering_hour: DateTime<Utc>,
     usage_settlement_run_id: Option<Uuid>,
+    pinned_run_id: Option<Uuid>,
+    run_pricing_schedule_version_id: Option<Uuid>,
+    run_pricing_checksum: Option<String>,
     pricing_schedule_version_id: Option<Uuid>,
     pricing_checksum: Option<String>,
+    rate_adjustment_id: Option<Uuid>,
+    rate_adjustment_version: Option<i32>,
+    rate_adjustment_checksum: Option<String>,
+    rate_adjustment_numerator: Option<i64>,
+    rate_adjustment_denominator: Option<i64>,
     source_evidence_hash: Option<String>,
 }
 
@@ -98,8 +107,8 @@ async fn reconcile_request(
     .await
     .map_err(|error| format!("mark pending activation processing: {error}"))?;
 
-    let wallet = sqlx::query_as::<Postgres, (String, i64, i64, i64, i64)>(
-        "SELECT status::text, cash_balance, promotional_balance, overdraft_limit, version
+    let wallet = sqlx::query_as::<Postgres, (String, Option<String>, i64, i64, i64, i64)>(
+        "SELECT status::text, restriction_reason, cash_balance, promotional_balance, overdraft_limit, version
          FROM billing.wallets WHERE id=$1 AND owner_id=$2 AND owner_type=$3::billing.owner_type FOR UPDATE",
     )
     .bind(request.wallet_id)
@@ -108,12 +117,21 @@ async fn reconcile_request(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| format!("lock pending activation wallet: {error}"))?;
-    let Some((wallet_status, mut cash_balance, mut promotional_balance, overdraft_limit, _)) =
-        wallet
+    let Some((
+        wallet_status,
+        restriction_reason,
+        mut cash_balance,
+        mut promotional_balance,
+        overdraft_limit,
+        _,
+    )) = wallet
     else {
         return mark_request(tx, request.wallet_id, "BLOCKED", Some("WALLET_MISSING")).await;
     };
-    if wallet_status != "PENDING_ACTIVATION" {
+    if wallet_status != "PENDING_ACTIVATION"
+        && !(wallet_status == "SUSPENDED"
+            && restriction_reason.as_deref() == Some("CREDIT_EXHAUSTED"))
+    {
         return mark_request(
             tx,
             request.wallet_id,
@@ -126,11 +144,17 @@ async fn reconcile_request(
     let lines = sqlx::query_as::<Postgres, PendingLine>(
         "SELECT u.id AS line_id, l.report_id, l.zone_id, l.resource_id,
                 l.resource_name, l.charge_kind_code, l.usage_quantity, l.usage_unit,
-                u.metering_hour, l.usage_settlement_run_id,
+                u.metering_hour, l.usage_settlement_run_id, r.id AS pinned_run_id,
+                r.pricing_schedule_version_id AS run_pricing_schedule_version_id,
+                r.pricing_checksum AS run_pricing_checksum,
                 l.pricing_schedule_version_id, l.pricing_checksum,
+                r.rate_adjustment_id, r.rate_adjustment_version,
+                r.rate_adjustment_checksum, r.rate_adjustment_numerator,
+                r.rate_adjustment_denominator,
                 u.source_evidence_hash
          FROM billing.unrated_usage u
          JOIN billing.storage_usage_line_inbox l ON l.line_id=u.id
+         LEFT JOIN billing.usage_settlement_runs r ON r.id=l.usage_settlement_run_id
          WHERE u.reason='WALLET_PENDING_ACTIVATION'
            AND u.status IN ('PENDING','PROCESSING')
            AND l.owner_id=$1 AND l.owner_type=$2::billing.owner_type
@@ -145,6 +169,7 @@ async fn reconcile_request(
     .map_err(|error| format!("load pending activation usage: {error}"))?;
 
     let mut blocked_reason: Option<&'static str> = None;
+    let mut current_wallet_status = wallet_status;
     for line in lines {
         let owner = sqlx::query_as::<Postgres, (Uuid, Uuid, String)>(
             "SELECT resource_id, owner_id, owner_type::text
@@ -185,18 +210,96 @@ async fn reconcile_request(
             blocked_reason = Some("PRICING_CHECKSUM_MISMATCH");
             continue;
         }
-        let cost = match line.charge_kind_code.as_str() {
-            "storage.capacity.gb_hour" => snapshot
-                .charge_micro_units_for_storage_gb_hours_micros(line.usage_quantity as u64)
-                .map_err(|error| error.to_string())?,
-            "storage.network_in.byte" | "storage.network_out.byte" => snapshot
-                .charge_micro_units_for_bytes(line.usage_quantity as u64)
-                .map_err(|error| error.to_string())?,
+        let Some(usage_run_id) = line.usage_settlement_run_id else {
+            blocked_reason = Some("PRICING_RUN_MISSING");
+            continue;
+        };
+        if line.pinned_run_id != Some(usage_run_id)
+            || line.run_pricing_schedule_version_id != Some(version_id)
+            || line.run_pricing_checksum.as_deref() != Some(snapshot.checksum.as_str())
+            || snapshot.module_code != "storage"
+            || snapshot.charge_kind_code != line.charge_kind_code
+            || snapshot.raw_input_unit != line.usage_unit
+            || line
+                .source_evidence_hash
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            blocked_reason = Some("PINNED_PRICING_EVIDENCE_INVALID");
+            continue;
+        }
+        let adjustment = match (
+            line.rate_adjustment_id,
+            line.rate_adjustment_version,
+            line.rate_adjustment_checksum,
+            line.rate_adjustment_numerator,
+            line.rate_adjustment_denominator,
+        ) {
+            (
+                Some(id),
+                Some(version_number),
+                Some(checksum),
+                Some(numerator),
+                Some(denominator),
+            ) => {
+                let durable =
+                    sqlx::query_as::<Postgres, (Uuid, i32, DateTime<Utc>, i64, i64, String)>(
+                        "SELECT zone_id, version_number, effective_from, multiplier_numerator,
+                            multiplier_denominator, checksum
+                     FROM billing.storage_zone_price_adjustment_versions WHERE id=$1",
+                    )
+                    .bind(id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|error| format!("verify pending activation adjustment: {error}"))?;
+                let Some((
+                    durable_zone,
+                    durable_version,
+                    effective_from,
+                    durable_numerator,
+                    durable_denominator,
+                    durable_checksum,
+                )) = durable
+                else {
+                    blocked_reason = Some("RATE_ADJUSTMENT_UNAVAILABLE");
+                    continue;
+                };
+                if durable_zone != line.zone_id
+                    || durable_version != version_number
+                    || durable_numerator != numerator
+                    || durable_denominator != denominator
+                    || durable_checksum != checksum
+                    || zone_adjustment_checksum(
+                        durable_zone,
+                        durable_version,
+                        effective_from,
+                        durable_numerator,
+                        durable_denominator,
+                    ) != checksum
+                {
+                    blocked_reason = Some("RATE_ADJUSTMENT_CHECKSUM_MISMATCH");
+                    continue;
+                }
+                Some(RateAdjustmentSnapshot {
+                    id,
+                    version_number,
+                    checksum,
+                    numerator,
+                    denominator,
+                })
+            }
+            (None, None, None, None, None) => None,
             _ => {
-                blocked_reason = Some("CHARGE_KIND_NOT_STORAGE");
+                blocked_reason = Some("RATE_ADJUSTMENT_LINEAGE_INVALID");
                 continue;
             }
         };
+        let quantity = u64::try_from(line.usage_quantity).map_err(|_| {
+            "pending activation usage quantity is outside unsigned range".to_string()
+        })?;
+        let cost = snapshot
+            .charge_micro_units(quantity, adjustment.as_ref())
+            .map_err(|error| error.to_string())?;
 
         let already_settled: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM billing.wallet_ledger_entries WHERE id=$1)",
@@ -213,10 +316,15 @@ async fn reconcile_request(
                 .checked_sub(cash_debit)
                 .ok_or_else(|| "pending activation cash balance overflow".to_string())?;
             promotional_balance = new_promotional_balance;
-            let status = if cash_balance.saturating_add(overdraft_limit) <= 0 {
+            let status = if current_wallet_status == "PENDING_ACTIVATION"
+                && cash_balance
+                    .saturating_add(promotional_balance)
+                    .saturating_add(overdraft_limit)
+                    <= 0
+            {
                 "SUSPENDED"
             } else {
-                "PENDING_ACTIVATION"
+                current_wallet_status.as_str()
             };
             let reason = if status == "SUSPENDED" {
                 "CREDIT_EXHAUSTED"
@@ -238,7 +346,7 @@ async fn reconcile_request(
             .fetch_one(&mut **tx)
             .await
             .map_err(|error| format!("debit pending activation wallet: {error}"))?;
-            if status == "SUSPENDED" {
+            if status != current_wallet_status {
                 sqlx::query(
                     "INSERT INTO billing.wallet_admission_outbox
                      (event_id, wallet_id, owner_id, owner_type, wallet_version, admission_mode, restriction_reason, effective_at)
@@ -253,10 +361,8 @@ async fn reconcile_request(
                 .execute(&mut **tx)
                 .await
                 .map_err(|error| format!("write pending activation suspension: {error}"))?;
+                current_wallet_status = status.to_string();
             }
-            let usage_run_id = line
-                .usage_settlement_run_id
-                .ok_or_else(|| "pending activation pricing run missing".to_string())?;
             sqlx::query(
                 "INSERT INTO billing.wallet_ledger_entries
                  (id, wallet_id, owner_id, owner_type, amount_micro_units,
@@ -266,7 +372,7 @@ async fn reconcile_request(
                   resource_id, resource_type, usage_quantity, usage_unit, occurred_at,
                   source_evidence_hash)
                  VALUES ($1,$2,$3,$4::billing.owner_type,$5,$6,$7,'USD','USAGE_CHARGE',
-                         'storage',$8,$9,$10,$11,$12,$13,$14,'STORAGE_BUCKET',$15,$16,$17,$18)",
+                         'storage',$8,$9,$10,$11,$12,$13,$14,$15,'STORAGE_BUCKET',$16,$17,$18,$19)",
             )
             .bind(line.line_id)
             .bind(request.wallet_id)
@@ -343,12 +449,21 @@ async fn reconcile_request(
     .fetch_one(&mut **tx)
     .await
     .map_err(|error| format!("count pending activation evidence: {error}"))?;
-    if remaining > 0 || blocked_reason.is_some() {
+    if blocked_reason.is_some() {
         return mark_request(
             tx,
             request.wallet_id,
             "BLOCKED",
             blocked_reason.or(Some("PENDING_USAGE_REMAINS")),
+        )
+        .await;
+    }
+    if remaining > 0 {
+        return mark_request(
+            tx,
+            request.wallet_id,
+            "PENDING",
+            Some("PENDING_USAGE_REMAINS"),
         )
         .await;
     }
@@ -409,3 +524,7 @@ async fn mark_request(
     .map_err(|error| format!("update pending activation request: {error}"))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/storage_pending_activation.rs"]
+mod tests;

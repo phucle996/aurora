@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -16,10 +18,11 @@ import (
 )
 
 const (
-	pricingCacheInvalidationChannel = "billing.pricing.schedule_cache.invalidate"
-	pricingCacheKeyPrefix           = "cost-manager:pricing:schedule:v2"
-	pricingCacheL1TTL               = time.Minute
-	pricingCacheL2TTL               = 5 * time.Minute
+	pricingCacheInvalidationChannel   = "billing.pricing.schedule_cache.invalidate"
+	pricingCacheKeyPrefix             = "cost-manager:pricing:schedule:v3"
+	pricingCacheL1TTL                 = time.Minute
+	pricingCacheL2TTL                 = 5 * time.Minute
+	pricingSnapshotChecksumTimeLayout = "2006-01-02T15:04:05.000000Z07:00"
 )
 
 type pricingCacheItem struct {
@@ -28,7 +31,7 @@ type pricingCacheItem struct {
 }
 
 type pricingCache struct {
-	repo        billingRepoInterface.PricingScheduleRepository
+	repo        billingRepoInterface.PricingSnapshotRepository
 	redisClient *redis.Client
 	sfGroup     singleflight.Group
 
@@ -38,25 +41,23 @@ type pricingCache struct {
 }
 
 type pricingCachePayload struct {
-	PricingScheduleID string                      `json:"pricing_schedule_id"`
-	VersionID         string                      `json:"version_id"`
-	Code              string                      `json:"code"`
-	ChargeKindCode    string                      `json:"charge_kind_code"`
-	ModuleCode        string                      `json:"module_code"`
-	PricingModel      entity.PricingModel         `json:"pricing_model"`
-	ScopeType         entity.PricingScope         `json:"scope_type"`
-	ZoneID            string                      `json:"zone_id,omitempty"`
-	RawInputUnit      string                      `json:"raw_input_unit"`
-	VersionNumber     int                         `json:"version_number"`
-	EffectiveFrom     time.Time                   `json:"effective_from"`
-	EffectiveTo       *time.Time                  `json:"effective_to,omitempty"`
-	Checksum          string                      `json:"checksum"`
-	Currency          string                      `json:"currency"`
-	Brackets          []entity.ScalarBracketInput `json:"brackets"`
+	PricingScheduleID string                          `json:"pricing_schedule_id"`
+	VersionID         string                          `json:"version_id"`
+	Code              string                          `json:"code"`
+	ChargeKindCode    string                          `json:"charge_kind_code"`
+	ModuleCode        string                          `json:"module_code"`
+	PricingModel      entity.PricingModel             `json:"pricing_model"`
+	RawInputUnit      string                          `json:"raw_input_unit"`
+	VersionNumber     int                             `json:"version_number"`
+	EffectiveFrom     time.Time                       `json:"effective_from"`
+	EffectiveTo       *time.Time                      `json:"effective_to,omitempty"`
+	Checksum          string                          `json:"checksum"`
+	Currency          string                          `json:"currency"`
+	Brackets          []entity.PricingSnapshotBracket `json:"brackets"`
 }
 
-func (c *pricingCache) get(ctx context.Context, chargeKind entity.ChargeKindCode, zoneID *uuid.UUID, at time.Time) (*entity.PricingSnapshot, error) {
-	lookupKey := pricingLookupKey(chargeKind, zoneID)
+func (c *pricingCache) get(ctx context.Context, chargeKind entity.ChargeKindCode, at time.Time) (*entity.PricingSnapshot, error) {
+	lookupKey := string(chargeKind)
 	now := time.Now().UTC()
 	c.mu.RLock()
 	item, ok := c.l1[lookupKey]
@@ -93,7 +94,7 @@ func (c *pricingCache) get(ctx context.Context, chargeKind entity.ChargeKindCode
 			}
 		}
 
-		snapshot, repoErr := c.repo.GetActivePricingSnapshot(ctx, chargeKind, zoneID, at)
+		snapshot, repoErr := c.repo.GetActivePricingSnapshot(ctx, chargeKind, at)
 		if repoErr != nil {
 			return nil, repoErr
 		}
@@ -122,13 +123,6 @@ func (c *pricingCache) get(ctx context.Context, chargeKind entity.ChargeKindCode
 	return snapshot, nil
 }
 
-func pricingLookupKey(chargeKind entity.ChargeKindCode, zoneID *uuid.UUID) string {
-	if zoneID == nil || *zoneID == uuid.Nil {
-		return string(chargeKind) + ":global"
-	}
-	return string(chargeKind) + ":zone:" + zoneID.String()
-}
-
 func snapshotEffectiveAt(snapshot *entity.PricingSnapshot, at time.Time) bool {
 	return snapshot != nil && !snapshot.EffectiveFrom.After(at) && (snapshot.EffectiveTo == nil || at.Before(*snapshot.EffectiveTo))
 }
@@ -140,17 +134,13 @@ func (c *pricingCache) currentGeneration() uint64 {
 }
 
 func pricingCachePayloadFromSnapshot(snapshot *entity.PricingSnapshot) pricingCachePayload {
-	zoneID := ""
-	if snapshot.ZoneID != nil {
-		zoneID = snapshot.ZoneID.String()
-	}
 	return pricingCachePayload{
 		PricingScheduleID: snapshot.PricingScheduleID.String(), VersionID: snapshot.VersionID.String(),
 		Code: snapshot.Code, ChargeKindCode: string(snapshot.ChargeKindCode), ModuleCode: snapshot.ModuleCode,
-		PricingModel: snapshot.PricingModel, ScopeType: snapshot.ScopeType, ZoneID: zoneID,
+		PricingModel: snapshot.PricingModel,
 		RawInputUnit: snapshot.RawInputUnit, VersionNumber: snapshot.VersionNumber,
 		EffectiveFrom: snapshot.EffectiveFrom, EffectiveTo: snapshot.EffectiveTo, Checksum: snapshot.Checksum,
-		Currency: snapshot.Currency, Brackets: append([]entity.ScalarBracketInput(nil), snapshot.Brackets...),
+		Currency: snapshot.Currency, Brackets: append([]entity.PricingSnapshotBracket(nil), snapshot.Brackets...),
 	}
 }
 
@@ -167,21 +157,13 @@ func decodePricingSnapshot(raw []byte) (*entity.PricingSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	var zoneID *uuid.UUID
-	if payload.ZoneID != "" {
-		parsed, parseErr := uuid.Parse(payload.ZoneID)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		zoneID = &parsed
-	}
 	snapshot := &entity.PricingSnapshot{
 		PricingScheduleID: scheduleID, VersionID: versionID, Code: payload.Code,
 		ChargeKindCode: entity.ChargeKindCode(payload.ChargeKindCode), ModuleCode: payload.ModuleCode,
-		PricingModel: payload.PricingModel, ScopeType: payload.ScopeType, ZoneID: zoneID,
+		PricingModel: payload.PricingModel,
 		RawInputUnit: payload.RawInputUnit, VersionNumber: payload.VersionNumber,
 		EffectiveFrom: payload.EffectiveFrom, EffectiveTo: payload.EffectiveTo, Checksum: payload.Checksum,
-		Currency: payload.Currency, Brackets: append([]entity.ScalarBracketInput(nil), payload.Brackets...),
+		Currency: payload.Currency, Brackets: append([]entity.PricingSnapshotBracket(nil), payload.Brackets...),
 	}
 	if err := validateCachedSnapshot(snapshot); err != nil {
 		return nil, err
@@ -193,12 +175,59 @@ func validateCachedSnapshot(snapshot *entity.PricingSnapshot) error {
 	if snapshot == nil || snapshot.PricingScheduleID == uuid.Nil || snapshot.VersionID == uuid.Nil || snapshot.Code == "" || snapshot.Currency == "" || snapshot.VersionNumber < 1 || snapshot.PricingModel != entity.PricingModelProgressiveUnit {
 		return fmt.Errorf("pricing snapshot is incomplete")
 	}
-	if err := validateScalarBrackets(snapshot.Brackets); err != nil {
+	if err := validatePricingSnapshotBrackets(snapshot.Brackets); err != nil {
 		return err
 	}
-	schedule := entity.PricingSchedule{Code: snapshot.Code, ChargeKindCode: snapshot.ChargeKindCode, PricingModel: snapshot.PricingModel, ScopeType: snapshot.ScopeType, ZoneID: snapshot.ZoneID, Currency: snapshot.Currency}
-	if pricingScheduleChecksum(schedule, snapshot.VersionNumber, snapshot.EffectiveFrom, snapshot.Brackets) != snapshot.Checksum {
+	if pricingSnapshotChecksum(*snapshot) != snapshot.Checksum {
 		return fmt.Errorf("pricing snapshot checksum mismatch")
+	}
+	return nil
+}
+
+func pricingSnapshotChecksum(snapshot entity.PricingSnapshot) string {
+	hash := sha256.New()
+	write := func(value string) {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(value))
+	}
+	write(snapshot.Code)
+	write(string(snapshot.ChargeKindCode))
+	write(string(snapshot.PricingModel))
+	write(snapshot.Currency)
+	write(snapshot.EffectiveFrom.UTC().Format(pricingSnapshotChecksumTimeLayout))
+	write(fmt.Sprintf("%d", snapshot.VersionNumber))
+	for _, bracket := range snapshot.Brackets {
+		write(fmt.Sprintf("%d", bracket.RangeStartQuantity))
+		if bracket.RangeEndQuantity == nil {
+			write("infinity")
+		} else {
+			write(fmt.Sprintf("%d", *bracket.RangeEndQuantity))
+		}
+		write(fmt.Sprintf("%d", bracket.PriceNumeratorMicroUnits))
+		write(fmt.Sprintf("%d", bracket.PriceDenominatorQuantity))
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func validatePricingSnapshotBrackets(brackets []entity.PricingSnapshotBracket) error {
+	if len(brackets) == 0 || brackets[0].RangeStartQuantity != 0 {
+		return fmt.Errorf("pricing snapshot brackets must start at zero")
+	}
+	for index, bracket := range brackets {
+		if bracket.RangeStartQuantity < 0 || bracket.PriceNumeratorMicroUnits < 0 || bracket.PriceDenominatorQuantity <= 0 {
+			return fmt.Errorf("pricing snapshot bracket is invalid")
+		}
+		if index == len(brackets)-1 {
+			if bracket.RangeEndQuantity != nil {
+				return fmt.Errorf("pricing snapshot final bracket must be infinite")
+			}
+			continue
+		}
+		if bracket.RangeEndQuantity == nil || *bracket.RangeEndQuantity != brackets[index+1].RangeStartQuantity {
+			return fmt.Errorf("pricing snapshot brackets contain a gap or overlap")
+		}
 	}
 	return nil
 }

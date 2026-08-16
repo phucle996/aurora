@@ -6,20 +6,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// PricingModel is closed at the catalog boundary. A module must have a
-// workflow-local validator before FIXED_BUNDLE can be enabled.
 type PricingModel string
 
 const (
 	PricingModelProgressiveUnit PricingModel = "PROGRESSIVE_UNIT"
 	PricingModelFixedBundle     PricingModel = "FIXED_BUNDLE"
-)
-
-type PricingScope string
-
-const (
-	PricingScopeGlobal PricingScope = "GLOBAL"
-	PricingScopeZone   PricingScope = "ZONE"
 )
 
 type ChargeKindCode string
@@ -30,17 +21,15 @@ const (
 	ChargeKindStorageCapacity   ChargeKindCode = "storage.capacity.gb_hour"
 )
 
-// PricingSchedule is the controlled logical identity. Its model and unit are
-// derived from the Charge Kind Registry in PostgreSQL, never from a quote or a
-// settlement report.
-type PricingSchedule struct {
+// Every type below belongs to one workflow. No API workflow consumes the
+// result entity of another workflow.
+
+type PricingScheduleListItem struct {
 	ID              uuid.UUID
 	Code            string
 	DisplayName     string
 	ChargeKindCode  ChargeKindCode
 	PricingModel    PricingModel
-	ScopeType       PricingScope
-	ZoneID          *uuid.UUID
 	Currency        string
 	MetadataVersion int
 	Status          string
@@ -48,7 +37,7 @@ type PricingSchedule struct {
 	UpdatedAt       time.Time
 }
 
-type ScalarBracketInput struct {
+type PricingScheduleDetailBracket struct {
 	ID                       uuid.UUID
 	RangeStartQuantity       int64
 	RangeEndQuantity         *int64
@@ -56,17 +45,57 @@ type ScalarBracketInput struct {
 	PriceDenominatorQuantity int64
 }
 
-type PricingScheduleVersionCreate struct {
+// PricingScheduleDetail is one flat read projection. Latest-version fields are
+// columns of this workflow result, not a nested version entity.
+type PricingScheduleDetail struct {
+	ID                        uuid.UUID
+	Code                      string
+	DisplayName               string
+	ChargeKindCode            ChargeKindCode
+	PricingModel              PricingModel
+	Currency                  string
+	MetadataVersion           int
+	Status                    string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	HasLatestVersion          bool
+	LatestVersionID           uuid.UUID
+	LatestVersionNumber       int
+	LatestVersionPricingModel PricingModel
+	LatestVersionStatus       string
+	LatestEffectiveFrom       time.Time
+	LatestEffectiveTo         *time.Time
+	LatestChecksum            string
+}
+
+type PricingScheduleVersionPublishBracket struct {
+	ID                       uuid.UUID
+	RangeStartQuantity       int64
+	RangeEndQuantity         *int64
+	PriceNumeratorMicroUnits int64
+	PriceDenominatorQuantity int64
+}
+
+type PricingScheduleVersionPublishCommand struct {
 	ScheduleCode          string
 	ExpectedLatestVersion int
 	EffectiveFrom         time.Time
 	ChangeReason          string
 	CreatedBy             uuid.UUID
 	Checksum              string
-	Brackets              []ScalarBracketInput
 }
 
-type PricingScheduleVersion struct {
+// PublishTarget is workflow-local authority data, not the detail workflow's
+// response projection.
+type PricingScheduleVersionPublishTarget struct {
+	PricingScheduleID uuid.UUID
+	ScheduleCode      string
+	ChargeKindCode    ChargeKindCode
+	PricingModel      PricingModel
+	Currency          string
+}
+
+type PricingScheduleVersionPublished struct {
 	ID                uuid.UUID
 	PricingScheduleID uuid.UUID
 	VersionNumber     int
@@ -75,16 +104,18 @@ type PricingScheduleVersion struct {
 	EffectiveFrom     time.Time
 	EffectiveTo       *time.Time
 	Checksum          string
-	Brackets          []ScalarBracketInput
 }
 
-type PricingScheduleDetail struct {
-	Schedule      PricingSchedule
-	LatestVersion PricingScheduleVersion
+type PricingSnapshotBracket struct {
+	ID                       uuid.UUID
+	RangeStartQuantity       int64
+	RangeEndQuantity         *int64
+	PriceNumeratorMicroUnits int64
+	PriceDenominatorQuantity int64
 }
 
-// PricingSnapshot is immutable read data selected by charge kind, trusted Zone
-// and effective time. It is safe to share through the read cache.
+// PricingSnapshot is the only Go-side kernel projection. Its bracket rows are
+// kernel data and may be composed into this immutable snapshot.
 type PricingSnapshot struct {
 	PricingScheduleID uuid.UUID
 	VersionID         uuid.UUID
@@ -92,34 +123,76 @@ type PricingSnapshot struct {
 	ChargeKindCode    ChargeKindCode
 	ModuleCode        string
 	PricingModel      PricingModel
-	ScopeType         PricingScope
-	ZoneID            *uuid.UUID
 	RawInputUnit      string
 	VersionNumber     int
 	EffectiveFrom     time.Time
 	EffectiveTo       *time.Time
 	Checksum          string
 	Currency          string
-	Brackets          []ScalarBracketInput
+	Brackets          []PricingSnapshotBracket
 }
 
-type PricingScheduleMetadataUpdate struct {
+type PricingScheduleMetadataCommand struct {
 	ScheduleCode    string
 	MetadataVersion int
 	DisplayName     string
 }
 
-// StorageEstimate is a read-only hourly capacity quote. It contains schedule
-// lineage so a UI cannot mistake it for a wallet debit or recurring commitment.
+type PricingScheduleMetadataUpdated struct {
+	ID              uuid.UUID
+	Code            string
+	DisplayName     string
+	MetadataVersion int
+	UpdatedAt       time.Time
+}
+
+type StorageZoneAdjustmentPublishCommand struct {
+	ZoneID                uuid.UUID
+	ExpectedLatestVersion int
+	EffectiveFrom         time.Time
+	ChangeReason          string
+	CreatedBy             uuid.UUID
+	MultiplierNumerator   int64
+	MultiplierDenominator int64
+	Checksum              string
+}
+
+type StorageZoneAdjustmentPublished struct {
+	ID                    uuid.UUID
+	ZoneID                uuid.UUID
+	VersionNumber         int
+	Status                string
+	EffectiveFrom         time.Time
+	EffectiveTo           *time.Time
+	MultiplierNumerator   int64
+	MultiplierDenominator int64
+	Checksum              string
+}
+
+type StorageZoneAdjustmentSnapshot struct {
+	ID                    uuid.UUID
+	ZoneID                uuid.UUID
+	VersionNumber         int
+	EffectiveFrom         time.Time
+	MultiplierNumerator   int64
+	MultiplierDenominator int64
+	Checksum              string
+}
+
 type StorageEstimate struct {
-	CapacityBytes            int64
-	HourlyMicroUnits         int64
-	Currency                 string
-	PricingScheduleCode      string
-	PricingScheduleID        uuid.UUID
-	PricingScheduleVersionID uuid.UUID
-	PricingVersion           int
-	PricingChecksum          string
-	PricingEffectiveFrom     time.Time
-	EstimatedAt              time.Time
+	CapacityBytes             int64
+	HourlyMicroUnits          int64
+	Currency                  string
+	PricingScheduleCode       string
+	PricingScheduleID         uuid.UUID
+	PricingScheduleVersionID  uuid.UUID
+	PricingVersion            int
+	PricingChecksum           string
+	PricingEffectiveFrom      time.Time
+	RateAdjustmentID          *uuid.UUID
+	RateAdjustmentVersion     *int
+	RateAdjustmentChecksum    *string
+	RateAdjustmentNumerator   int64
+	RateAdjustmentDenominator int64
+	EstimatedAt               time.Time
 }

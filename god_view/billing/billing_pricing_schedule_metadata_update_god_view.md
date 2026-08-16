@@ -1,7 +1,8 @@
 # Billing Pricing Schedule Metadata Update — God View
 
-This critical workflow changes display metadata only. It never changes a rate,
-effective interval, model, charge kind, scope or historical version.
+This critical workflow changes Global base-schedule display metadata only. It
+never changes a rate, effective interval, model, charge kind, module adjustment
+or historical version.
 
 ## API-scope contract
 

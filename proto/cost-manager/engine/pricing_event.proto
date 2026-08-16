@@ -13,6 +13,6 @@ message PricingScheduleVersionPublished {
   int64 effective_from_unix_ms = 6;
   string checksum = 7;
   int64 occurred_at_unix_ms = 8;
-  string scope_type = 9;
-  string zone_id = 10;
+  reserved 9, 10;
+  reserved "scope_type", "zone_id";
 }

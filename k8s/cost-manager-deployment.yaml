@@ -1,3 +1,13 @@
+# [COMMENT]: Vault Kubernetes auth uses this identity through an explicit,
+# short-lived projected token. The pod does not receive the default API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cost-manager
+  namespace: controlplane
+automountServiceAccountToken: false
+
+---
 # [COMMENT]: Deployment manifest sản xuất cho Cost Manager API phục vụ môi trường Cloud Native & HA
 apiVersion: apps/v1
 kind: Deployment
@@ -28,6 +38,7 @@ spec:
         app.kubernetes.io/component: billing-api
     spec:
       automountServiceAccountToken: false
+      serviceAccountName: cost-manager
       terminationGracePeriodSeconds: 30
       # [COMMENT]: Rải Pods đều giữa các Availability Zone và Host Node
       topologySpreadConstraints:
@@ -69,23 +80,40 @@ spec:
               protocol: TCP
           env:
             - name: TZ
-              value: "Asia/Ho_Chi_Minh"
-            - name: HTTP_PORT
+              value: "UTC"
+            - name: PORT
               value: "8084"
             - name: GRPC_PORT
               value: "9094"
-            # [COMMENT]: Database PostgreSQL Billing riêng biệt
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: cost-manager-secrets
-                  key: database-url
-            # [COMMENT]: Cost chỉ kết nối L2 Cache/Business Cache, không kết nối Redis Security-State của ACR
-            - name: CACHE_REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: cost-manager-secrets
-                  key: cache-redis-url
+            # API and embedded Engine authenticate independently. Vault returns
+            # capability-scoped PostgreSQL/Redis records; raw connection URLs
+            # are never injected into this workload.
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_KUBERNETES_ROLE
+              value: "cost-manager-api"
+            - name: VAULT_KUBERNETES_JWT_PATH
+              value: "/var/run/secrets/aurora-vault/token"
+            - name: VAULT_ENGINE_KUBERNETES_ROLE
+              value: "cost-manager-engine"
+            - name: VAULT_ENGINE_KUBERNETES_JWT_PATH
+              value: "/var/run/secrets/aurora-vault/token"
+            - name: VAULT_TIMEOUT
+              value: "5s"
+            - name: VAULT_TIMEOUT_SECS
+              value: "5"
+            - name: VAULT_MAX_RETRIES
+              value: "5"
+            - name: PG_SSL_MODE
+              value: "verify-full"
+            - name: PG_SSL_ROOT_CERT
+              value: "/etc/aurora/billing-postgres/ca.crt"
+            - name: PG_SSL_CLIENT_CERT
+              value: "/etc/aurora/billing-postgres/tls.crt"
+            - name: PG_SSL_CLIENT_KEY
+              value: "/etc/aurora/billing-postgres/tls.key"
+            - name: COST_ENGINE_READY_FILE
+              value: "/tmp/aurora-cost-engine.ready"
           resources:
             requests:
               cpu: 150m
@@ -96,30 +124,16 @@ spec:
           # [COMMENT]: Liveness probe lặp lại kiểm tra sức khỏe qua HTTP endpoint
           livenessProbe:
             httpGet:
-              path: /api/v1/billing/plans
+              path: /health/live
               port: 8084
-              httpHeaders:
-                - name: x-user-id
-                  value: "00000000-0000-0000-0000-000000000001"
-                - name: x-zone-id
-                  value: "00000000-0000-0000-0000-000000000001"
-                - name: x-user-name
-                  value: "probe"
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /api/v1/billing/plans
+              path: /health/ready
               port: 8084
-              httpHeaders:
-                - name: x-user-id
-                  value: "00000000-0000-0000-0000-000000000001"
-                - name: x-zone-id
-                  value: "00000000-0000-0000-0000-000000000001"
-                - name: x-user-name
-                  value: "probe"
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 2
@@ -127,10 +141,28 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: vault-identity
+              mountPath: /var/run/secrets/aurora-vault
+              readOnly: true
+            - name: billing-postgres-tls
+              mountPath: /etc/aurora/billing-postgres
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 32Mi
+        - name: vault-identity
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 3600
+                  path: token
+        - name: billing-postgres-tls
+          secret:
+            secretName: cost-manager-postgres-client-tls
+            defaultMode: 0440
 
 ---
 # [COMMENT]: Service đại diện cho Cost Manager

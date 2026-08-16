@@ -20,6 +20,9 @@ var (
 	ErrPricingScheduleMetadataConflict  = errors.New("billing: pricing schedule metadata version conflict")
 	ErrPricingScheduleEffectiveConflict = errors.New("billing: pricing schedule effective time conflict")
 	ErrInvalidPricingBrackets           = errors.New("billing: invalid pricing schedule brackets")
+	ErrStorageZoneAdjustmentConflict    = errors.New("billing: Storage Zone adjustment version conflict")
+	ErrHypervisorZoneAdjustmentConflict = errors.New("billing: Hypervisor Zone adjustment version conflict")
+	ErrMailZoneAdjustmentConflict       = errors.New("billing: Mail Zone adjustment version conflict")
 
 	// Lỗi liên quan đến Thuê bao Subscription
 	ErrSubscriptionNotFound = errors.New("billing: active subscription not found")
