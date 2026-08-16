@@ -17,7 +17,7 @@ CREATE TABLE billing.storage_usage_report_inbox (
     settled_at                TIMESTAMPTZ,
     CONSTRAINT ck_storage_report_window CHECK (window_end > window_start),
     CONSTRAINT ck_storage_report_checksum CHECK (octet_length(payload_sha256) = 32),
-    CONSTRAINT ck_storage_report_payload_size CHECK (octet_length(payload) <= 4194304),
+    CONSTRAINT ck_storage_report_payload_size CHECK (octet_length(payload) <= 524288),
     CONSTRAINT ck_storage_report_status CHECK (status IN ('RECEIVED', 'PROCESSING', 'SETTLED', 'UNRATED', 'DEAD')),
     CONSTRAINT ck_storage_report_retry_non_negative CHECK (retry_count >= 0),
     CONSTRAINT ck_storage_report_correction_parent CHECK (

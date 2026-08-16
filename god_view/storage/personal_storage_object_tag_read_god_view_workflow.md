@@ -7,9 +7,9 @@ capability from object metadata, even though both use the same object path.
 
 Browser calls
 `GET /zone-control/v1/storage/buckets/{physical_bucket}/objects/{object_key}/tags`
-with Trinity cookies and `x-aurora-access-session-id`. ACR requires
-`GetObjectTagging` in the Central access record. The bucket and object key must
-match record bucket and `key_prefix`; body must be empty and query is forbidden.
+with Trinity cookies and `x-aurora-access-session-id`. ACR authenticates and
+signs request facts. Zone KV must grant `GetObjectTagging`; Zone binds the
+bucket and object key to the capability prefix. Body is empty and query forbidden.
 No Controlplane route, owner rewrite or permission middleware is involved.
 
 ## REST input and output
@@ -19,7 +19,7 @@ No Controlplane route, owner rewrite or permission middleware is involved.
 | Header | Use |
 |---|---|
 | `Cookie` | ACR validates Trinity and claim Zone. Removed before MinIO. |
-| `x-aurora-access-session-id` | ACR record lookup, assertion correlation and Zone record lookup. |
+| `x-aurora-access-session-id` | Opaque assertion/Zone-record correlation UUID, not bearer authority. |
 | `Origin` | CORS. |
 | `traceparent` | Observability only. |
 
@@ -54,31 +54,30 @@ No Controlplane route, owner rewrite or permission middleware is involved.
 
 | Key/component | Store | Invariant |
 |---|---|---|
-| `storage_access:{session_id}` | Central Auth-State Redis | ACR requires schema, actor, Zone, action, expiry and scope match. |
-| Vault Transit assertion | ACR signing boundary | Exact external GET path and empty body are hashed in short-lived assertion. |
+| Vault Transit assertion | ACR signing boundary | Schema 2 signs actor/workspace/Zone/session plus exact GET path and empty body; it has no resource policy. |
 | Authorizer replay key | Zone process Moka | One assertion jti is accepted once per process. |
-| `AURORA_ZONE_ACCESS/{session_id}` | Zone JetStream KV | Record equality and `GetObjectTagging` action are rechecked. |
+| `AURORA_ZONE_ACCESS/{session_id}` | Zone JetStream KV | Sole capability SoT for resource, bucket, action, prefix, expiry and policy revision. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | Zone JetStream KV | Current `ALLOW` required before MinIO. |
 
 ## Phase 1 — Client → Envoy → ACR
 
-ACR executes CORS, Zone Control pre/post-auth rate limits, session and Zone
-checks. It loads Central access record, classifies only `GET .../tags` as
-`GetObjectTagging`, requires empty body/path scope, signs assertion with Vault
-Transit and overwrites four Zone headers. Invalid access session, path encoding,
-action or prefix cannot reach Central or Zone upstream.
+ACR executes CORS, Zone Control pre/post-auth rate limits and Trinity checks.
+Its Auth-State read is only authentication. It classifies the reviewed
+`GET .../tags` route, requires an empty body, signs exact request facts and
+overwrites four Zone headers. It does not decide action, bucket or prefix.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant E as Central Envoy
     participant A as ACR ExtAuthz
-    participant AR as Auth-State Redis
+    participant AR as Auth-State Trinity session
     participant V as Vault Transit
 
     B->>E: GET object tags plus access session header
     E->>A: CheckRequest exact external path empty body
-    A->>AR: Verify Trinity and access record
-    A->>A: Require GetObjectTagging and prefix-safe path
+    A->>AR: Verify Trinity user/device session
+    A->>A: Validate UUID context and reviewed empty-body tag route
     alt denied
         A-->>E: Local error
         E-->>B: 401, 403 or 429
@@ -122,8 +121,9 @@ sequenceDiagram
 
 The authorizer verifies Ed25519 signature/key id, 8 KiB assertion size, issuer,
 audience, its own Zone id, method/path/body SHA256 and timestamp window. It
-claims jti in local replay cache, loads Zone record and requires complete field
-equality, action and prefix before MinIO call. XML returns via Envoys unchanged
+claims jti in local replay cache, loads Zone record, binds assertion identity,
+then requires record integrity, expiry, action, bucket/prefix and admission
+before MinIO call. XML returns via Envoys unchanged
 except security request headers were stripped on ingress.
 
 ```mermaid
@@ -131,12 +131,14 @@ sequenceDiagram
     participant ZA as Zone Authorizer
     participant K as Keyring and replay cache
     participant KV as Zone access KV
+    participant AD as Zone admission KV
     participant ZE as Zone Envoy
     participant M as MinIO
     participant B as Browser
 
     ZA->>K: Verify assertion and claim jti
     ZA->>KV: Read session record
+    ZA->>AD: Require ALLOW for record resource id
     alt all fields and action match
         ZA-->>ZE: Allow
         ZE->>M: GET bucket object tagging
@@ -155,8 +157,9 @@ sequenceDiagram
 
 | Condition | Behavior |
 |---|---|
-| User has `GetObject` but not `GetObjectTagging` | ACR denies. Actions are not interchangeable. |
-| Query appended to tag path | ACR and Zone binding reject it. |
+| User has `GetObject` but not `GetObjectTagging` | Zone denies. Actions are not interchangeable. |
+| Query appended to tag path | Zone request binding rejects it. |
+| Admission missing or suspended | Zone denies before MinIO. |
 | Object missing | Authorization can succeed and MinIO returns `404`. |
 | Zone KV watch/read problem | Authorizer returns dependency `503`, not stale allow. |
 | Assertion reuse | Local jti replay denial. |

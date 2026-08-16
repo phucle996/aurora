@@ -248,7 +248,7 @@ never creates a bucket fail-open.
 sequenceDiagram
     participant H as PersonalBucketHandler
     participant S as PersonalBucketService
-    participant W as WalletAdmissionRepository
+    participant W as CommercialAdmissionRepository
     participant R as PersonalBucketRepository
     participant DB as Controlplane PostgreSQL
 
@@ -256,7 +256,7 @@ sequenceDiagram
     S->>W: RequireOwnerAdmission(user_id, PERSONAL)
     W->>DB: Read local owner projection
     alt missing, expired or suspended
-        W-->>S: ErrWalletAdmissionDenied
+        W-->>S: ErrCommercialAdmissionDenied
         S-->>H: 503 STORAGE_WALLET_ADMISSION_UNAVAILABLE
     else current ALLOW
         S->>R: Create bucket + credential + protected outbox

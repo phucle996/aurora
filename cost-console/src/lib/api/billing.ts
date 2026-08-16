@@ -63,7 +63,6 @@ export interface ReferralCampaign {
 }
 
 export type PricingModel = 'PROGRESSIVE_UNIT' | 'FIXED_BUNDLE';
-export type PricingScope = 'GLOBAL' | 'ZONE';
 
 export interface PricingSchedule {
   id: string;
@@ -71,8 +70,6 @@ export interface PricingSchedule {
   display_name: string;
   charge_kind_code: string;
   pricing_model: PricingModel;
-  scope_type: PricingScope;
-  zone_id?: string;
   currency: string;
   metadata_version: number;
   status: 'ACTIVE' | 'DISABLED';
@@ -82,10 +79,10 @@ export interface PricingSchedule {
 
 export interface PricingBracket {
   id?: string;
-  range_start_quantity: number;
-  range_end_quantity: number | null;
-  price_numerator_micro_units: number;
-  price_denominator_quantity: number;
+  range_start_quantity: string;
+  range_end_quantity: string | null;
+  price_numerator_micro_units: string;
+  price_denominator_quantity: string;
 }
 
 export interface PricingScheduleVersion {
@@ -106,16 +103,86 @@ export interface PricingScheduleDetail {
   display_name: string;
   charge_kind_code: string;
   pricing_model: PricingModel;
-  scope_type: PricingScope;
-  zone_id?: string;
   currency: string;
   metadata_version: number;
-  latest_version: PricingScheduleVersion;
+  latest_version: PricingScheduleVersion | null;
 }
 
 export interface PricingSchedulesResponse {
   pricing_schedules: PricingSchedule[];
   pagination: { page: number; limit: number; total: number };
+}
+
+export interface MailZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+  effective_from: string;
+  effective_to: string | null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+  change_reason: string;
+  created_by: string;
+  created_at: string;
+  is_latest: boolean;
+  is_effective: boolean;
+}
+
+export interface MailZonePriceAdjustmentsResponse {
+  zone_id: string;
+  adjustments: MailZonePriceAdjustment[];
+  has_more: boolean;
+  observed_at: string;
+}
+
+export interface PublishedMailZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE';
+  effective_from: string;
+  effective_to: null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+}
+
+export interface StorageZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+  effective_from: string;
+  effective_to: string | null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+  change_reason: string;
+  created_by: string;
+  created_at: string;
+  is_latest: boolean;
+  is_effective: boolean;
+}
+
+export interface StorageZonePriceAdjustmentsResponse {
+  zone_id: string;
+  adjustments: StorageZonePriceAdjustment[];
+  has_more: boolean;
+  observed_at: string;
+}
+
+export interface PublishedStorageZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE';
+  effective_from: string;
+  effective_to: null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
 }
 
 export const billingApi = {
@@ -203,6 +270,48 @@ export const billingApi = {
     brackets: PricingBracket[];
   }): Promise<PricingScheduleVersion> {
     return criticalFetcher<PricingScheduleVersion>(`/billing/critical/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+      method: 'POST',
+      body: payload,
+    });
+  },
+
+  async listMailZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<MailZonePriceAdjustmentsResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    return request<MailZonePriceAdjustmentsResponse>(`/billing/mail/zone-price-adjustments?${query.toString()}`, {
+      method: 'GET',
+      signal,
+    });
+  },
+
+  async listStorageZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<StorageZonePriceAdjustmentsResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    return request<StorageZonePriceAdjustmentsResponse>(`/billing/storage/zone-price-adjustments?${query.toString()}`, {
+      method: 'GET',
+      signal,
+    });
+  },
+
+  async publishStorageZonePriceAdjustment(payload: {
+    expected_latest_version: number;
+    effective_from: string;
+    change_reason: string;
+    multiplier_numerator: string;
+    multiplier_denominator: string;
+  }): Promise<PublishedStorageZonePriceAdjustment> {
+    return criticalFetcher<PublishedStorageZonePriceAdjustment>('/billing/critical/storage/zone-price-adjustments/versions', {
+      method: 'POST',
+      body: payload,
+    });
+  },
+
+  async publishMailZonePriceAdjustment(payload: {
+    expected_latest_version: number;
+    effective_from: string;
+    change_reason: string;
+    multiplier_numerator: string;
+    multiplier_denominator: string;
+  }): Promise<PublishedMailZonePriceAdjustment> {
+    return criticalFetcher<PublishedMailZonePriceAdjustment>('/billing/critical/mail/zone-price-adjustments/versions', {
       method: 'POST',
       body: payload,
     });

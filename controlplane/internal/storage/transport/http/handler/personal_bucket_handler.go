@@ -35,15 +35,18 @@ func formatUsedMegabytes(bytes int64) string {
 
 // [COMMENT]: PersonalBucketHandler xử lý các HTTP request quản trị Bucket của người dùng cá nhân/workspace.
 type PersonalBucketHandler struct {
-	personalSvc storageSvcInterface.PersonalBucketService
+	personalSvc      storageSvcInterface.PersonalBucketService
+	accessSessionSvc storageSvcInterface.PersonalStorageAccessSessionService
 }
 
 // [COMMENT]: NewPersonalBucketHandler khởi tạo controller xử lý các endpoint Bucket cá nhân.
 func NewPersonalBucketHandler(
 	personalSvc storageSvcInterface.PersonalBucketService,
+	accessSessionSvc storageSvcInterface.PersonalStorageAccessSessionService,
 ) *PersonalBucketHandler {
 	return &PersonalBucketHandler{
-		personalSvc: personalSvc,
+		personalSvc:      personalSvc,
+		accessSessionSvc: accessSessionSvc,
 	}
 }
 
@@ -107,7 +110,7 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		case errors.Is(createErr, storageTaxonomy.ErrInvalidBucketName):
 			logger.HandlerWarn(c, op, createErr, "invalid bucket name format")
 			apires.RespondBadRequest(c, "invalid bucket name format")
-		case errors.Is(createErr, storageTaxonomy.ErrWalletAdmissionDenied):
+		case errors.Is(createErr, storageTaxonomy.ErrCommercialAdmissionDenied):
 			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
 		default:
 			logger.HandlerError(c, op, createErr)
@@ -277,7 +280,7 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 			apires.RespondBadRequest(c, "requested quota must leave at least 1GB of free space above current usage")
 			return
 		}
-		if errors.Is(updateErr, storageTaxonomy.ErrWalletAdmissionDenied) {
+		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
 			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
 			return
 		}
@@ -389,6 +392,7 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 	}
 	allowed := map[string]struct{}{"ListBucket": {}, "GetObject": {}, "PutObject": {}, "DeleteObject": {}, "GetObjectTagging": {}, "PutObjectTagging": {}}
 	seen := make(map[string]struct{}, len(actions))
+	uniqueActions := make([]string, 0, len(actions))
 	for _, action := range actions {
 		if _, valid := allowed[action]; !valid {
 			apires.RespondBadRequest(c, "unsupported storage action")
@@ -398,7 +402,9 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 			continue
 		}
 		seen[action] = struct{}{}
+		uniqueActions = append(uniqueActions, action)
 	}
+	actions = uniqueActions
 	keyPrefix := strings.TrimSpace(req.KeyPrefix)
 	if len(keyPrefix) > 256 || strings.ContainsAny(keyPrefix, "\r\n") {
 		apires.RespondBadRequest(c, "invalid key_prefix")
@@ -423,27 +429,13 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		ExpiresAtUnixSeconds: uint64(time.Now().Add(time.Duration(duration) * time.Second).Unix()),
 		PolicyRevision:       1,
 	}
-	// Service performs the owner lookup before persisting the auth projection.
-	bucket, err := h.personalSvc.GetBucket(ctx, bucketID, userID)
-	if err != nil {
-		if errors.Is(err, storageTaxonomy.ErrNotFound) {
-			apires.RespondNotFound(c, "bucket not found")
+	if err := h.accessSessionSvc.CreatePersonalStorageAccessSession(ctx, session); err != nil {
+		if errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied) {
+			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
 			return
 		}
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-	if bucket.ZoneID != zoneID {
-		// A valid user must not be able to prepare a session for a bucket in a
-		// different routed Zone, even if the bucket UUID is otherwise owned.
-		apires.RespondNotFound(c, "bucket not found")
-		return
-	}
-	session.BucketName = bucket.Name
-	if err := h.personalSvc.CreateStorageAccessSession(ctx, session); err != nil {
-		if errors.Is(err, storageTaxonomy.ErrWalletAdmissionDenied) {
-			apires.RespondServiceUnavailableWithCode(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "storage billing admission is not currently available")
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "bucket not found")
 			return
 		}
 		logger.HandlerError(c, op, err)
@@ -457,4 +449,55 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		"expires_at":        time.Unix(int64(session.ExpiresAtUnixSeconds), 0).UTC().Format(time.RFC3339),
 		"gateway_path":      "/zone-control/v1/storage/",
 	}, "storage access session is being prepared")
+}
+
+func (h *PersonalBucketHandler) GetAccessSessionStatus(c *gin.Context) {
+	const op = "storage.personal_bucket.get_access_session_status"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+	bucketID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+	accessSessionID, err := uuid.Parse(c.Param("access_session_id"))
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid access session id format")
+		return
+	}
+	status, err := h.accessSessionSvc.GetPersonalStorageAccessSessionStatus(ctx, accessSessionID, bucketID, workspaceID, userID, zoneID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "storage access session not found")
+			return
+		}
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+	response := gin.H{
+		"access_session_id": accessSessionID.String(),
+		"bucket_id":         bucketID.String(),
+		"status":            status.State,
+	}
+	if status.CompletedAt != nil {
+		response["completed_at"] = status.CompletedAt.UTC().Format(time.RFC3339)
+	}
+	if status.State == "FAILED" && status.ErrorCode != nil {
+		response["error_code"] = *status.ErrorCode
+	}
+	apires.RespondSuccess(c, response, "get storage access session status success")
 }

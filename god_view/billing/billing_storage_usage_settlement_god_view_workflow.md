@@ -285,7 +285,7 @@ sequenceDiagram
     B->>B: Commit wallet status, version, reason and wallet_admission_outbox
     R->>B: Claim unpublished outbox row with claim token
     R->>S: XADD minimal CommercialAdmissionChangedV1 to the Storage-specific stream
-    R->>S: WAITAOF durability fence
+    R->>S: XADD module streams then WAITAOF on the same connection
     R->>B: Mark the claimed row published
     S-->>C: Consumer group delivers event
     C->>C: Apply owner policy_version and resolve Storage-owned resources

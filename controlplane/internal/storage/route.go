@@ -60,6 +60,10 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
 			module.PersonalBucketHandler.CreateAccessSession,
 		)
+		personalGroup.GET("/storage/buckets/:id/access-sessions/:access_session_id",
+			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+			module.PersonalBucketHandler.GetAccessSessionStatus,
+		)
 
 		// ========================================================================
 		// 🔑 PHÂN KHÚC CREDENTIALS: QUẢN LÝ ACCESS KEYS (PERSONAL)

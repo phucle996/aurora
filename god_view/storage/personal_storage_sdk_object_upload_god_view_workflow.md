@@ -70,9 +70,14 @@ sequenceDiagram
     end
 ```
 
-The authorizer validates `wallet_version > 0`, exact bucket-name binding,
+The authorizer validates `policy_version > 0`, exact bucket-name binding,
 `ALLOW`, `effective_at <= now` and `valid_until > now`. It does not trust a
 client-supplied resource id and does not query Billing.
+
+The shared SDK classifier exempts only an exact bucket-root GET (`/{bucket}` or
+`/{bucket}/`) as a non-billable list. A GET with any object-key segment remains
+admission-gated regardless of a trailing slash or `prefix`/`list-type` query;
+PUT is always admission-gated.
 
 ## Phase 2 — Public Envoy → MinIO
 

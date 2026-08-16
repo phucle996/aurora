@@ -32,8 +32,4 @@ type PersonalBucketRepo interface {
 
 	// [COMMENT]: Lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
 	ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error)
-
-	// CreateAccessPrepare atomically verifies bucket ownership/Zone binding and
-	// inserts the durable access-preparation outbox command.
-	CreateAccessPrepare(ctx context.Context, session *storageEntity.StorageAccessSession, outbox *storageEntity.StorageOutboxRecord) error
 }

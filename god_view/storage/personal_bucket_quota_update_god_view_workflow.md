@@ -185,14 +185,14 @@ footprint-reduction action and does not use this gate.
 ```mermaid
 sequenceDiagram
     participant S as PersonalBucketService
-    participant W as WalletAdmissionRepository
+    participant W as CommercialAdmissionRepository
     participant R as PersonalBucketRepository
     participant DB as Controlplane PostgreSQL
 
     S->>W: RequireOwnerAdmission(user_id, PERSONAL)
     W->>DB: Read effective owner projection
     alt not admitted
-        W-->>S: ErrWalletAdmissionDenied
+        W-->>S: ErrCommercialAdmissionDenied
     else ALLOW
         S->>R: UpdateQuota after direction check
         R->>DB: Lock bucket, compare used_bytes, update quota and outbox

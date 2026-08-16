@@ -450,6 +450,7 @@ pub fn start(config: Config, shutdown: CancellationToken) {
         let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut metering_task: Option<WorkflowTask> = None;
+        let mut storage_report_relay_task: Option<WorkflowTask> = None;
         let mut metadata_task: Option<WorkflowTask> = None;
         let mut storage_admission_task: Option<WorkflowTask> = None;
         let mut metadata_repair_task: Option<WorkflowTask> = None;
@@ -474,6 +475,7 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                             retryable = true
                         );
                         stop_workflow(&mut metering_task).await;
+                        stop_workflow(&mut storage_report_relay_task).await;
                         stop_workflow(&mut metadata_task).await;
                         stop_workflow(&mut storage_admission_task).await;
                         stop_workflow(&mut metadata_repair_task).await;
@@ -563,11 +565,20 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                             })
                         }
                     }).await;
-                    sync_workflow(&mut metering_task, config.metering_enabled && owns_report_unit, "storage_report", report_assignment.map_or(0, |value| value.assignment_epoch), {
+                    sync_workflow(&mut metering_task, config.metering_enabled && owns_report_unit, "storage_report_publisher", report_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
                         let config = config.clone();
                         let state = state.clone();
                         move |task_shutdown, assignment_epoch| {
                             tokio::spawn(async move { metering::run(config, state, task_shutdown, assignment_epoch).await })
+                        }
+                    }).await;
+                    sync_workflow(&mut storage_report_relay_task, config.metering_enabled && owns_report_unit, "storage_report_relay", report_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
+                        let config = config.clone();
+                        let state = state.clone();
+                        move |task_shutdown, assignment_epoch| {
+                            tokio::spawn(async move {
+                                crate::storage_report_relay::run(config, state, task_shutdown, assignment_epoch).await
+                            })
                         }
                     }).await;
                     sync_workflow(&mut storage_probe_task, owns_storage_probe, "storage_probe", storage_probe_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
@@ -652,6 +663,7 @@ pub fn start(config: Config, shutdown: CancellationToken) {
             }
         }
         stop_workflow(&mut metering_task).await;
+        stop_workflow(&mut storage_report_relay_task).await;
         stop_workflow(&mut metadata_task).await;
         stop_workflow(&mut storage_admission_task).await;
         stop_workflow(&mut metadata_repair_task).await;

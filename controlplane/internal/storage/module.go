@@ -2,7 +2,7 @@ package storage
 
 import (
 	"errors"
-	"fmt"
+	"strings"
 
 	kafkainfra "controlplane/infra/kafka"
 	"controlplane/internal/cacheengine"
@@ -14,6 +14,10 @@ import (
 	storageRepoImpl "controlplane/internal/storage/repository"
 	storageSvcImpl "controlplane/internal/storage/service"
 	storageHandler "controlplane/internal/storage/transport/http/handler"
+	storageKafka "controlplane/internal/storage/transport/kafka"
+	storageProto "controlplane/internal/storage/transport/proto"
+	storageStream "controlplane/internal/storage/transport/stream"
+	storageWorker "controlplane/internal/storage/transport/worker"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -35,17 +39,23 @@ type StorageModule struct {
 	TenantCredentialHandler   *storageHandler.TenantCredentialHandler
 
 	// Core Services
-	TenantBucketService       storageSvcInterface.TenantBucketService
-	PersonalBucketService     storageSvcInterface.PersonalBucketService
-	TenantCredentialService   storageSvcInterface.TenantCredentialService
-	PersonalCredentialService storageSvcInterface.PersonalCredentialService
+	TenantBucketService                 storageSvcInterface.TenantBucketService
+	PersonalBucketService               storageSvcInterface.PersonalBucketService
+	TenantCredentialService             storageSvcInterface.TenantCredentialService
+	PersonalCredentialService           storageSvcInterface.PersonalCredentialService
+	PersonalStorageAccessSessionService storageSvcInterface.PersonalStorageAccessSessionService
 
 	// Repositories
-	TenantBucketRepo          storageRepoInterface.TenantBucketRepo
-	PersonalBucketRepo        storageRepoInterface.PersonalBucketRepo
-	TenantCredentialRepo      storageRepoInterface.TenantCredentialRepo
-	PersonalCredentialRepo    storageRepoInterface.PersonalCredentialRepo
-	WalletAdmissionProjection *WalletAdmissionProjection
+	TenantBucketRepo                 storageRepoInterface.TenantBucketRepo
+	PersonalBucketRepo               storageRepoInterface.PersonalBucketRepo
+	TenantCredentialRepo             storageRepoInterface.TenantCredentialRepo
+	PersonalCredentialRepo           storageRepoInterface.PersonalCredentialRepo
+	PersonalStorageAccessSessionRepo storageRepoInterface.PersonalStorageAccessSessionRepository
+
+	// Background workflow transports
+	CommercialAdmissionProjection *storageStream.CommercialAdmissionProjectionConsumer
+	CommercialAdmissionReconcile  *storageWorker.CommercialAdmissionReconcile
+	CommercialAdmissionZoneRelay  *storageWorker.CommercialAdmissionZoneRelay
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -74,7 +84,6 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	authRds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
 	otel *observability.OTel,
 	protector jobpayload.Protector,
@@ -93,9 +102,6 @@ func NewModule(
 	if rds == nil {
 		return nil, errors.New("storage module: redis client is nil")
 	}
-	if authRds == nil {
-		return nil, errors.New("storage module: auth redis client is nil")
-	}
 	if cacheEngine == nil {
 		return nil, errors.New("storage module: cache engine registry is nil")
 	}
@@ -104,6 +110,15 @@ func NewModule(
 	}
 	if protector == nil {
 		return nil, errors.New("storage module: job payload protector is nil")
+	}
+	if kafkaProducer == nil {
+		return nil, errors.New("storage module: Kafka producer is nil")
+	}
+	if strings.TrimSpace(cfg.SchemaSQL.Storage) == "" {
+		return nil, errors.New("storage module: SQL schema is empty")
+	}
+	if strings.TrimSpace(cfg.Kafka.TopicPrefix) == "" {
+		return nil, errors.New("storage module: Kafka topic prefix is empty")
 	}
 	// ------------------------------------------------------------------------
 	// 🧱 GIAI ĐOẠN ĐẤU NỐI (WIRING GRAPH SETUP WITH FAIL-FAST CHECKS)
@@ -126,36 +141,56 @@ func NewModule(
 	if personalCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal credential repository")
 	}
-	walletAdmissionProjection, err := NewWalletAdmissionProjection(db, rds, kafkaProducer, cfg.SchemaSQL.Storage, cfg.Kafka.TopicPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("storage module: failed to construct wallet admission projection: %w", err)
+	personalStorageAccessSessionRepo := storageRepoImpl.NewPersonalStorageAccessSessionRepository(db, cfg, protector)
+	if personalStorageAccessSessionRepo == nil {
+		return nil, errors.New("storage module: failed to construct personal storage access-session repository")
 	}
-	walletAdmissionRepo := storageRepoImpl.NewWalletAdmissionRepo(db, cfg)
-	if walletAdmissionRepo == nil {
-		return nil, errors.New("storage module: failed to construct wallet admission repository")
+	commercialAdmissionZonePayloadEncoder := storageProto.NewCommercialAdmissionZonePayloadEncoder()
+	commercialAdmissionProjectionRepo := storageRepoImpl.NewStorageCommercialAdmissionProjectionRepo(
+		db, cfg.SchemaSQL.Storage, commercialAdmissionZonePayloadEncoder,
+	)
+	commercialAdmissionProjectionSvc := storageSvcImpl.NewStorageCommercialAdmissionProjectionService(commercialAdmissionProjectionRepo)
+	commercialAdmissionProjection := storageStream.NewCommercialAdmissionProjectionConsumer(rds, commercialAdmissionProjectionSvc)
+	commercialAdmissionReconcileRepo := storageRepoImpl.NewStorageCommercialAdmissionReconcileRepo(
+		db, cfg.SchemaSQL.Storage, commercialAdmissionZonePayloadEncoder,
+	)
+	commercialAdmissionReconcileSvc := storageSvcImpl.NewStorageCommercialAdmissionReconcileService(commercialAdmissionReconcileRepo)
+	commercialAdmissionReconcile := storageWorker.NewCommercialAdmissionReconcile(commercialAdmissionReconcileSvc)
+	commercialAdmissionZoneRelayRepo := storageRepoImpl.NewCommercialAdmissionZoneRelayRepo(db, cfg.SchemaSQL.Storage)
+	commercialAdmissionZonePublisher := storageKafka.NewCommercialAdmissionZonePublisher(kafkaProducer, cfg.Kafka.TopicPrefix)
+	commercialAdmissionZoneRelaySvc := storageSvcImpl.NewStorageCommercialAdmissionZoneRelayService(
+		commercialAdmissionZoneRelayRepo, commercialAdmissionZonePublisher,
+	)
+	commercialAdmissionZoneRelay := storageWorker.NewCommercialAdmissionZoneRelay(commercialAdmissionZoneRelaySvc)
+	commercialAdmissionRepo := storageRepoImpl.NewCommercialAdmissionRepo(db, cfg)
+	if commercialAdmissionRepo == nil {
+		return nil, errors.New("storage module: failed to construct commercial admission repository")
 	}
-
 	// 2. Khởi tạo services tách biệt theo scope
 	workflowMetrics := otel.WorkflowRecorder("storage")
-	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, walletAdmissionRepo, workflowMetrics)
+	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, commercialAdmissionRepo, workflowMetrics)
 	if tenantBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant bucket service")
 	}
-	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, walletAdmissionRepo, authRds, workflowMetrics)
+	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, commercialAdmissionRepo, workflowMetrics)
 	if personalBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket service")
 	}
-	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, walletAdmissionRepo, workflowMetrics)
+	personalStorageAccessSessionSvc := storageSvcImpl.NewPersonalStorageAccessSessionService(personalStorageAccessSessionRepo, commercialAdmissionRepo, workflowMetrics)
+	if personalStorageAccessSessionSvc == nil {
+		return nil, errors.New("storage module: failed to construct personal storage access-session service")
+	}
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, commercialAdmissionRepo, workflowMetrics)
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, walletAdmissionRepo, workflowMetrics)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, commercialAdmissionRepo, workflowMetrics)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}
 
 	// 3. Khởi tạo HTTP handlers
-	personalBucketHandler := storageHandler.NewPersonalBucketHandler(personalBucketSvc)
+	personalBucketHandler := storageHandler.NewPersonalBucketHandler(personalBucketSvc, personalStorageAccessSessionSvc)
 	if personalBucketHandler == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket handler")
 	}
@@ -173,23 +208,27 @@ func NewModule(
 	}
 
 	return &StorageModule{
-		enabled:                   true,
-		cfg:                       cfg,
-		db:                        db,
-		rds:                       rds,
-		L1Registry:                cacheEngine,
-		TenantBucketRepo:          tenantBucketRepo,
-		PersonalBucketRepo:        personalBucketRepo,
-		TenantCredentialRepo:      tenantCredentialRepo,
-		PersonalCredentialRepo:    personalCredentialRepo,
-		TenantBucketService:       tenantBucketSvc,
-		PersonalBucketService:     personalBucketSvc,
-		TenantCredentialService:   tenantCredentialSvc,
-		PersonalCredentialService: personalCredentialSvc,
-		PersonalBucketHandler:     personalBucketHandler,
-		TenantBucketHandler:       tenantBucketHandler,
-		PersonalCredentialHandler: personalCredentialHandler,
-		TenantCredentialHandler:   tenantCredentialHandler,
-		WalletAdmissionProjection: walletAdmissionProjection,
+		enabled:                             true,
+		cfg:                                 cfg,
+		db:                                  db,
+		rds:                                 rds,
+		L1Registry:                          cacheEngine,
+		TenantBucketRepo:                    tenantBucketRepo,
+		PersonalBucketRepo:                  personalBucketRepo,
+		TenantCredentialRepo:                tenantCredentialRepo,
+		PersonalCredentialRepo:              personalCredentialRepo,
+		PersonalStorageAccessSessionRepo:    personalStorageAccessSessionRepo,
+		TenantBucketService:                 tenantBucketSvc,
+		PersonalBucketService:               personalBucketSvc,
+		TenantCredentialService:             tenantCredentialSvc,
+		PersonalCredentialService:           personalCredentialSvc,
+		PersonalStorageAccessSessionService: personalStorageAccessSessionSvc,
+		PersonalBucketHandler:               personalBucketHandler,
+		TenantBucketHandler:                 tenantBucketHandler,
+		PersonalCredentialHandler:           personalCredentialHandler,
+		TenantCredentialHandler:             tenantCredentialHandler,
+		CommercialAdmissionProjection:       commercialAdmissionProjection,
+		CommercialAdmissionReconcile:        commercialAdmissionReconcile,
+		CommercialAdmissionZoneRelay:        commercialAdmissionZoneRelay,
 	}, nil
 }

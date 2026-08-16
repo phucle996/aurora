@@ -27,8 +27,4 @@ type PersonalBucketService interface {
 
 	// [COMMENT]: Yêu cầu xóa Bucket cá nhân.
 	DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error
-
-	// CreateStorageAccessSession creates a metadata-only access projection and
-	// a transactional Zone preparation command. No credential is returned.
-	CreateStorageAccessSession(ctx context.Context, param *storageEntity.StorageAccessSession) error
 }

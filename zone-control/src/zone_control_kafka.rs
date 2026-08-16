@@ -229,9 +229,9 @@ impl ControlKafka {
         format!("{}.storage.sizes.v1", self.topic_prefix)
     }
 
-    pub(crate) fn storage_wallet_admission_topic(&self, zone_id: &str) -> String {
+    pub(crate) fn storage_commercial_admission_topic(&self, zone_id: &str) -> String {
         format!(
-            "{}.storage.wallet.admission.{}.v1",
+            "{}.storage.commercial.admission.{}.v1",
             self.topic_prefix, zone_id
         )
     }

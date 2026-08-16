@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -12,7 +13,9 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/observability"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -136,6 +139,43 @@ func (p *Producer) Publish(ctx context.Context, topic string, key, value []byte)
 	// while the stable operation label is sufficient for alerting.
 	p.metrics.ObserveDependency(ctx, "kafka", "publish", result, reason, time.Since(startedAt))
 	return err
+}
+
+// EnsureTopic provisions a dynamic workflow destination through the same
+// authenticated Kafka client used for publish. The caller owns when this
+// capability is needed and caches successful provisioning per destination.
+func (p *Producer) EnsureTopic(ctx context.Context, topic string, partitions int32, retention time.Duration) error {
+	if p == nil || p.client == nil {
+		return errors.New("kafka: producer is unavailable")
+	}
+	if strings.TrimSpace(topic) == "" || partitions < 1 || retention <= 0 {
+		return errors.New("kafka: invalid topic provisioning request")
+	}
+	retentionMillis := fmt.Sprintf("%d", retention.Milliseconds())
+	request := kmsg.NewPtrCreateTopicsRequest()
+	request.TimeoutMillis = 10_000
+	request.Topics = []kmsg.CreateTopicsRequestTopic{{
+		Topic:             topic,
+		NumPartitions:     partitions,
+		ReplicationFactor: -1,
+		Configs: []kmsg.CreateTopicsRequestTopicConfig{{
+			Name:  "retention.ms",
+			Value: &retentionMillis,
+		}},
+	}}
+	response, err := p.client.Request(ctx, request)
+	if err != nil {
+		return fmt.Errorf("kafka: create topic %s: %w", topic, err)
+	}
+	created, ok := response.(*kmsg.CreateTopicsResponse)
+	if !ok || len(created.Topics) != 1 {
+		return fmt.Errorf("kafka: create topic %s returned an invalid response", topic)
+	}
+	topicErr := kerr.ErrorForCode(created.Topics[0].ErrorCode)
+	if topicErr != nil && !errors.Is(topicErr, kerr.TopicAlreadyExists) {
+		return fmt.Errorf("kafka: create topic %s: %w", topic, topicErr)
+	}
+	return nil
 }
 
 func (p *Producer) Close() {

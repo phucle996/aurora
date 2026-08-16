@@ -8,8 +8,8 @@ three usage kinds:
 
 - `NETWORK_IN`: successful upload bytes (`bytes_received`)
 - `NETWORK_OUT`: successful download bytes (`bytes_sent`)
-- `STORAGE`: end-of-hour occupied capacity represented as fixed-point
-  `GB_HOUR_MICRO` (`1_000_000` units = one decimal GB-hour)
+- `STORAGE`: end-of-hour occupied capacity represented exactly as
+  `BYTE_HOUR` for the fixed one-hour window
 
 This is a background workflow, not HTTP, so it has no ACR phase. Tickets,
 cookies, access keys, authorization headers and object paths are excluded at
@@ -193,7 +193,17 @@ sequenceDiagram
 The report may contain multiple aggregates for one hour. Transfer aggregates
 use `resource_id`; capacity aggregates use a validated `resource_name` and a
 deterministic synthetic line identity downstream. `storage_bytes` is retained
-for audit/diagnostics; `storage_gb_hours_micros` is the billable quantity.
+for audit/diagnostics and must equal the billable `storage_byte_hours`
+observation. Keeping bytes exact prevents a quantity rounding step before the
+PAYG money boundary.
+
+The producer contract is bounded to 512 KiB and 10,000 aggregates. Startup
+backfill and every downstream validator share the 30-day Zone outbox recovery
+horizon; startup recovery uses `METERING_MAX_BACKFILL_WINDOWS`, which defaults
+to and is capped at 720 hourly windows. After a successful startup pass, the
+steady loop retries only the newest 24 windows to avoid a permanent 30-day
+ClickHouse rescan. Reports older than the explicit retention boundary are
+quarantined rather than silently charged.
 
 ## Phase 5 — Durable Zone outbox relay to Kafka
 
@@ -230,7 +240,7 @@ wallet/ledger lines in Billing PostgreSQL. Central ClickHouse is not involved.
 | Key or contract | Value |
 | --- | --- |
 | Protobuf | `proto/cost-manager/engine/storage_usage_report.proto` |
-| Usage kinds | `NETWORK_IN/BYTE`, `NETWORK_OUT/BYTE`, `STORAGE/GB_HOUR_MICRO` |
+| Usage kinds | `NETWORK_IN/BYTE`, `NETWORK_OUT/BYTE`, `STORAGE/BYTE_HOUR` |
 | Kafka topic | `{topic_prefix}.storage.usage.reports.v1` |
 | Kafka key | `zone_id` |
 | Report identity | UUIDv5 of Zone, hourly start/end and sequence |
@@ -265,7 +275,8 @@ wallet/ledger lines in Billing PostgreSQL. Central ClickHouse is not involved.
 - `dev/zone/otel/otel-collector.yml`
 - `dev/zone/clickhouse/init.sql`
 - `zone-control/src/zone_storage.rs` (hourly sharded capacity scanner)
-- `zone-control/src/metering.rs` (closed-window report builder and relay)
+- `zone-control/src/metering.rs` (closed-window report builder and durable NATS outbox publisher)
+- `zone-control/src/storage_report_relay.rs` (independently restartable NATS outbox → Kafka relay and quarantine)
 - `zone-control/src/orchestrator.rs` (assignment, rebalance and lifecycle)
 - `job-orchestrator/src/storage_metering.rs` (Kafka to Shared Redis relay)
 - `proto/cost-manager/engine/storage_usage_report.proto`

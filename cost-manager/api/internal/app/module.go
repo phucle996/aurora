@@ -49,6 +49,7 @@ type Module struct {
 	TenantPaymentHandler   *handler.TenantPaymentHandler
 
 	StorageEstimateService    billingSvcInterface.StorageEstimateService
+	StoragePricingHandler     *handler.StoragePricingHandler
 	PricingScheduleHandler    *handler.PricingScheduleHandler
 	HypervisorEstimateService billingSvcInterface.HypervisorEstimateService
 	HypervisorPricingHandler  *handler.HypervisorPricingHandler
@@ -216,10 +217,16 @@ func NewModule(
 	pricingMetadataService := service.NewPricingScheduleMetadataService(pricingScheduleRepo)
 	pricingPublishService := service.NewPricingScheduleVersionPublishService(pricingScheduleRepo, pricingOutboxRelay.Notify)
 	storageAdjustmentService := service.NewStorageZoneAdjustmentPublishService(pricingScheduleRepo)
+	storageAdjustmentListRepo := repository.NewStorageZoneAdjustmentListRepository(dbPool)
+	storageAdjustmentListService := service.NewStorageZoneAdjustmentListService(storageAdjustmentListRepo)
 
-	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingListService, pricingDetailService, storageEstimateService, pricingMetadataService, pricingPublishService, storageAdjustmentService)
+	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingListService, pricingDetailService, pricingMetadataService, pricingPublishService)
 	if pricingScheduleHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PricingScheduleHandler: instance is nil")
+	}
+	storagePricingHandler := handler.NewStoragePricingHandler(storageEstimateService, storageAdjustmentService, storageAdjustmentListService)
+	if storagePricingHandler == nil {
+		return nil, fmt.Errorf("failed to initialize StoragePricingHandler: instance is nil")
 	}
 	hypervisorPricingRepo := repository.NewHypervisorPricingRepository(dbPool)
 	if hypervisorPricingRepo == nil {
@@ -294,6 +301,7 @@ func NewModule(
 		PersonalPaymentHandler:           personalPaymentHandler,
 		TenantPaymentHandler:             tenantPaymentHandler,
 		StorageEstimateService:           storageEstimateService,
+		StoragePricingHandler:            storagePricingHandler,
 		PricingScheduleHandler:           pricingScheduleHandler,
 		HypervisorEstimateService:        hypervisorEstimateService,
 		HypervisorPricingHandler:         hypervisorPricingHandler,

@@ -1,14 +1,24 @@
 use super::*;
 
 fn report() -> StorageUsageReportV1 {
-    let now = Utc::now().timestamp_millis();
+    let window_end = Utc::now()
+        .timestamp_millis()
+        .div_euclid(3_600_000)
+        .saturating_mul(3_600_000);
+    let window_start = window_end.saturating_sub(3_600_000);
+    let sequence = u64::try_from(window_end.div_euclid(3_600_000)).unwrap();
+    let zone_id = Uuid::new_v4();
+    let report_id = Uuid::new_v5(
+        &REPORT_NAMESPACE,
+        format!("{zone_id}:{window_start}:{window_end}:{sequence}").as_bytes(),
+    );
     let mut report = StorageUsageReportV1 {
         schema_version: REPORT_SCHEMA_VERSION,
-        report_id: Uuid::new_v4().to_string(),
-        zone_id: Uuid::new_v4().to_string(),
-        window_start_unix_ms: now - 60_000,
-        window_end_unix_ms: now - 1_000,
-        sequence: 1,
+        report_id: report_id.to_string(),
+        zone_id: zone_id.to_string(),
+        window_start_unix_ms: window_start,
+        window_end_unix_ms: window_end,
+        sequence,
         correction: false,
         aggregates: vec![StorageUsageAggregateV1 {
             resource_id: Uuid::new_v4().to_string(),
@@ -17,7 +27,7 @@ fn report() -> StorageUsageReportV1 {
             request_count: 1,
             resource_name: String::new(),
             storage_bytes: 0,
-            storage_gb_hours_micros: 0,
+            storage_byte_hours: 0,
         }],
         report_sha256: vec![0; 32],
         correction_of_report_id: String::new(),
@@ -51,7 +61,7 @@ fn report_rejects_unsorted_resource_lines() {
         request_count: 1,
         resource_name: String::new(),
         storage_bytes: 0,
-        storage_gb_hours_micros: 0,
+        storage_byte_hours: 0,
     };
     report.aggregates.push(second);
     assert_eq!(
@@ -77,5 +87,25 @@ fn report_rejects_cross_zone_identity() {
     assert_eq!(
         validate_report(&report, expected_zone),
         Err("STORAGE_USAGE_REPORT_ZONE_MISMATCH")
+    );
+}
+
+#[test]
+fn report_keeps_one_occupied_byte_hour_exact() {
+    let mut report = report();
+    let aggregate = &mut report.aggregates[0];
+    aggregate.resource_id.clear();
+    aggregate.resource_name = "ws-one-byte".to_string();
+    aggregate.upload_bytes = 0;
+    aggregate.download_bytes = 0;
+    aggregate.request_count = 0;
+    aggregate.storage_bytes = 1;
+    aggregate.storage_byte_hours = 1;
+    assert!(validate_report_shape(&report).is_ok());
+
+    report.aggregates[0].storage_byte_hours = 0;
+    assert_eq!(
+        validate_report_shape(&report),
+        Err("STORAGE_USAGE_REPORT_QUANTITY_INVALID")
     );
 }

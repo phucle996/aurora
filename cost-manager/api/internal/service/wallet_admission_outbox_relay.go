@@ -72,17 +72,27 @@ func (r *WalletAdmissionOutboxRelay) Run(ctx context.Context) {
 					break
 				}
 				published := true
+				connection := r.redis.Conn()
 				for _, stream := range walletAdmissionStreams {
-					if err := r.redis.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{"event_id": row.EventID.String(), "payload": payload}}).Err(); err != nil {
+					if err := connection.XAdd(ctx, &redis.XAddArgs{Stream: stream, Values: map[string]any{"event_id": row.EventID.String(), "payload": payload}}).Err(); err != nil {
 						_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
 						published = false
 						break
 					}
-					if err := r.redis.Do(ctx, "WAITAOF", 1, 1, 500).Err(); err != nil {
+				}
+				if published {
+					aofAcks, err := connection.Do(ctx, "WAITAOF", 1, 1, 500).Int64Slice()
+					if err != nil {
 						_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
 						published = false
-						break
+					} else if len(aofAcks) != 2 || aofAcks[0] < 1 || aofAcks[1] < 1 {
+						_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, fmt.Sprintf("Redis admission durability fence not met: %v", aofAcks))
+						published = false
 					}
+				}
+				if err := connection.Close(); err != nil && published {
+					_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, err.Error())
+					published = false
 				}
 				if !published {
 					break

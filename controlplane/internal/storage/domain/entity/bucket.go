@@ -109,8 +109,8 @@ type DeleteTenantBucket struct {
 	UserID      uuid.UUID
 }
 
-// StorageAccessSession is the short-lived Central authorization projection
-// consumed by ACR and mirrored to the target Zone. It is never an S3 secret.
+// StorageAccessSession is the short-lived command that creates a capability
+// record in the target Zone. The command never creates a Central credential.
 type StorageAccessSession struct {
 	AccessSessionID      uuid.UUID
 	BindingHash          string
@@ -123,4 +123,10 @@ type StorageAccessSession struct {
 	KeyPrefix            string
 	ExpiresAtUnixSeconds uint64
 	PolicyRevision       uint64
+}
+
+type StorageAccessSessionStatus struct {
+	State       string
+	CompletedAt *time.Time
+	ErrorCode   *string
 }

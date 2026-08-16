@@ -23,9 +23,10 @@ const STORAGE_USAGE_GROUP: &str = "cost-engine-storage-metering-v1";
 const STORAGE_USAGE_DLQ: &str = "aurora:storage:usage:reports:dlq";
 const STORAGE_USAGE_LOCK_PREFIX: &str = "storage:report:settlement:lock";
 const STORAGE_USAGE_FENCING_COUNTER: &str = "storage:report:settlement:fencing_counter";
-const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_AGGREGATES: usize = 100_000;
+const MAX_REPORT_BYTES: usize = 512 * 1024;
+const MAX_AGGREGATES: usize = 10_000;
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1_000;
+const MAX_REPORT_AGE_MS: i64 = 30 * 86_400_000;
 const HOURLY_WINDOW_MS: i64 = 3_600_000;
 const NETWORK_IN_CHARGE_KIND: &str = "storage.network_in.byte";
 const NETWORK_OUT_CHARGE_KIND: &str = "storage.network_out.byte";
@@ -1071,7 +1072,7 @@ fn validate_report_shape(report: &StorageUsageReportV1) -> Result<(), &'static s
     }
     let now = Utc::now().timestamp_millis();
     if report.window_end_unix_ms > now.saturating_add(MAX_CLOCK_SKEW_MS)
-        || report.window_start_unix_ms < now.saturating_sub(7 * 86_400_000)
+        || report.window_start_unix_ms < now.saturating_sub(MAX_REPORT_AGE_MS)
     {
         return Err("STORAGE_USAGE_REPORT_TIME_INVALID");
     }

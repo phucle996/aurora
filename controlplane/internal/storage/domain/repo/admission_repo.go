@@ -2,8 +2,8 @@ package storageRepoInterface
 
 import "context"
 
-// WalletAdmissionRepo reads the local Storage wallet-admission projection.
+// CommercialAdmissionRepo reads the local Storage commercial-admission projection.
 // It never calls Billing at request time; a missing or stale projection denies.
-type WalletAdmissionRepo interface {
+type CommercialAdmissionRepo interface {
 	RequireOwnerAdmission(ctx context.Context, ownerID, ownerType string) error
 }

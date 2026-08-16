@@ -5,8 +5,8 @@ use prost::Message;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::storage_admission_proto::StorageAdmissionChangedV1;
 use crate::transfer_ticket::config::Config;
-use crate::wallet_admission_proto::WalletAdmissionChangedV1;
 use crate::zone_control_kafka::ControlKafka;
 use crate::zone_control_state::{StorageAdmission, ZoneControlState};
 
@@ -20,7 +20,7 @@ pub(crate) async fn run_projection(
     const ASSIGNMENT_KEY: &str = "assignment.storage_admission.0";
     let expected_zone = Uuid::parse_str(&config.zone_id)
         .map_err(|_| "ZONE_ID is invalid for Storage admission projection".to_string())?;
-    let topic = kafka.storage_wallet_admission_topic(&config.zone_id);
+    let topic = kafka.storage_commercial_admission_topic(&config.zone_id);
     while !shutdown.is_cancelled() {
         let (consumer, fence) = match kafka
             .consumer(
@@ -72,18 +72,20 @@ pub(crate) async fn run_projection(
                         .await?;
                     continue;
                 };
-                let event = match WalletAdmissionChangedV1::decode(value.as_ref()) {
+                let event = match StorageAdmissionChangedV1::decode(value.as_ref()) {
                     Ok(event)
-                        if event.event_id != ""
-                            && event.wallet_version > 0
-                            && (event.admission_mode == "ALLOW"
-                                || event.admission_mode == "SUSPEND_BILLABLE")
-                            && ((event.admission_mode == "ALLOW"
+                        if !event.event_id.is_empty()
+                            && event.policy_version > 0
+                            && (event.decision == "ALLOW"
+                                || event.decision == "SUSPEND_BILLABLE")
+                            && ((event.decision == "ALLOW"
                                 && event.restriction_reason.is_empty())
-                                || (event.admission_mode == "SUSPEND_BILLABLE"
+                                || (event.decision == "SUSPEND_BILLABLE"
                                     && !event.restriction_reason.is_empty()))
                             && (event.owner_type == "PERSONAL" || event.owner_type == "TENANT")
-                            && event.storage_targets.len() == 1 =>
+                            && !event.resource_id.is_empty()
+                            && !event.resource_name.is_empty()
+                            && !event.zone_id.is_empty() =>
                     {
                         event
                     }
@@ -102,10 +104,12 @@ pub(crate) async fn run_projection(
                         continue;
                     }
                 };
-                let target = &event.storage_targets[0];
-                if target.zone_id != expected_zone.to_string()
-                    || Uuid::parse_str(&target.resource_id).is_err()
-                    || target.resource_name.is_empty()
+                let resource_id = Uuid::parse_str(&event.resource_id).ok();
+                if event.zone_id != expected_zone.to_string()
+                    || resource_id.is_none_or(|value| value.is_nil())
+                    || event.resource_name.len() > 255
+                    || (!event.resource_name.starts_with("ws-")
+                        && !event.resource_name.starts_with("tn-"))
                     || Uuid::parse_str(&event.event_id).is_err()
                 {
                     tracing::warn!(event_code = "ZONE_STORAGE_ADMISSION_EVENT_SCOPE_REJECTED");
@@ -175,10 +179,10 @@ pub(crate) async fn run_projection(
                     Some(parsed.timestamp())
                 };
                 let admission = StorageAdmission {
-                    resource_id: target.resource_id.clone(),
-                    resource_name: target.resource_name.clone(),
-                    wallet_version: event.wallet_version,
-                    admission_mode: event.admission_mode.clone(),
+                    resource_id: event.resource_id.clone(),
+                    resource_name: event.resource_name.clone(),
+                    policy_version: event.policy_version,
+                    decision: event.decision.clone(),
                     restriction_reason: if event.restriction_reason.is_empty() {
                         None
                     } else {
@@ -189,10 +193,10 @@ pub(crate) async fn run_projection(
                     source_event_id: event.event_id.clone(),
                 };
                 state
-                    .update_storage_admission(&target.resource_id, admission.clone())
+                    .update_storage_admission(&event.resource_id, admission.clone())
                     .await?;
                 state
-                    .update_storage_admission_name_index(&target.resource_name, admission)
+                    .update_storage_admission_name_index(&event.resource_name, admission)
                     .await?;
                 kafka
                     .commit(
@@ -214,5 +218,31 @@ async fn wait_or_cancel(shutdown: &CancellationToken, duration: Duration) -> boo
     tokio::select! {
         _ = shutdown.cancelled() => false,
         _ = tokio::time::sleep(duration) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_owned_admission_proto_round_trips() {
+        let event = StorageAdmissionChangedV1 {
+            event_id: Uuid::new_v4().to_string(),
+            owner_id: Uuid::new_v4().to_string(),
+            owner_type: "PERSONAL".to_string(),
+            policy_version: 7,
+            decision: "ALLOW".to_string(),
+            restriction_reason: String::new(),
+            effective_at: "2026-08-16T10:00:00Z".to_string(),
+            valid_until: String::new(),
+            resource_id: Uuid::new_v4().to_string(),
+            resource_name: "ws-contract-bucket".to_string(),
+            zone_id: Uuid::new_v4().to_string(),
+        };
+        let decoded = StorageAdmissionChangedV1::decode(event.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, event);
+        assert_eq!(decoded.policy_version, 7);
+        assert_eq!(decoded.decision, "ALLOW");
     }
 }

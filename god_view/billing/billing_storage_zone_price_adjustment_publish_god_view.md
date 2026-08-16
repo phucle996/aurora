@@ -44,10 +44,11 @@ sequenceDiagram
 
 ## Phase 2 — Cost API immutable adjustment transaction
 
-The handler reads the verified Zone from request context. The service parses
-the two integer strings, requires numerator nonnegative and denominator
-positive, normalizes time to UTC microseconds and computes a checksum over
-Zone, version, effective time and rational multiplier. The repository locks
+The handler reads the verified Zone from request context, parses the two
+integer strings and rejects malformed transport input. The service requires
+numerator nonnegative and denominator positive, normalizes time to UTC
+microseconds and computes a checksum over Zone, version, effective time and
+rational multiplier. The repository locks
 the latest adjustment for that Zone, performs OCC/effective-window checks,
 closes the previous window and inserts the new version atomically.
 
@@ -88,9 +89,10 @@ from Storage.
 
 ## Code map
 
-- `cost-manager/api/internal/transport/http/handler/pricing_schedule_handler.go`
+- `cost-manager/api/internal/transport/http/handler/storage_pricing_handler.go`
 - `cost-manager/api/internal/service/pricing_schedule_service.go`
 - `cost-manager/api/internal/repository/pricing_schedule_repo.go`
+- `cost-console/src/page/pricing-schedules/StorageZoneAdjustmentPanel.tsx`
 - `cost-manager/api/migrations/000003_tables_pricing.up.sql`
 - `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - `cost-manager/engine/src/engine/runtime.rs`

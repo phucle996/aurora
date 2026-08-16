@@ -1,8 +1,8 @@
 # Personal Storage Transfer Ticket Issue and Revoke — God View
 
 This workflow turns an already prepared personal storage access session into a
-short-lived, one-time browser transfer capability. ACR signs only a generic
-verified session and operation envelope. Zone Control reads the storage
+short-lived, one-time browser transfer capability. ACR signs only the verified
+actor/workspace/Zone/session and exact operation envelope. Zone Control reads the storage
 projection and is the only component that converts it into a public object
 path. No access key, secret key, STS credential, or presigned URL is returned.
 
@@ -62,8 +62,9 @@ headers. It does not read Zone KV or storage policy.
 
 | Key | Owner | Rule |
 |---|---|---|
-| `storage_access:{access_session_id}` | Auth-State Redis | Central binding of actor, bucket, Zone, actions, prefix and expiry. |
-| `AURORA_ZONE_ACCESS/{access_session_id}` | Zone Control | Durable Zone projection; missing means not ready. |
+| Schema-2 ACR assertion | Vault-signed request facts | Authenticated actor/workspace/Zone/session, operation and exact method/path/body; no Storage policy. |
+| `AURORA_ZONE_ACCESS/{access_session_id}` | Zone Control | Sole capability SoT; missing means not ready. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | Zone Control | Issue requires current `ALLOW` using the resource id derived from the Zone access record. |
 | `AURORA_ZONE_TRANSFER/{ticket_id}` | Issuer and Public Authorizer | File KV, history 1, bounded TTL, CAS state. |
 | `operation_id` | ACR and audit | Correlates issue or revoke attempts. |
 | `jti` | Zone authorizer replay cache | One assertion use per process. |
@@ -86,8 +87,8 @@ sequenceDiagram
     B->>CE: POST transfer ticket route with Cookie and JSON
     CE->>A: CheckRequest method path headers body
     A->>A: CORS rate limit body size and CSRF
-    A->>AR: Verify Trinity session and resolve Zone
-    A->>A: Validate capability operation and session UUID
+    A->>AR: Verify Trinity session and resolve workspace and Zone
+    A->>A: Validate capability operation session workspace and Zone UUIDs
     A->>A: Hash exact path and body
     A->>V: Sign assertion with Zone Control key
     alt invalid session or envelope
@@ -109,14 +110,16 @@ path hash binds the assertion to that exact ticket and prevents path replay.
 Zone Envoy Lua preserves only ACR assertion headers and the opaque access
 session marker. The Rust authorizer verifies signature, issuer, audience, Zone,
 method/path/body hashes, time window and replay `jti`. It then reads the Zone
-access projection and checks actor, actions, bucket, prefix, expiry and policy
-revision.
+access record, binds actor/workspace/Zone/session, checks record integrity,
+expiry, actions, bucket, prefix and policy revision, and uses that record's
+resource id for wallet admission.
 
 ```mermaid
 sequenceDiagram
     participant ZE as Zone Control Envoy
     participant ZA as Zone Control Authorizer
     participant KV as AURORA_ZONE_ACCESS
+    participant AD as AURORA_ZONE_ADMISSION
     participant ZC as Zone Control
     participant TV as AURORA_ZONE_TRANSFER
 
@@ -124,6 +127,7 @@ sequenceDiagram
     ZA->>ZA: Verify Ed25519 replay and request binding
     ZA->>KV: GET access session projection
     KV-->>ZA: Actor Zone bucket actions prefix expiry
+    ZA->>AD: Require ALLOW for record resource id on issue
     ZA->>ZA: Validate upload or download object scope
     ZA->>ZA: Encode TransferGrantV1 protobuf bytes and base64url header
     ZA-->>ZE: OkResponse transfer grant header
@@ -177,7 +181,8 @@ assertion.
 - A second request with the same ticket is denied even inside TTL.
 - Ticket KV retention is five minutes and ticket TTL is shorter.
 - ACR and Zone dependency failures fail closed.
-- No browser header can select tenant, workspace, bucket owner or Zone.
+- Browser workspace selection is signed by ACR and must equal the Zone record;
+  it cannot select a different capability owner, resource, bucket or Zone.
 - Ticket issue and revoke are generic at ACR but storage-specific at Zone
   Control, preserving dependency direction.
 

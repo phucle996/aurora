@@ -2,7 +2,6 @@ package storageSvcImpl
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 	"controlplane/pkg/crypto"
 
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -27,8 +25,7 @@ import (
 // [COMMENT]: PersonalBucketServiceImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Cá nhân.
 type PersonalBucketSvcImpl struct {
 	repo      storageRepoInterface.PersonalBucketRepo
-	admission storageRepoInterface.WalletAdmissionRepo
-	authRds   *goredis.Client
+	admission storageRepoInterface.CommercialAdmissionRepo
 	metrics   observability.WorkflowRecorder
 }
 
@@ -37,11 +34,10 @@ type PersonalBucketSvcImpl struct {
 // not accepted here: an access session is an authz projection, not a cache.
 func NewPersonalBucketService(
 	repo storageRepoInterface.PersonalBucketRepo,
-	admission storageRepoInterface.WalletAdmissionRepo,
-	authRds *goredis.Client,
+	admission storageRepoInterface.CommercialAdmissionRepo,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalBucketService {
-	return &PersonalBucketSvcImpl{repo: repo, admission: admission, authRds: authRds, metrics: metrics}
+	return &PersonalBucketSvcImpl{repo: repo, admission: admission, metrics: metrics}
 }
 
 // [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
@@ -62,7 +58,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	if err := s.admission.RequireOwnerAdmission(ctx, param.UserID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
 		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return nil, apperr.Wrap(err, err, "wallet_admission_denied")
+		return nil, apperr.Wrap(err, err, "commercial_admission_denied")
 	}
 
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
@@ -261,7 +257,7 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 	if quotaBytes > bucket.CapacityQuotaBytes {
 		if err := s.admission.RequireOwnerAdmission(ctx, userID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
 			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-			return apperr.Wrap(err, err, "wallet_admission_denied")
+			return apperr.Wrap(err, err, "commercial_admission_denied")
 		}
 	}
 
@@ -383,106 +379,6 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
 		}
 		return apperr.Wrap(err, err, "delete_failed")
-	}
-	result, reason = observability.ResultSuccess, observability.ReasonNone
-	return nil
-}
-
-func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, param *storageEntity.StorageAccessSession) error {
-	startedAt := time.Now()
-	result, reason := observability.ResultFailure, observability.ReasonInternal
-	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-
-	if param == nil || param.AccessSessionID == uuid.Nil || param.ResourceID == uuid.Nil || param.ActorID == uuid.Nil {
-		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
-		return apperr.Wrap(fmt.Errorf("access session identity is incomplete"), nil, "invalid_access_session")
-	}
-	if err := s.admission.RequireOwnerAdmission(ctx, param.ActorID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
-		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return apperr.Wrap(err, err, "wallet_admission_denied")
-	}
-	if param.ExpiresAtUnixSeconds <= uint64(time.Now().Unix()) {
-		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
-		return apperr.Wrap(fmt.Errorf("access session expiry is in the past"), nil, "invalid_access_session_expiry")
-	}
-
-	// The random binding is retained only as a digest. The client receives the
-	// opaque session id, while ACR binds it to the authenticated Trinity actor.
-	param.BindingHash = fmt.Sprintf("%x", sha256.Sum256([]byte(param.AccessSessionID.String()+":"+param.ActorID.String()+":"+uuid.New().String())))
-	// Auth-State Redis stores a versioned protobuf projection. The domain entity
-	// remains tag-free; this binary contract is the only Go/Rust wire boundary.
-	encoded, err := proto.Marshal(&storageproto.StorageAccessRecord{
-		SchemaVersion:        1,
-		AccessSessionId:      param.AccessSessionID.String(),
-		BindingHash:          param.BindingHash,
-		ActorId:              param.ActorID.String(),
-		ResourceId:           param.ResourceID.String(),
-		BucketName:           param.BucketName,
-		WorkspaceId:          param.WorkspaceID.String(),
-		ZoneId:               param.ZoneID.String(),
-		Actions:              append([]string(nil), param.Actions...),
-		KeyPrefix:            param.KeyPrefix,
-		ExpiresAtUnixSeconds: param.ExpiresAtUnixSeconds,
-		PolicyRevision:       param.PolicyRevision,
-	})
-	if err != nil {
-		return apperr.Wrap(err, err, "marshal_access_record_failed")
-	}
-	ttl := time.Until(time.Unix(int64(param.ExpiresAtUnixSeconds), 0))
-	if ttl <= 0 {
-		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
-		return apperr.Wrap(fmt.Errorf("access session ttl is not positive"), nil, "invalid_access_session_expiry")
-	}
-	// The opaque UUID is the lookup handle; the random digest stays inside the
-	// value and is copied to the Zone for assertion/record equality checks.
-	key := "storage_access:{" + param.AccessSessionID.String() + "}"
-
-	reqProto := &storageproto.StorageAccessPrepareRequest{
-		AccessSessionId:      param.AccessSessionID.String(),
-		BindingHash:          param.BindingHash,
-		ActorId:              param.ActorID.String(),
-		ResourceId:           param.ResourceID.String(),
-		BucketName:           param.BucketName,
-		WorkspaceId:          param.WorkspaceID.String(),
-		ZoneId:               param.ZoneID.String(),
-		Actions:              append([]string(nil), param.Actions...),
-		KeyPrefix:            param.KeyPrefix,
-		ExpiresAtUnixSeconds: param.ExpiresAtUnixSeconds,
-		PolicyRevision:       param.PolicyRevision,
-	}
-	payloadBytes, err := proto.Marshal(reqProto)
-	if err != nil {
-		return apperr.Wrap(err, err, "marshal_access_session_command_failed")
-	}
-	traceID := []byte(nil)
-	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-		tid := spanCtx.TraceID()
-		traceID = tid[:]
-	}
-	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              param.AccessSessionID,
-		ZoneID:               param.ZoneID,
-		JobTopic:             "storage.access.prepare",
-		Payload:              payloadBytes,
-		OwnerID:              param.ActorID,
-		OwnerType:            storageEntity.StorageOwnerTypePersonal,
-		ActorUserID:          &param.ActorID,
-		Status:               storageEntity.StorageOutboxStatusPending,
-		JobVersion:           1,
-		ResourceID:           param.ResourceID.String(),
-		PayloadSchemaVersion: 1,
-		TraceID:              traceID,
-		Idle:                 30,
-	}
-	// The PostgreSQL outbox is the first durability boundary. A crash before
-	// the following Redis write may prepare an unusable Zone record, but can
-	// never authorize a request because ACR has no Central Access Record.
-	if err := s.repo.CreateAccessPrepare(ctx, param, outbox); err != nil {
-		return apperr.Wrap(err, err, "create_access_session_command_failed")
-	}
-	if err := s.authRds.Set(ctx, key, encoded, ttl).Err(); err != nil {
-		result, reason = observability.ResultFailure, observability.ReasonUnavailable
-		return apperr.Wrap(err, err, "persist_access_session_failed")
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil

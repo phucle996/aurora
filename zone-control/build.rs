@@ -4,16 +4,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../proto/cost-manager/engine/storage_usage_report.proto");
     println!("cargo:rerun-if-changed=../proto/platform_transport.proto");
     println!("cargo:rerun-if-changed=../proto/zone_report.proto");
-    println!(
-        "cargo:rerun-if-changed=../proto/cost-manager/api/billing/wallet/v1/wallet_admission.proto"
-    );
+    println!("cargo:rerun-if-changed=../proto/controlplane/storage/v1/storage_admission.proto");
     prost_build::compile_protos(
         &[
             "../proto/zone/transfer_ticket.proto",
             "../proto/cost-manager/engine/storage_usage_report.proto",
             "../proto/platform_transport.proto",
             "../proto/zone_report.proto",
-            "../proto/cost-manager/api/billing/wallet/v1/wallet_admission.proto",
+            "../proto/controlplane/storage/v1/storage_admission.proto",
         ],
         &["../proto", "../proto/cost-manager/engine"],
     )?;

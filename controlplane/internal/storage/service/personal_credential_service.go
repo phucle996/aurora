@@ -25,7 +25,7 @@ import (
 type PersonalCredentialSvcImpl struct {
 	repo       storageRepoInterface.PersonalCredentialRepo
 	bucketRepo storageRepoInterface.PersonalBucketRepo
-	admission  storageRepoInterface.WalletAdmissionRepo
+	admission  storageRepoInterface.CommercialAdmissionRepo
 	metrics    observability.WorkflowRecorder
 }
 
@@ -33,7 +33,7 @@ type PersonalCredentialSvcImpl struct {
 func NewPersonalCredentialService(
 	repo storageRepoInterface.PersonalCredentialRepo,
 	bucketRepo storageRepoInterface.PersonalBucketRepo,
-	admission storageRepoInterface.WalletAdmissionRepo,
+	admission storageRepoInterface.CommercialAdmissionRepo,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalCredentialService {
 	return &PersonalCredentialSvcImpl{
@@ -50,7 +50,7 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	if err := s.admission.RequireOwnerAdmission(ctx, param.UserID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
 		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return nil, apperr.Wrap(err, err, "wallet_admission_denied")
+		return nil, apperr.Wrap(err, err, "commercial_admission_denied")
 	}
 
 	// [COMMENT]: Kiểm tra an toàn: Đảm bảo policy JSON chỉ cho phép truy cập vào đúng bucketName được truyền

@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 mod transfer_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.zone.transfer.v1.rs"));
@@ -44,10 +45,29 @@ struct AdmissionRecord {
     resource_id: String,
     #[serde(default)]
     resource_name: String,
-    wallet_version: i64,
-    admission_mode: String,
+    policy_version: i64,
+    decision: String,
     effective_at_unix_seconds: i64,
     valid_until_unix_seconds: Option<i64>,
+}
+
+// Only an exact bucket-root GET is a non-billable SDK list operation. Object
+// paths remain admission-gated even when they end in '/' or carry list-like
+// query keys, because both are valid object request shapes.
+fn is_sdk_bucket_list(method: &str, request_path: &str) -> bool {
+    if method != "GET" {
+        return false;
+    }
+    let path = request_path.split('?').next().unwrap_or_default();
+    let Some(bucket) = path.strip_prefix('/') else {
+        return false;
+    };
+    let bucket = bucket.strip_suffix('/').unwrap_or(bucket);
+    !bucket.is_empty()
+        && bucket.len() <= 255
+        && !bucket
+            .bytes()
+            .any(|byte| matches!(byte, b'/' | b'\\' | b'%'))
 }
 
 #[tonic::async_trait]
@@ -84,21 +104,7 @@ impl Authorization for PublicAuthorizer {
                 .next()
                 .unwrap_or_default()
                 .trim_start_matches('/');
-            let query = http
-                .path
-                .split_once('?')
-                .map(|(_, query)| query)
-                .unwrap_or_default();
-            let has_list_query = query.split('&').any(|parameter| {
-                let key = parameter.split('=').next().unwrap_or_default();
-                matches!(key, "list-type" | "prefix")
-            });
-            let path_segments = path
-                .split('/')
-                .filter(|segment| !segment.is_empty())
-                .count();
-            let is_list_get = http.method == "GET"
-                && (path_segments == 1 || path.ends_with('/') || has_list_query);
+            let is_list_get = is_sdk_bucket_list(&http.method, &http.path);
             if matches!(http.method.as_str(), "OPTIONS" | "HEAD" | "DELETE") || is_list_get {
                 let mut response = CheckResponse::with_status(Status::ok("authorized"));
                 response.set_http_response(
@@ -125,7 +131,7 @@ impl Authorization for PublicAuthorizer {
             .map_err(|_| Status::unavailable("Storage admission unavailable"))?;
             let Some(admission_entry) = admission_entry else {
                 return Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Storage wallet admission missing"),
+                    Status::permission_denied("Storage commercial admission missing"),
                 )));
             };
             let admission: AdmissionRecord = serde_json::from_slice(&admission_entry.value)
@@ -134,16 +140,17 @@ impl Authorization for PublicAuthorizer {
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| Status::unavailable("System clock unavailable"))?
                 .as_secs() as i64;
-            if admission.wallet_version <= 0
+            if admission.policy_version <= 0
+                || Uuid::parse_str(&admission.resource_id).is_err()
                 || admission.resource_name != bucket_name
-                || admission.admission_mode != "ALLOW"
+                || admission.decision != "ALLOW"
                 || admission.effective_at_unix_seconds > now
                 || admission
                     .valid_until_unix_seconds
                     .is_some_and(|until| until <= now)
             {
                 return Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Storage wallet admission suspended"),
+                    Status::permission_denied("Storage commercial admission suspended"),
                 )));
             }
             let mut response = CheckResponse::with_status(Status::ok("authorized"));
@@ -199,23 +206,24 @@ impl Authorization for PublicAuthorizer {
         .map_err(|_| Status::unavailable("Storage admission unavailable"))?
         .map_err(|_| Status::unavailable("Storage admission unavailable"))?;
         let admission = admission_entry
-            .ok_or_else(|| Status::permission_denied("Storage wallet admission missing"))?;
+            .ok_or_else(|| Status::permission_denied("Storage commercial admission missing"))?;
         let admission: AdmissionRecord = serde_json::from_slice(&admission.value)
             .map_err(|_| Status::unavailable("Storage admission record corrupt"))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| Status::unavailable("System clock unavailable"))?
             .as_secs();
-        if admission.wallet_version <= 0
+        if admission.policy_version <= 0
+            || Uuid::parse_str(&admission.resource_id).is_err()
             || admission.resource_id != ticket.resource_id
-            || admission.admission_mode != "ALLOW"
+            || admission.decision != "ALLOW"
             || admission.effective_at_unix_seconds > now as i64
             || admission
                 .valid_until_unix_seconds
                 .is_some_and(|until| until <= now as i64)
         {
             return Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Storage wallet admission suspended"),
+                Status::permission_denied("Storage commercial admission suspended"),
             )));
         }
         let actual_hash = format!("{:x}", Sha256::digest(secret.as_bytes()));
@@ -368,4 +376,35 @@ fn parsed<T: std::str::FromStr>(
         Ok(value) => value.parse().map_err(|_| format!("{name} is invalid"))?,
         Err(_) => default,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_sdk_bucket_list;
+
+    #[test]
+    fn bucket_root_get_is_the_only_sdk_list_exemption() {
+        for path in [
+            "/personal-bucket",
+            "/personal-bucket/",
+            "/personal-bucket?list-type=2&prefix=folder/",
+        ] {
+            assert!(is_sdk_bucket_list("GET", path), "expected list: {path}");
+        }
+
+        for path in [
+            "/personal-bucket/object",
+            "/personal-bucket/folder/",
+            "/personal-bucket/object?prefix=ignored",
+            "/personal-bucket%2Fobject",
+            "/personal-bucket//",
+            "/",
+        ] {
+            assert!(
+                !is_sdk_bucket_list("GET", path),
+                "expected admission-gated object request: {path}"
+            );
+        }
+        assert!(!is_sdk_bucket_list("PUT", "/personal-bucket"));
+    }
 }

@@ -23,12 +23,12 @@ import (
 // [COMMENT]: TenantBucketSvcImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Doanh nghiệp.
 type TenantBucketSvcImpl struct {
 	repo      storageRepoInterface.TenantBucketRepo
-	admission storageRepoInterface.WalletAdmissionRepo
+	admission storageRepoInterface.CommercialAdmissionRepo
 	metrics   observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewTenantBucketService khởi tạo instance thực thi TenantBucketService.
-func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo, admission storageRepoInterface.WalletAdmissionRepo, metrics observability.WorkflowRecorder) storageSvcInterface.TenantBucketService {
+func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo, admission storageRepoInterface.CommercialAdmissionRepo, metrics observability.WorkflowRecorder) storageSvcInterface.TenantBucketService {
 	return &TenantBucketSvcImpl{
 		repo:      repo,
 		admission: admission,
@@ -55,7 +55,7 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 	if err := s.admission.RequireOwnerAdmission(ctx, param.TenantID.String(), string(storageEntity.StorageOwnerTypeTenant)); err != nil {
 		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return nil, apperr.Wrap(err, err, "wallet_admission_denied")
+		return nil, apperr.Wrap(err, err, "commercial_admission_denied")
 	}
 
 	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào với UUID v7
@@ -218,7 +218,7 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	if quotaBytes > bucket.CapacityQuotaBytes {
 		if err := s.admission.RequireOwnerAdmission(ctx, bucket.TenantID.String(), string(storageEntity.StorageOwnerTypeTenant)); err != nil {
 			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-			return apperr.Wrap(err, err, "wallet_admission_denied")
+			return apperr.Wrap(err, err, "commercial_admission_denied")
 		}
 	}
 

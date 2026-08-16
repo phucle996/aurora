@@ -198,14 +198,14 @@ available for cleanup.
 ```mermaid
 sequenceDiagram
     participant S as PersonalCredentialService
-    participant W as WalletAdmissionRepository
+    participant W as CommercialAdmissionRepository
     participant R as PersonalCredentialRepository
     participant DB as Controlplane PostgreSQL
 
     S->>W: RequireOwnerAdmission(user_id, PERSONAL)
     W->>DB: Read owner admission projection
     alt denied or stale
-        W-->>S: ErrWalletAdmissionDenied
+        W-->>S: ErrCommercialAdmissionDenied
     else ALLOW
         S->>R: Create credential and protected Zone command
         R->>DB: Lock bucket and commit credential/outbox

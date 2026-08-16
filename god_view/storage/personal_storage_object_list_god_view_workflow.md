@@ -10,12 +10,13 @@ this access id to one personal bucket, actor, workspace and Zone.
 Browser calls
 `GET /zone-control/v1/storage/buckets/{physical_bucket}/objects?list-type=2&...`
 with Trinity cookies and `x-aurora-access-session-id`. This path is an
-ACR-local authorization boundary, not a neutral owner route. ACR requires an
-authenticated Trinity session and requires its verified claim Zone to equal the
-Central access record Zone. It does not run Controlplane `Authorize`; the
-durable repository authorization occurred when creating access session.
+ACR-local authentication and request-attestation boundary, not a neutral owner
+route. ACR requires an authenticated Trinity session and signs actor,
+workspace, Zone, session id and exact request facts. It does not read or decide
+Storage policy and does not run Controlplane `Authorize`. Zone Control reads
+the capability authority and makes the complete authorization decision.
 
-For list action, ACR requires `ListBucket` in session actions. Query must have
+For list action, Zone Control requires `ListBucket` in session actions. Query must have
 exactly one `list-type=2`. `prefix`, if session key scope is non-empty, is
 required and must begin with `key_prefix`. Only reviewed query parameters are
 permitted: `prefix`, `delimiter`, `max-keys` from 1 to 1000,
@@ -30,7 +31,7 @@ double slash, encoded percent and malformed percent encoding fail closed.
 | Header | Use |
 |---|---|
 | `Cookie` | Envoy supplies it to ACR for Trinity session verification. It is stripped by Zone Control Envoy before MinIO. |
-| `x-aurora-access-session-id` | Opaque UUID lookup handle in ACR Auth-State Redis. It is overwritten/injected toward Zone and stripped after Zone authorization. |
+| `x-aurora-access-session-id` | Opaque UUID correlation handle. ACR validates its shape, overwrites it toward Zone and never treats it as a bearer credential. |
 | `Origin` | ACR CORS enforcement. |
 | `X-Requested-With` or `Sec-Fetch-Site` | Not required for `GET`, but may be present. |
 | `traceparent` | Normal propagation, not part of access assertion. |
@@ -39,7 +40,7 @@ double slash, encoded percent and malformed percent encoding fail closed.
 
 | Field | Contract |
 |---|---|
-| `physical_bucket` | Must equal `StorageAccessRecord.bucket_name` byte-for-byte in external route. |
+| `physical_bucket` | Zone authorizer requires it to equal the Zone access record bucket byte-for-byte. |
 | `list-type=2` | Mandatory exactly once. |
 | `prefix` | Optional only when session scope is empty. Required and scope-prefixed when `key_prefix` is non-empty. |
 | `max-keys` | Optional `1..1000`. |
@@ -61,7 +62,7 @@ double slash, encoded percent and malformed percent encoding fail closed.
 | Status | Payload |
 |---|---|
 | `200` | MinIO `ListObjectsV2` XML. Cloud Console parses `Contents`, size, last modified and continuation token. |
-| `401` / `403` | ACR denial for session, action, session record or canonical request mismatch. |
+| `401` / `403` | ACR authentication/request-shape denial or Zone capability/admission/request-binding denial. |
 | `429` | ACR Zone Control rate limit. |
 | `503` | Zone authorizer unavailable, overloaded dependency or missing Zone access projection. |
 | `4xx` / `5xx` from MinIO | S3 error body after authenticated proxying. |
@@ -70,37 +71,33 @@ double slash, encoded percent and malformed percent encoding fail closed.
 
 | Key / component | Store | Operation | Invariant |
 |---|---|---|---|
-| `storage_access:{access_session_id}` | Central Auth-State Redis | Protobuf record GET by ACR | Schema 1, actor id, session id, Zone, expiry and policy revision must all bind claims. |
-| Assertion `jti` | ACR signed JSON | One assertion per request, expires in 10 seconds | Includes exact external method, full path including query SHA-256, empty body SHA-256 and scope. |
+| Assertion `jti` | ACR signed JSON | One assertion per request, expires in 10 seconds | Schema 2 includes authenticated actor/workspace/Zone/session plus exact external method, full path SHA-256, empty body SHA-256 and classified action; it contains no resource policy. |
 | Zone authorizer replay cache | Per-process Moka | Insert assertion `jti` with 30 second TTL | Replay shield is local only. |
-| `AURORA_ZONE_ACCESS/{access_session_id}` | JetStream KV | Authorizer watch/direct read | Must equal every identity, resource, scope/action and expiry field from assertion. |
+| `AURORA_ZONE_ACCESS/{access_session_id}` | JetStream KV | Authorizer watch/direct read | Sole capability SoT for resource, bucket, action set, prefix, expiry and policy revision; actor/workspace/Zone must bind the assertion. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | JetStream KV | Zone authorizer read | Current `ALLOW` admission is required before MinIO. |
 | Central Zone cluster | Central Envoy | Route prefix to `zone_control_edge_gateway_cluster` | Current config is a static `zone-z1` Kubernetes DNS endpoint. A non-z1 assertion fails closed at Zone authorizer; production needs xDS per Zone before other Zones work. |
 
 ## Phase 1 — Client → Envoy → ACR assertion issue
 
 ACR performs CORS, Zone Control pre-auth limit, Trinity verification, post-auth
-limit, and CSRF method check. It loads opaque session record from dedicated
-Auth-State Redis. It rejects absent/corrupt/expired records, actor or claim-Zone
-mismatch, disallowed action, bucket/prefix/query mismatch and any non-empty
-body. It creates assertion JSON, base64url encodes it and requests Vault Transit
-signature with configured key id. It removes caller workspace and cryptographic
-headers before overwriting signed headers to Central Envoy.
+limit and request-shape classification. Its Auth-State read is only the normal
+Trinity user/device session lookup. It validates UUID context and the reviewed
+route, then creates schema-2 request-fact JSON, base64url encodes it and requests
+Vault Transit signature. It never reads a Storage capability record.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant E as Central Envoy
     participant A as ACR ExtAuthz
-    participant AR as Auth-State Redis
+    participant AR as Auth-State Trinity session
     participant V as Vault Transit
 
     B->>E: GET Zone Control list path and access session header
     E->>A: CheckRequest exact path query headers empty body
-    A->>AR: Verify Trinity session
-    A->>A: CORS rate limit and Zone binding checks
-    A->>AR: GET storage access protobuf record
-    A->>A: Require ListBucket and canonical list query scope
-    alt record or request is invalid
+    A->>AR: Verify Trinity user/device session
+    A->>A: CORS rate limits UUID context and reviewed route/body shape
+    alt authentication or request shape is invalid
         A-->>E: Deny 401, 403 or 429
         E-->>B: Local error with no Zone call
     else valid request
@@ -146,24 +143,26 @@ sequenceDiagram
 ## Phase 3 — Zone authorization and MinIO response
 
 Zone authorizer verifies Ed25519 key id, assertion size and base64 JSON, issuer,
-audience, schema, own Zone id, 10 second lifetime with clock skew, exact method,
-external-path hash and body hash. It inserts assertion `jti` into local replay
-cache. It reads Zone access record and checks every field, `ListBucket` action,
-scope and canonical query once more. It allows Envoy to call private MinIO; the
-reverse XML response is returned without assertion headers.
+audience, schema, own Zone id, 10 second lifetime, exact method, path hash and
+body hash. It inserts assertion `jti` into local replay cache. It reads the Zone
+access record, binds session/actor/workspace/Zone, checks record integrity,
+expiry, `ListBucket`, bucket/prefix/query, then requires current resource
+admission. Only it derives trusted resource and bucket headers for MinIO.
 
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Control Authorizer
     participant K as Assertion keyring and replay cache
     participant KV as AURORA_ZONE_ACCESS
+    participant AD as AURORA_ZONE_ADMISSION
     participant ZE as Zone Control Envoy
     participant M as Private MinIO
     participant B as Browser
 
     ZA->>K: Verify signature lifetime request hash and one-time jti
     ZA->>KV: Read matching access record
-    alt all fences match
+    ZA->>AD: Require current ALLOW for record resource id
+    alt all fences and admission match
         KV-->>ZA: matching record
         ZA-->>ZE: Allow and inject audit headers
         ZE->>M: GET rewritten bucket query with Envoy SigV4
@@ -187,7 +186,8 @@ sequenceDiagram
 | Assertion replay at same replica | Moka replay cache rejects it. Cross-replica exactly-once is not claimed; mutating operations carry `operation_id`. |
 | Client sends forged Aurora/S3 auth headers | ACR overwrites trusted headers and Zone Lua strips all caller S3/Aurora material before Envoy signs. |
 | Central route points to wrong Zone | Assertion Zone mismatch denies at that Zone. Current static dev cluster therefore has availability, not cross-Zone authorization, limitation. |
-| Query canonicalization disagreement | Both ACR and Zone authorizer apply the same strict path/query contract before Envoy rewrite. |
+| Query canonicalization disagreement | ACR signs the exact bytes; Zone alone applies the capability and strict path/query contract before Envoy rewrite. |
+| Wallet admission missing or suspended | Zone denies before MinIO even if the access record and signature are otherwise valid. |
 | MinIO is down | Authorized request may return upstream `5xx`; access record is unchanged. |
 
 ## Code map

@@ -18,16 +18,14 @@ import (
 )
 
 type PricingScheduleHandler struct {
-	listService       billingSvcInterface.PricingScheduleListService
-	detailService     billingSvcInterface.PricingScheduleDetailService
-	estimateService   billingSvcInterface.StorageEstimateService
-	metadataService   billingSvcInterface.PricingScheduleMetadataService
-	publishService    billingSvcInterface.PricingScheduleVersionPublishService
-	adjustmentService billingSvcInterface.StorageZoneAdjustmentPublishService
+	listService     billingSvcInterface.PricingScheduleListService
+	detailService   billingSvcInterface.PricingScheduleDetailService
+	metadataService billingSvcInterface.PricingScheduleMetadataService
+	publishService  billingSvcInterface.PricingScheduleVersionPublishService
 }
 
-func NewPricingScheduleHandler(list billingSvcInterface.PricingScheduleListService, detail billingSvcInterface.PricingScheduleDetailService, estimate billingSvcInterface.StorageEstimateService, metadata billingSvcInterface.PricingScheduleMetadataService, publish billingSvcInterface.PricingScheduleVersionPublishService, adjustment billingSvcInterface.StorageZoneAdjustmentPublishService) *PricingScheduleHandler {
-	return &PricingScheduleHandler{listService: list, detailService: detail, estimateService: estimate, metadataService: metadata, publishService: publish, adjustmentService: adjustment}
+func NewPricingScheduleHandler(list billingSvcInterface.PricingScheduleListService, detail billingSvcInterface.PricingScheduleDetailService, metadata billingSvcInterface.PricingScheduleMetadataService, publish billingSvcInterface.PricingScheduleVersionPublishService) *PricingScheduleHandler {
+	return &PricingScheduleHandler{listService: list, detailService: detail, metadataService: metadata, publishService: publish}
 }
 
 func (h *PricingScheduleHandler) ListPricingSchedules(c *gin.Context) {
@@ -82,32 +80,6 @@ func (h *PricingScheduleHandler) GetPricingScheduleDetail(c *gin.Context) {
 		latestVersion = pricingScheduleDetailVersionResponse(*detail, brackets)
 	}
 	apires.RespondSuccess(c, gin.H{"id": detail.ID, "code": detail.Code, "display_name": detail.DisplayName, "charge_kind_code": detail.ChargeKindCode, "pricing_model": detail.PricingModel, "currency": detail.Currency, "metadata_version": detail.MetadataVersion, "latest_version": latestVersion}, "pricing schedule")
-}
-
-func (h *PricingScheduleHandler) EstimateStorage(c *gin.Context) {
-	const op = "handler.pricing_schedule.estimate_storage"
-	capacity, err := strconv.ParseInt(strings.TrimSpace(c.Query("capacity_bytes")), 10, 64)
-	if err != nil || capacity <= 0 || capacity > 1<<60 {
-		apires.RespondBadRequest(c, "capacity_bytes must be a positive integer no larger than 1<<60")
-		return
-	}
-	zoneID, ok := pkgcontext.GetZoneID(c, op)
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 2*time.Second)
-	defer cancel()
-	estimate, err := h.estimateService.EstimateStorage(ctx, capacity, zoneID)
-	if err != nil {
-		if errors.Is(err, billingTaxonomy.ErrInvalidArgument) || errors.Is(err, billingTaxonomy.ErrInvalidPricingBrackets) {
-			apires.RespondBadRequest(c, "invalid storage estimate request")
-		} else {
-			logger.HandlerError(c, op, err)
-			apires.RespondServiceUnavailable(c, "storage pricing is not available")
-		}
-		return
-	}
-	apires.RespondSuccess(c, gin.H{"capacity_bytes": strconv.FormatInt(estimate.CapacityBytes, 10), "hourly_estimate_micro_units": strconv.FormatInt(estimate.HourlyMicroUnits, 10), "currency": estimate.Currency, "pricing_schedule_code": estimate.PricingScheduleCode, "pricing_schedule_id": estimate.PricingScheduleID, "pricing_schedule_version_id": estimate.PricingScheduleVersionID, "pricing_version": estimate.PricingVersion, "pricing_checksum": estimate.PricingChecksum, "pricing_effective_from": estimate.PricingEffectiveFrom, "rate_adjustment_id": estimate.RateAdjustmentID, "rate_adjustment_version": estimate.RateAdjustmentVersion, "rate_adjustment_checksum": estimate.RateAdjustmentChecksum, "rate_adjustment_numerator": strconv.FormatInt(estimate.RateAdjustmentNumerator, 10), "rate_adjustment_denominator": strconv.FormatInt(estimate.RateAdjustmentDenominator, 10), "estimated_at": estimate.EstimatedAt}, "storage estimate")
 }
 
 func (h *PricingScheduleHandler) UpdatePricingScheduleMetadata(c *gin.Context) {
@@ -178,59 +150,6 @@ func (h *PricingScheduleHandler) CreatePricingScheduleVersion(c *gin.Context) {
 		return
 	}
 	apires.RespondCreated(c, pricingScheduleVersionResponse(*created, publishedBrackets), "pricing schedule version published")
-}
-
-func (h *PricingScheduleHandler) CreateStorageZonePriceAdjustment(c *gin.Context) {
-	const op = "handler.pricing_schedule.create_storage_zone_adjustment"
-	actor, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
-		return
-	}
-	zoneID, ok := pkgcontext.GetZoneID(c, op)
-	if !ok {
-		return
-	}
-	var req dto.CreateStorageZonePriceAdjustmentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid Storage Zone price adjustment payload")
-		return
-	}
-	numerator, err := strconv.ParseInt(strings.TrimSpace(req.MultiplierNumerator), 10, 64)
-	if err != nil {
-		apires.RespondBadRequest(c, "multiplier BIGINT fields must be decimal strings within int64 range")
-		return
-	}
-	denominator, err := strconv.ParseInt(strings.TrimSpace(req.MultiplierDenominator), 10, 64)
-	if err != nil {
-		apires.RespondBadRequest(c, "multiplier BIGINT fields must be decimal strings within int64 range")
-		return
-	}
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-	created, err := h.adjustmentService.CreateStorageZonePriceAdjustment(ctx, entity.StorageZoneAdjustmentPublishCommand{
-		ZoneID: zoneID, ExpectedLatestVersion: req.ExpectedLatestVersion,
-		EffectiveFrom: req.EffectiveFrom, ChangeReason: req.ChangeReason, CreatedBy: actor,
-		MultiplierNumerator: numerator, MultiplierDenominator: denominator,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, billingTaxonomy.ErrStorageZoneAdjustmentConflict):
-			apires.RespondConflict(c, "STORAGE_ZONE_PRICE_ADJUSTMENT_VERSION_CONFLICT")
-		case errors.Is(err, billingTaxonomy.ErrInvalidArgument):
-			apires.RespondBadRequest(c, "invalid Storage Zone price adjustment")
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "failed to publish Storage Zone price adjustment")
-		}
-		return
-	}
-	apires.RespondCreated(c, gin.H{
-		"id": created.ID, "zone_id": created.ZoneID, "version_number": created.VersionNumber,
-		"status": created.Status, "effective_from": created.EffectiveFrom.UTC().Format(time.RFC3339Nano),
-		"effective_to": nil, "multiplier_numerator": strconv.FormatInt(created.MultiplierNumerator, 10),
-		"multiplier_denominator": strconv.FormatInt(created.MultiplierDenominator, 10),
-		"checksum":               created.Checksum,
-	}, "Storage Zone price adjustment published")
 }
 
 func pricingScheduleVersionResponse(version entity.PricingScheduleVersionPublished, publishedBrackets []entity.PricingScheduleVersionPublishBracket) gin.H {

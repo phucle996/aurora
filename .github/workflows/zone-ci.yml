@@ -74,7 +74,7 @@ jobs:
           if $all || grep -Eq '^(dataplane/|proto/dataplane/|proto/(managed_service|platform_transport|zone_report)\.proto$)' "$RUNNER_TEMP/changed-files"; then echo "dataplane=true" >> "$GITHUB_OUTPUT"; else echo "dataplane=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^zone-runtime-stream/' "$RUNNER_TEMP/changed-files"; then echo "runtime_stream=true" >> "$GITHUB_OUTPUT"; else echo "runtime_stream=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^zone-control-edge-gateway/(authorizer/|envoy\.yaml$)' "$RUNNER_TEMP/changed-files"; then echo "authorizer=true" >> "$GITHUB_OUTPUT"; else echo "authorizer=false" >> "$GITHUB_OUTPUT"; fi
-          if $all || grep -Eq '^(zone-control/|proto/zone/transfer_ticket.proto|proto/cost-manager/engine/storage_usage_report.proto)' "$RUNNER_TEMP/changed-files"; then echo "zone_control=true" >> "$GITHUB_OUTPUT"; else echo "zone_control=false" >> "$GITHUB_OUTPUT"; fi
+          if $all || grep -Eq '^(zone-control/|proto/zone/transfer_ticket.proto|proto/cost-manager/engine/storage_usage_report.proto|proto/controlplane/storage/v1/storage_admission.proto)' "$RUNNER_TEMP/changed-files"; then echo "zone_control=true" >> "$GITHUB_OUTPUT"; else echo "zone_control=false" >> "$GITHUB_OUTPUT"; fi
           if $all || grep -Eq '^(zone-public-edge-gateway/(authorizer/|envoy\.yaml$)|proto/zone/transfer_ticket.proto)' "$RUNNER_TEMP/changed-files"; then echo "public_authorizer=true" >> "$GITHUB_OUTPUT"; else echo "public_authorizer=false" >> "$GITHUB_OUTPUT"; fi
 
   dataplane:

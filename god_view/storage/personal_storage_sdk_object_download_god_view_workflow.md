@@ -2,7 +2,7 @@
 
 This is the direct S3-compatible personal download path for a provisioned
 access key. It has no browser transfer ticket and no user-session context. The
-Public Authorizer still enforces the Zone wallet admission projection before a
+Public Authorizer still enforces the Zone commercial admission projection before a
 GET reaches MinIO.
 
 ## API-scope contract
@@ -10,6 +10,11 @@ GET reaches MinIO.
 The SDK sends `GET /{bucket}/{object-key}` to the Zone Public Edge with SigV4.
 The bucket name selects the admission name index; the client cannot select a
 different resource, wallet, Zone or owner by header.
+
+Only `GET /{bucket}` or `GET /{bucket}/` is classified as a non-billable bucket
+list and exempt from wallet admission. Any path with an object-key segment is
+an object download and must pass admission even if the key ends in `/` or the
+query contains `prefix`/`list-type`.
 
 ## Input and output
 
@@ -53,7 +58,8 @@ sequenceDiagram
     end
 ```
 
-The authorizer checks wallet version, exact bucket-name binding and the
+The authorizer first classifies list only by the exact bucket-root path. Every
+object GET then checks wallet version, exact bucket-name binding and the
 effective window. It never performs a central wallet lookup.
 
 ## Phase 2 — Public Envoy → MinIO

@@ -436,10 +436,14 @@ services:
         create_topic aurora.zone.reports.v1 6
         create_topic aurora.storage.sizes.v1 6
         create_topic aurora.storage.usage.reports.v1 6
+        create_topic aurora.storage.commercial.admission.019f3d3e-997d-7894-9236-c5122634cb4f.v1 6
         create_topic aurora.hypervisor.network.usage.reports.v1 6
         /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$$BOOTSTRAP" \
           --entity-type topics --entity-name aurora.storage.usage.reports.v1 \
           --alter --add-config retention.ms=604800000
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$$BOOTSTRAP" \
+          --entity-type topics --entity-name aurora.storage.commercial.admission.019f3d3e-997d-7894-9236-c5122634cb4f.v1 \
+          --alter --add-config retention.ms=2592000000
         /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$$BOOTSTRAP" \
           --entity-type topics --entity-name aurora.hypervisor.network.usage.reports.v1 \
           --alter --add-config retention.ms=2592000000

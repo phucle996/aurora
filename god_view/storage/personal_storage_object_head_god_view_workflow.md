@@ -8,15 +8,16 @@ with the separate tag-read workflow.
 
 Browser calls
 `HEAD /zone-control/v1/storage/buckets/{physical_bucket}/objects/{object_key}`
-with Trinity cookies and `x-aurora-access-session-id`. ACR must find a live
-Central record bound to current actor and Zone and require `GetObject` action.
-The literal path bucket must equal recorded bucket; object path must start with
-record `key_prefix` when scope is non-empty. Encoded slash/backslash/dot,
+with Trinity cookies and `x-aurora-access-session-id`. ACR authenticates the
+session and signs actor/workspace/Zone/session plus exact request facts. Zone
+KV supplies the resource policy and Zone requires `GetObject`. The literal
+path bucket must equal the Zone record bucket; object path must start with its
+`key_prefix` when scope is non-empty. Encoded slash/backslash/dot,
 double slash, `%25`, `.` and `..` segments are rejected before Zone routing.
 
 There is no Controlplane owner rewrite or `Authorize` call here. Ownership was
-durably checked during access-session prepare, while ACR and Zone recheck its
-short-lived projection per request.
+durably checked during access-session prepare, while Zone rechecks the
+short-lived capability and current resource admission per request.
 
 ## REST input and output
 
@@ -25,7 +26,7 @@ short-lived projection per request.
 | Header | Use |
 |---|---|
 | `Cookie` | ACR authenticates Trinity session. Zone Lua strips it before MinIO. |
-| `x-aurora-access-session-id` | Central access-record lookup handle, then trusted Zone projection correlation. |
+| `x-aurora-access-session-id` | Opaque Zone record correlation UUID; it is not bearer authority. |
 | `Origin` | ACR CORS check. |
 | `traceparent` | Trace only. No client-provided `x-amz-*` or `Authorization` survives. |
 
@@ -49,39 +50,38 @@ short-lived projection per request.
 
 ### Response payload
 
-`HEAD` has no response body. `403` represents a bad Central or Zone
-authorization fence. `503` represents unavailable Zone authorizer/dependency or
+`HEAD` has no response body. `403` represents failed authentication, Zone
+capability binding or admission. `503` represents unavailable Zone authorizer/dependency or
 missing Zone access record. MinIO may return normal S3 `404` or `5xx`.
 
 ## Key contract
 
 | Key/component | Store | Operation | Invariant |
 |---|---|---|---|
-| `storage_access:{session_id}` | Central Auth-State Redis | ACR protobuf GET | Actor, Zone, expiry, policy revision, action, bucket/prefix must match. |
-| Signed assertion | Vault Transit and request headers | Exact external `HEAD`, path hash and empty body hash | 10-second maximum authorization lease. |
+| Signed assertion | Vault Transit and request headers | Schema 2 authenticated actor/workspace/Zone/session plus exact external `HEAD`, path and empty-body hashes; no resource policy | 10-second maximum lease. |
 | Zone replay cache | Authorizer Moka | Claim `jti` | Local replay protection only. |
-| `AURORA_ZONE_ACCESS/{session_id}` | JetStream KV | Watch/direct read | Must match assertion and request exactly. |
+| `AURORA_ZONE_ACCESS/{session_id}` | JetStream KV | Watch/direct read | Sole capability SoT; Zone derives resource/bucket/action/prefix/expiry and binds assertion identity. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | JetStream KV | Zone read | Current `ALLOW` is required before MinIO. |
 
 ## Phase 1 — Client → Envoy → ACR
 
 ACR applies CORS, Zone Control rate limits, Trinity session verification and
-Zone binding. It rejects any missing/expired access record, `GetObject` action
-absence, wrong bucket/prefix or non-empty body. For a valid request it creates
-a unique assertion with SHA-256 of the original external path and empty body,
-signs via configured Vault Transit key and overwrites four headers to Envoy.
+request classification. Its Auth-State read is only Trinity authentication. It
+rejects invalid UUID context, unreviewed route shape or non-empty body, then
+signs request facts through Vault without reading Storage policy.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant E as Central Envoy
     participant A as ACR ExtAuthz
-    participant AR as Auth-State Redis
+    participant AR as Auth-State Trinity session
     participant V as Vault Transit
 
     B->>E: HEAD object route plus access session id
     E->>A: CheckRequest exact HEAD path and empty body
-    A->>AR: Verify Trinity session and storage access record
-    A->>A: Require GetObject and prefix-safe canonical path
+    A->>AR: Verify Trinity user/device session
+    A->>A: Validate UUID context and reviewed HEAD route with empty body
     alt any check fails
         A-->>E: Local 401, 403 or 429
         E-->>B: error
@@ -124,8 +124,9 @@ sequenceDiagram
 ## Phase 3 — Zone recheck and response
 
 Zone authorizer verifies signature/key id, own Zone, request hashes, short
-validity and one-time jti. It reads access KV and rechecks every access field,
-action and prefix. MinIO is called only on success. Metadata headers flow back
+validity and one-time jti. It reads access KV, binds assertion identity and
+rechecks record integrity, expiry, action, bucket and prefix. It then requires
+current resource admission. MinIO is called only on success. Metadata headers flow back
 through both Envoys; cookies and client authorization never reach MinIO.
 
 ```mermaid
@@ -133,12 +134,14 @@ sequenceDiagram
     participant ZA as Zone Authorizer
     participant K as Keyring and replay cache
     participant KV as Zone access KV
+    participant AD as Zone admission KV
     participant ZE as Zone Envoy
     participant M as MinIO
     participant B as Browser
 
     ZA->>K: Verify assertion and reserve jti
     ZA->>KV: Read session projection
+    ZA->>AD: Require ALLOW for record resource id
     alt projection and request match
         ZA-->>ZE: Allow
         ZE->>M: HEAD rewritten object
@@ -157,8 +160,9 @@ sequenceDiagram
 
 | Condition | Behavior |
 |---|---|
-| Object key outside `key_prefix` | ACR rejects before Zone call. |
-| Any object query | ACR and Zone reject because object head has no reviewed query contract. |
+| Object key outside `key_prefix` | Zone rejects before MinIO. |
+| Any object query | Zone rejects because object head has no reviewed query contract. |
+| Admission missing or suspended | Zone rejects before MinIO. |
 | Zone replay of assertion | Local authorizer rejects same `jti`. |
 | MinIO object absent | Auth succeeds; MinIO returns its normal `404`. |
 | Central static zone route mismatch | Target Zone authorizer rejects assertion whose Zone differs, so cross-Zone access fails closed. |

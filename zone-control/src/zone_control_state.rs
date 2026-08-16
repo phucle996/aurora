@@ -21,8 +21,8 @@ pub(crate) struct ZoneMetadata {
 pub(crate) struct StorageAdmission {
     pub resource_id: String,
     pub resource_name: String,
-    pub wallet_version: i64,
-    pub admission_mode: String,
+    pub policy_version: i64,
+    pub decision: String,
     pub restriction_reason: Option<String>,
     pub effective_at_unix_seconds: i64,
     pub valid_until_unix_seconds: Option<i64>,
@@ -103,7 +103,7 @@ impl ZoneControlState {
             &js,
             config,
             "AURORA_ZONE_ADMISSION",
-            "Aurora Storage wallet admission projection",
+            "Aurora Storage commercial admission projection",
             Duration::ZERO,
             64 * 1024,
         )
@@ -130,7 +130,7 @@ impl ZoneControlState {
                 .map_err(|error| format!("read Storage admission revision: {error}"))?;
             if let Some(entry) = current.as_ref() {
                 if let Ok(existing) = serde_json::from_slice::<StorageAdmission>(&entry.value) {
-                    if existing.wallet_version >= next.wallet_version {
+                    if existing.policy_version >= next.policy_version {
                         return Ok(());
                     }
                 }
@@ -174,7 +174,11 @@ impl ZoneControlState {
                 .map_err(|error| format!("read Storage admission name revision: {error}"))?;
             if let Some(entry) = current.as_ref() {
                 if let Ok(existing) = serde_json::from_slice::<StorageAdmission>(&entry.value) {
-                    if existing.wallet_version >= next.wallet_version {
+                    let same_resource = existing.resource_id == next.resource_id;
+                    if (same_resource && existing.policy_version >= next.policy_version)
+                        || (!same_resource
+                            && existing.effective_at_unix_seconds >= next.effective_at_unix_seconds)
+                    {
                         return Ok(());
                     }
                 }

@@ -23,7 +23,7 @@ import (
 type TenantCredentialSvcImpl struct {
 	repo       storageRepoInterface.TenantCredentialRepo
 	bucketRepo storageRepoInterface.TenantBucketRepo
-	admission  storageRepoInterface.WalletAdmissionRepo
+	admission  storageRepoInterface.CommercialAdmissionRepo
 	metrics    observability.WorkflowRecorder
 }
 
@@ -31,7 +31,7 @@ type TenantCredentialSvcImpl struct {
 func NewTenantCredentialService(
 	repo storageRepoInterface.TenantCredentialRepo,
 	bucketRepo storageRepoInterface.TenantBucketRepo,
-	admission storageRepoInterface.WalletAdmissionRepo,
+	admission storageRepoInterface.CommercialAdmissionRepo,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.TenantCredentialService {
 	return &TenantCredentialSvcImpl{
@@ -61,7 +61,7 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 	}
 	if err := s.admission.RequireOwnerAdmission(ctx, bucket.TenantID.String(), string(storageEntity.StorageOwnerTypeTenant)); err != nil {
 		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return nil, apperr.Wrap(err, err, "wallet_admission_denied")
+		return nil, apperr.Wrap(err, err, "commercial_admission_denied")
 	}
 
 	// [COMMENT]: Sinh ngẫu nhiên cặp Access Key và Secret Key
