@@ -10,14 +10,14 @@ Mỗi Zone là một datacenter độc lập; image bytes và Proxmox template c
 
 ### Lộ trình Quản trị SRE (`/admin/hypervisor/images`)
 
-- **Neutral Gateway Route**: Browser/Admin UI gọi route quản trị `/admin/hypervisor/images` kèm header `X-Zone-ID` và SRE Admin Credentials.
-- **ACR ExtAuthz Boundary**: ACR xác thực phiên SRE Admin, kiểm tra trạng thái Zone trong Cache, loại bỏ các header untrusted từ client, inject `x-user-id: sre` (dạng text identity định danh SRE, không phải User UUID) và `X-Zone-ID`.
-- **Controlplane Boundary**: Route `/admin/hypervisor/images` **không áp dụng `middleware.Authorize` của User RBAC** (vì SRE không thuộc tổ chức tenant/workspace cá nhân nào). Handler trích xuất `zoneID` qua `pkgcontext.GetZoneID(c, op)` và `actor` qua `x-user-id`.
+- **Neutral Gateway Route**: Browser/Admin UI gọi route quản trị `/admin/hypervisor/images` kèm cookie phiên SRE `aurora_sre_session` và cookie ngữ cảnh `zone_context` (chứa `zone_code` dạng text slug). **Client hoàn toàn không biết và không gửi `zone_id` (UUID)**.
+- **ACR ExtAuthz Boundary**: ACR xác thực phiên SRE Admin, đọc `zone_context` (`zone_code`) từ Cookie, tra cứu `Shared Zone Cache` để phân giải `zone_code` thành `zone_id` UUID tương ứng và xác nhận trạng thái Zone (`active`, `draining`). Sau đó ACR loại bỏ mọi header untrusted từ client, **inject `x-zone-id: <zone_uuid>`** và `x-user-id: sre` sang Controlplane.
+- **Controlplane Boundary**: Route `/admin/hypervisor/images` **không áp dụng `middleware.Authorize` của User RBAC** (vì SRE không thuộc tổ chức tenant/workspace cá nhân nào). Handler trích xuất `zoneID` đã được ACR phân giải và inject an toàn qua `pkgcontext.GetZoneID(c, op)` và `actor` qua `x-user-id`.
 
 | Boundary | Authority | Durable state |
 |---|---|---|
-| Admin UI (SRE) | SRE Admin Session & Target Zone ID | None |
-| ACR ExtAuthz | SRE Credentials / Admin Session Token | Auth-State Redis |
+| Admin UI (SRE) | SRE Admin Session Cookie & `zone_context` Cookie (`zone_code`) | None |
+| ACR ExtAuthz | SRE Credentials, Zone Resolution (`zone_code` $\to$ `zone_id` UUID) | Auth-State Redis & Shared Zone Cache |
 | Controlplane Hypervisor | Metadata Validation & Atomic Outbox Transaction (`jobpayload.Protector`) | PostgreSQL (`hypervisor.image_artifacts`, `hypervisor_outbox_records`) |
 | Job Orchestrator | CDC Logical Outbox Reader & Result Settlement | PostgreSQL & Kafka |
 | Dataplane (Rust Zone) | S3 MinIO Client & Proxmox API Client | MinIO Zone Bucket & Proxmox VM Template |
@@ -28,12 +28,13 @@ Mỗi Zone là một datacenter độc lập; image bytes và Proxmox template c
 
 ### 1. Request Headers
 
-| Header | Boundary nhận | Mục đích sử dụng |
+| Header / Cookie | Boundary nhận | Mục đích sử dụng |
 |---|---|---|
-| `Cookie` / `Authorization` | Envoy $\to$ ACR | ACR giải mã và xác thực phiên SRE Admin Token. |
-| `X-Zone-ID` | Controlplane Handler | Trích xuất qua `pkgcontext.GetZoneID(c, op)` để định vị Zone cụ thể. |
-| `X-User-ID` | Controlplane Handler | Nhận diện actor SRE (`"sre"`). |
-| `X-Client-Device-ID` | Envoy $\to$ ACR | Định danh thiết bị rate limit. |
+| `Cookie: aurora_sre_session` | Browser $\to$ ACR | ACR giải mã và xác thực phiên SRE Admin Token. |
+| `Cookie: zone_context` | Browser $\to$ ACR | Chứa `zone_code` (ví dụ: `hn-zone-01`). ACR đọc cookie này để phân giải ra `zone_id` (UUID). |
+| `X-Zone-ID` | **ACR $\to$ Controlplane** | **Được ACR inject** (UUID của Zone). Client không gửi header này. Handler trích xuất qua `pkgcontext.GetZoneID(c, op)`. |
+| `X-User-ID` | **ACR $\to$ Controlplane** | **Được ACR inject** (`"sre"`). Client không gửi header này. |
+| `Cookie: x_client_device_id` | Browser $\to$ ACR | Định danh thiết bị client phục vụ rate limit tại Gateway. |
 | `traceparent` | Toàn hệ thống | Lan truyền W3C Distributed Tracing. |
 
 ### 2. JSON Payload — `RegisterMetadata` (`POST /admin/hypervisor/images`)
