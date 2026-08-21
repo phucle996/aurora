@@ -1,91 +1,344 @@
-# Hypervisor Image Registry - Workflow God View
+# Hypervisor Image Registry — Workflow God View
 
-> [!IMPORTANT]
-> Mỗi Zone là một datacenter độc lập. Image bytes và Proxmox template của Zone
-> A không được tham chiếu hoặc copy qua Zone B. Không tạo `zone-image-service`.
+Quản lý Image hệ điều hành (OS Templates) cho phân hệ ảo hóa Hypervisor là workflow quản trị hạ tầng (SRE/Platform Admin). Mỗi Zone là một datacenter độc lập; image bytes và Proxmox template của Zone A **không bao giờ** được tham chiếu, copy hay chia sẻ trực tiếp qua Zone B. Image artifact là bất biến (immutable) theo bộ khóa `(zone_id, code, revision)`.
 
-## Ownership và dữ liệu
+---
 
-| Thành phần | Trách nhiệm |
-|---|---|
-| Admin UI | Quản lý metadata image theo Zone và theo dõi import/delete; không hiển thị node |
-| Controlplane Hypervisor | Sở hữu `image_artifacts` và một outbox duy nhất `hypervisor_outbox_records` |
-| Zone image storage | Bucket MinIO của chính Zone; object key do Controlplane tạo từ image UUID/revision/SHA |
-| Job Orchestrator | CDC outbox, publish command Kafka và settle result trong PostgreSQL |
-| Dataplane của Zone | Đọc object ở Zone MinIO, import vào Proxmox và trả template VMID |
-| Cloud Console | Chỉ đọc `AVAILABLE` catalog trong Zone đã chọn để tạo VM |
-| Grafana | Target node/capacity/health view; metric export/dashboard còn deferred |
+## API-scope contract
 
-Image artifact là immutable theo `(zone_id, code, revision)`. `name` là display
-label tự do; `code` mới là stable identifier. Xóa thành công là hard delete sau
-Zone ACK, không có `deleted_at` hoặc trạng thái `DELETED`.
+### 1. Phân định quyền hạn và lộ trình (Admin SRE vs End-User Catalog)
 
-## Migration baseline
+1. **Lộ trình Quản trị SRE (`/admin/hypervisor/images`)**:
+   - Browser/Admin UI gửi request tới Gateway kèm Admin Credentials.
+   - ACR ExtAuthz xác thực phiên SRE, kiểm tra quyền hạn hệ thống, inject `x-user-id: sre` (dạng text identity, không phải User UUID) và `X-Zone-ID`.
+   - Route `/admin/hypervisor/images` **không áp dụng `middleware.Authorize` của User RBAC** vì SRE không thuộc tổ chức tenant/workspace cá nhân nào trong L1 cache.
+2. **Lộ trình Tra cứu Catalog Khách hàng (`/api/v1/personal/hypervisor/images/catalog`)**:
+   - Browser người dùng gọi neutral route `/api/v1/hypervisor/images/catalog`.
+   - ACR ExtAuthz xác thực Trinity session, giải quyết Zone từ session/cookie và rewrite nội bộ thành `/api/v1/personal/hypervisor/images/catalog`.
+   - Controlplane áp dụng `middleware.Authorize("hypervisor:image:read", module.L1Registry, "*")`.
+   - Trả về danh sách Image đang ở trạng thái `AVAILABLE` (ẩn hoàn toàn các thông tin hạ tầng nội bộ như `object_key`, `provider_template_vmid`, `created_by`).
 
-Hypervisor schema là clean baseline cho lần khởi tạo mới, tách theo dependency:
+| Boundary | Authority | Durable state |
+|---|---|---|
+| Admin UI (SRE) | SRE Session & Zone Target | None |
+| ACR ExtAuthz | Admin Token / Trinity Session, Zone Resolution | Auth-State Redis |
+| Controlplane Hypervisor | Metadata Validation, Outbox Transaction (`jobpayload.Protector`) | PostgreSQL (`hypervisor.image_artifacts`, `hypervisor_outbox_records`) |
+| Job Orchestrator | CDC Logical Outbox Reader, Settle Results | PostgreSQL & Kafka |
+| Dataplane (Rust Zone) | S3 MinIO Client, Proxmox API Client | Proxmox VM Templates & MinIO Zone Bucket |
+| Cloud Console (User) | Read-only Catalog Query | L1 Cache / PostgreSQL Projection |
 
-```text
-000001_hypervisor_enums
-000002_hypervisor_tables
-000003_hypervisor_indexes
-000004_hypervisor_functions
-000005_hypervisor_triggers
-verification_hypervisor_post_migrate.sql
+---
+
+## REST input and output
+
+### 1. Request Headers
+
+| Header | Boundary nhận | Mục đích sử dụng |
+|---|---|---|
+| `Cookie` / `Authorization` | Envoy $\to$ ACR | ACR giải thực phiên SRE hoặc User Trinity Session. |
+| `X-Zone-ID` | Controlplane Handler | Trích xuất qua `pkgcontext.GetZoneID(c, op)` để định vị Zone cụ thể. |
+| `X-User-ID` | Controlplane Handler | Nhận diện actor (`"sre"` cho admin, UUID cho user). |
+| `X-Client-Device-ID` | Envoy $\to$ ACR | Định danh thiết bị rate limit. |
+| `traceparent` | Toàn hệ thống | Lan truyền W3C Distributed Tracing. |
+
+### 2. JSON Payload — `RegisterMetadata` (`POST /admin/hypervisor/images`)
+
+```json
+{
+  "name": "Ubuntu 24.04 LTS Noble Numbat",
+  "code": "ubuntu-24.04-server",
+  "distribution": "ubuntu",
+  "release": "24.04",
+  "revision": 1,
+  "architecture": "x86_64",
+  "format": "qcow2",
+  "size_bytes": 2361393152,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
 ```
 
-`image_artifacts` và `personal_vms` được tạo trước record table duy nhất
-`hypervisor_outbox_records`. Verification phải fail nếu còn `hypervisor.nodes`,
-split outbox, provider topology column, soft-delete column hoặc durable
-`personal_vms.FAILED`. Baseline không âm thầm chuyển đổi legacy schema; rollout
-database cũ phải được xử lý rõ ràng trước khi chạy verification.
+* **Ràng buộc**:
+  - `name`: 1–512 ký tự.
+  - `code`: Biểu thức chính quy `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`.
+  - `architecture`: `"x86_64"` hoặc `"aarch64"`.
+  - `format`: `"qcow2"` hoặc `"raw"`.
+  - `size_bytes`: 1 byte $\to$ 1 TiB ($1 \le \text{size} \le 2^{40}$).
+  - `sha256`: Đúng 64 ký tự hex (32 raw bytes).
+  - Giới hạn payload: Streaming decode với `http.MaxBytesReader(65536)` (64KB) và `DisallowUnknownFields()`.
 
-## Luồng command
+### 3. Response Status Table
+
+| Status | Endpoint | Ý nghĩa |
+|---|---|---|
+| `201 Created` | `POST /admin/hypervisor/images` | Metadata đã ghi vào DB (`state = 'UPLOADING'`), trả về `import_path`. |
+| `202 Accepted` | `POST /admin/hypervisor/images/{id}/import` | Khởi tạo Outbox Job thành công (`state = 'IMPORTING'`), bắt đầu chuyển đổi template. |
+| `202 Accepted` | `DELETE /admin/hypervisor/images/{id}` | Khởi tạo Outbox Job xóa image (`state = 'DELETING'`). |
+| `200 OK` | `GET /admin/hypervisor/images` | Lấy danh sách ảnh đĩa Zone cho SRE (bao gồm trạng thái và lỗi chi tiết). |
+| `200 OK` | `GET /api/v1/personal/hypervisor/images/catalog` | Lấy danh mục ảnh đĩa sẵn sàng cho người dùng tạo máy ảo. |
+| `400 Bad Request` | Mọi endpoint | Thiếu header `X-Zone-ID`, body sai schema, checksum SHA-256 không hợp lệ. |
+| `404 Not Found` | Import / Delete | Không tìm thấy `image_id` trong Zone tương ứng. |
+| `409 Conflict` | Register / Import / Delete | Trùng lặp `(zone_id, code, revision)` hoặc trạng thái không hợp lệ (ví dụ đang import thì không thể xóa). |
+| `500 Internal Error`| Mọi endpoint | Lỗi Database PostgreSQL, Vault Encryption hoặc Zone Gateway. |
+
+---
+
+## Key and transport contract
+
+| Kho lưu trữ / Kênh truyền | Vị trí / Tên định danh | Thao tác | Bất biến & Ràng buộc sở hữu |
+|---|---|---|---|
+| `hypervisor.image_artifacts` | PostgreSQL | `INSERT` / `UPDATE` / `DELETE` | Khóa chính `id` (UUIDv7). Ràng buộc Unique `(zone_id, code, revision)`. |
+| `hypervisor.hypervisor_outbox_records` | PostgreSQL | `INSERT` (Atomic với State mutation) | Outbox duy nhất của Hypervisor. Payload được mã hóa X25519 qua `jobpayload.Protector`. |
+| `aurora.jobs.commands.zone.{zone_id}.v1` | Kafka Topic | Job Orchestrator CDC Publish | Giao tiếp At-least-once tới đúng Dataplane Zone mục tiêu. Key = `image_id`. |
+| `aurora.jobs.results.v1` | Kafka Topic | Dataplane Publish | Chứa `ImageImportResultV1` hoặc `ImageDeleteResultV1`. JO chỉ settle các row `PENDING`/`PROCESSING`. |
+| `HYPERVISOR_IMAGE_S3_BUCKET` | MinIO Zone Cluster | Direct S3 Client | Bucket riêng biệt của hạ tầng Zone. Object key bất biến: `hypervisor/images/{zone_id}/{code}/r{revision}/{image_id}.{format}`. |
+| Proxmox VM Storage | Proxmox VE Cluster | Proxmox API `download-url` | VMID template được cấp phát tự động, convert sang `template=1`. |
+
+---
+
+## Phase 1 — SRE Client → Envoy → ACR ExtAuthz
+
+ACR xác thực phiên Admin của SRE, kiểm tra Zone Status trong L1 Cache, bảo vệ hệ thống trước tấn công brute-force và inject các header danh tính tin cậy (`x-user-id: sre`, `X-Zone-ID`) sang Controlplane.
 
 ```mermaid
 sequenceDiagram
-    participant Admin as Admin UI
+    autonumber
+    actor Admin as SRE / Admin UI
+    participant E as Central Envoy Gateway
+    participant A as ACR ExtAuthz
+    participant AR as Auth-State Redis
+    participant Z as Zone Cache
     participant CP as Controlplane Hypervisor
-    participant DB as PostgreSQL hypervisor
-    participant JO as Job Orchestrator
-    participant K as Kafka
-    participant DP as Dataplane Zone
-    participant S3 as MinIO Zone bucket
-    participant PVE as Proxmox Zone
 
-    Admin->>CP: POST metadata /admin/hypervisor/zones/{zone}/images
-    CP->>DB: INSERT image_artifacts(state=UPLOADING)
-    Admin->>S3: Upload bytes through the existing Zone storage boundary
-    Admin->>CP: POST .../images/{id}/import
-    CP->>DB: Atomic state=IMPORTING + hypervisor_outbox_records
-    DB-->>JO: CDC shared hypervisor outbox
-    JO->>K: hypervisor.image.import keyed by image_id
-    K-->>DP: Zone-scoped command
-    DP->>S3: HEAD + streamed GET verifies immutable key, size and SHA-256
-    DP->>S3: Create short-lived presigned GET URL in memory
-    DP->>PVE: download-url into Zone staging storage with SHA-256
-    DP->>PVE: Import VM, verify identity marker, convert to template
-    DP->>PVE: Delete staged ISO/content after template durability
-    DP->>K: ImageImportResultV1(template_vmid, SHA)
-    K-->>JO: Durable result
-    JO->>DB: state=AVAILABLE + template VMID, settle same outbox
-
-    Admin->>CP: DELETE .../images/{id}
-    CP->>DB: state=DELETING + same shared outbox
-    JO->>K: hypervisor.image.delete
-    K-->>DP: Zone-scoped delete command
-    DP->>PVE: Remove template and staged content (idempotent)
-    DP->>S3: Remove object only after provider delete succeeds
-    DP->>K: ImageDeleteResultV1
-    JO->>DB: Hard delete image row, settle same outbox
+    Admin->>E: POST /admin/hypervisor/images (Header: X-Zone-ID, Admin Token)
+    E->>A: CheckRequest (Path, Headers, Method)
+    A->>AR: Validate SRE Admin Session & Permissions
+    A->>Z: Verify Zone exists & is ACTIVE/DRAINING
+    alt Phiên không hợp lệ hoặc sai quyền
+        A-->>E: Deny 401 Unauthorized / 403 Forbidden
+        E-->>Admin: Trả về lỗi tại Gateway
+    else Xác thực thành công
+        A->>A: Inject x-user-id="sre" & X-Zone-ID
+        A-->>E: Allow request
+        E->>CP: Forward tới Controlplane Hypervisor Handler
+    end
 ```
 
-The image bytes path is a Zone storage concern; the hypervisor outbox carries
-metadata/command only and never embeds image bytes. Kafka uses at-least-once
-delivery, manual commit and DLQ. Image import/delete validates zone binding,
-image ID, revision and SHA before any Proxmox mutation. Duplicate commands are
-safe because the Dataplane adopts the existing template/object by immutable
-image identity. A retry after a crash re-discovers the provider name and
-checksum marker; it never trusts a name alone. The presigned URL is never
-placed in Kafka, Zone KV, logs or a result payload. The S3 client is disabled
-unless all dedicated `HYPERVISOR_IMAGE_S3_*` settings are present, and the
-Proxmox source/target storage names are explicit deployment configuration.
+---
+
+## Phase 2 — Controlplane Metadata Registration (`RegisterMetadata`)
+
+Tại Bước 1, Controlplane nhận metadata, kiểm tra ràng buộc Zone và tính khả dụng của dịch vụ `hypervisor`, sinh `image_id` (UUIDv7) và ghi vào PostgreSQL với trạng thái **`UPLOADING`**. **Tuyệt đối không tạo Outbox Job ở bước này** vì file bytes chưa được đưa lên MinIO.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as ImageHandler
+    participant S as ImageService
+    participant R as ImageRepoPostgres
+    participant PG as PostgreSQL (hypervisor.image_artifacts)
+
+    H->>H: pkgcontext.GetZoneID(c) & read actor="sre"
+    H->>H: 64KB MaxBytesReader & Strict JSON Decode
+    H->>S: RegisterImageMetadata(input)
+    S->>S: Generate UUIDv7 image_id & compute object_key
+    S->>R: RegisterImageMetadata(image)
+    R->>PG: INSERT INTO hypervisor.image_artifacts (...) WHERE zone.status IN ('active', 'draining') AND zone_services(hypervisor)=TRUE
+    PG-->>R: Trả về bản ghi image_artifacts (state='UPLOADING')
+    R-->>S: Trả về ImageArtifact
+    S-->>H: ImageArtifact entity
+    H-->>H: Format response 201 Created kèm import_path
+```
+
+* **SQL Invariant (Atomic Fencing)**:
+```sql
+INSERT INTO hypervisor.image_artifacts (
+    id, zone_id, name, code, distribution, release, revision,
+    architecture, format, size_bytes, sha256, object_key,
+    state, created_by, created_at, updated_at
+)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'UPLOADING', $14, $15, $16
+FROM hierarchy.zones zone
+WHERE zone.id = $2
+  AND zone.status IN ('active', 'draining')
+  AND EXISTS (
+      SELECT 1 FROM hierarchy.zone_services service
+      WHERE service.zone_id = zone.id
+        AND service.service_type = 'hypervisor'
+        AND service.desired_state = TRUE
+  )
+RETURNING id, zone_id, name, code, distribution, release, revision,
+          architecture, format, size_bytes, sha256, object_key,
+          state, created_by, provider_template_vmid, error_code, error_message,
+          created_at, updated_at, available_at;
+```
+
+---
+
+## Phase 3 — SRE Direct Byte Upload & Zone Edge Gateway
+
+SRE/Admin Portal upload trực tiếp file ảnh đĩa (`.qcow2`, `.raw`, `.iso`) lên MinIO Storage của Zone thông qua **Zone Public/Control Edge Gateway**. Quá trình này hoàn toàn tách biệt khỏi Controlplane HTTP API để tránh làm nghẽn băng thông và tràn bộ nhớ pod.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as SRE / Admin Portal
+    participant ZEG as Zone Edge Gateway
+    participant S3 as MinIO Cluster (Zone Datacenter)
+
+    Note over Admin,S3: Upload file nhị phân trực tiếp (Zero-Transit qua Controlplane)
+    Admin->>ZEG: PUT /storage/{object_key} (Multipart / Streamed bytes)
+    ZEG->>ZEG: Xác thực ControlAssertion / SRE Zone Authority
+    ZEG->>S3: Forward stream bytes vào MinIO Bucket HYPERVISOR_IMAGE_S3_BUCKET
+    S3-->>ZEG: 200 OK (Upload Complete)
+    ZEG-->>Admin: 200 OK
+```
+
+---
+
+## Phase 4 — Import Trigger (`BeginImport`) & Outbox Sealing
+
+Sau khi upload file hoàn tất lên MinIO của Zone, SRE gọi `POST /admin/hypervisor/images/{id}/import`. Controlplane thực hiện khóa bi quan (Pessimistic Lock) dòng image, chuyển trạng thái sang **`IMPORTING`**, mã hóa Job Payload qua `jobpayload.Protector` (X25519) và ghi vào bảng `hypervisor_outbox_records` trong **cùng một Transaction nguyên tử**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as SRE
+    participant H as ImageHandler (BeginImport)
+    participant S as ImageService
+    participant R as ImageRepoPostgres
+    participant V as Vault / jobpayload.Protector
+    participant PG as PostgreSQL
+
+    Admin->>H: POST /admin/hypervisor/images/{id}/import
+    H->>S: BeginImport(image_id, zone_id)
+    S->>S: Khởi tạo HypervisorOutboxRecord (topic: "hypervisor.image.import")
+    S->>R: BeginImport(image_id, zone_id, outbox)
+    R->>V: Seal(Metadata, Payload) bằng Zone X25519 Public Key
+    V-->>R: Encrypted Payload & PayloadKeyID
+    
+    rect rgb(240, 248, 255)
+    Note over R,PG: Atomic SQL CTE Transaction
+    R->>PG: WITH locked_image AS (SELECT FOR UPDATE WHERE state IN ('UPLOADING', 'FAILED', 'QUARANTINED'))
+    R->>PG: UPDATE image_artifacts SET state='IMPORTING'
+    R->>PG: INSERT INTO hypervisor_outbox_records (topic='hypervisor.image.import', status='PENDING')
+    end
+    PG-->>R: Committed successfully
+    R-->>S: Updated ImageArtifact
+    S-->>H: ImageArtifact entity
+    H-->>Admin: 202 Accepted { id, zone_id, state: "IMPORTING" }
+```
+
+---
+
+## Phase 5 — Outbox CDC Dispatch & Dataplane Proxmox Template Conversion
+
+Job Orchestrator đọc Logical Changefeed từ PostgreSQL WAL, gửi lệnh qua Kafka tới Dataplane của Zone. Dataplane giải mã payload, xác thực tính toàn vẹn của file trên MinIO, cấp Presigned GET URL ngắn hạn trong bộ nhớ, yêu cầu Proxmox import và chuyển đổi thành VM Template.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PG as PostgreSQL WAL
+    participant JO as Job Orchestrator (CDC Worker)
+    participant K as Kafka (Zone Command Topic)
+    participant DP as Dataplane Zone (Rust ImageProcessor)
+    participant S3 as MinIO (Zone Storage)
+    participant PVE as Proxmox VE API
+
+    PG-->>JO: Outbox Record (hypervisor.image.import)
+    JO->>K: JobCommandV1 (Payload mã hóa, Key: image_id)
+    K-->>DP: Consume Command tại Zone
+    
+    DP->>DP: Unseal Payload bằng Zone X25519 Private Key
+    DP->>S3: HEAD Object + Streamed Read verify SizeBytes & SHA-256 Checksum
+    alt Checksum không khớp hoặc dung lượng sai
+        DP->>K: Publish ImageImportResultV1 (Status: FAILED, Error: "CHECKSUM_MISMATCH")
+    else Checksum hợp lệ
+        DP->>DP: Tạo in-memory Presigned GET URL (TTL: 1 giờ)
+        DP->>PVE: POST /nodes/{node}/download-url (Tải image từ MinIO vào Proxmox storage)
+        PVE-->>DP: Task UPID hoàn thành
+        DP->>PVE: qm create / importdisk & gắn Metadata Marker
+        DP->>PVE: qm template {vmid} (Chuyển VM thành Template)
+        DP->>PVE: Xóa file download staging trong Proxmox
+        DP->>K: Publish ImageImportResultV1 (Status: SUCCEEDED, template_vmid, sha256)
+    end
+```
+
+---
+
+## Phase 6 — Job Settlement & Catalog Activation
+
+Job Orchestrator Result Worker nhận `ImageImportResultV1` từ Kafka `aurora.central.job_results`, mở Transaction cập nhật bảng `hypervisor_outbox_records` sang `SUCCEEDED` và cập nhật `hypervisor.image_artifacts` sang **`AVAILABLE`** cùng số hiệu `provider_template_vmid`. Ngay sau đó, Image chính thức xuất hiện trên User Catalog để người dùng tạo VM.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DP as Dataplane Zone
+    participant K as Kafka Result Topic
+    participant JO as Job Orchestrator Result Worker
+    participant PG as PostgreSQL (image_artifacts & outbox)
+    actor User as Cloud Console User
+
+    DP->>K: ImageImportResultV1 (status: SUCCEEDED, template_vmid=9001)
+    K-->>JO: Consume Result
+    
+    rect rgb(255, 250, 240)
+    Note over JO,PG: Atomic PostgreSQL Settlement
+    JO->>PG: SELECT FOR UPDATE OF outbox, image (Fence: status IN ('PENDING', 'PROCESSING'))
+    JO->>PG: UPDATE hypervisor.image_artifacts SET state='AVAILABLE', provider_template_vmid=9001, available_at=NOW()
+    JO->>PG: UPDATE hypervisor_outbox_records SET status='SUCCEEDED', completed_at=NOW()
+    end
+    PG-->>JO: Transaction Committed
+
+    Note over User,PG: Khách hàng truy vấn danh mục
+    User->>PG: GET /api/v1/personal/hypervisor/images/catalog
+    PG-->>User: 200 OK (Danh sách image AVAILABLE kèm ID để tạo máy ảo)
+```
+
+---
+
+## Phase 7 — Image Deletion Workflow (`BeginDelete`)
+
+Quy trình xóa Image tuân thủ nguyên tắc **Hard Delete an toàn sau khi Dataplane xác nhận**:
+
+1. **SRE gọi `DELETE /admin/hypervisor/images/{id}`**:
+   - Controlplane kiểm tra `image_artifacts` có tồn tại và không bị khóa bởi các tiến trình khác.
+   - Chuyển trạng thái sang **`DELETING`** và ghi outbox `hypervisor.image.delete`.
+2. **Dataplane thực thi xóa tại Zone**:
+   - Gọi Proxmox API xóa VM Template (`qm destroy {template_vmid}`).
+   - Chỉ sau khi Proxmox xóa thành công, Dataplane mới xóa Object nhị phân trên MinIO Zone.
+   - Publish `ImageDeleteResultV1` về Kafka.
+3. **Settlement**:
+   - Job Orchestrator thực thi **Hard Delete** xóa sạch dòng `image_artifacts` khỏi database, hoàn tất vòng đời.
+
+---
+
+## Failure and security rules
+
+| Tình huống sự cố | Hành vi xử lý thực tế |
+|---|---|
+| **SHA-256 Checksum không khớp** | Dataplane kiểm tra hash trước khi nạp vào Proxmox. Nếu sai lệch, hủy lệnh ngay lập tức, trả kết quả `FAILED` $\to$ JO chuyển `state = 'FAILED'` kèm `error_code = 'CHECKSUM_MISMATCH'`. |
+| **Proxmox hết dung lượng đĩa (Storage Full)** | Proxmox trả task error $\to$ Dataplane bắt lỗi, dọn dẹp file download dở dang $\to$ JO chuyển trạng thái `FAILED`. SRE có thể gọi lại `BeginImport` sau khi mở rộng đĩa. |
+| **Lệnh Kafka bị trùng lặp (Duplicate Command)** | Dataplane nhận diện tính bất biến qua `(zone_id, code, revision)`. Nếu Proxmox đã tồn tại template đúng identity marker, Dataplane adopt template cũ và trả kết quả thành công mà không tạo thêm bản sao rác. |
+| **Replay Job Result cũ** | SQL guard trong `job-orchestrator` chỉ cho phép settle các dòng outbox đang có trạng thái `PENDING` hoặc `PROCESSING`. Các kết quả replay sau khi đã settle sẽ bị rollback an toàn. |
+| **Presigned GET URL rò rỉ** | Presigned URL chỉ được sinh trong RAM của Dataplane với TTL 1 giờ, tuyệt đối không ghi vào Kafka, Database, Log hay Zone KV. |
+| **SRE gọi `BeginImport` khi file chưa upload xong** | Dataplane gọi `HEAD` Object trên MinIO thấy không tồn tại hoặc kích thước nhỏ hơn `size_bytes` đã khai báo $\to$ Trả kết quả thất bại `OBJECT_NOT_FOUND` / `INCOMPLETE_OBJECT`. |
+
+---
+
+## Code map
+
+### 1. Controlplane Hypervisor Module
+- **Route Registration**: [`controlplane/internal/hypervisor/route.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/route.go)
+- **HTTP Handler**: [`controlplane/internal/hypervisor/transport/http/handler/image_handler.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/transport/http/handler/image_handler.go)
+- **Domain Service**: [`controlplane/internal/hypervisor/service/image_service.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/service/image_service.go)
+- **PostgreSQL Repository**: [`controlplane/internal/hypervisor/repository/image_repo.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/repository/image_repo.go)
+- **Payload Protector**: [`controlplane/internal/security/job_payload.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/security/job_payload.go)
+
+### 2. Job Orchestrator
+- **Outbox Changefeed Dispatch**: [`job-orchestrator/src/changefeed/dispatch.rs`](file:///c:/Users/phuc/Desktop/aurora/job-orchestrator/src/changefeed/dispatch.rs)
+- **Image Result Worker**: [`job-orchestrator/src/results/hypervisor/image.rs`](file:///c:/Users/phuc/Desktop/aurora/job-orchestrator/src/results/hypervisor/image.rs)
+
+### 3. Dataplane Zone (Rust)
+- **Image Processor Executor**: [`dataplane/src/executor/hypervisor/processor/image.rs`](file:///c:/Users/phuc/Desktop/aurora/dataplane/src/executor/hypervisor/processor/image.rs)
+- **Proxmox Client Driver**: [`dataplane/src/executor/hypervisor/processor/proxmox.rs`](file:///c:/Users/phuc/Desktop/aurora/dataplane/src/executor/hypervisor/processor/proxmox.rs)
+- **Zone MinIO S3 Store**: [`dataplane/src/executor/hypervisor/processor/image.rs`](file:///c:/Users/phuc/Desktop/aurora/dataplane/src/executor/hypervisor/processor/image.rs#L25-L80)
