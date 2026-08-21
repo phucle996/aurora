@@ -23,21 +23,18 @@ import (
 
 // [COMMENT]: PersonalCredentialSvcImpl thực thi nghiệp vụ quản lý tài khoản keys của MinIO cho cá nhân.
 type PersonalCredentialSvcImpl struct {
-	repo       storageRepoInterface.PersonalCredentialRepo
-	bucketRepo storageRepoInterface.PersonalBucketRepo
-	metrics    observability.WorkflowRecorder
+	repo    storageRepoInterface.PersonalCredentialRepo
+	metrics observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewPersonalCredentialService tạo mới instance thực thi PersonalCredentialService.
 func NewPersonalCredentialService(
 	repo storageRepoInterface.PersonalCredentialRepo,
-	bucketRepo storageRepoInterface.PersonalBucketRepo,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalCredentialService {
 	return &PersonalCredentialSvcImpl{
-		repo:       repo,
-		bucketRepo: bucketRepo,
-		metrics:    metrics,
+		repo:    repo,
+		metrics: metrics,
 	}
 }
 
@@ -133,16 +130,11 @@ func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketI
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	// [COMMENT]: Validate bucket ownership using GetByID check
-	bucket, err := s.bucketRepo.GetByID(ctx, bucketID, userID)
-	if err != nil || bucket == nil {
-		result, reason = observability.ResultRejected, observability.ReasonNotFound
-		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
-	}
-
-	// [COMMENT]: Gọi repo lấy trực tiếp danh sách thực thể rút gọn PersonalCredentialListItem
-	creds, err := s.repo.ListByBucket(ctx, bucketID)
+	creds, err := s.repo.ListByBucket(ctx, bucketID, userID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone

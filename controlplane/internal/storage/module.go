@@ -153,7 +153,7 @@ func NewModule(
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, workflowMetrics)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, workflowMetrics)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}
