@@ -13,26 +13,10 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 	}
 
 	adminImages := router.Group("/admin/hypervisor/zones/:zone_id/images")
-	adminImages.GET(
-		"",
-		middleware.Authorize("hypervisor:image:read", module.L1Registry, "*"),
-		module.ImageHandler.ListAdmin,
-	)
-	adminImages.POST(
-		"",
-		middleware.Authorize("hypervisor:image:create", module.L1Registry, "*"),
-		module.ImageHandler.RegisterMetadata,
-	)
-	adminImages.POST(
-		"/:image_id/import",
-		middleware.Authorize("hypervisor:image:publish", module.L1Registry, "*"),
-		module.ImageHandler.BeginImport,
-	)
-	adminImages.DELETE(
-		"/:image_id",
-		middleware.Authorize("hypervisor:image:delete", module.L1Registry, "*"),
-		module.ImageHandler.BeginDelete,
-	)
+	adminImages.GET("", module.ImageHandler.ListAdmin)
+	adminImages.POST("", module.ImageHandler.RegisterMetadata)
+	adminImages.POST("/:image_id/import", module.ImageHandler.BeginImport)
+	adminImages.DELETE("/:image_id", module.ImageHandler.BeginDelete)
 
 	statusGroup := router.Group("/api/v1/hypervisor")
 	{
@@ -64,5 +48,10 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 		"/vms/:id",
 		middleware.Authorize("hypervisor:vm:read", module.L1Registry, "*"),
 		module.VMHandler.Get,
+	)
+	personal.DELETE(
+		"/vms/:id",
+		middleware.Authorize("hypervisor:vm:delete", module.L1Registry, "*"),
+		module.VMHandler.Delete,
 	)
 }
