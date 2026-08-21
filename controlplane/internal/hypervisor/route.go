@@ -12,7 +12,7 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 		return
 	}
 
-	adminImages := router.Group("/admin/hypervisor/zones/:zone_id/images")
+	adminImages := router.Group("/admin/hypervisor/images")
 	adminImages.GET("", module.ImageHandler.ListAdmin)
 	adminImages.POST("", module.ImageHandler.RegisterMetadata)
 	adminImages.POST("/:image_id/import", module.ImageHandler.BeginImport)

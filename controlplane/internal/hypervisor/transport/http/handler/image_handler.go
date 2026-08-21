@@ -39,9 +39,8 @@ func (h *ImageHandler) RegisterMetadata(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 10*time.Second)
 	defer cancel()
 
-	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "zone_id is invalid")
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
 		return
 	}
 	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
@@ -143,9 +142,8 @@ func (h *ImageHandler) RegisterMetadata(c *gin.Context) {
 		"size_bytes":   image.SizeBytes,
 		"sha256":       hex.EncodeToString(image.SHA256),
 		"state":        image.State,
-		"import_path": "/admin/hypervisor/zones/" + image.ZoneID.String() +
-			"/images/" + image.ID.String() + "/import",
-		"created_at": image.CreatedAt,
+		"import_path":  "/admin/hypervisor/images/" + image.ID.String() + "/import",
+		"created_at":   image.CreatedAt,
 	}, "image upload registered")
 }
 
@@ -154,9 +152,8 @@ func (h *ImageHandler) ListAdmin(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "zone_id is invalid")
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
 		return
 	}
 	limit := int32(100)
@@ -240,9 +237,8 @@ func (h *ImageHandler) BeginImport(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 10*time.Second)
 	defer cancel()
 
-	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "zone_id is invalid")
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
 		return
 	}
 	imageID, err := uuid.Parse(strings.TrimSpace(c.Param("image_id")))
@@ -279,9 +275,8 @@ func (h *ImageHandler) BeginDelete(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 10*time.Second)
 	defer cancel()
 
-	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "zone_id is invalid")
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
 		return
 	}
 	imageID, err := uuid.Parse(strings.TrimSpace(c.Param("image_id")))
