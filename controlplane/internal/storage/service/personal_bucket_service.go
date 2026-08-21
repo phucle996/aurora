@@ -15,7 +15,7 @@ import (
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/crypto"
+	"controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -80,11 +80,11 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	}
 
 	// [COMMENT]: CP tự sinh Access Key và Secret Key ngẫu nhiên (chuẩn MinIO Service Account)
-	accessKey, err := crypto.GenerateAccessKey()
+	accessKey, err := security.GenerateAccessKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "gen_access_key_failed")
 	}
-	secretKey, err := crypto.GenerateSecretKey()
+	secretKey, err := security.GenerateSecretKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "gen_secret_key_failed")
 	}

@@ -12,7 +12,7 @@ import (
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/crypto"
+	"controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -55,11 +55,11 @@ func (s *TenantCredentialSvcImpl) CreateCredential(
 		return nil, apperr.Wrap(err, err, "get_bucket_failed")
 	}
 
-	accessKey, err := crypto.GenerateAccessKey()
+	accessKey, err := security.GenerateAccessKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "generate_access_key_failed")
 	}
-	rawSecretKey, err := crypto.GenerateSecretKey()
+	rawSecretKey, err := security.GenerateSecretKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "generate_secret_key_failed")
 	}
