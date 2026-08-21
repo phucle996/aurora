@@ -93,12 +93,12 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		CapacityQuotaBytes:   req.QuotaBytes,
 		UserID:               userID,
 		Policy:               req.Policy,
-		EncryptEnabled:       *req.EncryptEnabled,
-		VersioningEnabled:    *req.VersioningEnabled,
-		ObjectLockingEnabled: *req.ObjectLockingEnabled,
-		ReplicationEnabled:   *req.ReplicationEnabled,
+		EncryptEnabled:       req.EncryptEnabled,
+		VersioningEnabled:    req.VersioningEnabled,
+		ObjectLockingEnabled: req.ObjectLockingEnabled,
+		ReplicationEnabled:   req.ReplicationEnabled,
 		RetentionDays:        req.RetentionDays,
-		LegalHoldEnabled:     *req.LegalHoldEnabled,
+		LegalHoldEnabled:     req.LegalHoldEnabled,
 		Tags:                 req.Tags,
 	}
 	createResult, createErr := h.personalSvc.CreateBucketForPersonal(ctx, param)
@@ -320,7 +320,7 @@ func (h *PersonalBucketHandler) UpdateVersioning(c *gin.Context) {
 		return
 	}
 
-	updatedBucket, updateErr := h.personalSvc.UpdateBucketVersioning(ctx, bucketID, userID, *req.VersioningEnabled)
+	updatedBucket, updateErr := h.personalSvc.UpdateBucketVersioning(ctx, bucketID, userID, req.VersioningEnabled)
 	if updateErr != nil {
 		if errors.Is(updateErr, storageTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "bucket not found")

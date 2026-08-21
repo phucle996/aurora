@@ -70,27 +70,6 @@ func (h *TenantBucketHandler) Create(c *gin.Context) {
 		return
 	}
 
-	encryptEnabled := false
-	if req.EncryptEnabled != nil {
-		encryptEnabled = *req.EncryptEnabled
-	}
-	versioningEnabled := false
-	if req.VersioningEnabled != nil {
-		versioningEnabled = *req.VersioningEnabled
-	}
-	objectLockingEnabled := false
-	if req.ObjectLockingEnabled != nil {
-		objectLockingEnabled = *req.ObjectLockingEnabled
-	}
-	replicationEnabled := false
-	if req.ReplicationEnabled != nil {
-		replicationEnabled = *req.ReplicationEnabled
-	}
-	legalHoldEnabled := false
-	if req.LegalHoldEnabled != nil {
-		legalHoldEnabled = *req.LegalHoldEnabled
-	}
-
 	param := &storageEntity.CreateTenantBucket{
 		Name:                 bucketName,
 		WorkspaceID:          workspaceID,
@@ -98,12 +77,12 @@ func (h *TenantBucketHandler) Create(c *gin.Context) {
 		TenantID:             tenantID,
 		CapacityQuotaBytes:   req.QuotaBytes,
 		UserID:               userID,
-		EncryptEnabled:       encryptEnabled,
-		VersioningEnabled:    versioningEnabled,
-		ObjectLockingEnabled: objectLockingEnabled,
-		ReplicationEnabled:   replicationEnabled,
+		EncryptEnabled:       req.EncryptEnabled,
+		VersioningEnabled:    req.VersioningEnabled,
+		ObjectLockingEnabled: req.ObjectLockingEnabled,
+		ReplicationEnabled:   req.ReplicationEnabled,
 		RetentionDays:        req.RetentionDays,
-		LegalHoldEnabled:     legalHoldEnabled,
+		LegalHoldEnabled:     req.LegalHoldEnabled,
 		Tags:                 req.Tags,
 	}
 
@@ -136,7 +115,7 @@ func (h *TenantBucketHandler) Create(c *gin.Context) {
 			"tenant_id":            tenantID.String(),
 			"capacity_quota_bytes": req.QuotaBytes,
 			"used_bytes":           0,
-			"versioning_enabled":   versioningEnabled,
+			"versioning_enabled":   req.VersioningEnabled,
 			"lifecycle_rules":      []storageEntity.BucketLifecycleRule{},
 		},
 		"credential": gin.H{
@@ -383,8 +362,8 @@ func (h *TenantBucketHandler) UpdateVersioning(c *gin.Context) {
 	}
 
 	var req storageDto.UpdateTenantBucketVersioningRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.VersioningEnabled == nil {
-		apires.RespondBadRequest(c, "invalid body payload: versioning_enabled is required")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid body payload")
 		return
 	}
 
@@ -394,7 +373,7 @@ func (h *TenantBucketHandler) UpdateVersioning(c *gin.Context) {
 		TenantID:          tenantID,
 		UserID:            userID,
 		ZoneID:            zoneID,
-		VersioningEnabled: *req.VersioningEnabled,
+		VersioningEnabled: req.VersioningEnabled,
 	}
 
 	bucket, err := h.tenantSvc.UpdateBucketVersioning(ctx, param)
