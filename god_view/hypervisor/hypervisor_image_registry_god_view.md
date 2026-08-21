@@ -289,36 +289,42 @@ sequenceDiagram
 
 ---
 
-## Phase 3 — SRE Direct Byte Upload & Zone Edge Gateway
+## Phase 3 — SRE Direct Byte Upload & Zone Public Edge Gateway
 
-SRE/Admin Portal upload trực tiếp file ảnh đĩa (`.qcow2`, `.raw`, `.iso`) lên MinIO Storage của Zone thông qua **Zone Public/Control Edge Gateway**. Quá trình này hoàn toàn tách biệt khỏi Controlplane HTTP API để tránh làm nghẽn băng thông và tràn bộ nhớ pod.
+SRE/Admin Portal upload trực tiếp file ảnh đĩa (`.qcow2`, `.raw`, `.iso`) lên MinIO Storage của Zone thông qua **Zone Public Edge Gateway** (`zone-public-edge-gateway`). Quá trình này hoàn toàn tách biệt khỏi Controlplane HTTP API để tránh làm nghẽn băng thông và tràn bộ nhớ pod.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Admin as SRE / Admin Portal
-    participant ZEG as Zone Edge Gateway
+    participant ZPEG as Zone Public Edge Gateway (Port 8080)
+    participant Authz as Zone Public Authorizer (Rust)
+    participant KV as NATS Zone KV
     participant S3 as MinIO Cluster (Zone Datacenter)
 
     Note over Admin,S3: Upload file nhị phân trực tiếp (Zero-Transit qua Controlplane)
-    Admin->>ZEG: PUT /storage/{object_key} (Multipart / Streamed bytes)
-    ZEG->>ZEG: Xác thực ControlAssertion / SRE Zone Authority
-    ZEG->>S3: Forward stream bytes vào MinIO Bucket HYPERVISOR_IMAGE_S3_BUCKET
-    S3-->>ZEG: 200 OK (Upload Complete)
-    ZEG-->>Admin: 200 OK
+    Admin->>ZPEG: PUT /storage/{object_key} (Multipart / Streamed bytes, Header: X-Aurora-Transfer-Ticket)
+    ZPEG->>Authz: gRPC CheckRequest
+    Authz->>KV: Tra cứu TransferTicket trong Zone KV kiểm tra trạng thái Active
+    Authz-->>ZPEG: CheckResponse OK (Allow)
+    ZPEG->>S3: Forward stream bytes trực tiếp vào MinIO Bucket HYPERVISOR_IMAGE_S3_BUCKET
+    S3-->>ZPEG: 200 OK (Upload Complete)
+    ZPEG-->>Admin: 200 OK
 ```
 
 ### Hop-by-Hop Contract — Phase 3
 
-#### Hop 3.1: SRE Admin Client → Zone Edge Gateway
+#### Hop 3.1: SRE Admin Client → Zone Public Edge Gateway
 - **Input Contract**:
   - HTTP `PUT /storage/hypervisor/images/{zone_id}/{code}/r{revision}/{image_id}.{format}`
-  - Headers: `Authorization` (hoặc `X-Aurora-Transfer-Ticket` / `ControlAssertion`), `Content-Length`, `Content-Type: application/octet-stream`.
+  - Headers: `Authorization` (hoặc `X-Aurora-Transfer-Ticket`), `Content-Length`, `Content-Type: application/octet-stream`.
   - Body: Binary stream (file `.qcow2`, `.raw`, hoặc `.iso`).
 
-#### Hop 3.2: Zone Edge Gateway → MinIO Zone Storage
-- **Authority**: Zone Gateway xác thực `ControlAssertion` do ACR ký bằng Ed25519 Public Key (hoặc đối soát `TransferTicket` từ `zone_kv`).
-- **Durable Effect**: Stream bytes được lưu trực tiếp vào MinIO bucket `HYPERVISOR_IMAGE_S3_BUCKET` tại đúng `object_key`.
+#### Hop 3.2: Zone Public Edge Gateway → MinIO Zone Storage
+- **Authority & Verification**:
+  - `Zone Public Authorizer` (`zone-public-edge-gateway/authorizer/src/main.rs`) nhận gRPC `CheckRequest` từ Envoy.
+  - Tra cứu và xác thực `TransferTicket` từ NATS JetStream `zone_kv` (kiểm tra `schema_version == 1`, `state == Active`, `valid_until`, `object_key` trùng khớp).
+- **Durable Effect**: Stream bytes được forward trực tiếp vào MinIO cluster của Zone trong bucket `HYPERVISOR_IMAGE_S3_BUCKET` tại đúng `object_key`.
 - **Output Schema**: HTTP `200 OK`.
 
 ---
@@ -596,9 +602,9 @@ sequenceDiagram
 - **Domain Service**: [`controlplane/internal/hypervisor/service/image_service.go`](../../controlplane/internal/hypervisor/service/image_service.go) (`RegisterImageMetadata`)
 - **PostgreSQL Repository**: [`controlplane/internal/hypervisor/repository/image_repo.go`](../../controlplane/internal/hypervisor/repository/image_repo.go) (`RegisterImageMetadata`)
 
-### Phase 3 — SRE Direct Byte Upload & Zone Edge Gateway
-- **Zone Edge Gateway Configuration**: [`zone-control-edge-gateway/envoy.yaml`](../../zone-control-edge-gateway/envoy.yaml)
-- **Zone Assertion Authorizer**: [`zone-control-edge-gateway/authorizer/src/control_assertion.rs`](../../zone-control-edge-gateway/authorizer/src/control_assertion.rs)
+### Phase 3 — SRE Direct Byte Upload & Zone Public Edge Gateway
+- **Zone Public Edge Gateway Configuration**: [`zone-public-edge-gateway/envoy.yaml`](../../zone-public-edge-gateway/envoy.yaml)
+- **Zone Public Authorizer**: [`zone-public-edge-gateway/authorizer/src/main.rs`](../../zone-public-edge-gateway/authorizer/src/main.rs)
 - **Zone S3 Storage Backend**: `MinIO HYPERVISOR_IMAGE_S3_BUCKET`
 
 ### Phase 4 — Import Trigger (`BeginImport`) & Outbox Sealing
