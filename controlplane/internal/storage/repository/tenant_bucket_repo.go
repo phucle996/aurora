@@ -71,7 +71,7 @@ func (r *TenantBucketRepoImpl) Create(
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $5::text
+				WHERE owner_id = $5
 				  AND owner_type = 'TENANT'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())
@@ -160,7 +160,6 @@ func (r *TenantBucketRepoImpl) Create(
 		mo.ErrorMessage,
 		mo.PayloadKeyID,
 		mo.RollbackQuotaBytes,
-		// $25-$31: Advanced bucket configurations
 		bucket.EncryptEnabled,
 		bucket.VersioningEnabled,
 		bucket.ObjectLockingEnabled,
@@ -443,7 +442,7 @@ func (r *TenantBucketRepoImpl) UpdateQuota(
 				)
 				OR EXISTS (
 					SELECT 1 FROM %s.commercial_admission_projection
-					WHERE owner_id = $3::text
+					WHERE owner_id = $3
 					  AND owner_type = 'TENANT'
 					  AND effective_at <= NOW()
 					  AND (valid_until IS NULL OR valid_until > NOW())
@@ -559,7 +558,7 @@ func (r *TenantBucketRepoImpl) UpdateVersioning(
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $3::text
+				WHERE owner_id = $3
 				  AND owner_type = 'TENANT'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())
@@ -718,7 +717,7 @@ func (r *TenantBucketRepoImpl) UpdateLifecycle(
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $3::text
+				WHERE owner_id = $3
 				  AND owner_type = 'TENANT'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())

@@ -55,7 +55,7 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $17::text
+				WHERE owner_id = $17
 				  AND owner_type = 'PERSONAL'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())
@@ -318,7 +318,7 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 				)
 				OR EXISTS (
 					SELECT 1 FROM %s.commercial_admission_projection
-					WHERE owner_id = $2::text
+					WHERE owner_id = $2
 					  AND owner_type = 'PERSONAL'
 					  AND effective_at <= NOW()
 					  AND (valid_until IS NULL OR valid_until > NOW())
@@ -425,7 +425,7 @@ func (r *PersonalBucketRepoImpl) UpdateVersioning(ctx context.Context, id uuid.U
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $2::text
+				WHERE owner_id = $2
 				  AND owner_type = 'PERSONAL'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())
@@ -546,7 +546,7 @@ func (r *PersonalBucketRepoImpl) UpdateLifecycle(ctx context.Context, id uuid.UU
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $2::text
+				WHERE owner_id = $2
 				  AND owner_type = 'PERSONAL'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())

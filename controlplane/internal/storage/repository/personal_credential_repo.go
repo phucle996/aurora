@@ -50,7 +50,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		WITH admitted AS (
 			SELECT EXISTS (
 				SELECT 1 FROM %s.commercial_admission_projection
-				WHERE owner_id = $3::text
+				WHERE owner_id = $3
 				  AND owner_type = 'PERSONAL'
 				  AND effective_at <= NOW()
 				  AND (valid_until IS NULL OR valid_until > NOW())

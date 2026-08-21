@@ -55,31 +55,54 @@ func (r *personalStorageAccessSessionRepository) CreatePersonalStorageAccessSess
 	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
 	row := storageModel.OutboxEntityToModel(outbox)
 
-	result, err := r.db.Exec(ctx, fmt.Sprintf(`
-		WITH target AS (
+	var admitted bool
+	var targetID *uuid.UUID
+	err = r.db.QueryRow(ctx, fmt.Sprintf(`
+		WITH admitted AS (
+			SELECT EXISTS (
+				SELECT 1 FROM %s.commercial_admission_projection
+				WHERE owner_id = $4
+				  AND owner_type = 'PERSONAL'
+				  AND effective_at <= NOW()
+				  AND (valid_until IS NULL OR valid_until > NOW())
+				  AND decision = 'ALLOW'
+			) AS ok
+		),
+		target AS (
 			SELECT bucket.id
 			FROM %s.personal_buckets bucket
 			JOIN %s.personal_workspaces workspace ON workspace.id=bucket.workspace_id
 			WHERE bucket.id=$1 AND bucket.name=$2 AND bucket.workspace_id=$3
 			  AND workspace.owner_id=$4 AND bucket.zone_id=$5 AND workspace.zone_id=$5
+			  AND (SELECT ok FROM admitted)
+		),
+		ins_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
+				completed_at, job_version, resource_id, payload_schema_version,
+				trace_id, idle, error_code, error_message, actor_user_id, payload_key_id
+			)
+			SELECT $6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+			FROM target
+			ON CONFLICT (event_id) DO NOTHING
+			RETURNING event_id
 		)
-		INSERT INTO %s.storage_outbox_records (
-			event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
-			completed_at, job_version, resource_id, payload_schema_version,
-			trace_id, idle, error_code, error_message, actor_user_id, payload_key_id
-		)
-		SELECT $6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
-		FROM target
-		ON CONFLICT (event_id) DO NOTHING`, r.storage, r.hierarchy, r.storage),
+		SELECT
+			(SELECT ok FROM admitted) AS admitted,
+			(SELECT id FROM target) AS target_id;
+	`, r.storage, r.storage, r.hierarchy, r.storage),
 		session.ResourceID, session.BucketName, session.WorkspaceID, session.ActorID,
 		session.ZoneID, row.EventID, row.ZoneID, row.JobTopic, row.Payload, row.OwnerID,
 		row.OwnerType, row.Status, row.CompletedAt, row.JobVersion, row.ResourceID,
 		row.PayloadSchemaVersion, row.TraceID, row.Idle, row.ErrorCode, row.ErrorMessage,
-		row.ActorUserID, row.PayloadKeyID)
+		row.ActorUserID, row.PayloadKeyID).Scan(&admitted, &targetID)
 	if err != nil {
 		return fmt.Errorf("storage access-session: create command: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if !admitted {
+		return storageTaxonomy.ErrCommercialAdmissionDenied
+	}
+	if targetID == nil {
 		return storageTaxonomy.ErrNotFound
 	}
 	return nil
