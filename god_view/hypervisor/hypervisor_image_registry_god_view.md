@@ -115,24 +115,89 @@ sequenceDiagram
     end
 ```
 
-### Hop-by-Hop Contract — Phase 1
-
 #### Hop 1.1: SRE Client → Central Envoy Gateway
-- **Input Contract**:
-  - Request: `POST /admin/hypervisor/images` (hoặc `POST /admin/hypervisor/images/{id}/import`)
-  - Headers: `Authorization: Bearer <sre_token>`, `X-Zone-ID: <uuid>`, `Origin`, `X-Client-Device-ID`, `traceparent`.
-  - Body: JSON payload (`RegisterImageMetadataRequest` cho đăng ký metadata).
+
+##### A. Tuyến Đăng ký Metadata (`POST /admin/hypervisor/images`)
+
+* **HTTP Wire Request**:
+```http
+POST /admin/hypervisor/images HTTP/1.1
+Host: api.aurora.local
+Authorization: Bearer eyJhbGciOiJFZERTQSI...
+X-Zone-ID: 7b0b2e8a-e555-4a18-97c3-21c6014e7a88
+Content-Type: application/json
+Origin: https://admin.aurora.local
+X-Client-Device-ID: dev-018e6a-mac-sre
+X-Requested-With: XMLHttpRequest
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+
+{
+  "name": "Ubuntu 24.04 LTS Noble Numbat",
+  "code": "ubuntu-24.04-server",
+  "distribution": "ubuntu",
+  "release": "24.04",
+  "revision": 1,
+  "architecture": "x86_64",
+  "format": "qcow2",
+  "size_bytes": 2361393152,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+```
+
+* **Chi tiết Headers gửi lên**:
+  - `Host`: Domain public của Gateway.
+  - `Authorization` / `Cookie`: Bearer Token hoặc Cookie phiên quản trị của SRE Admin (`aurora_sre_session`).
+  - `X-Zone-ID`: UUID định danh Zone đích cần nạp image (ví dụ: `7b0b2e8a-e555-4a18-97c3-21c6014e7a88`).
+  - `Content-Type`: `application/json; charset=utf-8`.
+  - `Origin` & `X-Requested-With`: Dùng cho CORS và CSRF protection tại ACR ExtAuthz.
+  - `X-Client-Device-ID`: Định danh thiết bị client phục vụ rate-limiting.
+  - `traceparent`: W3C distributed trace header.
+
+* **Chi tiết các trường trong JSON Request Body**:
+  - `name` *(string, bắt buộc)*: Tên hiển thị của OS Template (từ 1 đến 512 ký tự).
+  - `code` *(string, bắt buộc)*: Định danh kỹ thuật bất biến của dòng OS, định dạng slug `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$` (ví dụ: `ubuntu-24.04-server`).
+  - `distribution` *(string, bắt buộc)*: Tên bản phân phối Linux/BSD viết thường (`ubuntu`, `debian`, `rocky`, `alpine`).
+  - `release` *(string, bắt buộc)*: Số hiệu bản phát hành OS (ví dụ: `24.04`, `12`, `9`).
+  - `revision` *(int32, bắt buộc)*: Số hiệu bản sửa đổi của image trong Zone ($\ge 1$).
+  - `architecture` *(string, bắt buộc)*: Kiến trúc vi xử lý, chỉ chấp nhận `"x86_64"` hoặc `"aarch64"`.
+  - `format` *(string, bắt buộc)*: Định dạng đĩa ảo hóa, chỉ chấp nhận `"qcow2"` hoặc `"raw"`.
+  - `size_bytes` *(int64, bắt buộc)*: Kích thước chính xác của file ảnh đĩa tính bằng Byte ($1 \le \text{size} \le 1\text{ TiB} = 2^{40}$).
+  - `sha256` *(string, bắt buộc)*: Checksum băm SHA-256 gồm đúng 64 ký tự hexadecimal viết thường.
+
+##### B. Tuyến Kích hoạt Import (`POST /admin/hypervisor/images/{image_id}/import`)
+
+* **HTTP Wire Request**:
+```http
+POST /admin/hypervisor/images/018e6a12-8888-7123-9abc-def012345678/import HTTP/1.1
+Host: api.aurora.local
+Authorization: Bearer eyJhbGciOiJFZERTQSI...
+X-Zone-ID: 7b0b2e8a-e555-4a18-97c3-21c6014e7a88
+Origin: https://admin.aurora.local
+X-Client-Device-ID: dev-018e6a-mac-sre
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+Content-Length: 0
+```
+
+* **URL Path Parameter**:
+  - `image_id`: UUIDv7 của bản ghi Image Artifact đã được cấp phát từ bước `RegisterMetadata`.
 
 #### Hop 1.2: Envoy Gateway → ACR ExtAuthz (`CheckRequest`)
-- **Input**: Envoy forward request method, `:path`, headers và body hash sang gRPC `CheckRequest`.
-- **Authority & Validation**:
-  - ACR tra cứu phiên SRE trong `Auth-State Redis` (`iam:sre_session:...`).
-  - Kiểm tra trạng thái Zone ID trong `Shared Zone Cache` (Zone phải ở trạng thái `active` hoặc `draining`).
-  - Kiểm tra Rate Limit theo `X-Client-Device-ID`.
-- **Header Injection & Upstream Forwarding**:
-  - Xóa sạch các header untrusted từ browser (`x-workspace-id`, `x-user-level`, `x-tenant-id`).
-  - Inject header tin cậy: `x-user-id: sre`, `X-Zone-ID: <zone_uuid>`, `x-original-path`.
-- **Output Schema**: `CheckResponse` OK chuyển tiếp request nguyên bản sang Controlplane Hypervisor Cluster.
+- **Input gRPC `CheckRequest`**:
+  - `attributes.request.http.method`: `"POST"`
+  - `attributes.request.http.path`: `"/admin/hypervisor/images"` hoặc `"/admin/hypervisor/images/{id}/import"`
+  - `attributes.request.http.headers`: Đầy đủ headers client gửi lên từ Hop 1.1.
+  - `attributes.request.http.body`: Stream body bytes (được giới hạn buffer kiểm tra).
+- **Authority & Validation Rules tại ACR**:
+  1. **Session & Role Verification**: Tra cứu token trong `Auth-State Redis` (`iam:sre_session:{token}`), kiểm tra cờ `role == "PLATFORM_SRE"` hoặc admin root.
+  2. **Zone Availability Fence**: Kiểm tra `X-Zone-ID` tồn tại trong `Shared Zone Cache` và trạng thái nằm trong danh sách cho phép (`active`, `draining`).
+  3. **Security Fences**: Kiểm tra CSRF qua `Origin` / `Sec-Fetch-Site` và áp dụng pre-auth / post-auth token bucket rate limit theo `X-Client-Device-ID`.
+- **Header Sanitization & Injection**:
+  - **Remove**: Loại bỏ mọi header giả mạo từ browser nếu có (`x-workspace-id`, `x-user-level`, `x-tenant-id`).
+  - **Inject / Overwrite**:
+    * `x-user-id`: Ghi đè thành `"sre"` (định danh actor của luồng SRE Admin).
+    * `X-Zone-ID`: Giữ nguyên UUID của Zone đã được kiểm chứng.
+    * `x-original-path`: Lưu đường dẫn gốc mà client đã gọi.
+- **Output Schema**: `CheckResponse` Status `OK` (0) kèm tập headers đã được làm sạch để Envoy định tuyến sang cụm Controlplane Hypervisor Upstream.
 
 ---
 
