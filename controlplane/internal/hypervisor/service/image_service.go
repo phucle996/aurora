@@ -11,7 +11,7 @@ import (
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
 	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
-	hypervisorproto "controlplane/internal/hypervisor/transport/rpc/proto"
+	hypervisorproto "controlplane/internal/hypervisor/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
