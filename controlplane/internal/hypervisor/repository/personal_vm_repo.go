@@ -9,11 +9,13 @@ import (
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
+	hypervisorproto "controlplane/internal/hypervisor/transport/proto"
 	jobpayload "controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 type PersonalVMRepoPostgres struct {
@@ -450,97 +452,114 @@ func (r *PersonalVMRepoPostgres) Get(
 	return vm, nil
 }
 
-func (r *PersonalVMRepoPostgres) GetDeleteTarget(
+func (r *PersonalVMRepoPostgres) BeginDelete(
 	ctx context.Context,
 	vmID uuid.UUID,
 	workspaceID uuid.UUID,
+	zoneID uuid.UUID,
 	ownerUserID uuid.UUID,
-) (*hypervisorEntity.PersonalVMDeleteTarget, error) {
-	query := fmt.Sprintf(`
-		SELECT vm.id, vm.workspace_id, vm.zone_id, vm.owner_user_id, vm.name,
-		       vm.status, vm.operation_id, vm.provider_name, COALESCE(vm.provider_vmid, 0)
+	traceID []byte,
+) (*hypervisorEntity.PersonalVMDeleteResult, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("hypervisor repository: begin delete transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock and read VM in 1 statement
+	lockQuery := fmt.Sprintf(`
+		SELECT vm.name, vm.provider_name, COALESCE(vm.provider_vmid, 0), vm.status, vm.operation_id
 		FROM %s.personal_vms vm
 		JOIN %s.personal_workspaces workspace
 		  ON workspace.id = vm.workspace_id AND workspace.owner_id = $3
-		WHERE vm.id = $1 AND vm.workspace_id = $2
+		WHERE vm.id = $1 AND vm.workspace_id = $2 AND vm.zone_id = $4
+		FOR UPDATE OF vm
 	`, r.hypervisor, r.hierarchy)
-	target := &hypervisorEntity.PersonalVMDeleteTarget{}
-	err := r.db.QueryRow(ctx, query, vmID, workspaceID, ownerUserID).Scan(
-		&target.VMID, &target.WorkspaceID, &target.ZoneID, &target.OwnerUserID, &target.Name,
-		&target.Status, &target.OperationID, &target.ProviderName, &target.ProviderVMID,
+
+	var (
+		name         string
+		providerName string
+		providerVMID int64
+		status       hypervisorEntity.VMStatus
+		operationID  uuid.UUID
+	)
+	err = tx.QueryRow(ctx, lockQuery, vmID, workspaceID, ownerUserID, zoneID).Scan(
+		&name, &providerName, &providerVMID, &status, &operationID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, hypervisorTaxonomy.ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("hypervisor delete repository: read target: %w", err)
+		return nil, fmt.Errorf("hypervisor repository: lock VM for delete: %w", err)
 	}
-	return target, nil
-}
 
-func (r *PersonalVMRepoPostgres) BeginDelete(
-	ctx context.Context,
-	command *hypervisorEntity.BeginPersonalVMDelete,
-) (*hypervisorEntity.PersonalVMDeleteResult, error) {
-	outbox := &command.Outbox
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
-		ZoneID:               outbox.ZoneID,
-		SourceDomain:         "HYPERVISOR",
-		JobTopic:             outbox.JobTopic,
-		ResourceID:           outbox.ResourceID,
-		JobVersion:           uint32(outbox.JobVersion),
-		PayloadSchemaVersion: uint32(outbox.PayloadSchemaVersion),
-	}, outbox.Payload)
+	if status == hypervisorEntity.VMStatusDeleting {
+		return &hypervisorEntity.PersonalVMDeleteResult{
+			VMID:        vmID,
+			OperationID: operationID,
+			Status:      status,
+		}, nil
+	}
+	if status != hypervisorEntity.VMStatusReady || providerVMID <= 0 {
+		return nil, hypervisorTaxonomy.ErrVMStateConflict
+	}
+
+	newOperationID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
 	}
-	query := fmt.Sprintf(`
-		WITH target AS (
-			SELECT vm.id
-			FROM %s.personal_vms vm
-			JOIN %s.personal_workspaces workspace
-			  ON workspace.id = vm.workspace_id AND workspace.owner_id = $3
-			WHERE vm.id = $1 AND vm.workspace_id = $2 AND vm.zone_id = $4
-			  AND vm.status = 'READY' AND vm.provider_name = $5 AND vm.provider_vmid = $6
-			FOR UPDATE OF vm
-		), inserted_outbox AS (
+	payloadBytes, err := proto.Marshal(&hypervisorproto.VmDeleteV1{
+		SchemaVersion: 1,
+		VmId:          vmID[:],
+		ProviderName:  providerName,
+		ProviderVmid:  uint64(providerVMID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               zoneID,
+		SourceDomain:         "HYPERVISOR",
+		JobTopic:             "hypervisor.vm.delete",
+		ResourceID:           vmID.String(),
+		JobVersion:           1,
+		PayloadSchemaVersion: 1,
+	}, payloadBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	mutationQuery := fmt.Sprintf(`
+		WITH inserted_outbox AS (
 			INSERT INTO %s.hypervisor_outbox_records (
 				event_id, zone_id, job_topic, payload, payload_key_id, actor_user_id,
 				owner_id, owner_type, status, job_version, resource_id, resource_name,
 				payload_schema_version, trace_id, idle
 			)
-			SELECT $7, $4, $8, $9, $10, $11, $3, 'PERSONAL', 'PENDING', $12,
-			       $1::text, $13, $14, $15, $16
-			FROM target
+			VALUES (
+				$1, $2, 'hypervisor.vm.delete', $3, $4, $5,
+				$5, 'PERSONAL', 'PENDING', 1, $6, $7,
+				1, $8, 600
+			)
 			RETURNING event_id
-		), updated_vm AS (
-			UPDATE %s.personal_vms vm
-			SET status = 'DELETING', operation_id = $7, updated_at = NOW()
-			FROM inserted_outbox
-			WHERE vm.id = $1
-			RETURNING vm.id, vm.operation_id, vm.status
 		)
-		SELECT id, operation_id, status FROM updated_vm
-	`, r.hypervisor, r.hierarchy, r.hypervisor, r.hypervisor)
+		UPDATE %s.personal_vms
+		SET status = 'DELETING', operation_id = $1, updated_at = NOW()
+		WHERE id = $9
+		RETURNING id, operation_id, status
+	`, r.hypervisor, r.hypervisor)
+
 	result := &hypervisorEntity.PersonalVMDeleteResult{}
-	err = r.db.QueryRow(ctx, query,
-		command.Target.VMID, command.Target.WorkspaceID, command.Target.OwnerUserID,
-		command.Target.ZoneID, command.Target.ProviderName, command.Target.ProviderVMID,
-		outbox.EventID, outbox.JobTopic, protected.Payload, protected.KeyID, outbox.ActorUserID,
-		outbox.JobVersion, outbox.ResourceName, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.IdleSeconds,
+	err = tx.QueryRow(ctx, mutationQuery,
+		newOperationID, zoneID, protected.Payload, protected.KeyID, ownerUserID,
+		vmID.String(), name, traceID, vmID,
 	).Scan(&result.VMID, &result.OperationID, &result.Status)
-	if err == nil {
-		return result, nil
+	if err != nil {
+		return nil, fmt.Errorf("hypervisor repository: apply delete mutation: %w", err)
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("hypervisor delete repository: begin delete: %w", err)
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("hypervisor repository: commit delete transaction: %w", err)
 	}
-	current, currentErr := r.GetDeleteTarget(ctx, command.Target.VMID, command.Target.WorkspaceID, command.Target.OwnerUserID)
-	if currentErr != nil {
-		return nil, currentErr
-	}
-	if current.Status != hypervisorEntity.VMStatusDeleting {
-		return nil, hypervisorTaxonomy.ErrVMStateConflict
-	}
-	return &hypervisorEntity.PersonalVMDeleteResult{VMID: current.VMID, OperationID: current.OperationID, Status: current.Status}, nil
+	return result, nil
 }

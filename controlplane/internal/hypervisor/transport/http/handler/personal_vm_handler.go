@@ -294,13 +294,17 @@ func (h *PersonalVMHandler) Delete(c *gin.Context) {
 	if !ok {
 		return
 	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
 	vmID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
 	if err != nil {
 		apires.RespondBadRequest(c, "VM id is invalid")
 		return
 	}
 
-	result, err := h.service.Delete(ctx, vmID, workspaceID, userID)
+	result, err := h.service.Delete(ctx, vmID, workspaceID, zoneID, userID)
 	if err != nil {
 		switch {
 		case errors.Is(err, hypervisorTaxonomy.ErrNotFound):
