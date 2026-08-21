@@ -14,10 +14,8 @@ import (
 	storageRepoImpl "controlplane/internal/storage/repository"
 	storageSvcImpl "controlplane/internal/storage/service"
 	storageHandler "controlplane/internal/storage/transport/http/handler"
-	storageKafka "controlplane/internal/storage/transport/kafka"
 	storageProto "controlplane/internal/storage/transport/proto"
 	storageStream "controlplane/internal/storage/transport/stream"
-	storageWorker "controlplane/internal/storage/transport/worker"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -54,8 +52,6 @@ type StorageModule struct {
 
 	// Background workflow transports
 	CommercialAdmissionProjection *storageStream.CommercialAdmissionProjectionConsumer
-	CommercialAdmissionReconcile  *storageWorker.CommercialAdmissionReconcile
-	CommercialAdmissionZoneRelay  *storageWorker.CommercialAdmissionZoneRelay
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -147,46 +143,31 @@ func NewModule(
 	}
 	commercialAdmissionZonePayloadEncoder := storageProto.NewCommercialAdmissionZonePayloadEncoder()
 	commercialAdmissionProjectionRepo := storageRepoImpl.NewStorageCommercialAdmissionProjectionRepo(
-		db, cfg.SchemaSQL.Storage, commercialAdmissionZonePayloadEncoder,
+		db, cfg.SchemaSQL.Storage, commercialAdmissionZonePayloadEncoder, protector,
 	)
 	commercialAdmissionProjectionSvc := storageSvcImpl.NewStorageCommercialAdmissionProjectionService(commercialAdmissionProjectionRepo)
 	commercialAdmissionProjection := storageStream.NewCommercialAdmissionProjectionConsumer(rds, commercialAdmissionProjectionSvc)
-	commercialAdmissionReconcileRepo := storageRepoImpl.NewStorageCommercialAdmissionReconcileRepo(
-		db, cfg.SchemaSQL.Storage, commercialAdmissionZonePayloadEncoder,
-	)
-	commercialAdmissionReconcileSvc := storageSvcImpl.NewStorageCommercialAdmissionReconcileService(commercialAdmissionReconcileRepo)
-	commercialAdmissionReconcile := storageWorker.NewCommercialAdmissionReconcile(commercialAdmissionReconcileSvc)
-	commercialAdmissionZoneRelayRepo := storageRepoImpl.NewCommercialAdmissionZoneRelayRepo(db, cfg.SchemaSQL.Storage)
-	commercialAdmissionZonePublisher := storageKafka.NewCommercialAdmissionZonePublisher(kafkaProducer, cfg.Kafka.TopicPrefix)
-	commercialAdmissionZoneRelaySvc := storageSvcImpl.NewStorageCommercialAdmissionZoneRelayService(
-		commercialAdmissionZoneRelayRepo, commercialAdmissionZonePublisher,
-	)
-	commercialAdmissionZoneRelay := storageWorker.NewCommercialAdmissionZoneRelay(commercialAdmissionZoneRelaySvc)
-	commercialAdmissionRepo := storageRepoImpl.NewCommercialAdmissionRepo(db, cfg)
-	if commercialAdmissionRepo == nil {
-		return nil, errors.New("storage module: failed to construct commercial admission repository")
-	}
 	// 2. Khởi tạo services tách biệt theo scope
 	workflowMetrics := otel.WorkflowRecorder("storage")
-	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, commercialAdmissionRepo, workflowMetrics)
-	if tenantBucketSvc == nil {
-		return nil, errors.New("storage module: failed to construct tenant bucket service")
-	}
-	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, commercialAdmissionRepo, workflowMetrics)
-	if personalBucketSvc == nil {
-		return nil, errors.New("storage module: failed to construct personal bucket service")
-	}
-	personalStorageAccessSessionSvc := storageSvcImpl.NewPersonalStorageAccessSessionService(personalStorageAccessSessionRepo, commercialAdmissionRepo, workflowMetrics)
-	if personalStorageAccessSessionSvc == nil {
-		return nil, errors.New("storage module: failed to construct personal storage access-session service")
-	}
-	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, commercialAdmissionRepo, workflowMetrics)
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, workflowMetrics)
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, commercialAdmissionRepo, workflowMetrics)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, workflowMetrics)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
+	}
+	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo, tenantCredentialSvc, workflowMetrics)
+	if tenantBucketSvc == nil {
+		return nil, errors.New("storage module: failed to construct tenant bucket service")
+	}
+	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo, personalCredentialSvc, workflowMetrics)
+	if personalBucketSvc == nil {
+		return nil, errors.New("storage module: failed to construct personal bucket service")
+	}
+	personalStorageAccessSessionSvc := storageSvcImpl.NewPersonalStorageAccessSessionService(personalStorageAccessSessionRepo, workflowMetrics)
+	if personalStorageAccessSessionSvc == nil {
+		return nil, errors.New("storage module: failed to construct personal storage access-session service")
 	}
 
 	// 3. Khởi tạo HTTP handlers
@@ -228,7 +209,5 @@ func NewModule(
 		PersonalCredentialHandler:           personalCredentialHandler,
 		TenantCredentialHandler:             tenantCredentialHandler,
 		CommercialAdmissionProjection:       commercialAdmissionProjection,
-		CommercialAdmissionReconcile:        commercialAdmissionReconcile,
-		CommercialAdmissionZoneRelay:        commercialAdmissionZoneRelay,
 	}, nil
 }
