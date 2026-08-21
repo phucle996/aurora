@@ -123,11 +123,9 @@ sequenceDiagram
 ```http
 POST /admin/hypervisor/images HTTP/1.1
 Host: api.aurora.local
-Authorization: Bearer eyJhbGciOiJFZERTQSI...
-X-Zone-ID: 7b0b2e8a-e555-4a18-97c3-21c6014e7a88
+Cookie: aurora_sre_session=sre_sess_9a8b7c6d...; zone_context=hn-zone-01; x_client_device_id=dev-018e6a-mac-sre
 Content-Type: application/json
 Origin: https://admin.aurora.local
-X-Client-Device-ID: dev-018e6a-mac-sre
 X-Requested-With: XMLHttpRequest
 traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 
@@ -146,11 +144,9 @@ traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 
 * **Chi tiết Headers gửi lên**:
   - `Host`: Domain public của Gateway.
-  - `Authorization` / `Cookie`: Bearer Token hoặc Cookie phiên quản trị của SRE Admin (`aurora_sre_session`).
-  - `X-Zone-ID`: UUID định danh Zone đích cần nạp image (ví dụ: `7b0b2e8a-e555-4a18-97c3-21c6014e7a88`).
+  - `Cookie`: Chứa Cookie phiên quản trị của SRE Admin (`aurora_sre_session`), Cookie ngữ cảnh Zone (`zone_context=hn-zone-01` chứa `zone_code`), và Cookie thiết bị (`x_client_device_id`). Client **không gửi header `X-Zone-ID`** (Client chỉ biết `zone_code`).
   - `Content-Type`: `application/json; charset=utf-8`.
   - `Origin` & `X-Requested-With`: Dùng cho CORS và CSRF protection tại ACR ExtAuthz.
-  - `X-Client-Device-ID`: Định danh thiết bị client phục vụ rate-limiting.
   - `traceparent`: W3C distributed trace header.
 
 * **Chi tiết các trường trong JSON Request Body**:
@@ -170,10 +166,8 @@ traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 ```http
 POST /admin/hypervisor/images/018e6a12-8888-7123-9abc-def012345678/import HTTP/1.1
 Host: api.aurora.local
-Authorization: Bearer eyJhbGciOiJFZERTQSI...
-X-Zone-ID: 7b0b2e8a-e555-4a18-97c3-21c6014e7a88
+Cookie: aurora_sre_session=sre_sess_9a8b7c6d...; zone_context=hn-zone-01; x_client_device_id=dev-018e6a-mac-sre
 Origin: https://admin.aurora.local
-X-Client-Device-ID: dev-018e6a-mac-sre
 traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 Content-Length: 0
 ```
@@ -185,19 +179,19 @@ Content-Length: 0
 - **Input gRPC `CheckRequest`**:
   - `attributes.request.http.method`: `"POST"`
   - `attributes.request.http.path`: `"/admin/hypervisor/images"` hoặc `"/admin/hypervisor/images/{id}/import"`
-  - `attributes.request.http.headers`: Đầy đủ headers client gửi lên từ Hop 1.1.
-  - `attributes.request.http.body`: Stream body bytes (được giới hạn buffer kiểm tra).
+  - `attributes.request.http.headers`: Đầy đủ headers/cookies client gửi lên từ Hop 1.1.
+  - `attributes.request.http.body`: Stream body bytes.
 - **Authority & Validation Rules tại ACR**:
-  1. **Session & Role Verification**: Tra cứu token trong `Auth-State Redis` (`iam:sre_session:{token}`), kiểm tra cờ `role == "PLATFORM_SRE"` hoặc admin root.
-  2. **Zone Availability Fence**: Kiểm tra `X-Zone-ID` tồn tại trong `Shared Zone Cache` và trạng thái nằm trong danh sách cho phép (`active`, `draining`).
-  3. **Security Fences**: Kiểm tra CSRF qua `Origin` / `Sec-Fetch-Site` và áp dụng pre-auth / post-auth token bucket rate limit theo `X-Client-Device-ID`.
+  1. **Session & Role Verification**: Tra cứu token trong `Auth-State Redis` (`iam:sre_session:{token}`), kiểm tra quyền quản trị SRE.
+  2. **Zone Resolution from Cookie**: ACR đọc cookie `zone_context` (`zone_code`), tra cứu trong `Shared Zone Cache` để giải quyết ra `zone_id` UUID tương ứng và xác nhận Zone đang ở trạng thái `active` hoặc `draining`.
+  3. **Security Fences**: Kiểm tra CSRF qua `Origin` / `Sec-Fetch-Site` và áp dụng rate limit theo client device.
 - **Header Sanitization & Injection**:
-  - **Remove**: Loại bỏ mọi header giả mạo từ browser nếu có (`x-workspace-id`, `x-user-level`, `x-tenant-id`).
+  - **Remove**: Loại bỏ mọi header untrusted do client tự gửi (`x-workspace-id`, `x-user-level`, `x-tenant-id`, `x-zone-id`).
   - **Inject / Overwrite**:
     * `x-user-id`: Ghi đè thành `"sre"` (định danh actor của luồng SRE Admin).
-    * `X-Zone-ID`: Giữ nguyên UUID của Zone đã được kiểm chứng.
+    * `x-zone-id`: Inject UUID của Zone đã được ACR giải quyết và kiểm chứng.
     * `x-original-path`: Lưu đường dẫn gốc mà client đã gọi.
-- **Output Schema**: `CheckResponse` Status `OK` (0) kèm tập headers đã được làm sạch để Envoy định tuyến sang cụm Controlplane Hypervisor Upstream.
+- **Output Schema**: `CheckResponse` Status `OK` (0) kèm tập headers đã được inject (`x-zone-id`, `x-user-id: sre`) để Envoy định tuyến sang cụm Controlplane Hypervisor Upstream.
 
 ---
 

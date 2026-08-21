@@ -59,7 +59,7 @@ export default function HypervisorImagesPage() {
     }
     setLoading(true)
     try {
-      setImages(await listHypervisorImages(selectedZone.id))
+      setImages(await listHypervisorImages())
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Cannot load image registry')
     } finally {
@@ -79,7 +79,7 @@ export default function HypervisorImagesPage() {
     }
     setSubmitting(true)
     try {
-      await registerHypervisorImage(selectedZone.id, form)
+      await registerHypervisorImage(form)
       toast.success('Image metadata registered.')
       setForm(emptyForm)
       await loadImages()
@@ -93,7 +93,7 @@ export default function HypervisorImagesPage() {
   async function onImport(image: HypervisorImage) {
     if (!selectedZone) return
     try {
-      await importHypervisorImage(selectedZone.id, image.id)
+      await importHypervisorImage(image.id)
       toast.success(`Import queued for ${image.code} revision ${image.revision}.`)
       await loadImages()
     } catch (error) {
@@ -104,7 +104,7 @@ export default function HypervisorImagesPage() {
   async function onDelete(image: HypervisorImage) {
     if (!selectedZone || !window.confirm(`Delete ${image.code} revision ${image.revision}?`)) return
     try {
-      await deleteHypervisorImage(selectedZone.id, image.id)
+      await deleteHypervisorImage(image.id)
       toast.success('Image deletion queued.')
       await loadImages()
     } catch (error) {
