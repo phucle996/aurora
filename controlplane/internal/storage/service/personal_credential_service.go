@@ -12,7 +12,7 @@ import (
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	storageproto "controlplane/internal/storage/transport/rpc/proto"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
 
@@ -25,7 +25,6 @@ import (
 type PersonalCredentialSvcImpl struct {
 	repo       storageRepoInterface.PersonalCredentialRepo
 	bucketRepo storageRepoInterface.PersonalBucketRepo
-	admission  storageRepoInterface.CommercialAdmissionRepo
 	metrics    observability.WorkflowRecorder
 }
 
@@ -33,13 +32,11 @@ type PersonalCredentialSvcImpl struct {
 func NewPersonalCredentialService(
 	repo storageRepoInterface.PersonalCredentialRepo,
 	bucketRepo storageRepoInterface.PersonalBucketRepo,
-	admission storageRepoInterface.CommercialAdmissionRepo,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalCredentialService {
 	return &PersonalCredentialSvcImpl{
 		repo:       repo,
 		bucketRepo: bucketRepo,
-		admission:  admission,
 		metrics:    metrics,
 	}
 }
@@ -48,10 +45,6 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-	if err := s.admission.RequireOwnerAdmission(ctx, param.UserID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
-		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return nil, apperr.Wrap(err, err, "commercial_admission_denied")
-	}
 
 	// [COMMENT]: Kiểm tra an toàn: Đảm bảo policy JSON chỉ cho phép truy cập vào đúng bucketName được truyền
 	if !validatePolicyBucketName(param.Policy, param.BucketName) {
@@ -211,6 +204,10 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
+}
+
+func (s *PersonalCredentialSvcImpl) ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error) {
+	return s.repo.ListAccessKeys(ctx, bucketID, userID)
 }
 
 // [COMMENT]: PolicyStatement và PolicyDoc dùng để parse cấu trúc JSON Policy từ Client

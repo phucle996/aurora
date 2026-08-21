@@ -18,7 +18,6 @@ import (
 	"math"
 
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
-	platformtransportproto "controlplane/pkg/platformtransport/proto"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -144,11 +143,11 @@ func seal(randomSource io.Reader, deterministicEphemeralKey []byte, keyID uuid.U
 	}
 	ciphertext := aead.Seal(nil, nonce, plaintext, aad)
 
-	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(&platformtransportproto.ProtectedPayloadV1{
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(&ProtectedPayloadV1{
 		SchemaVersion:   1,
 		RecipientZoneId: metadata.ZoneID[:],
 		KeyId:           keyID[:],
-		Encoding:        platformtransportproto.PayloadEncodingV1_PAYLOAD_ENCODING_HPKE_X25519_HKDF_SHA256_AES_256_GCM,
+		Encoding:        PayloadEncodingV1_PAYLOAD_ENCODING_HPKE_X25519_HKDF_SHA256_AES_256_GCM,
 		EncapsulatedKey: encapsulatedKey,
 		Ciphertext:      ciphertext,
 		PlaintextSize:   uint32(len(plaintext)),

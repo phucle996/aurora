@@ -1,4 +1,4 @@
-package storageProto
+package storageproto
 
 import (
 	"time"
@@ -6,7 +6,6 @@ import (
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 
-	storagev1 "controlplane/internal/storage/transport/proto/storage"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -19,7 +18,7 @@ func NewCommercialAdmissionZonePayloadEncoder() storageRepoInterface.CommercialA
 func (e *CommercialAdmissionZonePayloadEncoder) Encode(
 	projection *storageEntity.CommercialAdmissionZoneProjection,
 ) ([]byte, error) {
-	event := &storagev1.StorageAdmissionChangedV1{
+	event := &StorageAdmissionChangedV1{
 		EventId:       projection.EventID.String(),
 		OwnerId:       projection.OwnerID.String(),
 		OwnerType:     projection.OwnerType,

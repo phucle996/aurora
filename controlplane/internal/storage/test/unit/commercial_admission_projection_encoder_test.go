@@ -6,7 +6,6 @@ import (
 
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageProto "controlplane/internal/storage/transport/proto"
-	storagev1 "controlplane/internal/storage/transport/proto/storage"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -32,7 +31,7 @@ func TestCommercialAdmissionZonePayloadEncoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode Zone payload: %v", err)
 	}
-	var event storagev1.StorageAdmissionChangedV1
+	var event storageProto.StorageAdmissionChangedV1
 	if err := proto.Unmarshal(payload, &event); err != nil {
 		t.Fatalf("decode Zone payload: %v", err)
 	}

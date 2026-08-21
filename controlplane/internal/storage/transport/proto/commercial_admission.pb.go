@@ -2,9 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.31.1
-// source: billing/admission/v1/commercial_admission.proto
+// source: commercial_admission.proto
 
-package admissionv1
+package storageproto
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -40,7 +40,7 @@ type CommercialAdmissionChangedV1 struct {
 
 func (x *CommercialAdmissionChangedV1) Reset() {
 	*x = CommercialAdmissionChangedV1{}
-	mi := &file_billing_admission_v1_commercial_admission_proto_msgTypes[0]
+	mi := &file_commercial_admission_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -52,7 +52,7 @@ func (x *CommercialAdmissionChangedV1) String() string {
 func (*CommercialAdmissionChangedV1) ProtoMessage() {}
 
 func (x *CommercialAdmissionChangedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_admission_v1_commercial_admission_proto_msgTypes[0]
+	mi := &file_commercial_admission_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -65,7 +65,7 @@ func (x *CommercialAdmissionChangedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommercialAdmissionChangedV1.ProtoReflect.Descriptor instead.
 func (*CommercialAdmissionChangedV1) Descriptor() ([]byte, []int) {
-	return file_billing_admission_v1_commercial_admission_proto_rawDescGZIP(), []int{0}
+	return file_commercial_admission_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *CommercialAdmissionChangedV1) GetEventId() string {
@@ -124,11 +124,11 @@ func (x *CommercialAdmissionChangedV1) GetValidUntil() string {
 	return ""
 }
 
-var File_billing_admission_v1_commercial_admission_proto protoreflect.FileDescriptor
+var File_commercial_admission_proto protoreflect.FileDescriptor
 
-const file_billing_admission_v1_commercial_admission_proto_rawDesc = "" +
+const file_commercial_admission_proto_rawDesc = "" +
 	"\n" +
-	"/billing/admission/v1/commercial_admission.proto\x12\x14billing.admission.v1\"\xa9\x02\n" +
+	"\x1acommercial_admission.proto\x12\x14billing.admission.v1\"\xa9\x02\n" +
 	"\x1cCommercialAdmissionChangedV1\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12\x1d\n" +
@@ -142,22 +142,22 @@ const file_billing_admission_v1_commercial_admission_proto_rawDesc = "" +
 	"validUntilBEZCcost-manager/api/internal/genproto/billing/admission/v1;admissionv1b\x06proto3"
 
 var (
-	file_billing_admission_v1_commercial_admission_proto_rawDescOnce sync.Once
-	file_billing_admission_v1_commercial_admission_proto_rawDescData []byte
+	file_commercial_admission_proto_rawDescOnce sync.Once
+	file_commercial_admission_proto_rawDescData []byte
 )
 
-func file_billing_admission_v1_commercial_admission_proto_rawDescGZIP() []byte {
-	file_billing_admission_v1_commercial_admission_proto_rawDescOnce.Do(func() {
-		file_billing_admission_v1_commercial_admission_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_billing_admission_v1_commercial_admission_proto_rawDesc), len(file_billing_admission_v1_commercial_admission_proto_rawDesc)))
+func file_commercial_admission_proto_rawDescGZIP() []byte {
+	file_commercial_admission_proto_rawDescOnce.Do(func() {
+		file_commercial_admission_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_commercial_admission_proto_rawDesc), len(file_commercial_admission_proto_rawDesc)))
 	})
-	return file_billing_admission_v1_commercial_admission_proto_rawDescData
+	return file_commercial_admission_proto_rawDescData
 }
 
-var file_billing_admission_v1_commercial_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
-var file_billing_admission_v1_commercial_admission_proto_goTypes = []any{
+var file_commercial_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_commercial_admission_proto_goTypes = []any{
 	(*CommercialAdmissionChangedV1)(nil), // 0: billing.admission.v1.CommercialAdmissionChangedV1
 }
-var file_billing_admission_v1_commercial_admission_proto_depIdxs = []int32{
+var file_commercial_admission_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
 	0, // [0:0] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
@@ -165,26 +165,26 @@ var file_billing_admission_v1_commercial_admission_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_billing_admission_v1_commercial_admission_proto_init() }
-func file_billing_admission_v1_commercial_admission_proto_init() {
-	if File_billing_admission_v1_commercial_admission_proto != nil {
+func init() { file_commercial_admission_proto_init() }
+func file_commercial_admission_proto_init() {
+	if File_commercial_admission_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_billing_admission_v1_commercial_admission_proto_rawDesc), len(file_billing_admission_v1_commercial_admission_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_commercial_admission_proto_rawDesc), len(file_commercial_admission_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_billing_admission_v1_commercial_admission_proto_goTypes,
-		DependencyIndexes: file_billing_admission_v1_commercial_admission_proto_depIdxs,
-		MessageInfos:      file_billing_admission_v1_commercial_admission_proto_msgTypes,
+		GoTypes:           file_commercial_admission_proto_goTypes,
+		DependencyIndexes: file_commercial_admission_proto_depIdxs,
+		MessageInfos:      file_commercial_admission_proto_msgTypes,
 	}.Build()
-	File_billing_admission_v1_commercial_admission_proto = out.File
-	file_billing_admission_v1_commercial_admission_proto_goTypes = nil
-	file_billing_admission_v1_commercial_admission_proto_depIdxs = nil
+	File_commercial_admission_proto = out.File
+	file_commercial_admission_proto_goTypes = nil
+	file_commercial_admission_proto_depIdxs = nil
 }

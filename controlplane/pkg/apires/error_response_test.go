@@ -17,20 +17,20 @@ func TestStableTaxonomyResponsesPreserveStatusCodeAndEnvelope(t *testing.T) {
 		code       string
 		respond    func(*gin.Context)
 	}{
-		{name: "bad_request", statusCode: http.StatusBadRequest, code: "REQUEST_INVALID", respond: func(c *gin.Context) {
-			RespondBadRequestWithCode(c, "REQUEST_INVALID", "invalid request")
+		{name: "bad_request", statusCode: http.StatusBadRequest, code: "bad request", respond: func(c *gin.Context) {
+			RespondBadRequest(c, "invalid request")
 		}},
-		{name: "not_found", statusCode: http.StatusNotFound, code: "CATALOG_NOT_FOUND", respond: func(c *gin.Context) {
-			RespondNotFoundWithCode(c, "CATALOG_NOT_FOUND", "catalog not found")
+		{name: "not_found", statusCode: http.StatusNotFound, code: "not found", respond: func(c *gin.Context) {
+			RespondNotFound(c, "catalog not found")
 		}},
-		{name: "conflict", statusCode: http.StatusConflict, code: "CATALOG_STALE", respond: func(c *gin.Context) {
-			RespondConflictWithCode(c, "CATALOG_STALE", "catalog stale")
+		{name: "conflict", statusCode: http.StatusConflict, code: "conflict", respond: func(c *gin.Context) {
+			RespondConflict(c, "catalog stale")
 		}},
 		{name: "unprocessable", statusCode: http.StatusUnprocessableEntity, code: "CATALOG_VALIDATION_FAILED", respond: func(c *gin.Context) {
 			RespondUnprocessableEntity(c, "CATALOG_VALIDATION_FAILED", "catalog invalid")
 		}},
 		{name: "unavailable", statusCode: http.StatusServiceUnavailable, code: "CATALOG_UNAVAILABLE", respond: func(c *gin.Context) {
-			RespondServiceUnavailableWithCode(c, "CATALOG_UNAVAILABLE", "catalog unavailable")
+			RespondServiceUnavailable(c, "CATALOG_UNAVAILABLE")
 		}},
 	}
 

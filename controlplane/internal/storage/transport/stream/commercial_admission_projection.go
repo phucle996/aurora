@@ -11,7 +11,7 @@ import (
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	admissionv1 "controlplane/internal/storage/transport/proto/admission"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
@@ -78,7 +78,7 @@ func (c *CommercialAdmissionProjectionConsumer) run(ctx context.Context) {
 			case []byte:
 				payload = value
 			}
-			var event admissionv1.CommercialAdmissionChangedV1
+			var event storageproto.CommercialAdmissionChangedV1
 			if len(payload) == 0 || len(payload) > 64*1024 || proto.Unmarshal(payload, &event) != nil {
 				logger.SysWarn("storage.commercial_admission.invalid", "commercial admission event rejected")
 				c.ack(ctx, message.ID)

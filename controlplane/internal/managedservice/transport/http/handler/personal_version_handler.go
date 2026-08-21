@@ -47,12 +47,12 @@ func (h *PersonalCatalogVersionHandler) GetPersonalCatalogVersion(c *gin.Context
 	}
 	versionID, err := uuid.Parse(strings.TrimSpace(c.Param("version_id")))
 	if err != nil || versionID == uuid.Nil {
-		apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "invalid version id")
+		apires.RespondBadRequest(c, "invalid version id")
 		return
 	}
 	for key := range c.Request.URL.Query() {
 		if key != "expected_revision_id" {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "unsupported query parameter")
+			apires.RespondBadRequest(c, "unsupported query parameter")
 			return
 		}
 	}
@@ -61,7 +61,7 @@ func (h *PersonalCatalogVersionHandler) GetPersonalCatalogVersion(c *gin.Context
 	if request.ExpectedRevisionID != "" {
 		parsed, parseErr := uuid.Parse(request.ExpectedRevisionID)
 		if parseErr != nil || parsed == uuid.Nil {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "invalid expected revision id")
+			apires.RespondBadRequest(c, "invalid expected revision id")
 			return
 		}
 		expectedRevisionID = parsed
@@ -75,12 +75,12 @@ func (h *PersonalCatalogVersionHandler) GetPersonalCatalogVersion(c *gin.Context
 	if err != nil {
 		switch {
 		case errors.Is(err, taxonomy.ErrCustomerCatalogNotFound):
-			apires.RespondNotFoundWithCode(c, "MANAGED_SERVICE_CATALOG_NOT_FOUND", "catalog version not found")
+			apires.RespondNotFound(c, "catalog version not found")
 		case errors.Is(err, taxonomy.ErrCustomerCatalogStale):
-			apires.RespondConflictWithCode(c, "CATALOG_STALE", "catalog revision changed; refresh the form")
+			apires.RespondConflict(c, "catalog revision changed; refresh the form")
 		case errors.Is(err, taxonomy.ErrCustomerCatalogUnavailable):
 			c.Header("Retry-After", "2")
-			apires.RespondServiceUnavailableWithCode(c, "MANAGED_SERVICE_CATALOG_UNAVAILABLE", "catalog is temporarily unavailable")
+			apires.RespondServiceUnavailable(c, "MANAGED_SERVICE_CATALOG_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "MANAGED_SERVICE_CATALOG_INTERNAL")
@@ -89,12 +89,32 @@ func (h *PersonalCatalogVersionHandler) GetPersonalCatalogVersion(c *gin.Context
 	}
 	c.Header("Cache-Control", "private, no-store")
 	apires.RespondSuccess(c, gin.H{
-		"context":      gin.H{"scope": "personal", "workspace_id": workspaceID, "zone_id": zoneID},
-		"category":     gin.H{"id": result.CategoryID, "code": result.CategoryCode, "name_i18n": result.CategoryNameI18n, "description_i18n": result.CategoryDescriptionI18n, "icon_key": result.CategoryIconKey},
-		"definition":   gin.H{"id": result.DefinitionID, "code": result.DefinitionCode, "name_i18n": result.DefinitionNameI18n, "description_i18n": result.DefinitionDescriptionI18n, "icon_key": result.DefinitionIconKey},
-		"version":      gin.H{"id": result.VersionID, "code": result.VersionCode, "display_version": result.VersionDisplay, "name_i18n": result.VersionNameI18n, "description_i18n": result.VersionDescriptionI18n, "icon_key": result.VersionIconKey},
-		"revision":     gin.H{"id": result.RevisionID, "number": result.RevisionNumber, "contract_version": result.ContractVersion, "contract_sha256": hex.EncodeToString(result.ContractSHA256)},
-		"input_schema": result.InputSchema, "input_schema_sha256": hex.EncodeToString(result.InputSchemaSHA256),
-		"ui_schema": result.UISchema, "ui_schema_sha256": hex.EncodeToString(result.UISchemaSHA256),
+		"context": gin.H{"scope": "personal",
+			"workspace_id": workspaceID,
+			"zone_id":      zoneID},
+		"category": gin.H{"id": result.CategoryID,
+			"code":             result.CategoryCode,
+			"name_i18n":        result.CategoryNameI18n,
+			"description_i18n": result.CategoryDescriptionI18n,
+			"icon_key":         result.CategoryIconKey},
+		"definition": gin.H{"id": result.DefinitionID,
+			"code":             result.DefinitionCode,
+			"name_i18n":        result.DefinitionNameI18n,
+			"description_i18n": result.DefinitionDescriptionI18n,
+			"icon_key":         result.DefinitionIconKey},
+		"version": gin.H{"id": result.VersionID,
+			"code":             result.VersionCode,
+			"display_version":  result.VersionDisplay,
+			"name_i18n":        result.VersionNameI18n,
+			"description_i18n": result.VersionDescriptionI18n,
+			"icon_key":         result.VersionIconKey},
+		"revision": gin.H{"id": result.RevisionID,
+			"number":           result.RevisionNumber,
+			"contract_version": result.ContractVersion,
+			"contract_sha256":  hex.EncodeToString(result.ContractSHA256)},
+		"input_schema":        result.InputSchema,
+		"input_schema_sha256": hex.EncodeToString(result.InputSchemaSHA256),
+		"ui_schema":           result.UISchema,
+		"ui_schema_sha256":    hex.EncodeToString(result.UISchemaSHA256),
 	}, "managed service form contract fetched")
 }

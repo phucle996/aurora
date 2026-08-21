@@ -13,7 +13,7 @@ import (
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	storageproto "controlplane/internal/storage/transport/rpc/proto"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
 
@@ -24,20 +24,18 @@ import (
 
 // [COMMENT]: PersonalBucketServiceImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Cá nhân.
 type PersonalBucketSvcImpl struct {
-	repo      storageRepoInterface.PersonalBucketRepo
-	admission storageRepoInterface.CommercialAdmissionRepo
-	metrics   observability.WorkflowRecorder
+	repo    storageRepoInterface.PersonalBucketRepo
+	credSvc storageSvcInterface.PersonalCredentialService
+	metrics observability.WorkflowRecorder
 }
 
-// NewPersonalBucketService wires the repository and the dedicated
-// Security-State Redis in one constructor. Shared L2 Redis is intentionally
-// not accepted here: an access session is an authz projection, not a cache.
+// NewPersonalBucketService wires the repository, credential service, and metrics in one constructor.
 func NewPersonalBucketService(
 	repo storageRepoInterface.PersonalBucketRepo,
-	admission storageRepoInterface.CommercialAdmissionRepo,
+	credSvc storageSvcInterface.PersonalCredentialService,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalBucketService {
-	return &PersonalBucketSvcImpl{repo: repo, admission: admission, metrics: metrics}
+	return &PersonalBucketSvcImpl{repo: repo, credSvc: credSvc, metrics: metrics}
 }
 
 // [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
@@ -56,11 +54,6 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-	if err := s.admission.RequireOwnerAdmission(ctx, param.UserID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
-		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return nil, apperr.Wrap(err, err, "commercial_admission_denied")
-	}
-
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
 	if err != nil {
@@ -254,13 +247,6 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 		}
 		return apperr.Wrap(err, err, "get_failed")
 	}
-	if quotaBytes > bucket.CapacityQuotaBytes {
-		if err := s.admission.RequireOwnerAdmission(ctx, userID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
-			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-			return apperr.Wrap(err, err, "commercial_admission_denied")
-		}
-	}
-
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
@@ -320,13 +306,167 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 	return nil
 }
 
+func (s *PersonalBucketSvcImpl) UpdateBucketVersioning(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, versioningEnabled bool) (*storageEntity.PersonalBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	syncEvent := &storageproto.BucketVersioningSync{
+		BucketId:          bucket.ID.String(),
+		Name:              bucket.Name,
+		VersioningEnabled: versioningEnabled,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.versioning",
+		Payload:              payloadBytes,
+		OwnerID:              userID,
+		OwnerType:            storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:          &userID,
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	updatedBucket, err := s.repo.UpdateVersioning(ctx, bucketID, userID, versioningEnabled, outbox)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "update_versioning_failed")
+	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
+	return updatedBucket, nil
+}
+
+func (s *PersonalBucketSvcImpl) GetBucketLifecycle(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]storageEntity.BucketLifecycleRule, error) {
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+	return bucket.LifecycleRules, nil
+}
+
+func (s *PersonalBucketSvcImpl) UpdateBucketLifecycle(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, rules []storageEntity.BucketLifecycleRule) (*storageEntity.PersonalBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
+	// Invariant check: if any rule has noncurrent_version_expiration_days > 0, bucket must have versioning enabled
+	for _, rule := range rules {
+		if rule.NoncurrentVersionExpirationDays > 0 && !bucket.VersioningEnabled {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+			return nil, apperr.Wrap(storageTaxonomy.ErrVersioningRequired, storageTaxonomy.ErrVersioningRequired, "versioning_required_for_noncurrent_expiration")
+		}
+	}
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	protoRules := make([]*storageproto.LifecycleRuleSync, len(rules))
+	for i, r := range rules {
+		protoRules[i] = &storageproto.LifecycleRuleSync{
+			Id:                                 r.ID,
+			Enabled:                            r.Enabled,
+			Prefix:                             r.Prefix,
+			ExpirationDays:                     int32(r.ExpirationDays),
+			NoncurrentVersionExpirationDays:    int32(r.NoncurrentVersionExpirationDays),
+			AbortIncompleteMultipartUploadDays: int32(r.AbortIncompleteMultipartUploadDays),
+		}
+	}
+
+	syncEvent := &storageproto.BucketLifecycleSync{
+		BucketId: bucket.ID.String(),
+		Name:     bucket.Name,
+		Rules:    protoRules,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.lifecycle",
+		Payload:              payloadBytes,
+		OwnerID:              userID,
+		OwnerType:            storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:          &userID,
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	updatedBucket, err := s.repo.UpdateLifecycle(ctx, bucketID, userID, rules, outbox)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, storageTaxonomy.ErrVersioningRequired) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
+		return nil, apperr.Wrap(err, err, "update_lifecycle_failed")
+	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
+	return updatedBucket, nil
+}
+
 func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
 	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết để xóa sạch trên MinIO
-	accessKeys, err := s.repo.ListAccessKeys(ctx, param.BucketID, param.UserID)
+	accessKeys, err := s.credSvc.ListAccessKeys(ctx, param.BucketID, param.UserID)
 	if err != nil {
 		return apperr.Wrap(err, err, "list_credentials_failed")
 	}

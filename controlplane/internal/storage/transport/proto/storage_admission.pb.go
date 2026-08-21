@@ -2,9 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.31.1
-// source: controlplane/storage/v1/storage_admission.proto
+// source: storage_admission.proto
 
-package storagev1
+package storageproto
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -42,7 +42,7 @@ type StorageAdmissionChangedV1 struct {
 
 func (x *StorageAdmissionChangedV1) Reset() {
 	*x = StorageAdmissionChangedV1{}
-	mi := &file_controlplane_storage_v1_storage_admission_proto_msgTypes[0]
+	mi := &file_storage_admission_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -54,7 +54,7 @@ func (x *StorageAdmissionChangedV1) String() string {
 func (*StorageAdmissionChangedV1) ProtoMessage() {}
 
 func (x *StorageAdmissionChangedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_storage_v1_storage_admission_proto_msgTypes[0]
+	mi := &file_storage_admission_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -67,7 +67,7 @@ func (x *StorageAdmissionChangedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageAdmissionChangedV1.ProtoReflect.Descriptor instead.
 func (*StorageAdmissionChangedV1) Descriptor() ([]byte, []int) {
-	return file_controlplane_storage_v1_storage_admission_proto_rawDescGZIP(), []int{0}
+	return file_storage_admission_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *StorageAdmissionChangedV1) GetEventId() string {
@@ -147,11 +147,11 @@ func (x *StorageAdmissionChangedV1) GetZoneId() string {
 	return ""
 }
 
-var File_controlplane_storage_v1_storage_admission_proto protoreflect.FileDescriptor
+var File_storage_admission_proto protoreflect.FileDescriptor
 
-const file_controlplane_storage_v1_storage_admission_proto_rawDesc = "" +
+const file_storage_admission_proto_rawDesc = "" +
 	"\n" +
-	"/controlplane/storage/v1/storage_admission.proto\x12\x17controlplane.storage.v1\"\x85\x03\n" +
+	"\x17storage_admission.proto\x12\x17controlplane.storage.v1\"\x85\x03\n" +
 	"\x19StorageAdmissionChangedV1\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12\x1d\n" +
@@ -167,25 +167,25 @@ const file_controlplane_storage_v1_storage_admission_proto_rawDesc = "" +
 	"resourceId\x12#\n" +
 	"\rresource_name\x18\n" +
 	" \x01(\tR\fresourceName\x12\x17\n" +
-	"\azone_id\x18\v \x01(\tR\x06zoneIdBAZ?controlplane/internal/storage/transport/proto/storage;storagev1b\x06proto3"
+	"\azone_id\x18\v \x01(\tR\x06zoneIdB<Z:controlplane/internal/storage/transport/proto;storageprotob\x06proto3"
 
 var (
-	file_controlplane_storage_v1_storage_admission_proto_rawDescOnce sync.Once
-	file_controlplane_storage_v1_storage_admission_proto_rawDescData []byte
+	file_storage_admission_proto_rawDescOnce sync.Once
+	file_storage_admission_proto_rawDescData []byte
 )
 
-func file_controlplane_storage_v1_storage_admission_proto_rawDescGZIP() []byte {
-	file_controlplane_storage_v1_storage_admission_proto_rawDescOnce.Do(func() {
-		file_controlplane_storage_v1_storage_admission_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_controlplane_storage_v1_storage_admission_proto_rawDesc), len(file_controlplane_storage_v1_storage_admission_proto_rawDesc)))
+func file_storage_admission_proto_rawDescGZIP() []byte {
+	file_storage_admission_proto_rawDescOnce.Do(func() {
+		file_storage_admission_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_storage_admission_proto_rawDesc), len(file_storage_admission_proto_rawDesc)))
 	})
-	return file_controlplane_storage_v1_storage_admission_proto_rawDescData
+	return file_storage_admission_proto_rawDescData
 }
 
-var file_controlplane_storage_v1_storage_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
-var file_controlplane_storage_v1_storage_admission_proto_goTypes = []any{
+var file_storage_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_storage_admission_proto_goTypes = []any{
 	(*StorageAdmissionChangedV1)(nil), // 0: controlplane.storage.v1.StorageAdmissionChangedV1
 }
-var file_controlplane_storage_v1_storage_admission_proto_depIdxs = []int32{
+var file_storage_admission_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
 	0, // [0:0] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
@@ -193,26 +193,26 @@ var file_controlplane_storage_v1_storage_admission_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_controlplane_storage_v1_storage_admission_proto_init() }
-func file_controlplane_storage_v1_storage_admission_proto_init() {
-	if File_controlplane_storage_v1_storage_admission_proto != nil {
+func init() { file_storage_admission_proto_init() }
+func file_storage_admission_proto_init() {
+	if File_storage_admission_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_storage_v1_storage_admission_proto_rawDesc), len(file_controlplane_storage_v1_storage_admission_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_storage_admission_proto_rawDesc), len(file_storage_admission_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_controlplane_storage_v1_storage_admission_proto_goTypes,
-		DependencyIndexes: file_controlplane_storage_v1_storage_admission_proto_depIdxs,
-		MessageInfos:      file_controlplane_storage_v1_storage_admission_proto_msgTypes,
+		GoTypes:           file_storage_admission_proto_goTypes,
+		DependencyIndexes: file_storage_admission_proto_depIdxs,
+		MessageInfos:      file_storage_admission_proto_msgTypes,
 	}.Build()
-	File_controlplane_storage_v1_storage_admission_proto = out.File
-	file_controlplane_storage_v1_storage_admission_proto_goTypes = nil
-	file_controlplane_storage_v1_storage_admission_proto_depIdxs = nil
+	File_storage_admission_proto = out.File
+	file_storage_admission_proto_goTypes = nil
+	file_storage_admission_proto_depIdxs = nil
 }

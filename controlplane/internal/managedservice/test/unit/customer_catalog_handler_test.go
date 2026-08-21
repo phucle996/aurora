@@ -100,11 +100,11 @@ func TestPersonalVersionMapsStaleRevisionWithoutReturningAForm(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/catalog/versions/"+customerVersionID.String()+"?expected_revision_id="+customerRevisionID.String(), nil)
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "CATALOG_STALE") {
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "conflict") {
 		t.Fatalf("expected stable stale taxonomy, got %d: %s", response.Code, response.Body.String())
 	}
 	var envelope apires.APIResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Error != "CATALOG_STALE" {
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Error != "conflict" {
 		t.Fatalf("stale response must use the shared apires taxonomy envelope: %#v, err=%v", envelope, err)
 	}
 	if service.Calls != 1 || service.Input.ExpectedRevisionID != customerRevisionID {

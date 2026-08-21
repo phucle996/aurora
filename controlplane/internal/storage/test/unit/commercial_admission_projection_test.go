@@ -10,7 +10,7 @@ import (
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageSvcImpl "controlplane/internal/storage/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	admissionv1 "controlplane/internal/storage/transport/proto/admission"
+	storageproto "controlplane/internal/storage/transport/proto"
 	storageStream "controlplane/internal/storage/transport/stream"
 
 	"github.com/alicebob/miniredis/v2"
@@ -102,7 +102,7 @@ func TestStorageCommercialAdmissionTransportProducesTypedCommand(t *testing.T) {
 	t.Cleanup(consumer.Stop)
 
 	eventID := "31ed91e8-f03c-4431-986f-11140384d1a2"
-	event := &admissionv1.CommercialAdmissionChangedV1{
+	event := &storageproto.CommercialAdmissionChangedV1{
 		EventId:       eventID,
 		OwnerId:       "85ea38ed-91d0-4684-8ce8-6367c7d709f1",
 		OwnerType:     "PERSONAL",

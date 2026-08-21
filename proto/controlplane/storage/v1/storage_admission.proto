@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package controlplane.storage.v1;
 
-option go_package = "controlplane/internal/storage/transport/proto/storage;storagev1";
+option go_package = "controlplane/internal/storage/transport/proto;storageproto";
 
 // StorageAdmissionChangedV1 is the Storage-owned per-bucket projection sent
 // to the bucket's Zone after Controlplane resolves its own resource topology.

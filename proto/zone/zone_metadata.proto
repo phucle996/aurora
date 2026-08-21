@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package aurora.transport.v1;
+
+// Dataplane cold-start gửi query durable; JO trả full aggregate vào metadata
+// topic riêng của Zone thay vì request/reply qua Redis PubSub.
+message ZoneMetadataQueryV1 {
+  bytes request_id = 1;
+  bytes zone_id = 2;
+  int64 requested_at_unix_ms = 3;
+  uint32 schema_version = 4;
+}
+
+message ZoneServiceDesiredStateV1 {
+  string service_type = 1;
+  bool enabled = 2;
+}
+
+// Full aggregate tránh lost-update giữa status và service events. Kafka
+// record key là zone_id và topic được compact để cold-start luôn có
+// authoritative snapshot gần nhất.
+message ZoneMetadataSnapshotV1 {
+  bytes event_id = 1;
+  bytes zone_id = 2;
+  string status = 3;
+  repeated ZoneServiceDesiredStateV1 services = 4;
+  int64 observed_at_unix_ms = 5;
+  uint32 schema_version = 6;
+}

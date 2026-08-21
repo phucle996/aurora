@@ -10,7 +10,7 @@ import (
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
-	storageproto "controlplane/internal/storage/transport/rpc/proto"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -18,13 +18,12 @@ import (
 )
 
 type personalStorageAccessSessionService struct {
-	repo      storageRepoInterface.PersonalStorageAccessSessionRepository
-	admission storageRepoInterface.CommercialAdmissionRepo
-	metrics   observability.WorkflowRecorder
+	repo    storageRepoInterface.PersonalStorageAccessSessionRepository
+	metrics observability.WorkflowRecorder
 }
 
-func NewPersonalStorageAccessSessionService(repo storageRepoInterface.PersonalStorageAccessSessionRepository, admission storageRepoInterface.CommercialAdmissionRepo, metrics observability.WorkflowRecorder) storageSvcInterface.PersonalStorageAccessSessionService {
-	return &personalStorageAccessSessionService{repo: repo, admission: admission, metrics: metrics}
+func NewPersonalStorageAccessSessionService(repo storageRepoInterface.PersonalStorageAccessSessionRepository, metrics observability.WorkflowRecorder) storageSvcInterface.PersonalStorageAccessSessionService {
+	return &personalStorageAccessSessionService{repo: repo, metrics: metrics}
 }
 
 func (s *personalStorageAccessSessionService) CreatePersonalStorageAccessSession(ctx context.Context, command *storageEntity.StorageAccessSession) error {
@@ -35,10 +34,6 @@ func (s *personalStorageAccessSessionService) CreatePersonalStorageAccessSession
 	if command == nil || command.AccessSessionID == uuid.Nil || command.ResourceID == uuid.Nil || command.ActorID == uuid.Nil || command.WorkspaceID == uuid.Nil || command.ZoneID == uuid.Nil {
 		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
 		return apperr.Wrap(fmt.Errorf("access session identity is incomplete"), nil, "invalid_access_session")
-	}
-	if err := s.admission.RequireOwnerAdmission(ctx, command.ActorID.String(), string(storageEntity.StorageOwnerTypePersonal)); err != nil {
-		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-		return apperr.Wrap(err, err, "commercial_admission_denied")
 	}
 	if command.ExpiresAtUnixSeconds <= uint64(time.Now().Unix()) {
 		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument

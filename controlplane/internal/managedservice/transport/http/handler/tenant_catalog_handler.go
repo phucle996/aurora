@@ -50,7 +50,7 @@ func (h *TenantCatalogHandler) ListTenantCatalog(c *gin.Context) {
 
 	for key := range c.Request.URL.Query() {
 		if key != "limit" && key != "cursor" {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "unsupported query parameter")
+			apires.RespondBadRequest(c, "unsupported query parameter")
 			return
 		}
 	}
@@ -59,7 +59,7 @@ func (h *TenantCatalogHandler) ListTenantCatalog(c *gin.Context) {
 	if request.Limit != "" {
 		parsed, err := strconv.Atoi(request.Limit)
 		if err != nil || parsed < 1 || parsed > 100 {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "limit must be between 1 and 100")
+			apires.RespondBadRequest(c, "limit must be between 1 and 100")
 			return
 		}
 		limit = parsed
@@ -67,17 +67,17 @@ func (h *TenantCatalogHandler) ListTenantCatalog(c *gin.Context) {
 	afterVersionID := uuid.Nil
 	if request.Cursor != "" {
 		if len(request.Cursor) > 128 {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "invalid cursor")
+			apires.RespondBadRequest(c, "invalid cursor")
 			return
 		}
 		decoded, err := base64.RawURLEncoding.DecodeString(request.Cursor)
 		if err != nil {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "invalid cursor")
+			apires.RespondBadRequest(c, "invalid cursor")
 			return
 		}
 		parsed, err := uuid.Parse(string(decoded))
 		if err != nil || parsed == uuid.Nil {
-			apires.RespondBadRequestWithCode(c, "REQUEST_INVALID", "invalid cursor")
+			apires.RespondBadRequest(c, "invalid cursor")
 			return
 		}
 		afterVersionID = parsed
@@ -91,7 +91,7 @@ func (h *TenantCatalogHandler) ListTenantCatalog(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, taxonomy.ErrCustomerCatalogUnavailable) {
 			c.Header("Retry-After", "2")
-			apires.RespondServiceUnavailableWithCode(c, "MANAGED_SERVICE_CATALOG_UNAVAILABLE", "catalog is temporarily unavailable")
+			apires.RespondServiceUnavailable(c, "MANAGED_SERVICE_CATALOG_UNAVAILABLE")
 			return
 		}
 		logger.HandlerError(c, op, err)
