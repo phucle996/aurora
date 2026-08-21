@@ -3,7 +3,9 @@ package hypervisorHandler
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,14 +44,20 @@ func (h *ImageHandler) RegisterMetadata(c *gin.Context) {
 		apires.RespondBadRequest(c, "zone_id is invalid")
 		return
 	}
-	actor := strings.TrimSpace(c.GetHeader("X-User-ID"))
+	actor := strings.TrimSpace(c.GetHeader("x-user-id"))
+	if actor == "" {
+		actor = strings.TrimSpace(c.GetHeader("X-User-ID"))
+	}
 	if actor == "" || len(actor) > 128 {
 		apires.RespondBadRequest(c, "verified admin identity is missing")
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var request hypervisorDTO.RegisterImageMetadataRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
 		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
