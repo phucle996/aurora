@@ -31,7 +31,9 @@ async function readEnvelope<T>(response: Response, fallback: string): Promise<T>
 }
 
 export async function listHypervisorImages(zoneID: string): Promise<HypervisorImage[]> {
-  const response = await Fetch(`/admin/hypervisor/zones/${encodeURIComponent(zoneID)}/images?limit=200`)
+  const response = await Fetch('/admin/hypervisor/images?limit=200', {
+    headers: { 'x-zone-id': zoneID },
+  })
   const data = await readEnvelope<{ images?: HypervisorImage[] }>(response, 'Cannot load image registry')
   return data.images ?? []
 }
@@ -52,9 +54,12 @@ export async function registerHypervisorImage(
   zoneID: string,
   input: RegisterHypervisorImageInput,
 ): Promise<HypervisorImage> {
-  const response = await Fetch(`/admin/hypervisor/zones/${encodeURIComponent(zoneID)}/images`, {
+  const response = await Fetch('/admin/hypervisor/images', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-zone-id': zoneID,
+    },
     body: JSON.stringify(input),
   })
   const data = await readEnvelope<HypervisorImage>(response, 'Cannot register image')
@@ -63,16 +68,22 @@ export async function registerHypervisorImage(
 
 export async function importHypervisorImage(zoneID: string, imageID: string): Promise<void> {
   const response = await Fetch(
-    `/admin/hypervisor/zones/${encodeURIComponent(zoneID)}/images/${encodeURIComponent(imageID)}/import`,
-    { method: 'POST' },
+    `/admin/hypervisor/images/${encodeURIComponent(imageID)}/import`,
+    {
+      method: 'POST',
+      headers: { 'x-zone-id': zoneID },
+    },
   )
   await readEnvelope<unknown>(response, 'Cannot start image import')
 }
 
 export async function deleteHypervisorImage(zoneID: string, imageID: string): Promise<void> {
   const response = await Fetch(
-    `/admin/hypervisor/zones/${encodeURIComponent(zoneID)}/images/${encodeURIComponent(imageID)}`,
-    { method: 'DELETE' },
+    `/admin/hypervisor/images/${encodeURIComponent(imageID)}`,
+    {
+      method: 'DELETE',
+      headers: { 'x-zone-id': zoneID },
+    },
   )
   await readEnvelope<unknown>(response, 'Cannot delete image')
 }
