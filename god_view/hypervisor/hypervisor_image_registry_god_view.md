@@ -115,11 +115,30 @@ sequenceDiagram
     end
 ```
 
+### Hop-by-Hop Contract — Phase 1
+
+#### Hop 1.1: SRE Client → Central Envoy Gateway
+- **Input Contract**:
+  - Request: `POST /admin/hypervisor/images` (hoặc `POST /admin/hypervisor/images/{id}/import`)
+  - Headers: `Authorization: Bearer <sre_token>`, `X-Zone-ID: <uuid>`, `Origin`, `X-Client-Device-ID`, `traceparent`.
+  - Body: JSON payload (`RegisterImageMetadataRequest` cho đăng ký metadata).
+
+#### Hop 1.2: Envoy Gateway → ACR ExtAuthz (`CheckRequest`)
+- **Input**: Envoy forward request method, `:path`, headers và body hash sang gRPC `CheckRequest`.
+- **Authority & Validation**:
+  - ACR tra cứu phiên SRE trong `Auth-State Redis` (`iam:sre_session:...`).
+  - Kiểm tra trạng thái Zone ID trong `Shared Zone Cache` (Zone phải ở trạng thái `active` hoặc `draining`).
+  - Kiểm tra Rate Limit theo `X-Client-Device-ID`.
+- **Header Injection & Upstream Forwarding**:
+  - Xóa sạch các header untrusted từ browser (`x-workspace-id`, `x-user-level`, `x-tenant-id`).
+  - Inject header tin cậy: `x-user-id: sre`, `X-Zone-ID: <zone_uuid>`, `x-original-path`.
+- **Output Schema**: `CheckResponse` OK chuyển tiếp request nguyên bản sang Controlplane Hypervisor Cluster.
+
 ---
 
 ## Phase 2 — Controlplane Metadata Registration (`RegisterMetadata`)
 
-Tại Bước 1, Controlplane nhận metadata, kiểm tra ràng buộc Zone và tính khả dụng của dịch vụ `hypervisor`, sinh `image_id` (UUIDv7) và ghi vào PostgreSQL với trạng thái **`UPLOADING`**. **Tuyệt đối không tạo Outbox Job ở bước này** vì file bytes chưa được đưa lên MinIO.
+Controlplane nhận metadata, kiểm tra ràng buộc Zone và tính khả dụng của dịch vụ `hypervisor`, sinh `image_id` (UUIDv7) và ghi vào PostgreSQL với trạng thái **`UPLOADING`**. **Tuyệt đối không tạo Outbox Job ở bước này** vì file bytes chưa được đưa lên MinIO.
 
 ```mermaid
 sequenceDiagram
@@ -141,28 +160,67 @@ sequenceDiagram
     H-->>H: Format response 201 Created kèm import_path
 ```
 
-* **SQL Invariant (Atomic Fencing)**:
-```sql
-INSERT INTO hypervisor.image_artifacts (
-    id, zone_id, name, code, distribution, release, revision,
-    architecture, format, size_bytes, sha256, object_key,
-    state, created_by, created_at, updated_at
-)
-SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'UPLOADING', $14, $15, $16
-FROM hierarchy.zones zone
-WHERE zone.id = $2
-  AND zone.status IN ('active', 'draining')
-  AND EXISTS (
-      SELECT 1 FROM hierarchy.zone_services service
-      WHERE service.zone_id = zone.id
-        AND service.service_type = 'hypervisor'
-        AND service.desired_state = TRUE
+### Hop-by-Hop Contract — Phase 2
+
+#### Hop 2.1: Envoy → Controlplane ImageHandler
+- **Input Contract**:
+  - Injected Headers: `x-user-id: "sre"`, `X-Zone-ID: <uuid>`, `traceparent`.
+  - Body Stream: `http.MaxBytesReader(c.Writer, c.Request.Body, 65536)`.
+- **Handler Validation**:
+  - `zoneID, ok := pkgcontext.GetZoneID(c, op)` $\to$ từ chối ngay nếu thiếu hoặc sai UUID.
+  - `actor := strings.TrimSpace(c.GetHeader("x-user-id"))` $\to$ yêu cầu actor `"sre"` (độ dài $\le 128$).
+  - `decoder.DisallowUnknownFields()` $\to$ chống mass-assignment.
+  - Regex & Type Validation: `code`, `distribution`, `release`, `revision \ge 1`, `architecture` (`x86_64`/`aarch64`), `format` (`qcow2`/`raw`), `1 \le size_bytes \le 1\text{ TiB}`, `sha256` (64 hex characters).
+
+#### Hop 2.2: ImageService → PostgreSQL Repository (`RegisterImageMetadata`)
+- **Input Domain Entity**: `hypervisorEntity.RegisterImageMetadata`
+- **Internal Derivations**:
+  - `imageID`: `uuid.NewV7()` (đảm bảo thứ tự thời gian).
+  - `objectKey`: `hypervisor/images/{zone_id}/{code}/r{revision}/{image_id}.{format}`.
+- **SQL Atomic Fencing Query**:
+  ```sql
+  INSERT INTO hypervisor.image_artifacts (
+      id, zone_id, name, code, distribution, release, revision,
+      architecture, format, size_bytes, sha256, object_key,
+      state, created_by, created_at, updated_at
   )
-RETURNING id, zone_id, name, code, distribution, release, revision,
-          architecture, format, size_bytes, sha256, object_key,
-          state, created_by, provider_template_vmid, error_code, error_message,
-          created_at, updated_at, available_at;
-```
+  SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'UPLOADING', $14, $15, $16
+  FROM hierarchy.zones zone
+  WHERE zone.id = $2
+    AND zone.status IN ('active', 'draining')
+    AND EXISTS (
+        SELECT 1 FROM hierarchy.zone_services service
+        WHERE service.zone_id = zone.id
+          AND service.service_type = 'hypervisor'
+          AND service.desired_state = TRUE
+    )
+  RETURNING id, zone_id, name, code, distribution, release, revision,
+            architecture, format, size_bytes, sha256, object_key,
+            state, created_by, provider_template_vmid, error_code, error_message,
+            created_at, updated_at, available_at;
+  ```
+- **Error Mapping**:
+  - PostgreSQL `23505` (Unique Violation) $\to$ `ErrImageConflict` $\to$ HTTP `409 Conflict`.
+  - `pgx.ErrNoRows` (Fencing Failed) $\to$ `ErrScopeUnavailable` $\to$ HTTP `409 Conflict`.
+- **Output Schema**: HTTP `201 Created`
+  ```json
+  {
+    "id": "018e6a12-...",
+    "zone_id": "7b0b2e8a-...",
+    "name": "Ubuntu 24.04 LTS Noble Numbat",
+    "code": "ubuntu-24.04-server",
+    "distribution": "ubuntu",
+    "release": "24.04",
+    "revision": 1,
+    "architecture": "x86_64",
+    "format": "qcow2",
+    "size_bytes": 2361393152,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "state": "UPLOADING",
+    "import_path": "/admin/hypervisor/images/018e6a12-.../import",
+    "created_at": "2026-08-21T20:00:00Z"
+  }
+  ```
 
 ---
 
@@ -184,6 +242,19 @@ sequenceDiagram
     S3-->>ZEG: 200 OK (Upload Complete)
     ZEG-->>Admin: 200 OK
 ```
+
+### Hop-by-Hop Contract — Phase 3
+
+#### Hop 3.1: SRE Admin Client → Zone Edge Gateway
+- **Input Contract**:
+  - HTTP `PUT /storage/hypervisor/images/{zone_id}/{code}/r{revision}/{image_id}.{format}`
+  - Headers: `Authorization` (hoặc `X-Aurora-Transfer-Ticket` / `ControlAssertion`), `Content-Length`, `Content-Type: application/octet-stream`.
+  - Body: Binary stream (file `.qcow2`, `.raw`, hoặc `.iso`).
+
+#### Hop 3.2: Zone Edge Gateway → MinIO Zone Storage
+- **Authority**: Zone Gateway xác thực `ControlAssertion` do ACR ký bằng Ed25519 Public Key (hoặc đối soát `TransferTicket` từ `zone_kv`).
+- **Durable Effect**: Stream bytes được lưu trực tiếp vào MinIO bucket `HYPERVISOR_IMAGE_S3_BUCKET` tại đúng `object_key`.
+- **Output Schema**: HTTP `200 OK`.
 
 ---
 
@@ -220,6 +291,70 @@ sequenceDiagram
     H-->>Admin: 202 Accepted { id, zone_id, state: "IMPORTING" }
 ```
 
+### Hop-by-Hop Contract — Phase 4
+
+#### Hop 4.1: SRE Admin UI → ImageHandler (`BeginImport`)
+- **Input Contract**:
+  - Request: `POST /admin/hypervisor/images/{image_id}/import`
+  - Headers: `X-Zone-ID: <uuid>`, `x-user-id: sre`.
+- **Validation**:
+  - `zoneID, ok := pkgcontext.GetZoneID(c, op)`
+  - `imageID, err := uuid.Parse(strings.TrimSpace(c.Param("image_id")))`
+
+#### Hop 4.2: ImageService → Repository & Vault Payload Protection
+- **Outbox Struct Assembly**:
+  - `topic`: `"hypervisor.image.import"`
+  - `resource_id`: `imageID.String()`
+  - `payload`: Protobuf serialize của `ImageImportV1` (`image_id`, `zone_id`, `object_key`, `size_bytes`, `sha256`, `format`, `revision`, `code`).
+- **Cryptographic Sealing**:
+  - Gọi `jobpayload.Protector.Seal(ctx, metadata, payload)` sử dụng **X25519 Public Key của Zone** lưu trong `hierarchy.zone_encryption_keys`.
+  - Trả về ciphertext và `payload_key_id`.
+
+#### Hop 4.3: PostgreSQL Atomic CTE Execution (`BeginImport`)
+- **SQL Execution**:
+  ```sql
+  WITH locked_image AS (
+      SELECT id
+      FROM hypervisor.image_artifacts
+      WHERE id = $1
+        AND zone_id = $2
+        AND state IN ('UPLOADING', 'FAILED', 'QUARANTINED')
+      FOR UPDATE
+  ),
+  updated_image AS (
+      UPDATE hypervisor.image_artifacts
+      SET state = 'IMPORTING',
+          error_code = NULL,
+          error_message = NULL,
+          updated_at = NOW()
+      WHERE id IN (SELECT id FROM locked_image)
+      RETURNING id, zone_id, name, code, distribution, release, revision,
+                architecture, format, size_bytes, sha256, object_key,
+                state, created_by, provider_template_vmid, error_code, error_message,
+                created_at, updated_at, available_at
+  ),
+  inserted_outbox AS (
+      INSERT INTO hypervisor.hypervisor_outbox_records (
+          event_id, zone_id, job_topic, resource_id, job_version,
+          payload, payload_key_id, payload_schema_version, status, created_at
+      )
+      SELECT $3, $2, $4, $1, $5, $6, $7, $8, 'PENDING', NOW()
+      FROM updated_image
+  )
+  SELECT * FROM updated_image;
+  ```
+- **Error Mapping**:
+  - `pgx.ErrNoRows` $\to$ kiểm tra nếu image tồn tại thì trả về `ErrImageStateConflict` (HTTP `409`), nếu không tồn tại trả về `ErrImageNotFound` (HTTP `404`).
+- **Output Schema**: HTTP `202 Accepted`
+  ```json
+  {
+    "id": "018e6a12-...",
+    "zone_id": "7b0b2e8a-...",
+    "revision": 1,
+    "state": "IMPORTING"
+  }
+  ```
+
 ---
 
 ## Phase 5 — Outbox CDC Dispatch & Dataplane Proxmox Template Conversion
@@ -255,6 +390,43 @@ sequenceDiagram
     end
 ```
 
+### Hop-by-Hop Contract — Phase 5
+
+#### Hop 5.1: PostgreSQL WAL → Job Orchestrator CDC Dispatch
+- **Input**: Committed record trong `hypervisor.hypervisor_outbox_records` (`job_topic = 'hypervisor.image.import'`, `status = 'PENDING'`).
+- **Processing**: JO đóng gói `JobCommandV1` (giữ nguyên ciphertext byte-for-byte).
+- **Transport**: Kafka Topic `aurora.jobs.commands.zone.{zone_id}.v1`, Partition Key = `image_id`.
+
+#### Hop 5.2: Zone Command Kafka → Dataplane ImageProcessor (`image.rs`)
+- **Input**: Consumed `JobCommandV1`.
+- **Payload Decryption**: Dataplane đọc `job-payload-keys.json` (Zone X25519 Private Key), giải mã ciphertext thành Protobuf `ImageImportV1`.
+
+#### Hop 5.3: Dataplane → MinIO Zone Storage Integrity Check
+- **Verification**:
+  - `HEAD` Object: Kiểm tra object có tồn tại và `content_length == size_bytes`.
+  - Streamed `GET` Object: Đọc từng chunk, băm SHA-256 thời gian thực và so khớp với `sha256` trong payload.
+  - Nếu sai lệch: Hủy bỏ, gửi kết quả `ImageImportResultV1` với `status: FAILED` và `error_code: "CHECKSUM_MISMATCH"`.
+
+#### Hop 5.4: Dataplane → Proxmox VE Cluster API
+- **Presigned URL Generation**: Dataplane sinh Presigned GET URL (TTL 1 giờ) chỉ lưu trong RAM.
+- **Download to Proxmox Staging**: Gọi Proxmox API `POST /nodes/{node}/download-url` kèm checksum SHA-256.
+- **Proxmox VM & Template Creation**:
+  - Cấp phát `vmid` mới (ví dụ `9001`).
+  - Gọi Proxmox CLI/API `qm create {vmid} --name {image_code}`.
+  - Gọi `qm importdisk {vmid} {staged_path} {target_storage}`.
+  - Gắn nhãn identity marker vào VM config.
+  - Gọi `qm template {vmid}` chuyển đổi sang VM Template bất biến.
+- **Staging Cleanup**: Gọi API xóa file tải về tạm trong phân vùng staging của Proxmox.
+
+#### Hop 5.5: Dataplane → Central Kafka Result Topic
+- **Topic**: `aurora.central.job_results`
+- **Output Protobuf (`ImageImportResultV1`)**:
+  - `job_id`: UUID (`event_id` của outbox record).
+  - `job_topic`: `"hypervisor.image.import"`.
+  - `status`: `JOB_STATUS_SUCCEEDED` (hoặc `JOB_STATUS_FAILED`).
+  - `template_vmid`: uint32 (`9001`).
+  - `sha256`: 32 bytes SHA-256.
+
 ---
 
 ## Phase 6 — Job Settlement & Template Availability
@@ -280,6 +452,57 @@ sequenceDiagram
     end
     PG-->>JO: Transaction Committed (Template sẵn sàng tạo VM)
 ```
+
+### Hop-by-Hop Contract — Phase 6
+
+#### Hop 6.1: Kafka Result → Job Orchestrator Result Worker
+- **Input**: Consumed `ImageImportResultV1` Protobuf từ Kafka.
+- **Authority & Idempotency Fence**:
+  ```sql
+  SELECT outbox.resource_id, outbox.status::text, image.revision, image.sha256
+  FROM hypervisor.hypervisor_outbox_records outbox
+  JOIN hypervisor.image_artifacts image ON image.id::text = outbox.resource_id
+  WHERE outbox.event_id = $1 AND outbox.job_topic = $2
+  FOR UPDATE OF outbox, image;
+  ```
+  - Khóa bi quan cả outbox row và image row.
+  - Kiểm tra trạng thái outbox: Bắt buộc phải là `PENDING` hoặc `PROCESSING`. Nếu đã `SUCCEEDED`/`FAILED` từ trước $\to$ Rollback, bỏ qua (chống duplicate / replay result).
+
+#### Hop 6.2: PostgreSQL ACID State Settlement
+- **Khi Thành công (`JOB_STATUS_SUCCEEDED`)**:
+  ```sql
+  UPDATE hypervisor.image_artifacts
+  SET state = 'AVAILABLE',
+      provider_template_vmid = $1,
+      available_at = NOW(),
+      error_code = NULL,
+      error_message = NULL,
+      updated_at = NOW()
+  WHERE id = $2;
+
+  UPDATE hypervisor.hypervisor_outbox_records
+  SET status = 'SUCCEEDED',
+      completed_at = NOW()
+  WHERE event_id = $3;
+  ```
+- **Khi Thất bại (`JOB_STATUS_FAILED`)**:
+  ```sql
+  UPDATE hypervisor.image_artifacts
+  SET state = 'FAILED',
+      error_code = $1,
+      error_message = $2,
+      updated_at = NOW()
+  WHERE id = $3;
+
+  UPDATE hypervisor.hypervisor_outbox_records
+  SET status = 'FAILED',
+      completed_at = NOW()
+  WHERE event_id = $4;
+  ```
+- **Hậu quả bền vững (Durable Outcome)**:
+  - Bản ghi `image_artifacts` đạt trạng thái `AVAILABLE`.
+  - Số hiệu `provider_template_vmid` được lưu trữ vĩnh viễn.
+  - Các workflow tạo máy ảo (`personal_vm_create`) có thể ngay lập tức phát hiện Image này trong Zone Catalog để phân bổ VM.
 
 ---
 
