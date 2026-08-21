@@ -123,13 +123,14 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 			INSERT INTO %s.personal_vms (
 				id, workspace_id, zone_id, owner_user_id, name, image,
 				image_id, image_revision, image_sha256,
-				cpu_cores, memory_mb, disk_gb, ssh_public_key, spec_hash,
+				resource_profile_code, cpu_cores, memory_mb, boot_disk_gb,
+				disk_gb, additional_disk_sizes_gb, ssh_public_key, spec_hash,
 				status, operation_id, provider_name, created_at, updated_at
 			)
 			SELECT $1, $2, $3, $4, $5, $6,
 			       $7, $8, $9,
-			       $10, $11, $12, $13, $14,
-			       $15, $16, $17, $18, $19
+			       $10, $11, $12, $13, $14, $15, $16, $17,
+			       $18, $19, $20, $21, $22
 			FROM authorized_scope
 			ON CONFLICT (workspace_id, name) DO NOTHING
 			RETURNING *
@@ -137,17 +138,20 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		inserted_outbox AS (
 			INSERT INTO %s.hypervisor_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id,
+				owner_id, owner_type,
 				status, job_version, resource_id, payload_schema_version,
-				trace_id, idle, payload_key_id
+				trace_id, idle, payload_key_id, resource_name
 			)
-			SELECT $20, $21, $22, $23, $24,
-			       $25, $26, $27, $28, $29, $30, $31
+			SELECT $23, $24, $25, $26, $27,
+			       $28, $29,
+			       $30, $31, $32, $33, $34, $35, $36, $37
 			FROM inserted_vm
 			RETURNING event_id
 		)
 		SELECT id, workspace_id, zone_id, owner_user_id, name, image,
 		       image_id, image_revision, image_sha256,
-		       cpu_cores, memory_mb, disk_gb, ssh_public_key, spec_hash,
+		       resource_profile_code, cpu_cores, memory_mb, boot_disk_gb,
+		       disk_gb, additional_disk_sizes_gb, ssh_public_key, spec_hash,
 		       status, operation_id, provider_name, provider_vmid,
 		       host(ipv4_address),
 		       created_at, updated_at, provisioned_at, TRUE AS created
@@ -167,9 +171,12 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		vm.ImageID,
 		vm.ImageRevision,
 		vm.ImageSHA256,
+		vm.ResourceProfileCode,
 		vm.CPUCores,
 		vm.MemoryMB,
+		vm.BootDiskGB,
 		vm.DiskGB,
+		vm.AdditionalDiskSizesGB,
 		vm.SSHPublicKey,
 		vm.SpecHash,
 		vm.Status,
@@ -182,6 +189,8 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		outbox.JobTopic,
 		outbox.Payload,
 		outbox.ActorUserID,
+		outbox.OwnerID,
+		outbox.OwnerType,
 		outbox.Status,
 		outbox.JobVersion,
 		outbox.ResourceID,
@@ -189,6 +198,7 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		outbox.TraceID,
 		outbox.IdleSeconds,
 		outbox.PayloadKeyID,
+		outbox.ResourceName,
 	)
 
 	var current hypervisorEntity.PersonalVM
@@ -203,9 +213,12 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 		&current.ImageID,
 		&current.ImageRevision,
 		&current.ImageSHA256,
+		&current.ResourceProfileCode,
 		&current.CPUCores,
 		&current.MemoryMB,
+		&current.BootDiskGB,
 		&current.DiskGB,
+		&current.AdditionalDiskSizesGB,
 		&current.SSHPublicKey,
 		&current.SpecHash,
 		&current.Status,
@@ -226,7 +239,9 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 				SELECT current_vm.id, current_vm.workspace_id, current_vm.zone_id,
 				       current_vm.owner_user_id, current_vm.name, current_vm.image,
 				       current_vm.image_id, current_vm.image_revision, current_vm.image_sha256,
-				       current_vm.cpu_cores, current_vm.memory_mb, current_vm.disk_gb,
+				       current_vm.resource_profile_code, current_vm.cpu_cores,
+				       current_vm.memory_mb, current_vm.boot_disk_gb, current_vm.disk_gb,
+				       current_vm.additional_disk_sizes_gb,
 				       current_vm.ssh_public_key, current_vm.spec_hash,
 				       current_vm.status, current_vm.operation_id, current_vm.provider_name,
 				       current_vm.provider_vmid,
@@ -267,9 +282,12 @@ func (r *PersonalVMRepoPostgres) CreateOrGet(
 				&current.ImageID,
 				&current.ImageRevision,
 				&current.ImageSHA256,
+				&current.ResourceProfileCode,
 				&current.CPUCores,
 				&current.MemoryMB,
+				&current.BootDiskGB,
 				&current.DiskGB,
+				&current.AdditionalDiskSizesGB,
 				&current.SSHPublicKey,
 				&current.SpecHash,
 				&current.Status,
@@ -313,7 +331,8 @@ func (r *PersonalVMRepoPostgres) List(
 	query := fmt.Sprintf(`
 		SELECT vm.id, vm.workspace_id, vm.zone_id, vm.owner_user_id, vm.name, vm.image,
 		       vm.image_id, vm.image_revision, vm.image_sha256,
-		       vm.cpu_cores, vm.memory_mb, vm.disk_gb, vm.ssh_public_key, vm.spec_hash,
+		       vm.resource_profile_code, vm.cpu_cores, vm.memory_mb, vm.boot_disk_gb,
+		       vm.disk_gb, vm.additional_disk_sizes_gb, vm.ssh_public_key, vm.spec_hash,
 		       vm.status, vm.operation_id, vm.provider_name,
 		       vm.provider_vmid, host(vm.ipv4_address),
 		       vm.created_at, vm.updated_at, vm.provisioned_at
@@ -346,9 +365,12 @@ func (r *PersonalVMRepoPostgres) List(
 			&vm.ImageID,
 			&vm.ImageRevision,
 			&vm.ImageSHA256,
+			&vm.ResourceProfileCode,
 			&vm.CPUCores,
 			&vm.MemoryMB,
+			&vm.BootDiskGB,
 			&vm.DiskGB,
+			&vm.AdditionalDiskSizesGB,
 			&vm.SSHPublicKey,
 			&vm.SpecHash,
 			&vm.Status,
@@ -379,7 +401,8 @@ func (r *PersonalVMRepoPostgres) Get(
 	query := fmt.Sprintf(`
 		SELECT vm.id, vm.workspace_id, vm.zone_id, vm.owner_user_id, vm.name, vm.image,
 		       vm.image_id, vm.image_revision, vm.image_sha256,
-		       vm.cpu_cores, vm.memory_mb, vm.disk_gb, vm.ssh_public_key, vm.spec_hash,
+		       vm.resource_profile_code, vm.cpu_cores, vm.memory_mb, vm.boot_disk_gb,
+		       vm.disk_gb, vm.additional_disk_sizes_gb, vm.ssh_public_key, vm.spec_hash,
 		       vm.status, vm.operation_id, vm.provider_name,
 		       vm.provider_vmid, host(vm.ipv4_address),
 		       vm.created_at, vm.updated_at, vm.provisioned_at
@@ -402,9 +425,12 @@ func (r *PersonalVMRepoPostgres) Get(
 		&vm.ImageID,
 		&vm.ImageRevision,
 		&vm.ImageSHA256,
+		&vm.ResourceProfileCode,
 		&vm.CPUCores,
 		&vm.MemoryMB,
+		&vm.BootDiskGB,
 		&vm.DiskGB,
+		&vm.AdditionalDiskSizesGB,
 		&vm.SSHPublicKey,
 		&vm.SpecHash,
 		&vm.Status,
@@ -422,4 +448,99 @@ func (r *PersonalVMRepoPostgres) Get(
 		return nil, fmt.Errorf("hypervisor repository: get personal VM: %w", err)
 	}
 	return vm, nil
+}
+
+func (r *PersonalVMRepoPostgres) GetDeleteTarget(
+	ctx context.Context,
+	vmID uuid.UUID,
+	workspaceID uuid.UUID,
+	ownerUserID uuid.UUID,
+) (*hypervisorEntity.PersonalVMDeleteTarget, error) {
+	query := fmt.Sprintf(`
+		SELECT vm.id, vm.workspace_id, vm.zone_id, vm.owner_user_id, vm.name,
+		       vm.status, vm.operation_id, vm.provider_name, COALESCE(vm.provider_vmid, 0)
+		FROM %s.personal_vms vm
+		JOIN %s.personal_workspaces workspace
+		  ON workspace.id = vm.workspace_id AND workspace.owner_id = $3
+		WHERE vm.id = $1 AND vm.workspace_id = $2
+	`, r.hypervisor, r.hierarchy)
+	target := &hypervisorEntity.PersonalVMDeleteTarget{}
+	err := r.db.QueryRow(ctx, query, vmID, workspaceID, ownerUserID).Scan(
+		&target.VMID, &target.WorkspaceID, &target.ZoneID, &target.OwnerUserID, &target.Name,
+		&target.Status, &target.OperationID, &target.ProviderName, &target.ProviderVMID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, hypervisorTaxonomy.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hypervisor delete repository: read target: %w", err)
+	}
+	return target, nil
+}
+
+func (r *PersonalVMRepoPostgres) BeginDelete(
+	ctx context.Context,
+	command *hypervisorEntity.BeginPersonalVMDelete,
+) (*hypervisorEntity.PersonalVMDeleteResult, error) {
+	outbox := &command.Outbox
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               outbox.ZoneID,
+		SourceDomain:         "HYPERVISOR",
+		JobTopic:             outbox.JobTopic,
+		ResourceID:           outbox.ResourceID,
+		JobVersion:           uint32(outbox.JobVersion),
+		PayloadSchemaVersion: uint32(outbox.PayloadSchemaVersion),
+	}, outbox.Payload)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf(`
+		WITH target AS (
+			SELECT vm.id
+			FROM %s.personal_vms vm
+			JOIN %s.personal_workspaces workspace
+			  ON workspace.id = vm.workspace_id AND workspace.owner_id = $3
+			WHERE vm.id = $1 AND vm.workspace_id = $2 AND vm.zone_id = $4
+			  AND vm.status = 'READY' AND vm.provider_name = $5 AND vm.provider_vmid = $6
+			FOR UPDATE OF vm
+		), inserted_outbox AS (
+			INSERT INTO %s.hypervisor_outbox_records (
+				event_id, zone_id, job_topic, payload, payload_key_id, actor_user_id,
+				owner_id, owner_type, status, job_version, resource_id, resource_name,
+				payload_schema_version, trace_id, idle
+			)
+			SELECT $7, $4, $8, $9, $10, $11, $3, 'PERSONAL', 'PENDING', $12,
+			       $1::text, $13, $14, $15, $16
+			FROM target
+			RETURNING event_id
+		), updated_vm AS (
+			UPDATE %s.personal_vms vm
+			SET status = 'DELETING', operation_id = $7, updated_at = NOW()
+			FROM inserted_outbox
+			WHERE vm.id = $1
+			RETURNING vm.id, vm.operation_id, vm.status
+		)
+		SELECT id, operation_id, status FROM updated_vm
+	`, r.hypervisor, r.hierarchy, r.hypervisor, r.hypervisor)
+	result := &hypervisorEntity.PersonalVMDeleteResult{}
+	err = r.db.QueryRow(ctx, query,
+		command.Target.VMID, command.Target.WorkspaceID, command.Target.OwnerUserID,
+		command.Target.ZoneID, command.Target.ProviderName, command.Target.ProviderVMID,
+		outbox.EventID, outbox.JobTopic, protected.Payload, protected.KeyID, outbox.ActorUserID,
+		outbox.JobVersion, outbox.ResourceName, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.IdleSeconds,
+	).Scan(&result.VMID, &result.OperationID, &result.Status)
+	if err == nil {
+		return result, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("hypervisor delete repository: begin delete: %w", err)
+	}
+	current, currentErr := r.GetDeleteTarget(ctx, command.Target.VMID, command.Target.WorkspaceID, command.Target.OwnerUserID)
+	if currentErr != nil {
+		return nil, currentErr
+	}
+	if current.Status != hypervisorEntity.VMStatusDeleting {
+		return nil, hypervisorTaxonomy.ErrVMStateConflict
+	}
+	return &hypervisorEntity.PersonalVMDeleteResult{VMID: current.VMID, OperationID: current.OperationID, Status: current.Status}, nil
 }

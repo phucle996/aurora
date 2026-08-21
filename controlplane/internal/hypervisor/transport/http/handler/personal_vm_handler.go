@@ -25,15 +25,13 @@ import (
 var personalVMNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$|^[a-z]$`)
 
 type PersonalVMHandler struct {
-	service       hypervisorSvcInterface.PersonalVMService
-	deleteService hypervisorSvcInterface.PersonalVMDeleteService
+	service hypervisorSvcInterface.PersonalVMService
 }
 
 func NewPersonalVMHandler(
 	service hypervisorSvcInterface.PersonalVMService,
-	deleteService hypervisorSvcInterface.PersonalVMDeleteService,
 ) *PersonalVMHandler {
-	return &PersonalVMHandler{service: service, deleteService: deleteService}
+	return &PersonalVMHandler{service: service}
 }
 
 func (h *PersonalVMHandler) Create(c *gin.Context) {
@@ -302,7 +300,7 @@ func (h *PersonalVMHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	result, err := h.deleteService.Delete(ctx, vmID, workspaceID, userID)
+	result, err := h.service.Delete(ctx, vmID, workspaceID, userID)
 	if err != nil {
 		switch {
 		case errors.Is(err, hypervisorTaxonomy.ErrNotFound):

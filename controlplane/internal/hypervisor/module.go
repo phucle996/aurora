@@ -33,8 +33,6 @@ type HypervisorModule struct {
 	VMRepository       hypervisorRepoInterface.PersonalVMRepository
 	VMService          hypervisorSvcInterface.PersonalVMService
 	VMHandler          *hypervisorHandler.PersonalVMHandler
-	VMDeleteRepository hypervisorRepoInterface.PersonalVMDeleteRepository
-	VMDeleteService    hypervisorSvcInterface.PersonalVMDeleteService
 	ImageRepository    hypervisorRepoInterface.ImageRepository
 	ImageService       hypervisorSvcInterface.ImageService
 	ImageHandler       *hypervisorHandler.ImageHandler
@@ -130,15 +128,7 @@ func NewModule(
 	if vmSvc == nil {
 		return nil, errors.New("hypervisor module: failed to construct personal VM service")
 	}
-	vmDeleteRepo := hypervisorRepoImpl.NewPersonalVMDeleteRepo(db, cfg, protector)
-	if vmDeleteRepo == nil {
-		return nil, errors.New("hypervisor module: failed to construct personal VM delete repository")
-	}
-	vmDeleteSvc := hypervisorSvcImpl.NewPersonalVMDeleteService(vmDeleteRepo, workflowMetrics)
-	if vmDeleteSvc == nil {
-		return nil, errors.New("hypervisor module: failed to construct personal VM delete service")
-	}
-	vmHandler := hypervisorHandler.NewPersonalVMHandler(vmSvc, vmDeleteSvc)
+	vmHandler := hypervisorHandler.NewPersonalVMHandler(vmSvc)
 	if vmHandler == nil {
 		return nil, errors.New("hypervisor module: failed to construct personal VM handler")
 	}
@@ -163,8 +153,6 @@ func NewModule(
 		VMRepository:                  vmRepo,
 		VMService:                     vmSvc,
 		VMHandler:                     vmHandler,
-		VMDeleteRepository:            vmDeleteRepo,
-		VMDeleteService:               vmDeleteSvc,
 		CommercialAdmissionProjection: commercialAdmissionProjection,
 		PricingReadinessProjection:    pricingReadinessProjection,
 		ImageRepository:               imageRepo,

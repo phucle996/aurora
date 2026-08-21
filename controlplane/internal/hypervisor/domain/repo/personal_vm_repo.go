@@ -32,4 +32,14 @@ type PersonalVMRepository interface {
 		workspaceID uuid.UUID,
 		ownerUserID uuid.UUID,
 	) (*hypervisorEntity.PersonalVM, error)
+	GetDeleteTarget(
+		ctx context.Context,
+		vmID uuid.UUID,
+		workspaceID uuid.UUID,
+		ownerUserID uuid.UUID,
+	) (*hypervisorEntity.PersonalVMDeleteTarget, error)
+	BeginDelete(
+		ctx context.Context,
+		command *hypervisorEntity.BeginPersonalVMDelete,
+	) (*hypervisorEntity.PersonalVMDeleteResult, error)
 }
