@@ -587,32 +587,32 @@ sequenceDiagram
 ## Code map
 
 ### Phase 1 — SRE Client → Envoy → ACR ExtAuthz
-- **ACR ExtAuthz Filter & SRE Authentication**: `acr/src/auth/`
-- **ACR Hypervisor Admin Route & Zone Injection**: `acr/src/hypervisor/`
+- **ACR ExtAuthz Filter & SRE Authentication**: `aurora/acr/src/auth/`
+- **ACR Hypervisor Admin Route & Zone Injection**: `aurora/acr/src/hypervisor/`
 
 ### Phase 2 — Controlplane Metadata Registration (`RegisterMetadata`)
-- **Route Registration**: `controlplane/internal/hypervisor/route.go`
-- **HTTP Handler**: `controlplane/internal/hypervisor/transport/http/handler/image_handler.go` (`RegisterMetadata`)
-- **Domain Service**: `controlplane/internal/hypervisor/service/image_service.go` (`RegisterImageMetadata`)
-- **PostgreSQL Repository**: `controlplane/internal/hypervisor/repository/image_repo.go` (`RegisterImageMetadata`)
+- **Route Registration**: `aurora/controlplane/internal/hypervisor/route.go`
+- **HTTP Handler**: `aurora/controlplane/internal/hypervisor/transport/http/handler/image_handler.go` (`RegisterMetadata`)
+- **Domain Service**: `aurora/controlplane/internal/hypervisor/service/image_service.go` (`RegisterImageMetadata`)
+- **PostgreSQL Repository**: `aurora/controlplane/internal/hypervisor/repository/image_repo.go` (`RegisterImageMetadata`)
 
 ### Phase 3 — SRE Direct Byte Upload & Zone Edge Gateway
-- **Zone Edge Gateway Configuration**: `zone-control-edge-gateway/envoy.yaml`
-- **Zone Assertion Authorizer**: `zone-control-edge-gateway/authorizer/src/control_assertion.rs`
+- **Zone Edge Gateway Configuration**: `aurora/zone-control-edge-gateway/envoy.yaml`
+- **Zone Assertion Authorizer**: `aurora/zone-control-edge-gateway/authorizer/src/control_assertion.rs`
 - **Zone S3 Storage Backend**: `MinIO HYPERVISOR_IMAGE_S3_BUCKET`
 
 ### Phase 4 — Import Trigger (`BeginImport`) & Outbox Sealing
-- **HTTP Handler**: `controlplane/internal/hypervisor/transport/http/handler/image_handler.go` (`BeginImport`)
-- **Domain Service**: `controlplane/internal/hypervisor/service/image_service.go` (`BeginImport`)
-- **PostgreSQL Repository & CTE**: `controlplane/internal/hypervisor/repository/image_repo.go` (`BeginImport`)
-- **X25519 Payload Protector**: `controlplane/internal/security/job_payload.go` (`Seal`)
+- **HTTP Handler**: `aurora/controlplane/internal/hypervisor/transport/http/handler/image_handler.go` (`BeginImport`)
+- **Domain Service**: `aurora/controlplane/internal/hypervisor/service/image_service.go` (`BeginImport`)
+- **PostgreSQL Repository & CTE**: `aurora/controlplane/internal/hypervisor/repository/image_repo.go` (`BeginImport`)
+- **X25519 Payload Protector**: `aurora/controlplane/internal/security/job_payload.go` (`Seal`)
 
 ### Phase 5 — Outbox CDC Dispatch & Dataplane Proxmox Template Conversion
-- **JO Outbox Changefeed Dispatch**: `job-orchestrator/src/changefeed/dispatch.rs`
-- **Dataplane Image Processor Executor**: `dataplane/src/executor/hypervisor/processor/image.rs`
-- **Proxmox Driver Client**: `dataplane/src/executor/hypervisor/processor/proxmox.rs`
-- **Dataplane S3 Client Store**: `dataplane/src/executor/hypervisor/processor/image.rs`
+- **JO Outbox Changefeed Dispatch**: `aurora/job-orchestrator/src/changefeed/dispatch.rs`
+- **Dataplane Image Processor Executor**: `aurora/dataplane/src/executor/hypervisor/processor/image.rs`
+- **Proxmox Driver Client**: `aurora/dataplane/src/executor/hypervisor/processor/proxmox.rs`
+- **Dataplane S3 Client Store**: `aurora/dataplane/src/executor/hypervisor/processor/image.rs`
 
 ### Phase 6 — Job Settlement & Template Availability
-- **JO Image Result Worker (DB Settlement)**: `job-orchestrator/src/results/hypervisor/image.rs`, `job-orchestrator/src/results/apply.rs`
+- **JO Image Result Worker (DB Settlement)**: `aurora/job-orchestrator/src/results/hypervisor/image.rs`, `aurora/job-orchestrator/src/results/apply.rs`
 - **PostgreSQL Schema & Tables**: `hypervisor.image_artifacts`, `hypervisor.hypervisor_outbox_records`
