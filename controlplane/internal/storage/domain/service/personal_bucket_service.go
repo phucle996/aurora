@@ -25,6 +25,15 @@ type PersonalBucketService interface {
 	// [COMMENT]: Thay đổi hạn mức quota cho bucket cá nhân.
 	UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error
 
+	// [COMMENT]: Bật hoặc tắt versioning cho bucket cá nhân.
+	UpdateBucketVersioning(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, versioningEnabled bool) (*storageEntity.PersonalBucket, error)
+
+	// [COMMENT]: Lấy cấu hình lifecycle rules của bucket cá nhân.
+	GetBucketLifecycle(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]storageEntity.BucketLifecycleRule, error)
+
+	// [COMMENT]: Cập nhật cấu hình lifecycle rules cho bucket cá nhân.
+	UpdateBucketLifecycle(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, rules []storageEntity.BucketLifecycleRule) (*storageEntity.PersonalBucket, error)
+
 	// [COMMENT]: Yêu cầu xóa Bucket cá nhân.
 	DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error
 }

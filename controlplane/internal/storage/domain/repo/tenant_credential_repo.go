@@ -4,18 +4,23 @@ import (
 	"context"
 
 	storageEntity "controlplane/internal/storage/domain/entity"
-
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: TenantCredentialRepo định nghĩa các phương thức giao tiếp CSDL cho Access Keys của Bucket doanh nghiệp.
+// TenantCredentialRepo định nghĩa các phương thức giao tiếp CSDL cho Access Keys của Bucket doanh nghiệp.
 type TenantCredentialRepo interface {
-	// [COMMENT]: Lưu trữ Access Key mới liên kết với Bucket doanh nghiệp cùng sự kiện Outbox.
-	Create(ctx context.Context, cred *storageEntity.TenantCredential, outbox *storageEntity.StorageOutboxRecord) error
+	// Create lưu trữ Access Key mới liên kết với Bucket doanh nghiệp cùng sự kiện Outbox.
+	Create(ctx context.Context, cred *storageEntity.TenantCredential, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error
 
-	// [COMMENT]: Liệt kê toàn bộ Access Keys thuộc một Bucket doanh nghiệp.
-	ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.TenantCredential, error)
+	// GetByID lấy chi tiết credential kèm xác thực quyền sở hữu bucket.
+	GetByID(ctx context.Context, id uuid.UUID, bucketID uuid.UUID, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID) (*storageEntity.TenantCredential, error)
 
-	// [COMMENT]: Xóa thông tin Access Key khỏi Database cùng sự kiện Outbox (scoping theo struct params).
+	// ListByBucket liệt kê toàn bộ Access Keys thuộc một Bucket doanh nghiệp.
+	ListByBucket(ctx context.Context, bucketID uuid.UUID, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantCredential, error)
+
+	// Delete xóa thông tin Access Key khỏi Database cùng sự kiện Outbox.
 	Delete(ctx context.Context, param *storageEntity.DeleteTenantCredential, outbox *storageEntity.StorageOutboxRecord) error
+
+	// ListAccessKeys lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
+	ListAccessKeys(ctx context.Context, bucketID uuid.UUID, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID) ([]string, error)
 }

@@ -18,7 +18,7 @@ grant is the authority for one exact object.
 |---|---|
 | X-Aurora-Transfer-Ticket | Opaque ticket id and secret, memory only. |
 | Origin | Allowed Cloud Console origin. |
-| :path | Exact bucket/object path bound by Zone Control. |
+| :path | Exact bucket/object path bound by Zone Control (`/{bucket}/{key}` or `/{bucket}/{key}?versionId={version_id}` for version-specific download). |
 | Request body | Empty. |
 | Cookies and AWS auth | Not sent and removed if supplied. |
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	jobpayload "controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 
@@ -16,15 +17,17 @@ type StorageCommercialAdmissionProjectionRepo struct {
 	db                 *pgxpool.Pool
 	schema             string
 	zonePayloadEncoder storageRepoInterface.CommercialAdmissionZonePayloadEncoder
+	protector          jobpayload.Protector
 }
 
 func NewStorageCommercialAdmissionProjectionRepo(
 	db *pgxpool.Pool,
 	schema string,
 	zonePayloadEncoder storageRepoInterface.CommercialAdmissionZonePayloadEncoder,
+	protector jobpayload.Protector,
 ) storageRepoInterface.CommercialAdmissionProjectionRepository {
 	return &StorageCommercialAdmissionProjectionRepo{
-		db: db, schema: schema, zonePayloadEncoder: zonePayloadEncoder,
+		db: db, schema: schema, zonePayloadEncoder: zonePayloadEncoder, protector: protector,
 	}
 }
 
@@ -39,7 +42,6 @@ func (r *StorageCommercialAdmissionProjectionRepo) Apply(
 	defer func() { _ = tx.Rollback(ctx) }()
 	ownerTable := r.schema + ".commercial_admission_projection"
 	resourceTable := r.schema + ".resource_admission_projection"
-	zoneOutboxTable := r.schema + ".commercial_admission_zone_outbox"
 	_, err = tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s AS current (owner_id, owner_type, policy_version, decision, restriction_reason, effective_at, valid_until, source_event_id, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
@@ -145,21 +147,45 @@ func (r *StorageCommercialAdmissionProjectionRepo) Apply(
 		if marshalErr != nil {
 			return fmt.Errorf("marshal Zone commercial admission outbox event: %w", marshalErr)
 		}
+
+		jobEventID := uuid.New()
+		var protectedPayload []byte
+		var payloadKeyID uuid.UUID
+		if r.protector != nil {
+			protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+				ZoneID:               target.zoneID,
+				SourceDomain:         "STORAGE",
+				JobTopic:             "storage.bucket.commercial_admission",
+				ResourceID:           target.resourceID.String(),
+				JobVersion:           1,
+				PayloadSchemaVersion: 1,
+			}, payload)
+			if err != nil {
+				return fmt.Errorf("seal commercial admission payload: %w", err)
+			}
+			protectedPayload = protected.Payload
+			payloadKeyID = protected.KeyID
+		} else {
+			protectedPayload = payload
+			payloadKeyID = target.zoneID
+		}
+
+		outboxTable := r.schema + ".storage_outbox_records"
 		if _, err := tx.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %s AS current
-				(resource_id, zone_id, source_event_id, policy_version, payload)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (resource_id, zone_id) DO UPDATE SET
-				source_event_id=EXCLUDED.source_event_id,
-				policy_version=EXCLUDED.policy_version,
-				payload=EXCLUDED.payload,
-				claim_token=NULL, claimed_at=NULL, published_at=NULL,
-				last_error=NULL, updated_at=NOW()
-			WHERE EXCLUDED.policy_version > current.policy_version
-			   OR EXCLUDED.source_event_id <> current.source_event_id`, zoneOutboxTable),
-			target.resourceID, target.zoneID, currentOwner.sourceEventID,
-			currentOwner.walletVersion, payload); err != nil {
-			return fmt.Errorf("append Zone commercial admission outbox: %w", err)
+			INSERT INTO %s (
+				event_id, zone_id, job_topic, payload, payload_key_id,
+				owner_id, owner_type, status, job_version, resource_id,
+				resource_name, payload_schema_version, trace_id, idle,
+				created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', 1, $8, $9, 1, $10, 0, NOW(), NOW())
+			ON CONFLICT (event_id) DO NOTHING`, outboxTable),
+			jobEventID, target.zoneID, "storage.bucket.commercial_admission",
+			protectedPayload, payloadKeyID,
+			projection.OwnerID, projection.OwnerType,
+			target.resourceID.String(), target.resourceName,
+			currentOwner.sourceEventID[:]); err != nil {
+			return fmt.Errorf("append storage_outbox_records for commercial admission: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

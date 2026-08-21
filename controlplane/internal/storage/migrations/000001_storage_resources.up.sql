@@ -1,10 +1,10 @@
--- Greenfield Storage resource baseline. Bucket existence is desired state;
--- there is intentionally no lifecycle status column.
+-- Greenfield Storage resource baseline.
 CREATE TABLE personal_buckets (
     id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     workspace_id UUID NOT NULL,
     zone_id UUID NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PROVISIONING',
     capacity_quota_bytes BIGINT NOT NULL DEFAULT 0,
     used_bytes BIGINT NOT NULL DEFAULT 0,
     used_bytes_observed_at TIMESTAMPTZ,
@@ -15,9 +15,12 @@ CREATE TABLE personal_buckets (
     retention_days INTEGER NOT NULL DEFAULT 0,
     legal_hold_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     tags JSONB NOT NULL DEFAULT '{}',
+    lifecycle_rules JSONB NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT ux_personal_buckets_name UNIQUE (name),
+    CONSTRAINT ck_personal_buckets_status
+        CHECK (status IN ('PROVISIONING', 'READY', 'UPDATING', 'DELETING', 'FAILED')),
     CONSTRAINT fk_personal_buckets_workspace
         FOREIGN KEY (workspace_id)
         REFERENCES hierarchy.personal_workspaces(id) ON DELETE RESTRICT
@@ -32,6 +35,7 @@ CREATE TABLE tenant_buckets (
     workspace_id UUID NOT NULL,
     zone_id UUID NOT NULL,
     tenant_id UUID NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PROVISIONING',
     capacity_quota_bytes BIGINT NOT NULL DEFAULT 0,
     used_bytes BIGINT NOT NULL DEFAULT 0,
     used_bytes_observed_at TIMESTAMPTZ,
@@ -42,9 +46,12 @@ CREATE TABLE tenant_buckets (
     retention_days INTEGER NOT NULL DEFAULT 0,
     legal_hold_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     tags JSONB NOT NULL DEFAULT '{}',
+    lifecycle_rules JSONB NOT NULL DEFAULT '[]',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT ux_tenant_buckets_name UNIQUE (name),
+    CONSTRAINT ck_tenant_buckets_status
+        CHECK (status IN ('PROVISIONING', 'READY', 'UPDATING', 'DELETING', 'FAILED')),
     CONSTRAINT fk_tenant_buckets_workspace
         FOREIGN KEY (workspace_id)
         REFERENCES hierarchy.tenant_workspaces(id) ON DELETE RESTRICT

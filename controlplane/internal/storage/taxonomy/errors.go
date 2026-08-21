@@ -27,4 +27,5 @@ var (
 
 	ErrCommercialAdmissionDenied            = errors.New("storage: commercial admission denied or projection is stale")
 	ErrInvalidCommercialAdmissionProjection = errors.New("storage: invalid commercial admission projection event")
+	ErrVersioningRequired                   = errors.New("storage: noncurrent version lifecycle expiration requires bucket versioning to be enabled")
 )

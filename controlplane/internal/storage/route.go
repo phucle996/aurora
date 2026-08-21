@@ -48,6 +48,24 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.PersonalBucketHandler.UpdateQuota,
 		)
 
+		// [COMMENT]: Cập nhật trạng thái Versioning của bucket
+		personalGroup.PATCH("/storage/buckets/:id/versioning",
+			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+			module.PersonalBucketHandler.UpdateVersioning,
+		)
+
+		// [COMMENT]: Lấy cấu hình Lifecycle của bucket
+		personalGroup.GET("/storage/buckets/:id/lifecycle",
+			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+			module.PersonalBucketHandler.GetLifecycle,
+		)
+
+		// [COMMENT]: Cập nhật cấu hình Lifecycle của bucket
+		personalGroup.PUT("/storage/buckets/:id/lifecycle",
+			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+			module.PersonalBucketHandler.UpdateLifecycle,
+		)
+
 		// [COMMENT]: Yêu cầu xóa bucket
 		personalGroup.DELETE("/storage/buckets/:id",
 			middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
@@ -124,6 +142,24 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		tenantGroup.PATCH("/storage/buckets/:id/quota",
 			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
 			module.TenantBucketHandler.UpdateQuota,
+		)
+
+		// [COMMENT]: Cập nhật trạng thái Versioning của bucket
+		tenantGroup.PATCH("/storage/buckets/:id/versioning",
+			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+			module.TenantBucketHandler.UpdateVersioning,
+		)
+
+		// [COMMENT]: Lấy cấu hình Lifecycle của bucket
+		tenantGroup.GET("/storage/buckets/:id/lifecycle",
+			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+			module.TenantBucketHandler.GetLifecycle,
+		)
+
+		// [COMMENT]: Cập nhật cấu hình Lifecycle của bucket
+		tenantGroup.PUT("/storage/buckets/:id/lifecycle",
+			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+			module.TenantBucketHandler.UpdateLifecycle,
 		)
 
 		// [COMMENT]: Yêu cầu xóa bucket

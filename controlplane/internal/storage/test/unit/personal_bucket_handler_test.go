@@ -11,6 +11,7 @@ import (
 
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
+	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageHandler "controlplane/internal/storage/transport/http/handler"
 	pkgcontext "controlplane/pkg/context"
 
@@ -20,7 +21,42 @@ import (
 
 type personalBucketServiceStub struct {
 	storageSvcInterface.PersonalBucketService
-	bucket *storageEntity.PersonalBucket
+	bucket           *storageEntity.PersonalBucket
+	updatedVer       bool
+	updatedLifecycle []storageEntity.BucketLifecycleRule
+	lifecycleErr     error
+}
+
+func (s *personalBucketServiceStub) GetBucket(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*storageEntity.PersonalBucket, error) {
+	return s.bucket, nil
+}
+
+func (s *personalBucketServiceStub) UpdateBucketVersioning(_ context.Context, bucketID uuid.UUID, _ uuid.UUID, enabled bool) (*storageEntity.PersonalBucket, error) {
+	s.updatedVer = enabled
+	if s.bucket != nil {
+		s.bucket.VersioningEnabled = enabled
+		return s.bucket, nil
+	}
+	return &storageEntity.PersonalBucket{ID: bucketID, Name: "test-bucket", VersioningEnabled: enabled}, nil
+}
+
+func (s *personalBucketServiceStub) GetBucketLifecycle(_ context.Context, _ uuid.UUID, _ uuid.UUID) ([]storageEntity.BucketLifecycleRule, error) {
+	if s.bucket != nil {
+		return s.bucket.LifecycleRules, nil
+	}
+	return nil, nil
+}
+
+func (s *personalBucketServiceStub) UpdateBucketLifecycle(_ context.Context, bucketID uuid.UUID, _ uuid.UUID, rules []storageEntity.BucketLifecycleRule) (*storageEntity.PersonalBucket, error) {
+	if s.lifecycleErr != nil {
+		return nil, s.lifecycleErr
+	}
+	s.updatedLifecycle = rules
+	if s.bucket != nil {
+		s.bucket.LifecycleRules = rules
+		return s.bucket, nil
+	}
+	return &storageEntity.PersonalBucket{ID: bucketID, Name: "test-bucket", LifecycleRules: rules}, nil
 }
 
 type personalStorageAccessSessionServiceStub struct {
@@ -82,10 +118,6 @@ func TestPersonalAccessSessionStatusUsesTrustedOwnerContext(t *testing.T) {
 	if envelope.Data.Status != "ACTIVE" || envelope.Data.CompletedAt != "2026-08-15T08:30:00Z" {
 		t.Fatalf("unexpected status payload: %#v", envelope.Data)
 	}
-}
-
-func (s *personalBucketServiceStub) GetBucket(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*storageEntity.PersonalBucket, error) {
-	return s.bucket, nil
 }
 
 func TestPersonalAccessSessionCanonicalizesDuplicateActions(t *testing.T) {
@@ -166,5 +198,67 @@ func TestPersonalBucketUsageResponseUsesSafeMegabyteString(t *testing.T) {
 				t.Fatalf("used_mb = %q, want %q", envelope.Data.UsedMB, tt.want)
 			}
 		})
+	}
+}
+
+func TestUpdateVersioningHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	userID := uuid.New()
+	bucketID := uuid.New()
+	stub := &personalBucketServiceStub{
+		bucket: &storageEntity.PersonalBucket{
+			ID:                bucketID,
+			Name:              "ws-test-bucket",
+			VersioningEnabled: false,
+		},
+	}
+	handler := storageHandler.NewPersonalBucketHandler(stub, &personalStorageAccessSessionServiceStub{})
+	router := gin.New()
+	router.PATCH("/buckets/:id/versioning", func(c *gin.Context) {
+		c.Set(pkgcontext.CtxUserID, userID)
+		handler.UpdateVersioning(c)
+	})
+
+	body := `{"versioning_enabled": true}`
+	req := httptest.NewRequest(http.MethodPatch, "/buckets/"+bucketID.String()+"/versioning", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if !stub.updatedVer {
+		t.Fatalf("expected stub.updatedVer to be true")
+	}
+}
+
+func TestUpdateLifecycleHandlerRejectsNoncurrentWhenVersioningDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	userID := uuid.New()
+	bucketID := uuid.New()
+	stub := &personalBucketServiceStub{
+		bucket: &storageEntity.PersonalBucket{
+			ID:                bucketID,
+			Name:              "ws-test-bucket",
+			VersioningEnabled: false,
+		},
+		lifecycleErr: storageTaxonomy.ErrVersioningRequired,
+	}
+	handler := storageHandler.NewPersonalBucketHandler(stub, &personalStorageAccessSessionServiceStub{})
+	router := gin.New()
+	router.PUT("/buckets/:id/lifecycle", func(c *gin.Context) {
+		c.Set(pkgcontext.CtxUserID, userID)
+		handler.UpdateLifecycle(c)
+	})
+
+	body := `{"rules":[{"id":"rule-1","enabled":true,"prefix":"logs/","expiration_days":30,"noncurrent_version_expiration_days":14,"abort_incomplete_multipart_upload_days":7}]}`
+	req := httptest.NewRequest(http.MethodPut, "/buckets/"+bucketID.String()+"/lifecycle", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request, got %d: %s", response.Code, response.Body.String())
 	}
 }

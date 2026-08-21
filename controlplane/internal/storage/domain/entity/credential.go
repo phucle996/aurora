@@ -52,6 +52,7 @@ type CreatePersonalCredential struct {
 type CreateTenantCredential struct {
 	BucketID    uuid.UUID
 	Policy      string
+	TenantID    uuid.UUID
 	UserID      uuid.UUID
 	WorkspaceID uuid.UUID
 	ZoneID      uuid.UUID
@@ -93,6 +94,7 @@ type DeleteTenantCredential struct {
 	AccessKey    string // [COMMENT]: Access Key của MinIO user cần xóa — không cần query DB thêm
 	BucketID     uuid.UUID
 	WorkspaceID  uuid.UUID
+	TenantID     uuid.UUID
 	UserID       uuid.UUID
 	ZoneID       uuid.UUID // [COMMENT]: Lấy từ request context đã xác minh và ghi trực tiếp vào Outbox
 }

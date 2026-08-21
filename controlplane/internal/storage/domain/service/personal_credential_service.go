@@ -17,4 +17,7 @@ type PersonalCredentialService interface {
 
 	// [COMMENT]: Xóa bỏ Access Key với xác thực scope bucket.
 	DeleteCredential(ctx context.Context, param *storageEntity.DeletePersonalCredential) error
+
+	// [COMMENT]: Lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
+	ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error)
 }
