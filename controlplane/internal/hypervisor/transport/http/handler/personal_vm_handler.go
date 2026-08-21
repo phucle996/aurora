@@ -241,13 +241,17 @@ func (h *PersonalVMHandler) Get(c *gin.Context) {
 	if !ok {
 		return
 	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
 	vmID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
 	if err != nil {
 		apires.RespondBadRequest(c, "VM id is invalid")
 		return
 	}
 
-	vm, err := h.service.Get(ctx, vmID, workspaceID, userID)
+	vm, err := h.service.Get(ctx, vmID, workspaceID, zoneID, userID)
 	if err != nil {
 		if errors.Is(err, hypervisorTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "VM was not found")

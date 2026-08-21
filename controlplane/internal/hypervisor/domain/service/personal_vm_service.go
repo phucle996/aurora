@@ -24,6 +24,7 @@ type PersonalVMService interface {
 		ctx context.Context,
 		vmID uuid.UUID,
 		workspaceID uuid.UUID,
+		zoneID uuid.UUID,
 		ownerUserID uuid.UUID,
 	) (*hypervisorEntity.PersonalVM, error)
 	Delete(

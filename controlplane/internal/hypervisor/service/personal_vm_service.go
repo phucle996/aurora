@@ -221,6 +221,7 @@ func (s *PersonalVMServiceImpl) Get(
 	ctx context.Context,
 	vmID uuid.UUID,
 	workspaceID uuid.UUID,
+	zoneID uuid.UUID,
 	ownerUserID uuid.UUID,
 ) (out *hypervisorEntity.PersonalVM, err error) {
 	startedAt := time.Now()
@@ -233,7 +234,7 @@ func (s *PersonalVMServiceImpl) Get(
 		}
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
-	return s.repo.Get(ctx, vmID, workspaceID, ownerUserID)
+	return s.repo.Get(ctx, vmID, workspaceID, zoneID, ownerUserID)
 }
 
 func (s *PersonalVMServiceImpl) Delete(

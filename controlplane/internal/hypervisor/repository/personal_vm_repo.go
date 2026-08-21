@@ -342,8 +342,10 @@ func (r *PersonalVMRepoPostgres) List(
 		JOIN %s.personal_workspaces workspace
 		  ON workspace.id = vm.workspace_id
 		 AND workspace.owner_id = $3
+		 AND workspace.zone_id = $2
 		WHERE vm.workspace_id = $1
 		  AND vm.zone_id = $2
+		  AND vm.owner_user_id = $3
 		ORDER BY vm.created_at DESC, vm.id DESC
 		LIMIT $4
 	`, r.hypervisor, r.hierarchy)
@@ -398,6 +400,7 @@ func (r *PersonalVMRepoPostgres) Get(
 	ctx context.Context,
 	vmID uuid.UUID,
 	workspaceID uuid.UUID,
+	zoneID uuid.UUID,
 	ownerUserID uuid.UUID,
 ) (*hypervisorEntity.PersonalVM, error) {
 	query := fmt.Sprintf(`
@@ -411,13 +414,16 @@ func (r *PersonalVMRepoPostgres) Get(
 		FROM %s.personal_vms vm
 		JOIN %s.personal_workspaces workspace
 		  ON workspace.id = vm.workspace_id
-		 AND workspace.owner_id = $3
+		 AND workspace.owner_id = $4
+		 AND workspace.zone_id = $3
 		WHERE vm.id = $1
 		  AND vm.workspace_id = $2
+		  AND vm.zone_id = $3
+		  AND vm.owner_user_id = $4
 	`, r.hypervisor, r.hierarchy)
 
 	vm := &hypervisorEntity.PersonalVM{}
-	if err := r.db.QueryRow(ctx, query, vmID, workspaceID, ownerUserID).Scan(
+	if err := r.db.QueryRow(ctx, query, vmID, workspaceID, zoneID, ownerUserID).Scan(
 		&vm.ID,
 		&vm.WorkspaceID,
 		&vm.ZoneID,
@@ -471,8 +477,13 @@ func (r *PersonalVMRepoPostgres) BeginDelete(
 		SELECT vm.name, vm.provider_name, COALESCE(vm.provider_vmid, 0), vm.status, vm.operation_id
 		FROM %s.personal_vms vm
 		JOIN %s.personal_workspaces workspace
-		  ON workspace.id = vm.workspace_id AND workspace.owner_id = $3
-		WHERE vm.id = $1 AND vm.workspace_id = $2 AND vm.zone_id = $4
+		  ON workspace.id = vm.workspace_id
+		 AND workspace.owner_id = $3
+		 AND workspace.zone_id = $4
+		WHERE vm.id = $1
+		  AND vm.workspace_id = $2
+		  AND vm.zone_id = $4
+		  AND vm.owner_user_id = $3
 		FOR UPDATE OF vm
 	`, r.hypervisor, r.hierarchy)
 
