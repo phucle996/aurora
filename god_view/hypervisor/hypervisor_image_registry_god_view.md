@@ -586,18 +586,33 @@ sequenceDiagram
 
 ## Code map
 
-### 1. Controlplane Hypervisor Module
-- **Route Registration**: [`controlplane/internal/hypervisor/route.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/route.go)
-- **HTTP Handler**: [`controlplane/internal/hypervisor/transport/http/handler/image_handler.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/transport/http/handler/image_handler.go)
-- **Domain Service**: [`controlplane/internal/hypervisor/service/image_service.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/service/image_service.go)
-- **PostgreSQL Repository**: [`controlplane/internal/hypervisor/repository/image_repo.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/hypervisor/repository/image_repo.go)
-- **Payload Protector**: [`controlplane/internal/security/job_payload.go`](file:///c:/Users/phuc/Desktop/aurora/controlplane/internal/security/job_payload.go)
+### Phase 1 — SRE Client → Envoy → ACR ExtAuthz
+- **ACR ExtAuthz Filter & SRE Authentication**: `acr/src/auth/`
+- **ACR Hypervisor Admin Route & Zone Injection**: `acr/src/hypervisor/`
 
-### 2. Job Orchestrator
-- **Outbox Changefeed Dispatch**: [`job-orchestrator/src/changefeed/dispatch.rs`](file:///c:/Users/phuc/Desktop/aurora/job-orchestrator/src/changefeed/dispatch.rs)
-- **Image Result Worker**: [`job-orchestrator/src/results/hypervisor/image.rs`](file:///c:/Users/phuc/Desktop/aurora/job-orchestrator/src/results/hypervisor/image.rs)
+### Phase 2 — Controlplane Metadata Registration (`RegisterMetadata`)
+- **Route Registration**: `controlplane/internal/hypervisor/route.go`
+- **HTTP Handler**: `controlplane/internal/hypervisor/transport/http/handler/image_handler.go` (`RegisterMetadata`)
+- **Domain Service**: `controlplane/internal/hypervisor/service/image_service.go` (`RegisterImageMetadata`)
+- **PostgreSQL Repository**: `controlplane/internal/hypervisor/repository/image_repo.go` (`RegisterImageMetadata`)
 
-### 3. Dataplane Zone (Rust)
-- **Image Processor Executor**: [`dataplane/src/executor/hypervisor/processor/image.rs`](file:///c:/Users/phuc/Desktop/aurora/dataplane/src/executor/hypervisor/processor/image.rs)
-- **Proxmox Client Driver**: [`dataplane/src/executor/hypervisor/processor/proxmox.rs`](file:///c:/Users/phuc/Desktop/aurora/dataplane/src/executor/hypervisor/processor/proxmox.rs)
-- **Zone MinIO S3 Store**: [`dataplane/src/executor/hypervisor/processor/image.rs`](file:///c:/Users/phuc/Desktop/aurora/dataplane/src/executor/hypervisor/processor/image.rs#L25-L80)
+### Phase 3 — SRE Direct Byte Upload & Zone Edge Gateway
+- **Zone Edge Gateway Configuration**: `zone-control-edge-gateway/envoy.yaml`
+- **Zone Assertion Authorizer**: `zone-control-edge-gateway/authorizer/src/control_assertion.rs`
+- **Zone S3 Storage Backend**: `MinIO HYPERVISOR_IMAGE_S3_BUCKET`
+
+### Phase 4 — Import Trigger (`BeginImport`) & Outbox Sealing
+- **HTTP Handler**: `controlplane/internal/hypervisor/transport/http/handler/image_handler.go` (`BeginImport`)
+- **Domain Service**: `controlplane/internal/hypervisor/service/image_service.go` (`BeginImport`)
+- **PostgreSQL Repository & CTE**: `controlplane/internal/hypervisor/repository/image_repo.go` (`BeginImport`)
+- **X25519 Payload Protector**: `controlplane/internal/security/job_payload.go` (`Seal`)
+
+### Phase 5 — Outbox CDC Dispatch & Dataplane Proxmox Template Conversion
+- **JO Outbox Changefeed Dispatch**: `job-orchestrator/src/changefeed/dispatch.rs`
+- **Dataplane Image Processor Executor**: `dataplane/src/executor/hypervisor/processor/image.rs`
+- **Proxmox Driver Client**: `dataplane/src/executor/hypervisor/processor/proxmox.rs`
+- **Dataplane S3 Client Store**: `dataplane/src/executor/hypervisor/processor/image.rs`
+
+### Phase 6 — Job Settlement & Template Availability
+- **JO Image Result Worker (DB Settlement)**: `job-orchestrator/src/results/hypervisor/image.rs`, `job-orchestrator/src/results/apply.rs`
+- **PostgreSQL Schema & Tables**: `hypervisor.image_artifacts`, `hypervisor.hypervisor_outbox_records`
