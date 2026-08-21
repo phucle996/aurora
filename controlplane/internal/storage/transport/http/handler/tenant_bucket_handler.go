@@ -2,7 +2,9 @@ package storageHandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -58,9 +60,12 @@ func (h *TenantBucketHandler) Create(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.CreateTenantBucketRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 
@@ -295,9 +300,16 @@ func (h *TenantBucketHandler) UpdateQuota(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateTenantQuotaRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+	if req.QuotaBytes <= 0 {
+		apires.RespondBadRequest(c, "quota_bytes must be positive")
 		return
 	}
 
@@ -361,9 +373,12 @@ func (h *TenantBucketHandler) UpdateVersioning(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateTenantBucketVersioningRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload")
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 
@@ -489,9 +504,12 @@ func (h *TenantBucketHandler) UpdateLifecycle(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateTenantBucketLifecycleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 

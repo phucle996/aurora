@@ -2,7 +2,10 @@ package storageHandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -66,9 +69,12 @@ func (h *TenantCredentialHandler) Create(c *gin.Context) {
 	}
 
 	var req storageDto.CreateTenantCredentialRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		// Optional body
-		req.Policy = ""
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		apires.RespondBadRequest(c, "invalid request payload")
+		return
 	}
 
 	param := &storageEntity.CreateTenantCredential{
@@ -199,7 +205,13 @@ func (h *TenantCredentialHandler) Delete(c *gin.Context) {
 	}
 
 	var req storageDto.DeleteTenantCredentialRequest
-	_ = c.ShouldBindJSON(&req)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		apires.RespondBadRequest(c, "invalid request payload")
+		return
+	}
 
 	param := &storageEntity.DeleteTenantCredential{
 		CredentialID: credID,

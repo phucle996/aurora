@@ -2,8 +2,10 @@ package storageHandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -72,10 +74,13 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// 2. Bind JSON Request Body sử dụng cấu trúc DTO
+	// 2. Stream decode Request Body có giới hạn 64KB để chống DoS
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.CreateBucketRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 
@@ -268,9 +273,16 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateQuotaRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+	if req.QuotaBytes <= 0 {
+		apires.RespondBadRequest(c, "quota_bytes must be positive")
 		return
 	}
 
@@ -314,8 +326,11 @@ func (h *PersonalBucketHandler) UpdateVersioning(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateBucketVersioningRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
@@ -392,8 +407,11 @@ func (h *PersonalBucketHandler) UpdateLifecycle(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateBucketLifecycleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
@@ -542,9 +560,12 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid bucket id format")
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.RequestStorageAccessRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 	duration := req.DurationSeconds

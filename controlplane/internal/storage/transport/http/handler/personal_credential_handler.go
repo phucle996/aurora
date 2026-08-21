@@ -2,7 +2,9 @@ package storageHandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -60,9 +62,12 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// 2. Bind Request Body
+	// 2. Bind Request Body có giới hạn 64KB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.CreateCredentialRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		apires.RespondBadRequest(c, "invalid request payload")
 		return
 	}
@@ -197,8 +202,11 @@ func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
 	}
 
 	// [COMMENT]: Bind request body để lấy access_key — FE đã có access_key từ List response
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.DeleteCredentialRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || strings.TrimSpace(req.AccessKey) == "" {
 		apires.RespondBadRequest(c, "missing or invalid access_key in request body")
 		return
 	}
