@@ -1,286 +1,447 @@
-# Personal VM Create - Workflow God View
+# Personal VM Create — Workflow God View
 
 > [!IMPORTANT]
-> Đây là Source of Truth cho luồng tạo VM cá nhân từ Cloud Console tới
-> Proxmox và trả trạng thái về Controlplane. Luồng Cost/Metering chưa thuộc
-> contract này; không được suy luận trạng thái thanh toán từ VM lifecycle.
+> Đây là Source of Truth duy nhất cho quy trình **Personal VM Create** end-to-end: từ khi người dùng khởi tạo yêu cầu tạo Máy ảo cá nhân trên Web Console, qua Gateway xác thực & định tuyến, Controlplane thẩm định & lưu trữ Outbox nguyên tử, Job Orchestrator điều vận qua Kafka, Dataplane thực thi phân bổ & khởi tạo trên cụm Proxmox VE nội vùng, tới khi Job Settlement hoàn tất và thông báo Realtime về giao diện người dùng.
 
-## API scope and edge-routing contract
+---
 
-Đây là personal platform workflow. Browser chỉ gọi neutral Hypervisor API; ACR
-verify session, chọn personal context, rewrite internal target thành
-`/api/v1/personal/hypervisor/**`, overwrite `:path` và set `x-original-path`.
-Direct `/personal/**` từ browser bị từ chối. Personal authorizer kiểm tra
-permission và required role level trước handler, và repository rechecks durable
-user/workspace/Zone scope. Đây không phải `/me` self-user route.
+## API-scope contract
 
-## 1. Phạm vi và ownership
+### Lộ trình Người dùng Cá nhân (`/api/v1/personal/hypervisor/vms`)
 
-| Thành phần | Ownership |
-|---|---|
-| Cloud Console | Form và current view; không tự tạo identity/routing |
-| Envoy + ACR | Xác thực, authorize và rewrite route theo personal context |
-| Controlplane Hypervisor | Desired resource, natural identity và shared outbox |
-| Controlplane PostgreSQL | Durable SoT của live `personal_vms` và `hypervisor_outbox_records` |
-| Job Orchestrator | CDC bridge, allow-list contract, result settlement và realtime notification |
-| Kafka | Durable at-least-once transport Central-Zone |
-| Dataplane đúng Zone | Validate transport, lease/fence, gọi Proxmox và publish result |
-| Zone NATS JetStream KV | Immutable local provider binding và CAS reservation của VMID |
-| Proxmox | Runtime side effect |
+- **Neutral Client Route**: Browser/Web Console gọi route trung lập `/api/v1/hypervisor/vms` kèm Session Cookie phiên người dùng.
+- **ACR ExtAuthz Boundary**: 
+  - ACR xác thực Session Cookie qua Trinity / Auth-State Redis.
+  - ACR xác định Context cá nhân của người dùng, thực hiện **Path Rewrite** nội bộ sang `/api/v1/personal/hypervisor/vms` (ghi đè `:path` sang upstream và gán `x-original-path`).
+  - ACR xóa toàn bộ header do client tự gửi (`x-user-id`, `x-workspace-id`, `x-zone-id`, `x-user-level`), sau đó **inject tập header tin cậy**:
+    * `x-user-id`: UUID của người dùng cá nhân (Owner).
+    * `x-workspace-id`: UUID của Personal Workspace tương ứng.
+    * `x-zone-id`: UUID của Zone Datacenter đích.
+    * `x-user-level`: Cấp độ bảo mật/xác thực của session.
+- **Controlplane Boundary**:
+  - Route `/api/v1/personal/hypervisor/vms` được bảo vệ bởi middleware `middleware.Authorize("hypervisor:vm:create", L1Registry, "*")`.
+  - Handler trích xuất `userID`, `workspaceID`, `zoneID` an toàn qua các context helper (`pkgcontext.GetUserID`, `pkgcontext.GetWorkspaceID`, `pkgcontext.GetZoneID`).
+  - Repository tái thẩm định toàn diện bộ 4 khóa thẩm quyền: `(workspace_id, zone_id, owner_user_id)` và kiểm tra trạng thái Zone `active` + Service `hypervisor` kích hoạt trong cùng một câu lệnh SQL.
 
-Controlplane và JO không có credential Proxmox hoặc Zone KV. Dataplane không
-được kết nối Controlplane PostgreSQL, Shared Redis, Auth-State Redis hoặc Vault.
+| Thành phần | Vai trò & Trách nhiệm thẩm quyền | Durable State lưu trữ |
+|---|---|---|
+| **Cloud Console (UI)** | Tiếp nhận input từ user, render trạng thái `PROVISIONING` $\to$ `READY`. | None (State nằm tại Backend) |
+| **Envoy + ACR ExtAuthz** | Xác thực session, trích xuất Personal Context, Rewrite Path & Inject trusted headers. | Auth-State Redis |
+| **Controlplane Hypervisor** | Thẩm định Commercial Admission & Pricing Readiness, mã hóa X25519 Payload, ghi Outbox nguyên tử. | PostgreSQL (`personal_vms`, `hypervisor_outbox_records`) |
+| **Job Orchestrator (JO)** | CDC Outbox Dispatcher, phân phối Command qua Kafka, tiếp nhận Result và thực hiện DB Settlement. | PostgreSQL & Kafka Commit Offset |
+| **Kafka Transport** | Kênh vận chuyển phân tán bất biến 2 chiều (Command & Result) giữa Central và Zone. | Kafka Brokers |
+| **Dataplane (Zone Rust)** | Unseal Payload X25519, CAS Provider Binding & VMID trong Zone KV, Clone & Provision Proxmox VE, đo baseline mạng. | Proxmox VE Cluster & Zone NATS JetStream KV |
+| **Notification Service (Centrifugo)** | Nhận sự kiện hoàn tất từ JO và bắn WebSocket Push về Browser UI. | Centrifugo Realtime Engine |
 
-## 2. Public API và request validation
+---
 
-Public route:
+## REST input and output
 
-- `POST /api/v1/hypervisor/vms`
-- `GET /api/v1/hypervisor/vms`
-- `GET /api/v1/hypervisor/vms/:id`
+### 1. Request Headers
 
-ACR dùng verified session context để rewrite personal request thành
-`/api/v1/personal/hypervisor/vms...`. Envoy phải strip các internal identity
-header từ client trước khi inject lại `user_id`, `workspace_id`, `zone_id` và
-permission đã xác minh.
+| Header / Cookie | Boundary nhận | Mục đích sử dụng |
+|---|---|---|
+| `Cookie: aurora_session` | Browser $\to$ Envoy $\to$ ACR | ACR giải mã và xác thực phiên đăng nhập người dùng. |
+| `x-user-id` | **ACR $\to$ Controlplane** | **Được ACR inject** (UUID người dùng). Handler đọc qua `pkgcontext.GetUserID`. |
+| `x-workspace-id` | **ACR $\to$ Controlplane** | **Được ACR inject** (UUID Personal Workspace). Handler đọc qua `pkgcontext.GetWorkspaceID`. |
+| `x-zone-id` | **ACR $\to$ Controlplane** | **Được ACR inject** (UUID Zone Datacenter). Handler đọc qua `pkgcontext.GetZoneID`. |
+| `x-user-level` | **ACR $\to$ Controlplane** | **Được ACR inject** (Cấp độ phân quyền tài khoản). |
+| `traceparent` | Toàn hệ thống | Lan truyền W3C Distributed Tracing xuyên suốt các service. |
 
-Create permission là `hypervisor:vm:create`; read permission là
-`hypervisor:vm:read`.
+### 2. JSON Request Payload (`POST /api/v1/hypervisor/vms`)
 
-HTTP request validation kết thúc tại handler:
+```json
+{
+  "name": "dev-ubuntu-box",
+  "image_id": "018e6a12-8888-7123-9abc-def012345678",
+  "resource_profile_code": "standard",
+  "additional_disks": [
+    {
+      "size_gb": 50
+    }
+  ],
+  "ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... user@workstation"
+}
+```
 
-- `name`: lowercase, 1-63 ký tự, bắt đầu bằng chữ, chỉ chữ/số/dấu gạch đơn;
-- `image_id`: UUID của image `AVAILABLE` trong đúng Zone; metadata hiển thị lấy
-  từ catalog, không cho client tự chọn template VMID/object key;
-- `cpu_cores`: 1-64;
-- `memory_mb`: 512-262144 và chia hết cho 256;
-- `disk_gb`: 8-4096;
-- `ssh_public_key`: tối đa 16 KiB và có public-key prefix được hỗ trợ.
+* **Chi tiết ràng buộc các trường trong Request Body**:
+  - `name` *(string, bắt buộc)*: Tên máy ảo, 1-63 ký tự chữ thường, số hoặc dấu gạch đơn, bắt đầu bằng chữ cái (`^[a-z][a-z0-9-]{0,61}[a-z0-9]$|^[a-z]$`), không chứa hai dấu gạch nối liên tiếp (`--`).
+  - `image_id` *(string UUID, bắt buộc)*: UUID của Image OS Template đã ở trạng thái `AVAILABLE` trong đúng Zone chỉ định.
+  - `resource_profile_code` *(string, bắt buộc)*: Mã cấu hình tài nguyên phần cứng chuẩn. Chỉ chấp nhận một trong 3 giá trị:
+    * `"basic"`: 1 vCPU, 2048 MB RAM, 32 GB Boot Disk.
+    * `"standard"`: 2 vCPU, 4096 MB RAM, 64 GB Boot Disk.
+    * `"performance"`: 4 vCPU, 8192 MB RAM, 128 GB Boot Disk.
+    *(Người dùng không được tự do tùy biến CPU/RAM lẻ để bảo đảm packing density trên cụm Proxmox).*
+  - `additional_disks` *(array of objects, tùy chọn)*: Danh sách đĩa dữ liệu gắn thêm (tối đa 15 đĩa). Mỗi đĩa từ 8 GiB đến 4096 GiB; tổng dung lượng đĩa (boot + data) không vượt quá 65536 GiB.
+  - `ssh_public_key` *(string, bắt buộc)*: Khóa công khai SSH để inject qua Cloud-Init, tối đa 16384 bytes, bắt đầu bằng `ssh-ed25519 `, `ssh-rsa ` hoặc `ecdsa-sha2-`.
 
-Service không parse hoặc lặp lại HTTP validation. Repository chỉ enforce
-authorized persistence scope và database integrity. Dataplane vẫn phải validate
-Protobuf/schema/zone/hash sau Kafka trust boundary; đây là transport security,
-không phải lặp lại HTTP validation.
+### 3. JSON Response Payload (`202 Accepted` / `200 OK`)
 
-## 3. Natural identity và state machine
+```json
+{
+  "code": 202,
+  "message": "VM provisioning accepted",
+  "data": {
+    "id": "018e6a34-9999-7abc-def0-123456789abc",
+    "operation_id": "018e6a34-9999-7abc-def0-fedcba987654",
+    "name": "dev-ubuntu-box",
+    "image": "Ubuntu 24.04 LTS Server",
+    "image_id": "018e6a12-8888-7123-9abc-def012345678",
+    "image_revision": 1,
+    "resource_profile_code": "standard",
+    "cpu_cores": 2,
+    "memory_mb": 4096,
+    "boot_disk_gb": 64,
+    "disk_gb": 114,
+    "additional_disk_sizes_gb": [50],
+    "status": "PROVISIONING",
+    "zone_id": "7b0b2e8a-e555-4a18-97c3-21c6014e7a88",
+    "provider_vmid": null,
+    "ipv4_address": null,
+    "created_at": "2026-08-21T20:30:00Z",
+    "updated_at": "2026-08-21T20:30:00Z",
+    "provisioned_at": null
+  }
+}
+```
 
-Natural identity là `(workspace_id, normalized_name)`, được enforce bằng unique
-constraint. Client không cần gửi idempotency key.
+---
 
-| Tình huống concurrent/retry | Kết quả |
-|---|---|
-| Cùng workspace, cùng name, cùng spec | Trả lại cùng VM/operation; không tạo outbox thứ hai |
-| Cùng workspace, cùng name, khác spec | `409 Conflict` |
-| Cùng name ở workspace khác | Hai VM độc lập |
-| Operation trước đã terminal `FAILED` | VM row đã bị xóa; name được phép dùng lại cho operation mới |
-
-`spec_hash = SHA-256(image_id || image_revision_be64 || image_sha256 || cpu_be64 ||
-memory_be64 || disk_be64 || ssh_public_key)`. Hash là execution identity bất
-biến và được Dataplane tính lại trước side effect.
+## State machine & Invariants
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PROVISIONING: personal_vms + outbox commit
-    PROVISIONING --> PROVISIONING: PROCESSING result
-    PROVISIONING --> READY: verified SUCCEEDED result
-    PROVISIONING --> [*]: terminal FAILED deletes VM row
-    READY --> READY: duplicate terminal result
+    [*] --> PROVISIONING: Atomic CTE (personal_vms + outbox insert)
+    PROVISIONING --> PROVISIONING: Dataplane PROCESSING heartbeat
+    PROVISIONING --> READY: Dataplane SUCCEEDED result settled (provider_vmid, ipv4, provisioned_at persisted)
+    PROVISIONING --> DELETING: Dataplane terminal FAILED / Provisioning timeout
+    DELETING --> [*]: Hard delete VM row in settlement transaction
+    READY --> READY: Idempotent duplicate result replay
 ```
 
-`READY` chỉ được ghi sau khi JO xác minh result payload khớp `vm_id`,
-`provider_name` và `config_hash` authoritative. Realtime notification không
-được dùng để thay durable state này. `FAILED` là terminal state của outbox,
-không phải state của `personal_vms`: JO xóa VM row và settle outbox trong cùng
-transaction. Outbox giữ operation fence/error phục vụ duplicate settlement và
-bounded diagnostics; Cloud Console không render một VM thất bại còn kẹt lại.
+### Invariants bất biến:
+1. **Natural Identity & Idempotency Key**:
+   - Khóa duy nhất xác định danh tính máy ảo là `(workspace_id, name)`.
+   - `spec_hash = SHA-256(image_id || image_revision_be64 || image_sha256 || cpu_be64 || memory_be64 || boot_disk_be64 || repeated(disk_index_be64 || disk_size_be64) || ssh_public_key)`.
+   - Nếu client gửi lại request trùng `(workspace_id, name)` với cùng `spec_hash` $\to$ Trả về `200 OK` với thông tin VM hiện tại, **tuyệt đối không sinh outbox thứ hai**.
+   - Nếu client gửi request trùng tên nhưng khác cấu hình (`spec_hash` sai khác) $\to$ Trả về **`409 Conflict` (`ErrNameConflict`)**.
+2. **Terminal Failure Semantics**:
+   - Khi provisioning thất bại ở Dataplane, VM **không bao giờ ở lại trạng thái `FAILED` vĩnh viễn** trong bảng `personal_vms`. Result Worker của Job Orchestrator chuyển status sang `DELETING`, thực hiện dọn dẹp và xóa cứng dòng VM khỏi DB để giải phóng `(workspace_id, name)` cho user tạo lại.
+   - Bản ghi lỗi được lưu giữ tại `hypervisor_outbox_records` phục vụ tra cứu lỗi và auditing.
 
-## 4. End-to-end write flow
+---
+
+## Sequence diagram (End-to-End)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant UI as Cloud Console
-    participant Edge as Envoy + ACR
+    actor User as Web Console User
+    participant Edge as Envoy + ACR ExtAuthz
     participant CP as Controlplane Hypervisor
-    participant DB as Controlplane PostgreSQL
+    participant DB as PostgreSQL (Controlplane)
     participant JO as Job Orchestrator
-    participant Kafka as Kafka transport
-    participant DP as Dataplane đúng Zone
-    participant KV as Zone NATS KV
-    participant PVE as Proxmox
+    participant Kafka as Kafka Transport
+    participant DP as Dataplane (Zone Rust)
+    participant KV as Zone NATS JetStream KV
+    participant PVE as Proxmox VE Cluster
+    participant Centri as Notification Service (Centrifugo)
 
-    UI->>Edge: POST /api/v1/hypervisor/vms
-    Edge->>CP: POST /api/v1/personal/hypervisor/vms + verified context
-    CP->>CP: Handler validates and normalizes request
-    CP->>CP: Serialize VM command + HPKE-seal full payload
-    CP->>DB: Atomic INSERT personal_vms + protected hypervisor_outbox_records
-    DB-->>CP: VM PROVISIONING, operation_id
-    CP-->>UI: 202 Accepted
+    %% Phase 1
+    User->>Edge: POST /api/v1/hypervisor/vms (Cookie, Body)
+    Edge->>Edge: ExtAuthz Check, Verify Trinity Session, Resolve Personal Context
+    Edge->>CP: POST /api/v1/personal/hypervisor/vms (Injected trusted headers)
 
-    DB-->>JO: WAL/CDC INSERT hypervisor.hypervisor_outbox_records
-    JO->>JO: Validate source domain HYPERVISOR and registered job topic
-    JO->>Kafka: Produce "jobs.commands.zone.<zone_id>.v1"
-    Note over JO,Kafka: key=resource_id; acks=all before WAL LSN ACK
-
-    Kafka-->>DP: Manual-consume JobCommandV1
-    DP->>DP: Validate protection/target zone, HPKE-open, resource, config hash and retry budget
-    DP->>KV: Acquire resource lease "hypervisor:<vm_id>"
-    DP->>KV: CAS provider binding and reverse VMID reservation
-    DP->>PVE: Inventory, select node, full clone template
-    DP->>PVE: Configure CPU/RAM/cloud-init, grow disk, start VM
-    DP->>Kafka: Produce PROCESSING then SUCCEEDED/FAILED result
-    Note over DP,Kafka: command offset settles only after result/retry/DLQ durability
-
-    Kafka-->>JO: "jobs.results.v1"
-    JO->>DB: Lock authoritative VM/outbox and atomically settle result
-    alt SUCCEEDED
-        JO->>DB: VM -> READY; outbox -> SUCCEEDED
-    else FAILED
-        JO->>DB: Hard-delete VM; outbox -> FAILED
+    %% Phase 2
+    CP->>CP: Handler validates schema & Profile (basic/standard/performance)
+    CP->>CP: CommercialAdmissionGate: Check ALLOW in Redis Projection
+    CP->>CP: PricingReadinessGate: Check READY in Redis Projection
+    CP->>DB: Resolve Available Image in Zone (GetAvailableImage)
+    CP->>CP: Compute spec_hash (SHA-256 binary packing)
+    CP->>CP: Marshal VmCreateV1 & Seal Payload with Zone X25519 Public Key
+    
+    rect rgb(240, 248, 255)
+    Note over CP,DB: Phase 2: Atomic SQL CTE Execution
+    CP->>DB: WITH authorized_scope AS (...), inserted_vm AS (...), inserted_outbox AS (...)
+    DB-->>CP: PersonalVM (Status: PROVISIONING, OperationID)
     end
-    JO->>JO: Publish bounded job notification after DB commit
-    JO->>Kafka: Manual commit result offset
-    UI->>CP: Invalidate/refetch durable VM state after realtime wake-up
+    CP-->>User: 202 Accepted (VM Created & Queued)
+
+    %% Phase 3
+    DB-->>JO: CDC / Changefeed on hypervisor_outbox_records (Status: PENDING)
+    JO->>JO: Parse domain HYPERVISOR, topic hypervisor.vm.create
+    JO->>Kafka: Produce JobCommandV1 to "jobs.commands.zone.<zone_id>.v1" (Key: vm_id)
+    Kafka-->>JO: ACK -> Advance Outbox Status to PROCESSING & Commit LSN
+
+    %% Phase 4
+    Kafka-->>DP: Consume JobCommandV1
+    DP->>DP: Unseal X25519 Payload with Zone Private Key -> VmCreateV1
+    DP->>KV: Acquire Resource Lease "hypervisor:<vm_id>"
+    DP->>KV: CAS Provider Binding "hypervisor.vm.provider.<vm_id>" & Reverse VMID Reservation
+    DP->>PVE: Inventory nodes, select lowest-load online node
+    DP->>PVE: Full Clone from Template VMID -> aurora-<vm_id>
+    DP->>PVE: Configure CPU, RAM, Cloud-Init (SSH key), grow boot disk, attach scsi1..N
+    DP->>PVE: Read initial cumulative netin/netout
+    DP->>KV: CAS Initial Network Baseline Counter (Zero baseline)
+    DP->>PVE: Start VM & Poll Guest Agent for IPv4
+    DP->>Kafka: Produce JobExecutionResultProto (SUCCEEDED, VmCreateResultV1) to "jobs.results.v1"
+
+    %% Phase 5
+    Kafka-->>JO: Consume JobExecutionResultProto
+    JO->>DB: Atomic Settlement: UPDATE personal_vms (status='READY', provider_vmid, ipv4) & outbox='SUCCEEDED'
+    JO->>Centri: Publish Realtime Event ("vm.ready", vm_id, workspace_id)
+    Centri-->>User: WebSocket Push -> UI updates VM badge to READY
 ```
 
-Mutation của `personal_vms` và outbox là một PostgreSQL statement/transaction.
-Không publish broker trước DB commit. CDC chỉ advance LSN sau Kafka durable
-publish hoặc terminal DLQ outcome. Crash sau Kafka ACK nhưng trước LSN ACK có thể
-tạo duplicate; resource key, natural identity, Zone lease, provider binding và
-result settlement phải làm duplicate an toàn.
+---
 
-## 5. Kafka contracts
+## Hop-by-Hop detailed contracts
 
-Command:
+### Phase 1 — Client $\to$ Envoy $\to$ ACR ExtAuthz
 
-- source domain: `HYPERVISOR`;
-- job topic: `hypervisor.vm.create`;
-- plaintext payload schema after HPKE open: `hypervisor.VmCreateV1`, version 1;
-- outer payload: serialized `ProtectedPayloadV1` with HPKE payload encoding;
-- resource ID: VM UUID;
-- Kafka key: resource ID để preserve per-VM ordering;
-- immutable destination: typed `zone_id` UUID; không còn `routing_scope` string.
+#### Hop 1.1: Web Console Client $\to$ Envoy Gateway
+* **HTTP Wire Request**:
+```http
+POST /api/v1/hypervisor/vms HTTP/1.1
+Host: api.aurora.local
+Cookie: aurora_session=sess_sec_987abc...; zone_context=hn-zone-01; x_client_device_id=dev-mac-018e
+Content-Type: application/json
+Origin: https://console.aurora.local
+X-Requested-With: XMLHttpRequest
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 
-Result:
-
-- envelope: `job_lifecycle.JobExecutionResultProto`;
-- terminal success payload: `hypervisor.VmCreateResultV1`, version 1;
-- result key: job/operation ID theo result transport hiện hành;
-- `PROCESSING` và `FAILED` không mang domain result payload;
-- payload tối đa 64 KiB.
-
-Protobuf command/result phải byte-compatible giữa Controlplane, JO và Dataplane.
-Thay field number hoặc semantic phải cập nhật cả ba bản contract và God View
-trong cùng change-set.
-
-## 6. Dataplane idempotency và Proxmox boundary
-
-Dataplane dùng một `HypervisorRuntime` shared cho toàn pod, cùng ownership
-pattern với `MailRuntime`:
-
-```text
-executor/hypervisor/
-├── executor.rs                 action dispatch
-├── processor/create_vm.rs      VM create workflow
-├── processor/proxmox.rs        typed Proxmox HTTP boundary
-└── runtime/provider_binding.rs Zone KV binding/CAS runtime
+{
+  "name": "dev-ubuntu-box",
+  "image_id": "018e6a12-8888-7123-9abc-def012345678",
+  "resource_profile_code": "standard",
+  "additional_disks": [
+    { "size_gb": 50 }
+  ],
+  "ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... user@workstation"
+}
 ```
 
-Runtime sở hữu duy nhất connection pool `reqwest`, mutation semaphore
-`PROXMOX_MAX_CONCURRENT_JOBS` và Zone-local provider-binding runtime. Zone Control
-probe worker dùng client riêng cho health probe; không tạo client/pool thứ hai
-trong mỗi job. Worker chỉ gọi Proxmox khi thực thi
-command đã lease/fence, không tự chạy health loop.
+#### Hop 1.2: Envoy $\to$ ACR ExtAuthz (`CheckRequest`)
+- **Input**: Envoy forward toàn bộ Cookie, Method `POST`, Path `/api/v1/hypervisor/vms`.
+- **Thẩm định & Khử trùng tại ACR**:
+  1. Tra cứu token trong `Auth-State Redis`, xác thực danh tính người dùng `user_id`.
+  2. Đọc ngữ cảnh Zone `zone_context` (`zone_code`) $\to$ phân giải thành `zone_id` (UUID).
+  3. Xác định Personal Workspace mặc định của user trong Zone đó $\to$ `workspace_id` (UUID).
+  4. Thực hiện **Path Rewrite** nội bộ sang `/api/v1/personal/hypervisor/vms`.
+  5. Xóa bỏ toàn bộ header nguy hại do client tự gửi và **Inject các trusted headers**:
+     * `x-user-id`: `018e6a00-1111-7abc-def0-123456789abc`
+     * `x-workspace-id`: `018e6a00-2222-7abc-def0-123456789abc`
+     * `x-zone-id`: `7b0b2e8a-e555-4a18-97c3-21c6014e7a88`
+     * `x-user-level`: `"1"`
+     * `x-original-path`: `"/api/v1/hypervisor/vms"`
+- **Output Schema**: `CheckResponse` OK (0) forward sang Controlplane Hypervisor Upstream.
 
-Semaphore chỉ bao quanh external mutation từ clone/configure/resize/start.
-Inventory, placement, Zone KV CAS và guest-agent IP warm-up không giữ mutation
-permit; permit được release trước bounded guest-agent polling để không chặn VM
-khác. Mỗi command vẫn chịu resource-scoped distributed lease/fencing trong Zone
-Coordination KV.
+---
 
-Provider identity:
+### Phase 2 — Controlplane Processing & Atomic CTE Persistence
 
-- Proxmox name: `aurora-<vm_uuid>`;
-- binding key: `AURORA_ZONE_CONFIG/hypervisor.vm.provider.<vm_uuid>`;
-- reverse reservation:
-  `AURORA_ZONE_CONFIG/hypervisor.provider.vmid.<provider_vmid>`;
-- Proxmox description marker:
-  `aurora-config-sha256=<spec_hash_hex>`.
+#### Hop 2.1: Controlplane Handler & Security Preconditions
+1. **Context Extraction**: Trích xuất `userID`, `workspaceID`, `zoneID` qua `pkgcontext`.
+2. **Payload Validation**: Kiểm tra Regex `name`, giới hạn số đĩa $\le 15$, kích thước đĩa $8 \le \text{size} \le 4096$, SSH Key hợp lệ.
+3. **Commercial Admission Gate**: Gọi `RequirePersonalOwnerAdmission(ctx, userID)` kiểm tra Projection trong Redis Shared Cache (trạng thái `ALLOW`, còn hiệu lực `valid_until > NOW()`).
+4. **Pricing Readiness Gate**: Gọi `RequireHypervisorPricing(ctx)` kiểm tra bảng giá Hypervisor nội vùng có đang ở trạng thái `READY` hay không. Nếu thiếu hoặc hết hạn $\to$ `503 Service Unavailable` (`HYPERVISOR_PRICING_UNAVAILABLE`).
+5. **Image Verification**: Truy vấn `GetAvailableImage` xác nhận Image tồn tại trong Zone, trạng thái `AVAILABLE` và đã có `provider_template_vmid`.
 
-Binding và reverse reservation dùng CAS create. Retry đọc lại winner và chỉ
-adopt khi `resource_id`, provider name, VMID và config hash đều khớp. Nếu VMID
-đang trỏ tới provider khác, executor fail-closed; không mutate VM lạ.
+#### Hop 2.2: Payload Sealing & Atomic SQL CTE
+* **Mã hóa Payload**:
+  - Serialize struct Protobuf `VmCreateV1`.
+  - Gọi `jobpayload.Protector.Seal(ctx, Metadata, payload)` mã hóa bằng X25519 Public Key của Zone đích.
+* **Atomic SQL CTE (`CreateOrGet`)**:
+```sql
+WITH authorized_scope AS (
+    SELECT 1
+    FROM hierarchy.personal_workspaces workspace
+    JOIN hierarchy.zones zone
+      ON zone.id = workspace.zone_id
+    JOIN hypervisor.image_artifacts image
+      ON image.id = $image_id
+     AND image.zone_id = zone.id
+     AND image.revision = $image_revision
+     AND image.sha256 = $image_sha256
+     AND image.state = 'AVAILABLE'
+     AND image.provider_template_vmid IS NOT NULL
+    WHERE workspace.id = $workspace_id
+      AND workspace.owner_id = $owner_user_id
+      AND workspace.zone_id = $zone_id
+      AND zone.status = 'active'
+      AND EXISTS (
+        SELECT 1
+        FROM hierarchy.zone_services service
+        WHERE service.zone_id = zone.id
+          AND service.service_type = 'hypervisor'
+          AND service.desired_state = TRUE
+      )
+),
+inserted_vm AS (
+    INSERT INTO hypervisor.personal_vms (
+        id, workspace_id, zone_id, owner_user_id, name, image,
+        image_id, image_revision, image_sha256,
+        resource_profile_code, cpu_cores, memory_mb, boot_disk_gb,
+        disk_gb, additional_disk_sizes_gb, ssh_public_key, spec_hash,
+        status, operation_id, provider_name, created_at, updated_at
+    )
+    SELECT $vm_id, $workspace_id, $zone_id, $owner_user_id, $name, $image_name,
+           $image_id, $image_revision, $image_sha256,
+           $profile_code, $cpu_cores, $memory_mb, $boot_disk_gb,
+           $disk_gb, $additional_disks, $ssh_public_key, $spec_hash,
+           'PROVISIONING', $operation_id, $provider_name, NOW(), NOW()
+    FROM authorized_scope
+    ON CONFLICT (workspace_id, name) DO NOTHING
+    RETURNING *
+),
+inserted_outbox AS (
+    INSERT INTO hypervisor.hypervisor_outbox_records (
+        event_id, zone_id, job_topic, payload, actor_user_id,
+        owner_id, owner_type,
+        status, job_version, resource_id, payload_schema_version,
+        trace_id, idle, payload_key_id, resource_name
+    )
+    SELECT $operation_id, $zone_id, 'hypervisor.vm.create', $sealed_payload, $owner_user_id,
+           $owner_user_id, 'PERSONAL',
+           'PENDING', 1, $vm_id::text, 1,
+           $trace_id, 600, $payload_key_id, $name
+    FROM inserted_vm
+    RETURNING event_id
+)
+SELECT id, workspace_id, zone_id, owner_user_id, name, image,
+       image_id, image_revision, image_sha256,
+       resource_profile_code, cpu_cores, memory_mb, boot_disk_gb,
+       disk_gb, additional_disk_sizes_gb, ssh_public_key, spec_hash,
+       status, operation_id, provider_name, provider_vmid,
+       host(ipv4_address),
+       created_at, updated_at, provisioned_at, TRUE AS created
+FROM inserted_vm;
+```
+* **Output**: HTTP `202 Accepted` trả về Client.
 
-VMID candidate được dẫn xuất ổn định từ resource UUID và collision-probe có
-budget tối đa 32 candidate. Mỗi Zone KV binding operation có deadline 5 giây để
-mất quorum không giữ worker vô hạn. Zone KV reservation ngăn các Dataplane
-replica của Aurora cấp cùng VMID; inventory check bảo vệ trước VM đã tồn tại
-trong Proxmox. Đây là idempotency boundary cho retry của external side effect,
-không phải exactly-once.
+---
 
-Physical node không được persist hoặc expose bởi Controlplane. Node placement
-chỉ diễn ra trong đúng Dataplane: executor lấy inventory mới từ Proxmox, chọn
-node online đủ CPU/RAM và ưu tiên tổng tải CPU+RAM thấp.
-Clone là full clone từ template cấu hình theo image. Disk chỉ được grow; không
-shrink template disk. Task Proxmox có bounded timeout và polling interval. Mọi
-downstream operation có OTel client span theo URL template; API token, SSH key và
-raw provider response body không được đưa vào span, log hoặc durable job result.
+### Phase 3 — Outbox CDC Dispatch & Kafka Transport
 
-## 7. Backpressure, retry và failure semantics
+#### Hop 3.1: Changefeed Read $\to$ Job Orchestrator
+- **Trigger**: Job Orchestrator CDC Worker phát hiện dòng mới trong `hypervisor_outbox_records` có trạng thái `PENDING`.
+- **Validation**: Kiểm tra `source_domain == 'HYPERVISOR'` và `job_topic == 'hypervisor.vm.create'`.
 
-| Failure point | Semantics |
+#### Hop 3.2: Job Orchestrator $\to$ Kafka Command Topic
+- **Kafka Topic**: `jobs.commands.zone.<zone_id>.v1`
+- **Partition Key**: `vm_id` (UUID dạng chuỗi để bảo đảm per-resource total ordering).
+- **Message Envelope**: `JobCommandV1`
+  * `event_id`: UUIDv7 của Outbox Record.
+  * `zone_id`: UUID Zone đích.
+  * `job_topic`: `"hypervisor.vm.create"`
+  * `payload`: Sealed binary payload (HPKE X25519).
+  * `payload_key_id`: ID khóa giải mã.
+- **Durable Action**: Sau khi Kafka broker xác nhận `acks=all`, JO cập nhật `hypervisor_outbox_records.status = 'PROCESSING'` và advance LSN checkpoint.
+
+---
+
+### Phase 4 — Dataplane Proxmox Provisioning & State Enforcement
+
+#### Hop 4.1: Dataplane Intake & Payload Unsealing
+1. Dataplane consumer nhận `JobCommandV1` từ Kafka partition của Zone.
+2. Dùng Zone X25519 Private Key giải mã payload thành `hypervisorproto.VmCreateV1`.
+3. Kiểm tra tính toàn vẹn của `spec_hash` và schema version.
+
+#### Hop 4.2: Resource Lease & CAS Provider Binding (Zone KV)
+1. **Acquire Distributed Lease**: Ghi khóa tạm `hypervisor:<vm_id>` trong NATS JetStream KV với TTL để tránh 2 worker cùng xử lý 1 VM.
+2. **CAS Reverse VMID Reservation**: Sinh candidate VMID từ VM UUID (có collision probe tối đa 32 candidate). Thực hiện atomic CAS vào `AURORA_ZONE_CONFIG/hypervisor.provider.vmid.<provider_vmid>`.
+3. **CAS Provider Binding**: Ghi binding `AURORA_ZONE_CONFIG/hypervisor.vm.provider.<vm_id>` trỏ tới `provider_vmid` và `spec_hash`.
+
+#### Hop 4.3: Proxmox VE Hardware Execution
+1. **Node Selection**: Gọi Proxmox API `/nodes`, chọn node đang online có đủ CPU/RAM và có tổng tải thấp nhất.
+2. **Full Clone**: Gọi `/nodes/{node}/qemu/{template_vmid}/clone` tạo VM mới với tên `aurora-<vm_id>`.
+3. **Hardware & Cloud-Init Configuration**:
+   - Cấu hình số vCPU, RAM MB.
+   - Inject `ssh_public_key` vào Cloud-Init drive.
+   - Resize Boot Disk lên đúng `boot_disk_gb`.
+   - Gắn thêm các Data Disks `scsi1` đến `scsiN` theo `additional_disks`.
+4. **Network Baseline Counter**: Đọc chỉ số byte mạng ban đầu `netin` / `netout` từ Proxmox RRD/Status, thực hiện CAS khởi tạo baseline trong Zone KV để phục vụ đo lường Pay-As-You-Go Network Metering.
+5. **Start VM**: Gọi `/nodes/{node}/qemu/{vmid}/status/start`.
+6. **Guest Agent IP Polling**: Bounded polling qua QEMU Guest Agent để lấy địa chỉ IPv4 được cấp phát.
+
+#### Hop 4.4: Dataplane Result Publication
+- **Produce Result**: Gửi `JobExecutionResultProto` về Kafka topic `jobs.results.v1`:
+  * `event_id`: Operation ID.
+  * `status`: `SUCCEEDED`
+  * `payload`: Protobuf `VmCreateResultV1` chứa `vm_id`, `provider_vmid`, `ipv4_address`, `config_hash`.
+
+---
+
+### Phase 5 — Job Settlement & Realtime Notification
+
+#### Hop 5.1: Job Orchestrator Result Worker Settlement
+- **Database Transaction**:
+  ```sql
+  WITH settled_outbox AS (
+      UPDATE hypervisor.hypervisor_outbox_records
+      SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW()
+      WHERE event_id = $event_id AND status = 'PROCESSING'
+      RETURNING event_id, resource_id
+  )
+  UPDATE hypervisor.personal_vms vm
+  SET status = 'READY',
+      provider_vmid = $provider_vmid,
+      ipv4_address = $ipv4_address::inet,
+      provisioned_at = NOW(),
+      updated_at = NOW()
+  FROM settled_outbox
+  WHERE vm.id = $vm_id AND vm.status = 'PROVISIONING';
+  ```
+- **Commit**: Sau khi DB commit thành công, JO commit Kafka offset của result message.
+
+#### Hop 5.2: Realtime WebSocket Notification (Centrifugo)
+- JO bắn payload sự kiện sang Centrifugo:
+  * Channel: `personal:workspace:<workspace_id>`
+  * Event: `vm.ready`
+  * Payload: `{ "vm_id": "...", "status": "READY", "ipv4_address": "10.0.12.34" }`
+- Trình duyệt người dùng nhận WebSocket frame và cập nhật trạng thái VM trên giao diện tức thời mà không cần reload trang.
+
+---
+
+## Bảng Ma trận Xử lý Lỗi & Khôi phục (Failure Semantics)
+
+| Điểm xảy ra sự cố | Hành vi xử lý & Cơ chế bảo đảm (Recovery / Invariant) |
 |---|---|
-| Workspace/Zone không authorized, inactive, service disabled hoặc image unavailable | Không tạo VM/outbox |
-| DB commit lỗi | Không có command |
-| Kafka publish lỗi | Không ACK WAL; reconnect/backoff và replay |
-| Duplicate Kafka command | Cùng resource lease/provider binding; adopt đúng VM hoặc retry |
-| Hết node capacity/template tạm unavailable/API timeout | Retryable, bounded backoff; terminal failure xóa VM và settle outbox FAILED |
-| Schema/hash/provider collision | Permanent failure; không retry side effect; xóa VM khi FAILED được settle |
-| Dataplane chết giữa clone và result | Kafka redelivery; inventory + immutable binding adopt VM |
-| JO chết sau DB settlement trước offset commit | Duplicate result no-op dưới row lock |
-| Realtime notification mất | UI refetch/list vẫn thấy READY/PROVISIONING; failed resource không còn trong list |
+| **Ví tiền chưa mở / Bảng giá chưa sẵn sàng** | Bị chặn ngay tại Controlplane Precondition Gates $\to$ Trả về `402 Payment Required` hoặc `503 Service Unavailable`. Không tạo rác trong DB. |
+| **User bấm tạo 2 lần (Double Click / Network Retry)** | Câu lệnh SQL `ON CONFLICT (workspace_id, name) DO NOTHING` nhận diện VM đã tạo $\to$ Trả về `200 OK` với dữ liệu VM đang tạo, không sinh outbox thứ 2. |
+| **Cụm Proxmox hết tài nguyên RAM/Disk** | Dataplane thử lại với bounded backoff. Nếu kiệt tài nguyên $\to$ Bắn kết quả `FAILED` $\to$ JO chuyển VM sang `DELETING` và xóa cứng dòng VM, giải phóng tên cho user. |
+| **Dataplane sập nguồn giữa lúc đang Clone** | Kafka redeliver message sau timeout $\to$ Worker mới dùng Zone KV CAS Provider Binding để nhận diện VM đã tạo dở trên Proxmox, tiếp tục cấu hình hoặc dọn dẹp an toàn. |
+| **Replay Result cũ từ Kafka** | SQL Guard `WHERE status = 'PROCESSING'` ngăn chặn việc cập nhật đè lên các bản ghi đã settle. |
+| **Centrifugo WebSocket bị đứt kết nối** | Không ảnh hưởng đến dữ liệu bền vững. Khi user tải lại trang hoặc mở lại tab, API `GET /api/v1/hypervisor/vms` truy vấn từ PostgreSQL sẽ hiển thị đúng trạng thái `READY`. |
 
-Kafka production phải dùng topic provision trước, replication factor 3+, producer
-idempotent, `acks=all`, `min.insync.replicas>=2`, manual commit và durable DLQ.
-Không tuyên bố exactly-once qua PostgreSQL, Kafka và Proxmox.
+---
 
-Graceful shutdown phải dừng intake, chờ bounded inflight executor, publish
-result/retry/DLQ đã quyết định rồi mới settle offset. Rebalance fence không được
-commit partition đã mất ownership.
+## Code map
 
-## 8. Runtime configuration
+### Phase 1 — Client $\to$ Envoy $\to$ ACR ExtAuthz
+- **ACR ExtAuthz Filter & Session Validation**: [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs)
+- **ACR Session Context Resolver**: [`acr/src/user/session.rs`](../../acr/src/user/session.rs)
+- **Header Constants**: [`acr/src/pkg/header.rs`](../../acr/src/pkg/header.rs)
 
-Dataplane bắt buộc có Proxmox endpoint/token. Template VMID đến từ immutable
-image artifact đã được import trong đúng Zone và được pin trong command:
+### Phase 2 — Controlplane Processing & Atomic CTE Persistence
+- **Route Registration & Group**: [`controlplane/internal/hypervisor/route.go`](../../controlplane/internal/hypervisor/route.go)
+- **HTTP Handler**: [`controlplane/internal/hypervisor/transport/http/handler/personal_vm_handler.go`](../../controlplane/internal/hypervisor/transport/http/handler/personal_vm_handler.go) (`Create`)
+- **Domain Service & Precondition Gates**: [`controlplane/internal/hypervisor/service/personal_vm_service.go`](../../controlplane/internal/hypervisor/service/personal_vm_service.go) (`Create`)
+- **PostgreSQL Repository (Atomic CTE)**: [`controlplane/internal/hypervisor/repository/personal_vm_repo.go`](../../controlplane/internal/hypervisor/repository/personal_vm_repo.go) (`CreateOrGet`)
+- **X25519 Payload Protector**: [`controlplane/internal/security/job_payload.go`](../../controlplane/internal/security/job_payload.go) (`Seal`)
+- **DTOs & Schemas**: [`controlplane/internal/hypervisor/transport/http/dto/vm.go`](../../controlplane/internal/hypervisor/transport/http/dto/vm.go)
 
-- `PROXMOX_API_URL`
-- `PROXMOX_API_TOKEN`
-- `PROXMOX_VM_STORAGE` (optional)
-- `PROXMOX_VM_POOL` (optional)
-- `PROXMOX_MAX_CONCURRENT_JOBS` (default 2, range 1-32)
-- `PROXMOX_TASK_TIMEOUT_SECONDS` (default 300, range 30-900)
+### Phase 3 — Outbox CDC Dispatch & Kafka Transport
+- **JO Outbox Changefeed Reader**: [`job-orchestrator/src/workers.rs`](../../job-orchestrator/src/workers.rs)
+- **Kafka Command Publisher**: [`job-orchestrator/src/infra/kafka.rs`](../../job-orchestrator/src/infra/kafka.rs)
+- **Job Topics Registry**: [`job-orchestrator/src/job_topics.rs`](../../job-orchestrator/src/job_topics.rs)
 
-Token phải là least-privilege identity giới hạn vào pool/storage/template và VM
-operations cần thiết, không dùng `root@pam`. Secret không được ghi vào command,
-PostgreSQL business row, Zone KV, notification hoặc log.
+### Phase 4 — Dataplane Proxmox Provisioning
+- **Dataplane VM Processor**: [`dataplane/src/executor/hypervisor/processor/create_vm.rs`](../../dataplane/src/executor/hypervisor/processor/create_vm.rs)
+- **Proxmox HTTP API Client**: [`dataplane/src/executor/hypervisor/processor/proxmox.rs`](../../dataplane/src/executor/hypervisor/processor/proxmox.rs)
+- **Zone KV Lease & Provider Binding**: [`dataplane/src/infra/zone_kv.rs`](../../dataplane/src/infra/zone_kv.rs)
 
-## 9. Read model và UI
-
-Cloud Console `/compute` là table-first responsive view. `/compute/new` chỉ render
-khi render context có `hypervisor:vm:create`. UI không tin realtime payload là
-business completion: notification `operation=hypervisor.vm.create` chỉ coalesce
-invalidate/refetch query của current workspace/zone.
-
-List/Get luôn scope bằng verified `owner_user_id + workspace_id`; create còn bind
-selected `zone_id`. Client-supplied owner/workspace/zone không tồn tại trong body.
-
-## 10. Ngoài phạm vi hiện tại
-
-- Cost ownership projection, wallet check, estimate và charging;
-- tenant VM create;
-- resize, stop/start/reboot/delete;
-- periodic VM drift reconciliation và operator repair workflow;
-- VM usage metering.
-
-Các workflow trên phải có contract, durability boundary và God View riêng trước
-khi implementation. Không nối Cost vào create path bằng synchronous dependency.
+### Phase 5 — Job Settlement & Realtime Notification
+- **JO VM Result Worker (DB Settlement)**: [`job-orchestrator/src/results/hypervisor/vm.rs`](../../job-orchestrator/src/results/hypervisor/vm.rs), [`job-orchestrator/src/results/apply.rs`](../../job-orchestrator/src/results/apply.rs)
+- **Centrifugo Realtime Job Notification**: [`notification-service/src/application/job_notifications.rs`](../../notification-service/src/application/job_notifications.rs)
+- **PostgreSQL Schema & Tables**: `hypervisor.personal_vms`, `hypervisor.hypervisor_outbox_records`
