@@ -51,9 +51,12 @@ CREATE TABLE IF NOT EXISTS personal_vms (
     image_id UUID NOT NULL,
     image_revision BIGINT NOT NULL,
     image_sha256 BYTEA NOT NULL,
+    resource_profile_code TEXT NOT NULL,
     cpu_cores INT NOT NULL,
     memory_mb BIGINT NOT NULL,
+    boot_disk_gb BIGINT NOT NULL,
     disk_gb BIGINT NOT NULL,
+    additional_disk_sizes_gb BIGINT[] NOT NULL DEFAULT '{}',
     ssh_public_key TEXT NOT NULL,
     spec_hash BYTEA NOT NULL,
     status hypervisor_vm_status NOT NULL DEFAULT 'PROVISIONING',
@@ -75,12 +78,17 @@ CREATE TABLE IF NOT EXISTS personal_vms (
         CHECK (image_revision > 0),
     CONSTRAINT ck_hypervisor_personal_vms_image_sha256
         CHECK (octet_length(image_sha256) = 32),
-    CONSTRAINT ck_hypervisor_personal_vms_cpu
-        CHECK (cpu_cores BETWEEN 1 AND 64),
-    CONSTRAINT ck_hypervisor_personal_vms_memory
-        CHECK (memory_mb BETWEEN 512 AND 262144 AND memory_mb % 256 = 0),
+    CONSTRAINT ck_hypervisor_personal_vms_resource_profile
+        CHECK (
+            (resource_profile_code = 'basic' AND cpu_cores = 1 AND memory_mb = 2048 AND boot_disk_gb = 32)
+            OR (resource_profile_code = 'standard' AND cpu_cores = 2 AND memory_mb = 4096 AND boot_disk_gb = 64)
+            OR (resource_profile_code = 'performance' AND cpu_cores = 4 AND memory_mb = 8192 AND boot_disk_gb = 128)
+        ),
     CONSTRAINT ck_hypervisor_personal_vms_disk
-        CHECK (disk_gb BETWEEN 8 AND 4096),
+        CHECK (disk_gb BETWEEN boot_disk_gb AND 65536),
+    CONSTRAINT ck_hypervisor_personal_vms_additional_disks
+        CHECK (cardinality(additional_disk_sizes_gb) BETWEEN 0 AND 15
+               AND array_position(additional_disk_sizes_gb, NULL) IS NULL),
     CONSTRAINT ck_hypervisor_personal_vms_spec_hash
         CHECK (octet_length(spec_hash) = 32),
     CONSTRAINT ck_hypervisor_personal_vms_provider_vmid
@@ -97,10 +105,13 @@ CREATE TABLE IF NOT EXISTS hypervisor_outbox_records (
     payload BYTEA NOT NULL,
     payload_key_id UUID NOT NULL,
     actor_user_id UUID,
+    owner_id UUID NOT NULL,
+    owner_type VARCHAR(16) NOT NULL,
     status hypervisor_outbox_status NOT NULL DEFAULT 'PENDING',
     completed_at TIMESTAMPTZ,
     job_version INT NOT NULL DEFAULT 1,
     resource_id TEXT NOT NULL,
+    resource_name VARCHAR(255) NOT NULL,
     payload_schema_version INT NOT NULL DEFAULT 1,
     trace_id BYTEA,
     idle INT NOT NULL DEFAULT 600,
@@ -110,6 +121,8 @@ CREATE TABLE IF NOT EXISTS hypervisor_outbox_records (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT ck_hypervisor_outbox_job_topic
         CHECK (length(btrim(job_topic)) BETWEEN 1 AND 128),
+    CONSTRAINT ck_hypervisor_outbox_owner_type
+        CHECK (owner_type IN ('PERSONAL', 'TENANT')),
     CONSTRAINT ck_hypervisor_outbox_payload
         CHECK (octet_length(payload) BETWEEN 1 AND 1000000),
     CONSTRAINT ck_hypervisor_outbox_job_version CHECK (job_version > 0),
@@ -117,9 +130,83 @@ CREATE TABLE IF NOT EXISTS hypervisor_outbox_records (
         CHECK (payload_schema_version > 0),
     CONSTRAINT ck_hypervisor_outbox_resource
         CHECK (length(resource_id) BETWEEN 1 AND 512),
+    CONSTRAINT ck_hypervisor_outbox_resource_name
+        CHECK (length(btrim(resource_name)) BETWEEN 1 AND 255),
     CONSTRAINT ck_hypervisor_outbox_trace
         CHECK (trace_id IS NULL OR octet_length(trace_id) IN (0, 16)),
     CONSTRAINT ck_hypervisor_outbox_idle CHECK (idle BETWEEN 1 AND 86400),
     CONSTRAINT ck_hypervisor_outbox_zone_id
         CHECK (zone_id <> '00000000-0000-0000-0000-000000000000'::uuid)
+);
+
+CREATE TABLE IF NOT EXISTS hypervisor_allocation_outbox (
+    id BIGSERIAL PRIMARY KEY,
+    source_job_id UUID NOT NULL UNIQUE,
+    event_type VARCHAR(16) NOT NULL,
+    resource_id UUID NOT NULL,
+    owner_id UUID NOT NULL,
+    owner_type VARCHAR(16) NOT NULL,
+    resource_name VARCHAR(255) NOT NULL,
+    zone_id UUID NOT NULL,
+    source_version BIGINT NOT NULL,
+    effective_at TIMESTAMPTZ NOT NULL,
+    cpu_cores BIGINT NOT NULL,
+    memory_mib BIGINT NOT NULL,
+    disk_gib BIGINT NOT NULL,
+    gpu_sku VARCHAR(128) NOT NULL DEFAULT '',
+    gpu_count BIGINT NOT NULL DEFAULT 0,
+    published_at TIMESTAMPTZ,
+    locked_by VARCHAR(255),
+    locked_until TIMESTAMPTZ,
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_error VARCHAR(512),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ux_hypervisor_allocation_resource_version UNIQUE (resource_id, source_version),
+    CONSTRAINT ck_hypervisor_allocation_event_type CHECK (event_type IN ('ACTIVATE', 'REVISE', 'TERMINATE')),
+    CONSTRAINT ck_hypervisor_allocation_owner_type CHECK (owner_type IN ('PERSONAL', 'TENANT')),
+    CONSTRAINT ck_hypervisor_allocation_identity CHECK (
+        resource_id <> '00000000-0000-0000-0000-000000000000'::uuid
+        AND owner_id <> '00000000-0000-0000-0000-000000000000'::uuid
+        AND zone_id <> '00000000-0000-0000-0000-000000000000'::uuid
+        AND length(btrim(resource_name)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT ck_hypervisor_allocation_version CHECK (source_version > 0),
+    CONSTRAINT ck_hypervisor_allocation_limits CHECK (
+        cpu_cores >= 0 AND memory_mib >= 0 AND disk_gib >= 0 AND gpu_count >= 0
+        AND (
+            (event_type IN ('ACTIVATE', 'REVISE') AND cpu_cores > 0 AND memory_mib > 0 AND disk_gib > 0)
+            OR
+            (event_type = 'TERMINATE' AND cpu_cores = 0 AND memory_mib = 0 AND disk_gib = 0 AND gpu_count = 0 AND gpu_sku = '')
+        )
+    ),
+    CONSTRAINT ck_hypervisor_allocation_attempt CHECK (attempt_count >= 0),
+    CONSTRAINT ck_hypervisor_allocation_lock CHECK (
+        (locked_by IS NULL AND locked_until IS NULL)
+        OR (locked_by IS NOT NULL AND locked_until IS NOT NULL)
+    ),
+    CONSTRAINT ck_hypervisor_allocation_published CHECK (
+        published_at IS NULL OR (locked_by IS NULL AND locked_until IS NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS commercial_admission_projection (
+    owner_id UUID NOT NULL,
+    owner_type VARCHAR(16) NOT NULL,
+    policy_version BIGINT NOT NULL,
+    decision VARCHAR(32) NOT NULL,
+    restriction_reason VARCHAR(64),
+    effective_at TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ,
+    source_event_id UUID NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (owner_id, owner_type),
+    CONSTRAINT ck_hypervisor_commercial_admission_owner_type CHECK (owner_type IN ('PERSONAL', 'TENANT')),
+    CONSTRAINT ck_hypervisor_commercial_decision CHECK (decision IN ('ALLOW', 'SUSPEND_BILLABLE')),
+    CONSTRAINT ck_hypervisor_commercial_admission_reason CHECK (
+        (decision = 'ALLOW' AND restriction_reason IS NULL)
+        OR (decision = 'SUSPEND_BILLABLE' AND restriction_reason IS NOT NULL)
+    ),
+    CONSTRAINT ck_hypervisor_commercial_admission_version CHECK (policy_version > 0),
+    CONSTRAINT ck_hypervisor_commercial_admission_window CHECK (valid_until IS NULL OR valid_until > effective_at)
 );

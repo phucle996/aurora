@@ -34,8 +34,8 @@ BEGIN
         JOIN pg_namespace namespace ON namespace.oid = enum_type.typnamespace
         WHERE namespace.nspname = 'hypervisor'
           AND enum_type.typname = 'hypervisor_vm_status'
-    ) IS DISTINCT FROM ARRAY['PROVISIONING', 'READY']::text[] THEN
-        RAISE EXCEPTION 'personal VM enum must contain exactly PROVISIONING and READY';
+    ) IS DISTINCT FROM ARRAY['PROVISIONING', 'READY', 'DELETING']::text[] THEN
+        RAISE EXCEPTION 'personal VM enum must contain exactly PROVISIONING, READY and DELETING';
     END IF;
 
     IF (
@@ -90,6 +90,17 @@ BEGIN
           )
     ) THEN
         RAISE EXCEPTION 'legacy provider topology or soft-delete column exists';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'hypervisor.personal_vms'::regclass
+          AND trigger_record.tgname = 'trg_hypervisor_vm_delete_requires_deleting'
+          AND trigger_record.tgenabled <> 'D'
+          AND NOT trigger_record.tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'personal VM deletion status guard trigger is missing or disabled';
     END IF;
 END
 $$;

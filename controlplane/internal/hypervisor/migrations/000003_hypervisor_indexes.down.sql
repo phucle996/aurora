@@ -1,3 +1,5 @@
+DROP INDEX IF EXISTS idx_hypervisor_allocation_export_resource;
+DROP INDEX IF EXISTS idx_hypervisor_allocation_export_pending;
 DROP INDEX IF EXISTS idx_hypervisor_outbox_terminal_cleanup;
 DROP INDEX IF EXISTS idx_hypervisor_outbox_resource;
 DROP INDEX IF EXISTS idx_hypervisor_outbox_claim;

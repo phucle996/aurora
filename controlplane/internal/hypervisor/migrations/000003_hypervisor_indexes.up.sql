@@ -22,3 +22,10 @@ CREATE INDEX IF NOT EXISTS idx_hypervisor_outbox_terminal_cleanup
     ON hypervisor_outbox_records (completed_at, id)
     WHERE status IN ('SUCCEEDED', 'FAILED', 'DEAD')
       AND completed_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_hypervisor_allocation_export_pending
+    ON hypervisor_allocation_outbox (effective_at, id)
+    WHERE published_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_hypervisor_allocation_export_resource
+    ON hypervisor_allocation_outbox (resource_id, source_version DESC);

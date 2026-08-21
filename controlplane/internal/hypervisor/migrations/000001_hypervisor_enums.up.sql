@@ -1,6 +1,6 @@
 DO $$
 BEGIN
-    CREATE TYPE hypervisor_vm_status AS ENUM ('PROVISIONING', 'READY');
+    CREATE TYPE hypervisor_vm_status AS ENUM ('PROVISIONING', 'READY', 'DELETING');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END
