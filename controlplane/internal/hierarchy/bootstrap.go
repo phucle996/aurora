@@ -15,6 +15,9 @@ func (m *Module) Bootstrap(_ context.Context) error {
 	if err := m.zoneRedis.Start(); err != nil {
 		return fmt.Errorf("hierarchy bootstrap: start zone Redis handler: %w", err)
 	}
+	if m.tenantWalletProvisionRelay != nil {
+		m.tenantWalletProvisionRelay.Start()
+	}
 	logger.SysInfo("hierarchy.redis", "Successfully registered Shared Redis zone handlers")
 	return nil
 }

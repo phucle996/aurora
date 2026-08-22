@@ -10,7 +10,7 @@ import (
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,6 +20,8 @@ import (
 )
 
 var tenantWalletProvisionEventNamespace = uuid.MustParse("24bbad2a-d35b-5e77-b548-31b81dbac82c")
+
+const tenantWalletProvisionRequestedEventType = "billing.tenant_wallet.provision.requested.v1"
 
 type TenantRepoImpl struct {
 	db              *pgxpool.Pool
@@ -79,7 +81,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 	}
 
 	// Shared Redis is only a bounded relay after commit; the outbox row is the durability
-	// boundary if either Controlplane or Cost Manager is unavailable.
+	// boundary if either the producer or any downstream consumer is unavailable.
 	occurredAt := time.Now().UTC()
 	eventID := uuid.NewSHA1(tenantWalletProvisionEventNamespace, in.ID[:])
 	eventPayload, err := proto.Marshal(&iamproto.TenantWalletProvisionRequestedV1{
@@ -95,7 +97,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 	}
 
 	// [COMMENT]: Tenant, owner membership, normalized root definition, compiled
-	// assignment and billing intent cross schemas but share one PostgreSQL commit.
+	// assignment and the Cost outbox command cross schemas but share one PostgreSQL commit.
 	query := fmt.Sprintf(`
 		WITH tenant_inserted AS (
 			INSERT INTO %s.tenants (id, code, name, status, created_at, updated_at)
@@ -131,10 +133,10 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 			WHERE EXISTS (SELECT 1 FROM role_permissions_inserted)
 			RETURNING id
 		), outbox_inserted AS (
-			INSERT INTO %s.billing_outbox_records
-				(event_id, event_type, schema_version, aggregate_type, aggregate_id, aggregate_version,
+			INSERT INTO %s.cost_outbox_records
+				(event_id, event_type, aggregate_type, aggregate_id, aggregate_version,
 				 owner_id, owner_type, actor_user_id, payload, occurred_at)
-			SELECT $11, 'billing.wallet.tenant.provision.requested.v1', 1, 'TENANT', tenant_inserted.id, 1,
+			SELECT $11, '%s', 1, 'TENANT', tenant_inserted.id, 1,
 			       tenant_inserted.id, 'TENANT', $6, $12, $13
 			FROM tenant_inserted CROSS JOIN assignment_inserted
 			RETURNING event_id
@@ -142,7 +144,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 		SELECT tenant_inserted.id, tenant_inserted.code, tenant_inserted.name,
 		       tenant_inserted.status, tenant_inserted.created_at, tenant_inserted.updated_at
 		FROM tenant_inserted CROSS JOIN domain_inserted CROSS JOIN outbox_inserted
-	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema)
+	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema, tenantWalletProvisionRequestedEventType)
 
 	out := &hierarchyEntity.CreateTenant{
 		OwnerID:           in.OwnerID,
@@ -170,6 +172,71 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 	}
 
 	return out, nil
+}
+
+func (r *TenantRepoImpl) ClaimTenantWalletProvisionOutbox(ctx context.Context, limit int) ([]hierarchyEntity.TenantWalletProvisionOutbox, error) {
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
+		WITH candidates AS (
+			SELECT id
+			FROM %s.cost_outbox_records
+			WHERE event_type=$2
+				AND ((status='PENDING' AND available_at<=NOW()) OR (status='PUBLISHING' AND lease_until<NOW()))
+			ORDER BY available_at,id
+			FOR UPDATE SKIP LOCKED
+			LIMIT $1
+		)
+		UPDATE %s.cost_outbox_records outbox
+		SET status='PUBLISHING', lease_until=NOW()+INTERVAL '30 seconds', attempts=attempts+1, updated_at=NOW()
+		FROM candidates
+		WHERE outbox.id=candidates.id AND outbox.event_type=$2
+		RETURNING outbox.id,outbox.event_id,outbox.owner_id,outbox.actor_user_id,outbox.payload
+	`, r.hierarchySchema, r.hierarchySchema), limit, tenantWalletProvisionRequestedEventType)
+	if err != nil {
+		return nil, fmt.Errorf("tenant wallet provision outbox: claim: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]hierarchyEntity.TenantWalletProvisionOutbox, 0, limit)
+	for rows.Next() {
+		var event hierarchyEntity.TenantWalletProvisionOutbox
+		if err := rows.Scan(&event.ID, &event.EventID, &event.TenantID, &event.ActorUserID, &event.Payload); err != nil {
+			return nil, fmt.Errorf("tenant wallet provision outbox: scan claim: %w", err)
+		}
+		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tenant wallet provision outbox: iterate claim: %w", err)
+	}
+	return out, nil
+}
+
+func (r *TenantRepoImpl) MarkTenantWalletProvisionPublished(ctx context.Context, id int64) error {
+	_, err := r.db.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s.cost_outbox_records
+		SET status='PUBLISHED',published_at=NOW(),lease_until=NULL,updated_at=NOW()
+		WHERE id=$1 AND event_type=$2 AND status='PUBLISHING'
+	`, r.hierarchySchema), id, tenantWalletProvisionRequestedEventType)
+	return err
+}
+
+func (r *TenantRepoImpl) MarkTenantWalletProvisionFailed(ctx context.Context, id int64, message string) error {
+	_, err := r.db.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s.cost_outbox_records
+		SET status=CASE WHEN attempts>=25 THEN 'DEAD' ELSE 'PENDING' END,
+			available_at=NOW()+make_interval(secs => LEAST(30, 1 << LEAST(GREATEST(attempts - 1, 0), 5))),
+			lease_until=NULL,last_error=LEFT($3,2000),updated_at=NOW()
+		WHERE id=$1 AND event_type=$2 AND status='PUBLISHING'
+	`, r.hierarchySchema), id, tenantWalletProvisionRequestedEventType, message)
+	return err
+}
+
+func (r *TenantRepoImpl) MarkTenantWalletProvisionDead(ctx context.Context, id int64, message string) error {
+	_, err := r.db.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s.cost_outbox_records
+		SET status='DEAD',lease_until=NULL,last_error=LEFT($3,2000),updated_at=NOW()
+		WHERE id=$1 AND event_type=$2 AND status='PUBLISHING'
+	`, r.hierarchySchema), id, tenantWalletProvisionRequestedEventType, message)
+	return err
 }
 
 func (r *TenantRepoImpl) ListTenantsForUser(ctx context.Context, userID uuid.UUID) ([]hierarchyEntity.TenantCatalogItem, error) {

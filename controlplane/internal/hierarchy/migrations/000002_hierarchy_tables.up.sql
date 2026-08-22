@@ -194,3 +194,28 @@ COMMENT ON COLUMN tenant_workspaces.description IS 'Optional description of the 
 COMMENT ON COLUMN tenant_workspaces.zone_id IS 'ID của Zone mà Workspace này thuộc về (bắt buộc).';
 COMMENT ON COLUMN tenant_workspaces.tenant_id IS 'ID của Tenant sở hữu Workspace này (NOT NULL).';
 COMMENT ON COLUMN tenant_workspaces.owner_id IS 'ID của User tạo ra Workspace trong Tenant.';
+
+-- Generic transport outbox owned by Hierarchy for commands sent to Cost.
+CREATE TABLE IF NOT EXISTS cost_outbox_records (
+    id BIGSERIAL PRIMARY KEY,
+    event_id UUID NOT NULL UNIQUE,
+    event_type VARCHAR(128) NOT NULL,
+    aggregate_type VARCHAR(64) NOT NULL,
+    aggregate_id UUID NOT NULL,
+    aggregate_version BIGINT NOT NULL CHECK (aggregate_version > 0),
+    owner_id UUID NOT NULL,
+    owner_type VARCHAR(16) NOT NULL CHECK (owner_type IN ('PERSONAL', 'TENANT')),
+    actor_user_id UUID NOT NULL,
+    payload BYTEA NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'DEAD')),
+    attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until TIMESTAMPTZ,
+    published_at TIMESTAMPTZ,
+    last_error TEXT,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (event_type ~ '^[a-z0-9]+([._][a-z0-9]+)*\.v[1-9][0-9]*$')
+);

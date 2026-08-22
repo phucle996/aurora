@@ -12,7 +12,7 @@ A Tenant has no Zone placement; its future workspaces select Zones separately.
 | Owner | authenticated personal user; a tenant session cannot create a sibling tenant |
 | Authorization | personal `hierarchy:tenant:create` at the required level before the handler |
 | Durable SoT | one Controlplane PostgreSQL transaction |
-| Follow-up | transactional billing-wallet outbox; it never changes the successful HTTP result |
+| Follow-up | transactional Hierarchy-to-Cost wallet-provision command; it never changes the successful HTTP result |
 
 Browser must not call `/api/v1/personal/**`. ACR alone selects the owner branch,
 rewrites the path, overwrites `:path`, and adds `x-original-path`.
@@ -37,7 +37,7 @@ trusted.
 | `hierarchy.tenant_domains` | PostgreSQL | exactly one primary domain created with the tenant |
 | `hierarchy.tenant_memberships` | PostgreSQL | active ownership membership for creator |
 | `iam.tenant_roles` + `iam.membership_role` | PostgreSQL | tenant-root role and compiled creator authority |
-| `billing_outbox_records` | PostgreSQL | `billing.wallet.tenant.provision.requested.v1` recovery boundary |
+| `cost_outbox_records` | PostgreSQL | `billing.tenant_wallet.provision.requested.v1` recovery boundary owned by Hierarchy |
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -108,37 +108,35 @@ sequenceDiagram
 ```
 
 The commit is all-or-nothing: no tenant may exist without its primary domain,
-creator ownership membership, tenant-root role assignment, or billing intent.
+creator ownership membership, tenant-root role assignment, or its Cost outbox command.
 Duplicate code/domain identity returns `409`; invalid input returns `400`; an
 infrastructure or serialization failure returns `500`. After commit, the service
 wakes the relay only as a latency hint.
 
-## Phase 3 — Tenant wallet provisioning
+## Phase 3 — Hierarchy Cost outbox relay
 
 ```mermaid
 sequenceDiagram
-    participant O as Billing outbox relay
+    participant O as Hierarchy Cost outbox relay
     participant Q as Shared Redis stream
     participant CM as Cost Manager
     participant B as Billing PostgreSQL
 
-    O->>Q: Publish deterministic tenant-wallet event
+    O->>Q: XADD deterministic tenant wallet provision command
+    O->>Q: WAITAOF master and configured replicas
     Q->>CM: At-least-once delivery
     CM->>B: Inbox fence and USD tenant-wallet upsert
     B-->>CM: Commit
     CM->>Q: ACK after commit
 ```
 
-The deterministic event ID, Cost inbox, and wallet uniqueness converge replay.
-Relay or Cost failure leaves the outbox recoverable; it never rolls back the
-already-created tenant.
-
-## Current implementation discrepancy
-
-The intended personal sentinel is `platform`, but ACR currently injects
-`x-tenant-id: platform` while `TenantHandler.CreateTenant` rejects every
-non-empty `x-tenant-id`. Therefore the current implementation rejects an
-otherwise valid personal request with `400`. In addition, the registered
-personal route currently lacks the required `middleware.Authorize` call. This
-God View is the target contract; those two code paths must be reconciled in a
-separate implementation change before tenant creation is operational.
+The request-owning pod sends a non-blocking local wake after commit. Every pod
+also runs a startup drain staggered by 0–2 seconds, then a 30-second fallback
+scan with 0–10-second jitter. `FOR UPDATE SKIP LOCKED` partitions claimed rows
+across pods; a 30-second lease reclaims a row from a dead pod. The complete
+`XADD` plus `WAITAOF` call is deadline-bounded below that lease. The relay
+validates the envelope and immutable Protobuf command before publication and
+marks the PostgreSQL outbox row `PUBLISHED` only after the Redis AOF durability
+fence succeeds. The deterministic event ID, Cost inbox, and wallet uniqueness
+converge replay; a relay or Cost failure leaves the outbox recoverable and
+never rolls back the already-created tenant.

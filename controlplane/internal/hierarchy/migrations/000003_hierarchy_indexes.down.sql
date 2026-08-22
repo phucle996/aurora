@@ -15,3 +15,4 @@ DROP INDEX IF EXISTS ux_zone_encryption_keys_fingerprint;
 DROP INDEX IF EXISTS ix_zone_services_zone_desired_state;
 DROP INDEX IF EXISTS ix_zones_status;
 DROP INDEX IF EXISTS ux_zones_code;
+DROP INDEX IF EXISTS hierarchy_cost_outbox_claim_idx;

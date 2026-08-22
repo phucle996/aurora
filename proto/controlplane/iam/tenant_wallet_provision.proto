@@ -1,7 +1,8 @@
 syntax = "proto3";
 package iamproto;
-option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
 
+// Hierarchy-owned command emitted after the Tenant transaction commits.
 message TenantWalletProvisionRequestedV1 {
   bytes event_id = 1;
   int32 schema_version = 2;

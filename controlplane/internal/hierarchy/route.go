@@ -85,6 +85,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		// Tenant creation is a personal-owner action. A tenant session cannot
 		// create a sibling tenant through a generic route.
 		personalGroup.POST("/tenants",
+			middleware.Authorize("hierarchy:tenant:create", module.L1Registry, "*"),
 			module.TenantHandler.CreateTenant,
 		)
 	}
