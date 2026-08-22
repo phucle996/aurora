@@ -59,6 +59,11 @@ func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler
 		m.MailPricingHandler.ListZonePriceAdjustments,
 	)
 	router.GET(
+		"/api/v1/billing/hypervisor/zone-price-adjustments",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.HypervisorPricingHandler.ListZonePriceAdjustments,
+	)
+	router.GET(
 		"/api/v1/billing/referrals",
 		m.PersonalAuthorizationMiddleware.Authorize("billing:credit:adjust", false),
 		m.PersonalAccountHandler.ListReferralCampaigns,

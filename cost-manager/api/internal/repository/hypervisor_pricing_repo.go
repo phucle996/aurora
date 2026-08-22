@@ -215,6 +215,37 @@ func (r *hypervisorPricingRepository) CreateHypervisorZonePriceAdjustment(ctx co
 	}, nil
 }
 
+func (r *hypervisorPricingRepository) ListHypervisorZonePriceAdjustments(ctx context.Context, query entity.HypervisorZoneAdjustmentListQuery) ([]entity.HypervisorZoneAdjustmentListItem, bool, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH history AS (
+			SELECT id,zone_id,version_number,status,effective_from,effective_to,multiplier_numerator,multiplier_denominator,checksum,change_reason,created_by,created_at,
+			       version_number=MAX(version_number) OVER () AS is_latest,
+			       effective_from <= NOW() AND (effective_to IS NULL OR NOW() < effective_to) AS is_effective
+			FROM billing.hypervisor_zone_price_adjustment_versions WHERE zone_id=$1
+		), bounded AS (SELECT * FROM history ORDER BY version_number DESC LIMIT $2)
+		SELECT id,zone_id,version_number,status,effective_from,effective_to,multiplier_numerator,multiplier_denominator,checksum,change_reason,created_by,created_at,is_latest,is_effective FROM bounded ORDER BY version_number DESC`, query.ZoneID, query.Limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("Hypervisor pricing repo: list Zone adjustments: %w", err)
+	}
+	defer rows.Close()
+	items := make([]entity.HypervisorZoneAdjustmentListItem, 0, query.Limit+1)
+	for rows.Next() {
+		var item entity.HypervisorZoneAdjustmentListItem
+		if err := rows.Scan(&item.ID, &item.ZoneID, &item.VersionNumber, &item.Status, &item.EffectiveFrom, &item.EffectiveTo, &item.MultiplierNumerator, &item.MultiplierDenominator, &item.Checksum, &item.ChangeReason, &item.CreatedBy, &item.CreatedAt, &item.IsLatest, &item.IsEffective); err != nil {
+			return nil, false, fmt.Errorf("Hypervisor pricing repo: scan Zone adjustment: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("Hypervisor pricing repo: iterate Zone adjustments: %w", err)
+	}
+	hasMore := len(items) > query.Limit
+	if hasMore {
+		items = items[:query.Limit]
+	}
+	return items, hasMore, nil
+}
+
 func (r *hypervisorPricingRepository) RefreshHypervisorPricingStatuses(ctx context.Context) error {
 	if _, err := r.db.Exec(ctx, `WITH projected AS (
 		SELECT v.id,CASE WHEN v.effective_to IS NOT NULL AND v.effective_to<=NOW() THEN 'SUPERSEDED' WHEN v.effective_from<=NOW() AND (v.effective_to IS NULL OR NOW()<v.effective_to) THEN 'ACTIVE' ELSE 'SCHEDULED' END desired_status

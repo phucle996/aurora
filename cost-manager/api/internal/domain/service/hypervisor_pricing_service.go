@@ -16,4 +16,5 @@ type HypervisorPricingService interface {
 	GetHypervisorBasePricePublishTarget(context.Context, string) (*entity.HypervisorBasePricePublishTarget, error)
 	CreateHypervisorBasePriceVersion(context.Context, entity.HypervisorBasePricePublishCommand, []entity.HypervisorBasePriceBracketCommand) (*entity.HypervisorBasePricePublished, error)
 	CreateHypervisorZonePriceAdjustment(context.Context, entity.HypervisorZoneAdjustmentPublishCommand) (*entity.HypervisorZoneAdjustmentPublished, error)
+	ListHypervisorZonePriceAdjustments(context.Context, entity.HypervisorZoneAdjustmentListQuery) (*entity.HypervisorZoneAdjustmentListResult, error)
 }

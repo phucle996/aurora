@@ -809,6 +809,19 @@ func (s *hypervisorPricingService) CreateHypervisorZonePriceAdjustment(
 	return s.repo.CreateHypervisorZonePriceAdjustment(ctx, create)
 }
 
+func (s *hypervisorPricingService) ListHypervisorZonePriceAdjustments(ctx context.Context, query entity.HypervisorZoneAdjustmentListQuery) (*entity.HypervisorZoneAdjustmentListResult, error) {
+	items, hasMore, err := s.repo.ListHypervisorZonePriceAdjustments(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return &entity.HypervisorZoneAdjustmentListResult{
+		ZoneID:     query.ZoneID,
+		Items:      items,
+		HasMore:    hasMore,
+		ObservedAt: time.Now().UTC(),
+	}, nil
+}
+
 // ============================================================================
 // 4. WORKFLOW: INVALIDATION WORKER
 // ============================================================================

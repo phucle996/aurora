@@ -97,6 +97,18 @@ export interface PricingScheduleVersion {
   brackets: PricingBracket[];
 }
 
+export interface PublishedBasePriceVersion {
+	id: string;
+	pricing_schedule_id: string;
+	charge_kind_code: string;
+	version_number: number;
+	pricing_model: PricingModel;
+	status: 'SCHEDULED' | 'ACTIVE';
+	effective_from: string;
+	effective_to: null;
+	checksum: string;
+}
+
 export interface PricingScheduleDetail {
   id: string;
   code: string;
@@ -185,6 +197,42 @@ export interface PublishedStorageZonePriceAdjustment {
   checksum: string;
 }
 
+export interface HypervisorZonePriceAdjustment {
+	id: string;
+	zone_id: string;
+	version_number: number;
+	status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+	effective_from: string;
+	effective_to: string | null;
+	multiplier_numerator: string;
+	multiplier_denominator: string;
+	checksum: string;
+	change_reason: string;
+	created_by: string;
+	created_at: string;
+	is_latest: boolean;
+	is_effective: boolean;
+}
+
+export interface HypervisorZonePriceAdjustmentsResponse {
+	zone_id: string;
+	adjustments: HypervisorZonePriceAdjustment[];
+	has_more: boolean;
+	observed_at: string;
+}
+
+export interface PublishedHypervisorZonePriceAdjustment {
+	id: string;
+	zone_id: string;
+	version_number: number;
+	status: 'SCHEDULED' | 'ACTIVE';
+	effective_from: string;
+	effective_to: null;
+	multiplier_numerator: string;
+	multiplier_denominator: string;
+	checksum: string;
+}
+
 export const billingApi = {
   async getWalletSummary(signal?: AbortSignal): Promise<WalletSummary> {
     return request<WalletSummary>('/billing/wallet/summary', { method: 'GET', signal });
@@ -263,17 +311,41 @@ export const billingApi = {
     });
   },
 
-  async publishPricingScheduleVersion(code: string, payload: {
+  async publishStorageBasePriceVersion(code: string, payload: {
     expected_latest_version: number;
     effective_from: string;
     change_reason: string;
     brackets: PricingBracket[];
-  }): Promise<PricingScheduleVersion> {
-    return criticalFetcher<PricingScheduleVersion>(`/billing/critical/pricing-schedules/${encodeURIComponent(code)}/versions`, {
-      method: 'POST',
-      body: payload,
-    });
-  },
+	}): Promise<PublishedBasePriceVersion> {
+		return criticalFetcher<PublishedBasePriceVersion>(`/billing/critical/storage/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+			method: 'POST',
+			body: payload,
+		});
+	},
+
+	async publishHypervisorBasePriceVersion(code: string, payload: {
+		expected_latest_version: number;
+		effective_from: string;
+		change_reason: string;
+		brackets: PricingBracket[];
+	}): Promise<PublishedBasePriceVersion> {
+		return criticalFetcher<PublishedBasePriceVersion>(`/billing/critical/hypervisor/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+			method: 'POST',
+			body: payload,
+		});
+	},
+
+	async publishMailBasePriceVersion(code: string, payload: {
+		expected_latest_version: number;
+		effective_from: string;
+		change_reason: string;
+		brackets: PricingBracket[];
+	}): Promise<PublishedBasePriceVersion> {
+		return criticalFetcher<PublishedBasePriceVersion>(`/billing/critical/mail/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+			method: 'POST',
+			body: payload,
+		});
+	},
 
   async listMailZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<MailZonePriceAdjustmentsResponse> {
     const query = new URLSearchParams({ limit: String(limit) });
@@ -283,13 +355,21 @@ export const billingApi = {
     });
   },
 
-  async listStorageZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<StorageZonePriceAdjustmentsResponse> {
+	async listStorageZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<StorageZonePriceAdjustmentsResponse> {
     const query = new URLSearchParams({ limit: String(limit) });
     return request<StorageZonePriceAdjustmentsResponse>(`/billing/storage/zone-price-adjustments?${query.toString()}`, {
       method: 'GET',
       signal,
     });
-  },
+	},
+
+	async listHypervisorZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<HypervisorZonePriceAdjustmentsResponse> {
+		const query = new URLSearchParams({ limit: String(limit) });
+		return request<HypervisorZonePriceAdjustmentsResponse>(`/billing/hypervisor/zone-price-adjustments?${query.toString()}`, {
+			method: 'GET',
+			signal,
+		});
+	},
 
   async publishStorageZonePriceAdjustment(payload: {
     expected_latest_version: number;
@@ -304,7 +384,7 @@ export const billingApi = {
     });
   },
 
-  async publishMailZonePriceAdjustment(payload: {
+	async publishMailZonePriceAdjustment(payload: {
     expected_latest_version: number;
     effective_from: string;
     change_reason: string;
@@ -314,6 +394,19 @@ export const billingApi = {
     return criticalFetcher<PublishedMailZonePriceAdjustment>('/billing/critical/mail/zone-price-adjustments/versions', {
       method: 'POST',
       body: payload,
-    });
-  },
+		});
+	},
+
+	async publishHypervisorZonePriceAdjustment(payload: {
+		expected_latest_version: number;
+		effective_from: string;
+		change_reason: string;
+		multiplier_numerator: string;
+		multiplier_denominator: string;
+	}): Promise<PublishedHypervisorZonePriceAdjustment> {
+		return criticalFetcher<PublishedHypervisorZonePriceAdjustment>('/billing/critical/hypervisor/zone-price-adjustments/versions', {
+			method: 'POST',
+			body: payload,
+		});
+	},
 };

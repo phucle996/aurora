@@ -29,6 +29,47 @@ func NewHypervisorPricingHandler(service billingSvcInterface.HypervisorPricingSe
 	return &HypervisorPricingHandler{service: service}
 }
 
+func (h *HypervisorPricingHandler) ListZonePriceAdjustments(c *gin.Context) {
+	const op = "handler.hypervisor_pricing.list_zone_adjustments"
+	limit := 100
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			apires.RespondBadRequest(c, "limit must be an integer between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+	result, err := h.service.ListHypervisorZonePriceAdjustments(ctx, entity.HypervisorZoneAdjustmentListQuery{ZoneID: zoneID, Limit: limit})
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "failed to retrieve Hypervisor Zone price adjustments")
+		return
+	}
+	items := make([]gin.H, len(result.Items))
+	for index, item := range result.Items {
+		var effectiveTo *string
+		if item.EffectiveTo != nil {
+			formatted := item.EffectiveTo.UTC().Format(time.RFC3339Nano)
+			effectiveTo = &formatted
+		}
+		items[index] = gin.H{
+			"id": item.ID, "zone_id": item.ZoneID, "version_number": item.VersionNumber, "status": item.Status,
+			"effective_from": item.EffectiveFrom.UTC().Format(time.RFC3339Nano), "effective_to": effectiveTo,
+			"multiplier_numerator": strconv.FormatInt(item.MultiplierNumerator, 10), "multiplier_denominator": strconv.FormatInt(item.MultiplierDenominator, 10),
+			"checksum": item.Checksum, "change_reason": item.ChangeReason, "created_by": item.CreatedBy,
+			"created_at": item.CreatedAt.UTC().Format(time.RFC3339Nano), "is_latest": item.IsLatest, "is_effective": item.IsEffective,
+		}
+	}
+	apires.RespondSuccess(c, gin.H{"zone_id": result.ZoneID, "adjustments": items, "has_more": result.HasMore, "observed_at": result.ObservedAt.UTC().Format(time.RFC3339Nano)}, "Hypervisor Zone price adjustments")
+}
+
 // Estimate xử lý GET request tính toán trước chi phí theo giờ và theo tháng cho cấu hình VM (cpu_cores, memory_mib, disk_gib).
 func (h *HypervisorPricingHandler) Estimate(c *gin.Context) {
 	const op = "handler.hypervisor_pricing.estimate"

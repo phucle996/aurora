@@ -1,4 +1,4 @@
-import { request } from './fetcher';
+import { apiRequestPath, request } from './fetcher';
 import { signSessionProof } from '../security/deviceKey';
 
 type CriticalChallenge = {
@@ -28,7 +28,7 @@ export async function criticalFetcher<T>(path: string, options: CriticalOptions)
   });
   const serializedBody = options.body === undefined ? '' : JSON.stringify(options.body);
   const timestamp = Math.floor(Date.now() / 1000);
-  const fullPath = `/api/v1${normalizedPath}`;
+	const fullPath = apiRequestPath(normalizedPath);
   const message = [
     'aurora.session-proof.v1',
     challenge.challenge_id,

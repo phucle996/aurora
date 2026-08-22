@@ -12,6 +12,7 @@ import { useAuthStore } from '../../lib/store/useAuthStore';
 import { cn } from '../../lib/utils';
 import { MailZoneAdjustmentPanel } from './MailZoneAdjustmentPanel';
 import { StorageZoneAdjustmentPanel } from './StorageZoneAdjustmentPanel';
+import { HypervisorZoneAdjustmentPanel } from './HypervisorZoneAdjustmentPanel';
 
 const EMPTY_BRACKET: PricingBracket = {
   range_start_quantity: '0',
@@ -19,6 +20,22 @@ const EMPTY_BRACKET: PricingBracket = {
   price_numerator_micro_units: '0',
   price_denominator_quantity: '1',
 };
+
+const STORAGE_BASE_CHARGE_KINDS = new Set([
+  'storage.capacity.gb_hour',
+  'storage.network_in.byte',
+  'storage.network_out.byte',
+]);
+
+const HYPERVISOR_BASE_CHARGE_KINDS = new Set([
+  'hypervisor.vcpu.allocated_second',
+  'hypervisor.memory_mib.allocated_second',
+  'hypervisor.disk_gib.allocated_second',
+  'hypervisor.network_in.byte',
+  'hypervisor.network_out.byte',
+]);
+
+const MAIL_BASE_CHARGE_KINDS = new Set(['mail.delivery.accepted_recipient']);
 
 function formatDate(value: string): string {
   return new Date(value).toISOString().replace('T', ' ').replace('Z', ' UTC');
@@ -98,15 +115,25 @@ export default function PricingSchedulesPage() {
     }
     setPublishing(true);
     try {
-      const next = await billingApi.publishPricingScheduleVersion(selected.code, {
+      const payload = {
         expected_latest_version: selected.latest_version?.version_number ?? 0,
         effective_from: `${effectiveFrom}:00.000Z`,
         change_reason: changeReason.trim(),
         brackets,
-      });
-      setSelected({ ...selected, latest_version: next });
+      };
+      let published;
+      if (STORAGE_BASE_CHARGE_KINDS.has(selected.charge_kind_code)) {
+        published = await billingApi.publishStorageBasePriceVersion(selected.code, payload);
+      } else if (HYPERVISOR_BASE_CHARGE_KINDS.has(selected.charge_kind_code)) {
+        published = await billingApi.publishHypervisorBasePriceVersion(selected.code, payload);
+      } else if (MAIL_BASE_CHARGE_KINDS.has(selected.charge_kind_code)) {
+        published = await billingApi.publishMailBasePriceVersion(selected.code, payload);
+      } else {
+        toast.error('This module must publish its base price through its own workflow');
+        return;
+      }
       setChangeReason('');
-      toast.success(`Version ${next.version_number} published`);
+      toast.success(`Version ${published.version_number} published`);
       await loadSchedules();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Pricing version publish failed');
@@ -197,8 +224,9 @@ export default function PricingSchedulesPage() {
 
               {selected.charge_kind_code === 'mail.delivery.accepted_recipient' && <MailZoneAdjustmentPanel canPublish={canPublish} />}
               {['storage.capacity.gb_hour', 'storage.network_in.byte', 'storage.network_out.byte'].includes(selected.charge_kind_code) && <StorageZoneAdjustmentPanel canPublish={canPublish} />}
+              {HYPERVISOR_BASE_CHARGE_KINDS.has(selected.charge_kind_code) && <HypervisorZoneAdjustmentPanel canPublish={canPublish} />}
 
-              {canPublish && selected.pricing_model === 'PROGRESSIVE_UNIT' && <div className="space-y-3 rounded-lg border border-blue-900/50 bg-blue-950/10 p-4"><div className="flex items-center justify-between"><div><h3 className="text-xs font-bold text-blue-100">Publish immutable version</h3><p className="mt-1 text-[10px] text-slate-400">Ranges are raw quantities; BIGINT values stay decimal strings and the API validates contiguous coverage.</p></div><Plus size={15} className="text-blue-300" /></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-[10px] text-slate-400">Effective from (UTC+0)<input type="datetime-local" step={60} value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white" /></label><label className="text-[10px] text-slate-400">Change reason<input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white" /></label></div><div className="space-y-2">{brackets.map((bracket, index) => <div key={bracket.id ?? index} className="grid gap-2 sm:grid-cols-4"><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.range_start_quantity} onChange={(event) => updateBracket(index, 'range_start_quantity', event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Range start" /><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.range_end_quantity ?? ''} onChange={(event) => updateBracket(index, 'range_end_quantity', event.target.value)} placeholder="∞" className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Range end" /><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.price_numerator_micro_units} onChange={(event) => updateBracket(index, 'price_numerator_micro_units', event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Price numerator" /><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.price_denominator_quantity} onChange={(event) => updateBracket(index, 'price_denominator_quantity', event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Price denominator" /></div>)}<button type="button" onClick={() => setBrackets((current) => [...current, { ...EMPTY_BRACKET, range_start_quantity: current.at(-1)?.range_end_quantity ?? '0' }])} className="text-[10px] font-semibold text-blue-300 hover:text-blue-200">+ Add bracket</button></div><button type="button" disabled={publishing} onClick={() => void publish()} className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50"><Check size={14} />{publishing ? 'Publishing…' : 'Publish version'}</button></div>}
+              {canPublish && selected.pricing_model === 'PROGRESSIVE_UNIT' && (STORAGE_BASE_CHARGE_KINDS.has(selected.charge_kind_code) || HYPERVISOR_BASE_CHARGE_KINDS.has(selected.charge_kind_code) || MAIL_BASE_CHARGE_KINDS.has(selected.charge_kind_code)) && <div className="space-y-3 rounded-lg border border-blue-900/50 bg-blue-950/10 p-4"><div className="flex items-center justify-between"><div><h3 className="text-xs font-bold text-blue-100">Publish immutable {STORAGE_BASE_CHARGE_KINDS.has(selected.charge_kind_code) ? 'Storage' : HYPERVISOR_BASE_CHARGE_KINDS.has(selected.charge_kind_code) ? 'Hypervisor' : 'Mail'} base version</h3><p className="mt-1 text-[10px] text-slate-400">Ranges are raw quantities; BIGINT values stay decimal strings and the module API validates contiguous coverage.</p></div><Plus size={15} className="text-blue-300" /></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-[10px] text-slate-400">Effective from (UTC+0)<input type="datetime-local" step={60} value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white" /></label><label className="text-[10px] text-slate-400">Change reason<input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white" /></label></div><div className="space-y-2">{brackets.map((bracket, index) => <div key={bracket.id ?? index} className="grid gap-2 sm:grid-cols-4"><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.range_start_quantity} onChange={(event) => updateBracket(index, 'range_start_quantity', event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Range start" /><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.range_end_quantity ?? ''} onChange={(event) => updateBracket(index, 'range_end_quantity', event.target.value)} placeholder="∞" className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Range end" /><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.price_numerator_micro_units} onChange={(event) => updateBracket(index, 'price_numerator_micro_units', event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Price numerator" /><input type="text" inputMode="numeric" pattern="[0-9]*" value={bracket.price_denominator_quantity} onChange={(event) => updateBracket(index, 'price_denominator_quantity', event.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white" aria-label="Price denominator" /></div>)}<button type="button" onClick={() => setBrackets((current) => [...current, { ...EMPTY_BRACKET, range_start_quantity: current.at(-1)?.range_end_quantity ?? '0' }])} className="text-[10px] font-semibold text-blue-300 hover:text-blue-200">+ Add bracket</button></div><button type="button" disabled={publishing} onClick={() => void publish()} className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50"><Check size={14} />{publishing ? 'Publishing…' : 'Publish base version'}</button></div>}
 
               {!canPublish && <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 text-[11px] text-amber-200"><AlertTriangle size={14} className="mt-0.5 shrink-0" />Read-only catalog. Publishing requires the billing pricing-schedule permission and a session proof.</div>}
             </div>

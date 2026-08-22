@@ -14,6 +14,7 @@ type HypervisorPricingRepository interface {
 	CreateHypervisorBasePriceVersion(context.Context, entity.HypervisorBasePricePublishCommand, []entity.HypervisorBasePriceBracketCommand) (*entity.HypervisorBasePricePublished, error)
 	GetActiveHypervisorZonePriceAdjustment(context.Context, uuid.UUID, time.Time) (*entity.HypervisorZoneAdjustmentSnapshot, error)
 	CreateHypervisorZonePriceAdjustment(context.Context, entity.HypervisorZoneAdjustmentPublishCommand) (*entity.HypervisorZoneAdjustmentPublished, error)
+	ListHypervisorZonePriceAdjustments(context.Context, entity.HypervisorZoneAdjustmentListQuery) ([]entity.HypervisorZoneAdjustmentListItem, bool, error)
 	RefreshHypervisorPricingStatuses(context.Context) error
 	ClaimHypervisorPricingOutbox(context.Context, uuid.UUID, time.Time, int) ([]*entity.PricingOutboxRow, error)
 	MarkHypervisorPricingOutboxPublished(context.Context, uuid.UUID, uuid.UUID) error
