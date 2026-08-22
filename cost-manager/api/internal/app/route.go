@@ -1,74 +1,163 @@
 package app
 
 import (
+	"cost-manager/api/internal/transport/http/handler"
 	"cost-manager/api/internal/transport/middleware"
 
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoutes(router *gin.Engine, m *Module) {
-	// Đăng ký các global middlewares
-	router.Use(middleware.AccessLog())
-	router.Use(middleware.ContextInjector())
-	// [COMMENT]: CORS do Envoy vhost enforce; backend không phát wildcard + credentials mâu thuẫn.
-
-	// Provider webhooks are owner-specific contracts. Each handler authenticates
-	// the exact raw body and writes only its own payment/ledger branch.
-	billing := router.Group("/api/v1/billing")
-	billing.POST("/webhooks/personal/payment-settled", m.PersonalPaymentHandler.ApplySettlement)
-	billing.POST("/webhooks/tenant/payment-settled", m.TenantPaymentHandler.ApplySettlement)
-
-	// Đăng ký các endpoints phiên bản v1
-	v1 := billing.Group("")
-	{
-		v1.GET("/pricing-schedules", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.PricingScheduleHandler.ListPricingSchedules)
-		v1.GET("/pricing-schedules/:code", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.PricingScheduleHandler.GetPricingScheduleDetail)
-		v1.GET("/storage/zone-price-adjustments", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.StoragePricingHandler.ListZonePriceAdjustments)
-		v1.GET("/mail/zone-price-adjustments", middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:read", false), m.MailPricingHandler.ListZonePriceAdjustments)
-		v1.PATCH("/critical/pricing-schedules/:code/metadata", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.UpdatePricingScheduleMetadata)
-		v1.POST("/critical/pricing-schedules/:code/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.PricingScheduleHandler.CreatePricingScheduleVersion)
-		v1.POST("/critical/storage/zone-price-adjustments/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.StoragePricingHandler.CreateZonePriceAdjustment)
-		v1.POST("/critical/hypervisor/zone-price-adjustments/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.HypervisorPricingHandler.CreateZonePriceAdjustment)
-		v1.POST("/critical/mail/zone-price-adjustments/versions", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:pricing_schedule:publish", true), m.MailPricingHandler.CreateZonePriceAdjustment)
-		v1.GET("/referrals", middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", false), m.PersonalAccountHandler.ListReferralCampaigns)
-		v1.POST("/critical/referrals", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.CreateReferralCampaign)
-		v1.PATCH("/critical/referrals/:id/status", middleware.RequireSessionProof(), middleware.Authorize(m.AuthorizationResolver, "billing:credit:adjust", true), m.PersonalAccountHandler.UpdateReferralCampaignStatus)
+// RegisterRoutes thiết lập toàn bộ cây định tuyến phẳng (Flat Routing Tree) cho Cost Manager API.
+// Toàn bộ API path được viết tường minh trực tiếp trên từng route, không lồng router.Group để dễ tra cứu và bảo trì.
+func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler) {
+	// ========================================================================
+	// 0. HEALTH CHECK PROBES (/health/...)
+	// ========================================================================
+	if health != nil {
+		router.GET("/health/live", health.Liveness)
+		router.GET("/health/startup", health.Startup)
+		router.GET("/health/ready", health.Readiness)
 	}
 
-	// These are internal owner routes. Browser/SDK calls the neutral
-	// `/api/v1/billing/wallet/*` surface; ACR chooses exactly one scope and
-	// overwrites :path after verifying the host-bound identity.
-	ownerAPI := router.Group("/api/v1")
+	// ========================================================================
+	// 1. GLOBAL MIDDLEWARES
+	// ========================================================================
+	router.Use(middleware.AccessLog())
+	router.Use(middleware.ContextInjector())
+	// [LƯU Ý]: CORS do Envoy Reverse Proxy / Ingress Gateway enforce; backend không phát wildcard.
 
-	personal := ownerAPI.Group("/personal/billing")
-	personal.GET("/wallet/summary", m.PersonalPaymentHandler.GetWallet)
-	personal.GET("/wallet/onboarding", m.PersonalAccountHandler.GetOnboarding)
-	personal.POST("/wallet/referral", m.PersonalAccountHandler.ReserveReferral)
-	personal.POST("/wallet/top-ups", m.PersonalPaymentHandler.CreateTopUp)
-	personal.GET("/wallet/top-ups/:id", m.PersonalPaymentHandler.GetTopUp)
-	personal.GET("/wallet/estimate/storage", m.StoragePricingHandler.Estimate)
-	personal.GET("/wallet/estimate/hypervisor", m.HypervisorPricingHandler.Estimate)
-	personal.GET("/wallet/estimate/mail", m.MailPricingHandler.Estimate)
+	// ========================================================================
+	// 2. PAYMENT PROVIDER WEBHOOKS (/api/v1/billing/webhooks/...)
+	// ========================================================================
+	// Webhook từ cổng thanh toán bên thứ 3 (MoMo, VNPay, Stripe,...).
+	// Mỗi webhook handler tự xác thực chữ ký thô (raw signature) và ghi nhận giao dịch vào đúng nhánh sổ cái.
+	router.POST("/api/v1/billing/webhooks/personal/payment-settled", m.PersonalPaymentHandler.ApplySettlement)
+	router.POST("/api/v1/billing/webhooks/tenant/payment-settled", m.TenantPaymentHandler.ApplySettlement)
 
-	tenant := ownerAPI.Group("/tenant/billing")
-	tenant.GET(
-		"/wallet/summary",
-		middleware.AuthorizeTenant(m.AuthorizationResolver, "billing:wallet:read", false),
+	// ========================================================================
+	// 3. CATALOG & PRICING MANAGEMENT API (/api/v1/billing/...)
+	// ========================================================================
+	// --- 3.1. Tra cứu danh mục bảng giá & hệ số khu vực (Read Catalog) ---
+	router.GET(
+		"/api/v1/billing/pricing-schedules",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.PricingScheduleHandler.ListPricingSchedules,
+	)
+	router.GET(
+		"/api/v1/billing/pricing-schedules/:code",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.PricingScheduleHandler.GetPricingScheduleDetail,
+	)
+	router.GET(
+		"/api/v1/billing/storage/zone-price-adjustments",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.StoragePricingHandler.ListZonePriceAdjustments,
+	)
+	router.GET(
+		"/api/v1/billing/mail/zone-price-adjustments",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.MailPricingHandler.ListZonePriceAdjustments,
+	)
+	router.GET(
+		"/api/v1/billing/referrals",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:credit:adjust", false),
+		m.PersonalAccountHandler.ListReferralCampaigns,
+	)
+
+	// --- 3.2. Nghiệp vụ Quản trị viên nhạy cảm (Critical Mutations: Yêu cầu Session Proof + Quyền Cấp 3) ---
+	router.PATCH(
+		"/api/v1/billing/critical/pricing-schedules/:code/metadata",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.PricingScheduleHandler.UpdatePricingScheduleMetadata,
+	)
+	router.POST(
+		"/api/v1/billing/critical/storage/pricing-schedules/:code/versions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.StoragePricingHandler.CreateBasePriceVersion,
+	)
+	router.POST(
+		"/api/v1/billing/critical/hypervisor/pricing-schedules/:code/versions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.HypervisorPricingHandler.CreateBasePriceVersion,
+	)
+	router.POST(
+		"/api/v1/billing/critical/mail/pricing-schedules/:code/versions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.MailPricingHandler.CreateBasePriceVersion,
+	)
+	router.POST(
+		"/api/v1/billing/critical/storage/zone-price-adjustments/versions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.StoragePricingHandler.CreateZonePriceAdjustment,
+	)
+	router.POST(
+		"/api/v1/billing/critical/hypervisor/zone-price-adjustments/versions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.HypervisorPricingHandler.CreateZonePriceAdjustment,
+	)
+	router.POST(
+		"/api/v1/billing/critical/mail/zone-price-adjustments/versions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.MailPricingHandler.CreateZonePriceAdjustment,
+	)
+	router.POST(
+		"/api/v1/billing/critical/referrals",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:credit:adjust", true),
+		m.PersonalAccountHandler.CreateReferralCampaign,
+	)
+	router.PATCH(
+		"/api/v1/billing/critical/referrals/:id/status",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:credit:adjust", true),
+		m.PersonalAccountHandler.UpdateReferralCampaignStatus,
+	)
+
+	// ========================================================================
+	// 4. PERSONAL BILLING API (/api/v1/personal/billing/...)
+	// ========================================================================
+	// Các endpoint dành cho tài khoản cá nhân, được ACR điều hướng từ route `/api/v1/billing/wallet/*`
+	// Quản lý số dư, nạp tiền và chương trình Onboarding / Referral
+	router.GET("/api/v1/personal/billing/wallet/summary", m.PersonalPaymentHandler.GetWallet)
+	router.GET("/api/v1/personal/billing/wallet/onboarding", m.PersonalAccountHandler.GetOnboarding)
+	router.POST("/api/v1/personal/billing/wallet/referral", m.PersonalAccountHandler.ReserveReferral)
+	router.POST("/api/v1/personal/billing/wallet/top-ups", m.PersonalPaymentHandler.CreateTopUp)
+	router.GET("/api/v1/personal/billing/wallet/top-ups/:id", m.PersonalPaymentHandler.GetTopUp)
+
+	// Dự toán cước phí thời gian thực (Real-time Estimation)
+	router.GET("/api/v1/personal/billing/wallet/estimate/storage", m.StoragePricingHandler.Estimate)
+	router.GET("/api/v1/personal/billing/wallet/estimate/hypervisor", m.HypervisorPricingHandler.Estimate)
+	router.GET("/api/v1/personal/billing/wallet/estimate/mail", m.MailPricingHandler.Estimate)
+
+	// ========================================================================
+	// 5. TENANT BILLING API (/api/v1/tenant/billing/...)
+	// ========================================================================
+	// Các endpoint dành cho tổ chức / doanh nghiệp, yêu cầu kiểm tra quyền theo Workspace/Tenant
+	router.GET(
+		"/api/v1/tenant/billing/wallet/summary",
+		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:read", false),
 		m.TenantPaymentHandler.GetWallet,
 	)
-	tenant.POST(
-		"/wallet/top-ups",
-		middleware.AuthorizeTenant(m.AuthorizationResolver, "billing:wallet:top_up", true),
+	router.POST(
+		"/api/v1/tenant/billing/wallet/top-ups",
+		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:top_up", true),
 		m.TenantPaymentHandler.CreateTopUp,
 	)
-	tenant.GET(
-		"/wallet/top-ups/:id",
-		middleware.AuthorizeTenant(m.AuthorizationResolver, "billing:wallet:read", false),
+	router.GET(
+		"/api/v1/tenant/billing/wallet/top-ups/:id",
+		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:read", false),
 		m.TenantPaymentHandler.GetTopUp,
 	)
-	tenant.GET(
-		"/wallet/estimate/mail",
-		middleware.AuthorizeTenant(m.AuthorizationResolver, "billing:wallet:read", false),
+	router.GET(
+		"/api/v1/tenant/billing/wallet/estimate/mail",
+		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:read", false),
 		m.MailPricingHandler.Estimate,
 	)
 }

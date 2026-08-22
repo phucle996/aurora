@@ -1,6 +1,9 @@
 package dto
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type ListPricingSchedulesRequest struct {
 	Page       int    `form:"page,default=1"`
@@ -21,17 +24,10 @@ type UpdatePricingScheduleMetadataRequest struct {
 	DisplayName     string `json:"display_name" binding:"required"`
 }
 
-type CreatePricingScheduleVersionRequest struct {
-	ExpectedLatestVersion *int                         `json:"expected_latest_version" binding:"required,min=0"`
-	EffectiveFrom         time.Time                    `json:"effective_from" binding:"required"`
-	ChangeReason          string                       `json:"change_reason" binding:"required"`
-	Brackets              []CreateScalarBracketRequest `json:"brackets" binding:"required,min=1,dive"`
-}
-
 type CreateStorageZonePriceAdjustmentRequest struct {
-	ExpectedLatestVersion int       `json:"expected_latest_version"`
-	EffectiveFrom         time.Time `json:"effective_from" binding:"required"`
-	ChangeReason          string    `json:"change_reason" binding:"required"`
-	MultiplierNumerator   string    `json:"multiplier_numerator" binding:"required"`
-	MultiplierDenominator string    `json:"multiplier_denominator" binding:"required"`
+	ExpectedLatestVersion json.Number `json:"expected_latest_version" binding:"required"`
+	EffectiveFrom         time.Time   `json:"effective_from" binding:"required"`
+	ChangeReason          string      `json:"change_reason" binding:"required"`
+	MultiplierNumerator   string      `json:"multiplier_numerator" binding:"required"`
+	MultiplierDenominator string      `json:"multiplier_denominator" binding:"required"`
 }

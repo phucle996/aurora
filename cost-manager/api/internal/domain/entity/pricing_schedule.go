@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// PricingModel định nghĩa mô hình tính giá: Lũy tiến theo đơn vị (PROGRESSIVE_UNIT) hoặc Gói cố định (FIXED_BUNDLE).
 type PricingModel string
 
 const (
@@ -13,6 +14,7 @@ const (
 	PricingModelFixedBundle     PricingModel = "FIXED_BUNDLE"
 )
 
+// ChargeKindCode định nghĩa mã phân loại cước phí đo lường tài nguyên.
 type ChargeKindCode string
 
 const (
@@ -21,9 +23,7 @@ const (
 	ChargeKindStorageCapacity   ChargeKindCode = "storage.capacity.gb_hour"
 )
 
-// Every type below belongs to one workflow. No API workflow consumes the
-// result entity of another workflow.
-
+// PricingScheduleListItem là flat projection tóm tắt một bảng giá trong danh mục Catalog.
 type PricingScheduleListItem struct {
 	ID              uuid.UUID
 	Code            string
@@ -37,6 +37,7 @@ type PricingScheduleListItem struct {
 	UpdatedAt       time.Time
 }
 
+// PricingScheduleDetailBracket biểu diễn khoảng phân bậc giá trong chi tiết bảng giá.
 type PricingScheduleDetailBracket struct {
 	ID                       uuid.UUID
 	RangeStartQuantity       int64
@@ -45,8 +46,7 @@ type PricingScheduleDetailBracket struct {
 	PriceDenominatorQuantity int64
 }
 
-// PricingScheduleDetail is one flat read projection. Latest-version fields are
-// columns of this workflow result, not a nested version entity.
+// PricingScheduleDetail là flat read projection chứa thông tin chi tiết bảng giá kèm thông tin phiên bản hiệu lực mới nhất.
 type PricingScheduleDetail struct {
 	ID                        uuid.UUID
 	Code                      string
@@ -68,76 +68,14 @@ type PricingScheduleDetail struct {
 	LatestChecksum            string
 }
 
-type PricingScheduleVersionPublishBracket struct {
-	ID                       uuid.UUID
-	RangeStartQuantity       int64
-	RangeEndQuantity         *int64
-	PriceNumeratorMicroUnits int64
-	PriceDenominatorQuantity int64
-}
-
-type PricingScheduleVersionPublishCommand struct {
-	ScheduleCode          string
-	ExpectedLatestVersion int
-	EffectiveFrom         time.Time
-	ChangeReason          string
-	CreatedBy             uuid.UUID
-	Checksum              string
-}
-
-// PublishTarget is workflow-local authority data, not the detail workflow's
-// response projection.
-type PricingScheduleVersionPublishTarget struct {
-	PricingScheduleID uuid.UUID
-	ScheduleCode      string
-	ChargeKindCode    ChargeKindCode
-	PricingModel      PricingModel
-	Currency          string
-}
-
-type PricingScheduleVersionPublished struct {
-	ID                uuid.UUID
-	PricingScheduleID uuid.UUID
-	VersionNumber     int
-	PricingModel      PricingModel
-	Status            string
-	EffectiveFrom     time.Time
-	EffectiveTo       *time.Time
-	Checksum          string
-}
-
-type PricingSnapshotBracket struct {
-	ID                       uuid.UUID
-	RangeStartQuantity       int64
-	RangeEndQuantity         *int64
-	PriceNumeratorMicroUnits int64
-	PriceDenominatorQuantity int64
-}
-
-// PricingSnapshot is the only Go-side kernel projection. Its bracket rows are
-// kernel data and may be composed into this immutable snapshot.
-type PricingSnapshot struct {
-	PricingScheduleID uuid.UUID
-	VersionID         uuid.UUID
-	Code              string
-	ChargeKindCode    ChargeKindCode
-	ModuleCode        string
-	PricingModel      PricingModel
-	RawInputUnit      string
-	VersionNumber     int
-	EffectiveFrom     time.Time
-	EffectiveTo       *time.Time
-	Checksum          string
-	Currency          string
-	Brackets          []PricingSnapshotBracket
-}
-
+// PricingScheduleMetadataCommand là Command cập nhật thông tin hiển thị metadata của bảng giá (OCC qua MetadataVersion).
 type PricingScheduleMetadataCommand struct {
 	ScheduleCode    string
 	MetadataVersion int
 	DisplayName     string
 }
 
+// PricingScheduleMetadataUpdated là kết quả sau khi cập nhật metadata bảng giá thành công.
 type PricingScheduleMetadataUpdated struct {
 	ID              uuid.UUID
 	Code            string
@@ -146,53 +84,18 @@ type PricingScheduleMetadataUpdated struct {
 	UpdatedAt       time.Time
 }
 
-type StorageZoneAdjustmentPublishCommand struct {
-	ZoneID                uuid.UUID
-	ExpectedLatestVersion int
-	EffectiveFrom         time.Time
-	ChangeReason          string
-	CreatedBy             uuid.UUID
-	MultiplierNumerator   int64
-	MultiplierDenominator int64
-	Checksum              string
-}
-
-type StorageZoneAdjustmentPublished struct {
-	ID                    uuid.UUID
-	ZoneID                uuid.UUID
-	VersionNumber         int
-	Status                string
-	EffectiveFrom         time.Time
-	EffectiveTo           *time.Time
-	MultiplierNumerator   int64
-	MultiplierDenominator int64
-	Checksum              string
-}
-
-type StorageZoneAdjustmentSnapshot struct {
-	ID                    uuid.UUID
-	ZoneID                uuid.UUID
-	VersionNumber         int
-	EffectiveFrom         time.Time
-	MultiplierNumerator   int64
-	MultiplierDenominator int64
-	Checksum              string
-}
-
-type StorageEstimate struct {
-	CapacityBytes             int64
-	HourlyMicroUnits          int64
-	Currency                  string
-	PricingScheduleCode       string
-	PricingScheduleID         uuid.UUID
-	PricingScheduleVersionID  uuid.UUID
-	PricingVersion            int
-	PricingChecksum           string
-	PricingEffectiveFrom      time.Time
-	RateAdjustmentID          *uuid.UUID
-	RateAdjustmentVersion     *int
-	RateAdjustmentChecksum    *string
-	RateAdjustmentNumerator   int64
-	RateAdjustmentDenominator int64
-	EstimatedAt               time.Time
+// PricingOutboxRow đại diện cho bản ghi Transactional Outbox phát sinh khi phát hành phiên bản bảng giá mới,
+// dùng để đồng bộ bảng giá sang L2 Cache và phát tán sự kiện ra các hệ thống tính cước.
+type PricingOutboxRow struct {
+	ID                uuid.UUID
+	PricingScheduleID uuid.UUID
+	VersionID         uuid.UUID
+	VersionNumber     int32
+	ModuleCode        string
+	ChargeKindCode    ChargeKindCode
+	EffectiveFrom     time.Time
+	Checksum          string
+	OccurredAt        time.Time
+	ClaimToken        uuid.UUID
+	RetryCount        int
 }

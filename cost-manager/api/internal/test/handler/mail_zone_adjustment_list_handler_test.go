@@ -21,6 +21,23 @@ type mailZoneAdjustmentListServiceStub struct {
 	calls int
 }
 
+func (s *mailZoneAdjustmentListServiceStub) EstimateMail(context.Context, int64, uuid.UUID) (*entity.MailEstimate, error) {
+	return nil, nil
+}
+func (s *mailZoneAdjustmentListServiceStub) RunPricingCacheInvalidation(context.Context) {}
+func (s *mailZoneAdjustmentListServiceStub) RunPricingSnapshotRefresh(context.Context)   {}
+func (s *mailZoneAdjustmentListServiceStub) RunPricingOutboxRelay(context.Context)       {}
+func (s *mailZoneAdjustmentListServiceStub) NotifyPricingOutbox()                        {}
+func (s *mailZoneAdjustmentListServiceStub) GetMailBasePricePublishTarget(context.Context, string) (*entity.MailBasePricePublishTarget, error) {
+	return nil, nil
+}
+func (s *mailZoneAdjustmentListServiceStub) CreateMailBasePriceVersion(context.Context, entity.MailBasePricePublishCommand, []entity.MailBasePriceBracketCommand) (*entity.MailBasePricePublished, error) {
+	return nil, nil
+}
+func (s *mailZoneAdjustmentListServiceStub) CreateMailZonePriceAdjustment(context.Context, entity.MailZoneAdjustmentPublishCommand) (*entity.MailZoneAdjustmentPublished, error) {
+	return nil, nil
+}
+
 func (s *mailZoneAdjustmentListServiceStub) ListMailZonePriceAdjustments(_ context.Context, query entity.MailZoneAdjustmentListQuery) (*entity.MailZoneAdjustmentListResult, error) {
 	s.calls++
 	s.query = query
@@ -51,7 +68,7 @@ func TestMailZoneAdjustmentListUsesTrustedContextAndSerializesBigIntAsString(t *
 	trustedZoneID := uuid.New()
 	attackerZoneID := uuid.New()
 	service := &mailZoneAdjustmentListServiceStub{}
-	mailHandler := handler.NewMailPricingHandler(nil, nil, service)
+	mailHandler := handler.NewMailPricingHandler(service)
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(pkgcontext.CtxZoneID, trustedZoneID)
@@ -86,7 +103,7 @@ func TestMailZoneAdjustmentListUsesTrustedContextAndSerializesBigIntAsString(t *
 func TestMailZoneAdjustmentListRejectsInvalidLimitBeforeService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &mailZoneAdjustmentListServiceStub{}
-	mailHandler := handler.NewMailPricingHandler(nil, nil, service)
+	mailHandler := handler.NewMailPricingHandler(service)
 	router := gin.New()
 	router.GET("/api/v1/billing/mail/zone-price-adjustments", mailHandler.ListZonePriceAdjustments)
 

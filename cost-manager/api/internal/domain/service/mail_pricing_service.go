@@ -7,12 +7,14 @@ import (
 	"github.com/google/uuid"
 )
 
-type MailEstimateService interface {
+type MailPricingService interface {
 	EstimateMail(context.Context, int64, uuid.UUID) (*entity.MailEstimate, error)
 	RunPricingCacheInvalidation(context.Context)
-	RunPricingReadinessProjection(context.Context)
-}
-
-type MailZoneAdjustmentPublishService interface {
+	RunPricingSnapshotRefresh(context.Context)
+	RunPricingOutboxRelay(context.Context)
+	NotifyPricingOutbox()
+	GetMailBasePricePublishTarget(context.Context, string) (*entity.MailBasePricePublishTarget, error)
+	CreateMailBasePriceVersion(context.Context, entity.MailBasePricePublishCommand, []entity.MailBasePriceBracketCommand) (*entity.MailBasePricePublished, error)
 	CreateMailZonePriceAdjustment(context.Context, entity.MailZoneAdjustmentPublishCommand) (*entity.MailZoneAdjustmentPublished, error)
+	ListMailZonePriceAdjustments(context.Context, entity.MailZoneAdjustmentListQuery) (*entity.MailZoneAdjustmentListResult, error)
 }

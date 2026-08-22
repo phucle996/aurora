@@ -45,4 +45,7 @@ var (
 	ErrSettlementMismatch         = errors.New("billing: settlement does not match payment intent")
 	ErrWebhookReplayConflict      = errors.New("billing: webhook event replayed with different payload")
 	ErrPaymentProviderUnavailable = errors.New("billing: payment provider unavailable")
+
+	// Lỗi liên quan đến Quyền sở hữu tài nguyên (Resource Ownership Projection)
+	ErrResourceOwnershipIntegrity = errors.New("billing: resource ownership integrity violation")
 )

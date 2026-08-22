@@ -40,6 +40,7 @@ type VaultCfg struct {
 // [COMMENT]: AppCfg lưu trữ thông tin cấu hình dịch vụ web và HTTP REST Server.
 type AppCfg struct {
 	AppName        string
+	Host           string
 	Env            string
 	TimeZone       string
 	HTTPPort       int
@@ -91,6 +92,7 @@ func LoadConfig() *Config {
 	return &Config{
 		App: AppCfg{
 			AppName:        getEnv("APP_NAME", "cost-manager-api"),
+			Host:           GetNodeHostname(),
 			Env:            getEnv("APP_ENV", "development"),
 			TimeZone:       getEnv("APP_TIMEZONE", "UTC"),
 			HTTPPort:       getEnvAsInt("PORT", 8084),

@@ -12,28 +12,35 @@ import (
 
 	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
-	"cost-manager/api/internal/useractivity"
+	billingSvcInterface "cost-manager/api/internal/domain/service"
+	"cost-manager/api/internal/provisioner"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
+// tenantPaymentService là Domain Service điều phối các nghiệp vụ thanh toán cho tài khoản tổ chức (Tenant):
+// 1. Tra cứu số dư ví tổ chức (`GetWallet`).
+// 2. Tạo phiên thanh toán nạp tiền và sinh URL Checkout có chữ ký HMAC (`CreateTopUp`).
+// 3. Tra cứu chi tiết trạng thái phiên thanh toán của tổ chức (`GetTopUp`).
+// 4. Quyết toán tiền vào ví tổ chức và ghi nhận dòng sự kiện hoạt động người dùng (`ApplyVerifiedSettlement`).
 type tenantPaymentService struct {
-	repo        billingRepoInterface.TenantPaymentRepository
-	sharedRedis *goredis.Client
-	policy      entity.PaymentPolicy
-	checkoutURL url.URL
-	returnURL   url.URL
+	repo        billingRepoInterface.TenantPaymentRepository // Repository quản lý các transaction và CTE thanh toán tổ chức trong PostgreSQL
+	sharedRedis *goredis.Client                              // Redis Client để ghi log hoạt động người dùng (User Activity Timeline)
+	policy      entity.PaymentPolicy                         // Chính sách thanh toán hệ thống (Provider, TTL, Khóa ký URL Checkout)
+	checkoutURL url.URL                                      // URL cơ sở của trang thanh toán Checkout
+	returnURL   url.URL                                      // URL chuyển hướng người dùng quay lại ứng dụng sau khi thanh toán
 }
 
+// NewTenantPaymentService khởi tạo một instance mới của tenantPaymentService, trả về interface TenantPaymentService.
 func NewTenantPaymentService(
 	repo billingRepoInterface.TenantPaymentRepository,
 	sharedRedis *goredis.Client,
 	policy entity.PaymentPolicy,
 	checkoutURL url.URL,
 	returnURL url.URL,
-) *tenantPaymentService {
+) billingSvcInterface.TenantPaymentService {
 	return &tenantPaymentService{
 		repo:        repo,
 		sharedRedis: sharedRedis,
@@ -43,6 +50,7 @@ func NewTenantPaymentService(
 	}
 }
 
+// GetWallet tra cứu thông tin tóm tắt ví tiền tổ chức từ Repository theo TenantID.
 func (s *tenantPaymentService) GetWallet(
 	ctx context.Context,
 	tenantID uuid.UUID,
@@ -50,6 +58,10 @@ func (s *tenantPaymentService) GetWallet(
 	return s.repo.GetTenantWalletSummary(ctx, tenantID)
 }
 
+// CreateTopUp khởi tạo phiên nạp tiền cho tổ chức và sinh Checkout URL có chữ ký HMAC-SHA256:
+// 1. Gắn các thông số mặc định: USD, Provider thanh toán, và thời hạn hiệu lực (`IntentTTL`).
+// 2. Gọi Repository tạo bản ghi `billing.payment_intents` cho Tenant.
+// 3. Xây dựng Checkout URL có chữ ký HMAC để bảo đảm an toàn dữ liệu số tiền và thông tin tổ chức.
 func (s *tenantPaymentService) CreateTopUp(
 	ctx context.Context,
 	command entity.CreateTenantPaymentIntentCommand,
@@ -57,14 +69,48 @@ func (s *tenantPaymentService) CreateTopUp(
 	command.Currency = "USD"
 	command.Provider = s.policy.Provider
 	command.ExpiresAt = time.Now().UTC().Add(s.policy.IntentTTL)
+
 	intent, err := s.repo.CreateTenantIntent(ctx, command)
 	if err != nil {
 		return nil, err
 	}
-	s.buildCheckout(intent)
+
+	// Xây dựng checkout URL có chữ ký HMAC nếu intent đang chờ thanh toán
+	if intent != nil && intent.Status == "PENDING" {
+		checkoutURL := s.checkoutURL
+		returnURL := s.returnURL
+		returnQuery := returnURL.Query()
+		returnQuery.Set("payment_intent_id", intent.ID.String())
+		returnURL.RawQuery = returnQuery.Encode()
+
+		signingPayload := strings.Join([]string{
+			"aurora.checkout.v1",
+			intent.ID.String(),
+			string(intent.OwnerType),
+			strconv.FormatInt(intent.AmountMicroUnits, 10),
+			intent.Currency,
+			strconv.FormatInt(intent.ExpiresAt.Unix(), 10),
+			returnURL.String(),
+		}, "\n")
+		mac := hmac.New(sha256.New, []byte(s.policy.CheckoutSigningKey))
+		_, _ = mac.Write([]byte(signingPayload))
+
+		query := checkoutURL.Query()
+		query.Set("payment_intent_id", intent.ID.String())
+		query.Set("owner_type", string(intent.OwnerType))
+		query.Set("amount_micro_units", strconv.FormatInt(intent.AmountMicroUnits, 10))
+		query.Set("currency", intent.Currency)
+		query.Set("expires_at", strconv.FormatInt(intent.ExpiresAt.Unix(), 10))
+		query.Set("return_url", returnURL.String())
+		query.Set("signature", base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
+		checkoutURL.RawQuery = query.Encode()
+		intent.CheckoutURL = checkoutURL.String()
+	}
+
 	return intent, nil
 }
 
+// GetTopUp tra cứu chi tiết phiên thanh toán của tổ chức theo TenantID và IntentID.
 func (s *tenantPaymentService) GetTopUp(
 	ctx context.Context,
 	tenantID uuid.UUID,
@@ -73,6 +119,9 @@ func (s *tenantPaymentService) GetTopUp(
 	return s.repo.GetTenantIntent(ctx, tenantID, intentID)
 }
 
+// ApplyVerifiedSettlement thực thi quyết toán tiền vào ví tổ chức từ webhook thanh toán đã xác thực:
+// 1. Gọi Repository thực thi Transaction ACID: cộng tiền nạp vào ví tổ chức, kích hoạt ví và phát Outbox.
+// 2. Ghi nhận sự kiện hoạt động người dùng (User Activity Timeline) vào Redis với context độc lập (150ms timeout).
 func (s *tenantPaymentService) ApplyVerifiedSettlement(
 	ctx context.Context,
 	settlement entity.PaymentSettlement,
@@ -88,11 +137,11 @@ func (s *tenantPaymentService) ApplyVerifiedSettlement(
 		activityAction = "billing.wallet.activate"
 		activityTitle = "Tenant wallet activated"
 	}
-	// [COMMENT]: A tenant actor is retained for self-history, while the wallet
-	// and ledger remain owned by the tenant aggregate.
+
+	// Ghi nhận sự kiện vào Timeline với context độc lập
 	activityCtx, cancelActivity := context.WithTimeout(context.WithoutCancel(ctx), 150*time.Millisecond)
 	defer cancelActivity()
-	if activityErr := useractivity.Append(activityCtx, s.sharedRedis, useractivity.Event{
+	if activityErr := provisioner.AppendUserActivity(activityCtx, s.sharedRedis, provisioner.UserActivityEvent{
 		EventID:      uuid.New().String(),
 		UserID:       result.ActorID.String(),
 		Category:     "billing",
@@ -118,38 +167,4 @@ func (s *tenantPaymentService) ApplyVerifiedSettlement(
 		logger.SysError("billing.user_activity.tenant_wallet_settlement", activityErr.Error())
 	}
 	return result, nil
-}
-
-func (s *tenantPaymentService) buildCheckout(intent *entity.PaymentIntent) {
-	if intent == nil || intent.Status != "PENDING" {
-		return
-	}
-	checkoutURL := s.checkoutURL
-	returnURL := s.returnURL
-	returnQuery := returnURL.Query()
-	returnQuery.Set("payment_intent_id", intent.ID.String())
-	returnURL.RawQuery = returnQuery.Encode()
-
-	signingPayload := strings.Join([]string{
-		"aurora.checkout.v1",
-		intent.ID.String(),
-		string(intent.OwnerType),
-		strconv.FormatInt(intent.AmountMicroUnits, 10),
-		intent.Currency,
-		strconv.FormatInt(intent.ExpiresAt.Unix(), 10),
-		returnURL.String(),
-	}, "\n")
-	mac := hmac.New(sha256.New, []byte(s.policy.CheckoutSigningKey))
-	_, _ = mac.Write([]byte(signingPayload))
-
-	query := checkoutURL.Query()
-	query.Set("payment_intent_id", intent.ID.String())
-	query.Set("owner_type", string(intent.OwnerType))
-	query.Set("amount_micro_units", strconv.FormatInt(intent.AmountMicroUnits, 10))
-	query.Set("currency", intent.Currency)
-	query.Set("expires_at", strconv.FormatInt(intent.ExpiresAt.Unix(), 10))
-	query.Set("return_url", returnURL.String())
-	query.Set("signature", base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
-	checkoutURL.RawQuery = query.Encode()
-	intent.CheckoutURL = checkoutURL.String()
 }

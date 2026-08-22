@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"cost-manager/api/internal/domain/entity"
+	billingSvcInterface "cost-manager/api/internal/domain/service"
 	"cost-manager/api/internal/transport/http/handler"
 	"cost-manager/api/pkg/pkgcontext"
 
@@ -17,6 +18,7 @@ import (
 )
 
 type storageZoneAdjustmentListServiceStub struct {
+	billingSvcInterface.StoragePricingService
 	query entity.StorageZoneAdjustmentListQuery
 	calls int
 }
@@ -42,7 +44,7 @@ func TestStorageZoneAdjustmentListUsesTrustedContextAndSerializesBigIntAsString(
 	trustedZoneID := uuid.New()
 	attackerZoneID := uuid.New()
 	service := &storageZoneAdjustmentListServiceStub{}
-	storageHandler := handler.NewStoragePricingHandler(nil, nil, service)
+	storageHandler := handler.NewStoragePricingHandler(service)
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(pkgcontext.CtxZoneID, trustedZoneID)
@@ -73,7 +75,7 @@ func TestStorageZoneAdjustmentListUsesTrustedContextAndSerializesBigIntAsString(
 func TestStorageZoneAdjustmentListRejectsInvalidLimitBeforeService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &storageZoneAdjustmentListServiceStub{}
-	storageHandler := handler.NewStoragePricingHandler(nil, nil, service)
+	storageHandler := handler.NewStoragePricingHandler(service)
 	router := gin.New()
 	router.GET("/api/v1/billing/storage/zone-price-adjustments", storageHandler.ListZonePriceAdjustments)
 

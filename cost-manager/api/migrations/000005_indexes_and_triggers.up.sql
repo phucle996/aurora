@@ -8,7 +8,7 @@ CREATE UNIQUE INDEX uq_scalar_bracket_one_infinity
 CREATE INDEX idx_scalar_bracket_lookup
     ON billing.pricing_schedule_scalar_brackets(pricing_schedule_version_id, range_start_quantity);
 CREATE INDEX idx_pricing_outbox_unpublished
-    ON billing.pricing_outbox(occurred_at, id)
+    ON billing.pricing_outbox(module_code, available_at, lease_until, occurred_at, id)
     WHERE published_at IS NULL;
 CREATE INDEX idx_usage_settlement_retry
     ON billing.usage_settlement_runs(status, updated_at, source_module, charge_kind_code);

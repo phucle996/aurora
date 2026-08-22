@@ -92,6 +92,9 @@ CREATE TABLE billing.pricing_outbox (
     checksum              CHAR(64) NOT NULL,
     occurred_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     published_at          TIMESTAMPTZ,
+    claim_token           UUID,
+    lease_until           TIMESTAMPTZ,
+    available_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     retry_count           INT NOT NULL DEFAULT 0,
     last_error            TEXT,
     CONSTRAINT ck_schedule_outbox_retry CHECK (retry_count >= 0)

@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"cost-manager/api/internal/domain/entity"
+	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	"cost-manager/api/internal/service"
 
 	"github.com/google/uuid"
 )
 
 type mailZoneAdjustmentListRepoStub struct {
+	billingRepoInterface.MailPricingRepository
 	query   entity.MailZoneAdjustmentListQuery
 	items   []entity.MailZoneAdjustmentListItem
 	hasMore bool
@@ -27,7 +29,7 @@ func TestMailZoneAdjustmentListPreservesWorkflowProjection(t *testing.T) {
 	zoneID := uuid.New()
 	item := entity.MailZoneAdjustmentListItem{ID: uuid.New(), ZoneID: zoneID, VersionNumber: 7, IsLatest: true}
 	repo := &mailZoneAdjustmentListRepoStub{items: []entity.MailZoneAdjustmentListItem{item}, hasMore: true}
-	result, err := service.NewMailZoneAdjustmentListService(repo).ListMailZonePriceAdjustments(
+	result, err := service.NewMailPricingService(repo, nil).ListMailZonePriceAdjustments(
 		context.Background(),
 		entity.MailZoneAdjustmentListQuery{ZoneID: zoneID, Limit: 25},
 	)
@@ -48,7 +50,7 @@ func TestMailZoneAdjustmentListPreservesWorkflowProjection(t *testing.T) {
 func TestMailZoneAdjustmentListReturnsRepositoryFailure(t *testing.T) {
 	want := errors.New("list failed")
 	repo := &mailZoneAdjustmentListRepoStub{err: want}
-	result, err := service.NewMailZoneAdjustmentListService(repo).ListMailZonePriceAdjustments(
+	result, err := service.NewMailPricingService(repo, nil).ListMailZonePriceAdjustments(
 		context.Background(),
 		entity.MailZoneAdjustmentListQuery{ZoneID: uuid.New(), Limit: 100},
 	)

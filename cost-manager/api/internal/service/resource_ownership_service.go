@@ -1,13 +1,3 @@
-/*
-============================================================================
-MAP: BILLING SERVICE LAYER - LIFECYCLE SERVICE
-============================================================================
-CONTRACT:
-1. Xử lý nghiệp vụ thuần túy cho sự kiện chuyển giao vòng đời tài nguyên.
-2. Điều phối ResourceOwnershipRepository để cập nhật Inbox và Ownership Projection (Validate dữ liệu đã thực hiện tại Handler Layer).
-============================================================================
-*/
-
 package service
 
 import (
@@ -15,25 +5,24 @@ import (
 
 	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
+	billingSvcInterface "cost-manager/api/internal/domain/service"
 )
 
-type ResourceOwnershipService interface {
-	ProcessResourceOwnershipEvent(ctx context.Context, event *entity.ResourceOwnershipEvent) error
-}
-
+// resourceOwnershipService là Service điều phối việc ghi nhận và áp dụng sự kiện thay đổi quyền sở hữu tài nguyên (Resource Ownership Projection):
+// - Nhận sự kiện đã xác thực hợp đồng từ Redis Consumer.
+// - Chuyển giao xuống Repository để ghi nhận Inbox bất biến và cập nhật bảng `billing.resource_ownership_projections`.
 type resourceOwnershipService struct {
 	repo billingRepoInterface.ResourceOwnershipRepository
 }
 
-// [COMMENT]: NewResourceOwnershipService khởi tạo service cập nhật ownership projection.
-func NewResourceOwnershipService(repo billingRepoInterface.ResourceOwnershipRepository) ResourceOwnershipService {
+// NewResourceOwnershipService khởi tạo một instance mới của resourceOwnershipService, trả về interface ResourceOwnershipService.
+func NewResourceOwnershipService(repo billingRepoInterface.ResourceOwnershipRepository) billingSvcInterface.ResourceOwnershipService {
 	return &resourceOwnershipService{repo: repo}
 }
 
-// [COMMENT]: ProcessLifecycleEvent xử lý business logic và chuyển giao sự kiện xuống Repository Layer.
+// ProcessResourceOwnershipEvent xử lý sự kiện sở hữu tài nguyên:
+// - Đảm bảo tính nguyên tử (Atomicity) và Idempotency thông qua Repository Layer.
+// - Nếu sự kiện đã được ghi nhận trước đó (trùng event_id & payload_hash), Repository sẽ bỏ qua mà không tạo side-effect.
 func (s *resourceOwnershipService) ProcessResourceOwnershipEvent(ctx context.Context, event *entity.ResourceOwnershipEvent) error {
-	if err := s.repo.ApplyResourceOwnershipEvent(ctx, event); err != nil {
-		return err
-	}
-	return nil
+	return s.repo.ApplyResourceOwnershipEvent(ctx, event)
 }

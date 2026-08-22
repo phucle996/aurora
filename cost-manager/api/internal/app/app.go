@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"cost-manager/api/infra"
 	"cost-manager/api/internal/config"
+	"cost-manager/api/internal/transport/http/handler"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -108,43 +110,52 @@ func (a *App) Start() error {
 
 	// [COMMENT]: Shared Redis consumer group phải sẵn sàng trước HTTP readiness;
 	// pending command sẽ được XAUTOCLAIM khi pod cũ chết hoặc rolling restart.
-	if a.module != nil && a.module.PersonalAccountActivatedConsumer != nil {
-		if err := a.module.PersonalAccountActivatedConsumer.Start(); err != nil {
+	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
+		if err := a.module.PersonalWalletProvisionConsumer.Start(); err != nil {
 			return fmt.Errorf("start personal wallet provision consumer: %w", err)
 		}
 	}
-	if a.module != nil && a.module.TenantCreatedConsumer != nil {
-		if err := a.module.TenantCreatedConsumer.Start(); err != nil {
-			if a.module.PersonalAccountActivatedConsumer != nil {
-				a.module.PersonalAccountActivatedConsumer.Stop()
+	if a.module != nil && a.module.TenantWalletProvisionConsumer != nil {
+		if err := a.module.TenantWalletProvisionConsumer.Start(); err != nil {
+			if a.module.PersonalWalletProvisionConsumer != nil {
+				a.module.PersonalWalletProvisionConsumer.Stop()
 			}
 			return fmt.Errorf("start tenant wallet provision consumer: %w", err)
 		}
 	}
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		if err := a.module.ResourceOwnershipConsumer.Start(); err != nil {
-			if a.module.TenantCreatedConsumer != nil {
-				a.module.TenantCreatedConsumer.Stop()
+			if a.module.TenantWalletProvisionConsumer != nil {
+				a.module.TenantWalletProvisionConsumer.Stop()
 			}
-			if a.module.PersonalAccountActivatedConsumer != nil {
-				a.module.PersonalAccountActivatedConsumer.Stop()
+			if a.module.PersonalWalletProvisionConsumer != nil {
+				a.module.PersonalWalletProvisionConsumer.Stop()
 			}
 			return fmt.Errorf("start resource ownership consumer: %w", err)
 		}
 	}
 
-	// 1. Outbox relay cho Pricing updates
+	// Each pricing module owns its own durable relay, including its own cache hint.
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	a.outboxCancel = outboxCancel
 	a.outboxDone = make(chan struct{})
-	if a.module != nil && a.module.PricingOutboxRelay != nil {
-		go func() {
-			defer close(a.outboxDone)
-			a.module.PricingOutboxRelay.Run(outboxCtx)
-		}()
-	} else {
-		close(a.outboxDone)
-	}
+	go func() {
+		defer close(a.outboxDone)
+		var workers sync.WaitGroup
+		if a.module != nil && a.module.StoragePricingService != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); a.module.StoragePricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		if a.module != nil && a.module.HypervisorPricingService != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); a.module.HypervisorPricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		if a.module != nil && a.module.MailPricingService != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); a.module.MailPricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		workers.Wait()
+	}()
 
 	// Wallet admission relay publishes only committed, versioned wallet
 	// transitions. Billing PostgreSQL remains the replay authority.
@@ -164,49 +175,42 @@ func (a *App) Start() error {
 	pricingCacheCtx, pricingCacheCancel := context.WithCancel(context.Background())
 	a.pricingCacheCancel = pricingCacheCancel
 	a.pricingCacheDone = make(chan struct{})
-	if a.module != nil && a.module.StorageEstimateService != nil {
-		go func() {
-			defer close(a.pricingCacheDone)
-			workers := 1
-			done := make(chan struct{}, 5)
-			go func() {
-				a.module.StorageEstimateService.RunPricingCacheInvalidation(pricingCacheCtx)
-				done <- struct{}{}
-			}()
-			if a.module.HypervisorEstimateService != nil {
-				workers += 2
-				go func() {
-					a.module.HypervisorEstimateService.RunPricingCacheInvalidation(pricingCacheCtx)
-					done <- struct{}{}
-				}()
-				go func() {
-					a.module.HypervisorEstimateService.RunPricingReadinessProjection(pricingCacheCtx)
-					done <- struct{}{}
-				}()
-			}
-			if a.module.MailEstimateService != nil {
-				workers += 2
-				go func() {
-					a.module.MailEstimateService.RunPricingCacheInvalidation(pricingCacheCtx)
-					done <- struct{}{}
-				}()
-				go func() {
-					a.module.MailEstimateService.RunPricingReadinessProjection(pricingCacheCtx)
-					done <- struct{}{}
-				}()
-			}
-			for range workers {
-				<-done
-			}
-		}()
-	} else {
-		close(a.pricingCacheDone)
-	}
+	go func() {
+		defer close(a.pricingCacheDone)
+		var workers sync.WaitGroup
 
-	// 3. Start gRPC Reconciler Worker
-	if a.module != nil && a.module.ReconcilerWorker != nil {
-		a.module.ReconcilerWorker.Start(context.Background())
-	}
+		if a.module != nil && a.module.StoragePricingService != nil {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				a.module.StoragePricingService.RunPricingCacheInvalidation(pricingCacheCtx)
+			}()
+		}
+
+		if a.module != nil && a.module.HypervisorPricingService != nil {
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				a.module.HypervisorPricingService.RunPricingCacheInvalidation(pricingCacheCtx)
+			}()
+			go func() {
+				defer workers.Done()
+				a.module.HypervisorPricingService.RunPricingSnapshotRefresh(pricingCacheCtx)
+			}()
+		}
+		if a.module != nil && a.module.MailPricingService != nil {
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				a.module.MailPricingService.RunPricingCacheInvalidation(pricingCacheCtx)
+			}()
+			go func() {
+				defer workers.Done()
+				a.module.MailPricingService.RunPricingSnapshotRefresh(pricingCacheCtx)
+			}()
+		}
+		workers.Wait()
+	}()
 
 	if err := a.costEngine.Start(); err != nil {
 		return err
@@ -217,9 +221,8 @@ func (a *App) Start() error {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-	registerCostHealthRoutes(router, a.dbPool, a.redisClient, a.costEngine)
-
-	RegisterRoutes(router, a.module)
+	healthHandler := handler.NewHealthHandler(a.dbPool, a.redisClient, a.costEngine)
+	RegisterRoutes(router, a.module, healthHandler)
 
 	portStr := strconv.Itoa(a.Cfg.App.HTTPPort)
 	a.httpServer = &http.Server{
@@ -292,18 +295,18 @@ func (a *App) Stop() {
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		a.module.ResourceOwnershipConsumer.Stop()
 	}
-	if a.module != nil && a.module.TenantCreatedConsumer != nil {
-		a.module.TenantCreatedConsumer.Stop()
+	if a.module != nil && a.module.TenantWalletProvisionConsumer != nil {
+		a.module.TenantWalletProvisionConsumer.Stop()
 	}
-	if a.module != nil && a.module.PersonalAccountActivatedConsumer != nil {
-		a.module.PersonalAccountActivatedConsumer.Stop()
+	if a.module != nil && a.module.PersonalWalletProvisionConsumer != nil {
+		a.module.PersonalWalletProvisionConsumer.Stop()
 	}
 
-	if a.module != nil && a.module.ReconcilerWorker != nil {
-		a.module.ReconcilerWorker.Stop()
+	if a.module != nil && a.module.PersonalAuthorizationMiddleware != nil {
+		a.module.PersonalAuthorizationMiddleware.Close()
 	}
-	if a.module != nil && a.module.AuthorizationResolver != nil {
-		a.module.AuthorizationResolver.Close()
+	if a.module != nil && a.module.TenantAuthorizationMiddleware != nil {
+		a.module.TenantAuthorizationMiddleware.Close()
 	}
 
 	// Terminate the isolated Cost Engine lifecycle workflow.

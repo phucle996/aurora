@@ -1,14 +1,3 @@
-/*
-============================================================================
-MAP: COST MANAGER API CENTRALIZED MODULE & DEPENDENCY INJECTION
-============================================================================
-CONTRACT:
-1. Centralized Dependency Injection container cho toàn bộ ứng dụng Cost Manager API.
-2. Khởi tạo và liên kết 3 lớp Repository -> Service -> Handler / Worker cho tất cả phân hệ.
-3. Kiểm tra nil đàng hoàng sau mỗi câu lệnh khởi tạo để đảm bảo không instance nào bị nil tại runtime.
-============================================================================
-*/
-
 package app
 
 import (
@@ -24,22 +13,22 @@ import (
 	"cost-manager/api/internal/repository"
 	"cost-manager/api/internal/service"
 	"cost-manager/api/internal/transport/http/handler"
+	"cost-manager/api/internal/transport/middleware"
 	redisHandler "cost-manager/api/internal/transport/redis/handler"
-	"cost-manager/api/internal/transport/rpc"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
-// [COMMENT]: Module quản lý tất cả các repository, service và handler của ứng dụng.
+// Module quản lý tất cả các repository, service và handler của ứng dụng Cost Manager.
 type Module struct {
-	PersonalAccountRepo              billingRepoInterface.PersonalAccountRepository
-	TenantAccountRepo                billingRepoInterface.TenantAccountRepository
-	PersonalAccountService           billingSvcInterface.PersonalAccountService
-	TenantAccountService             billingSvcInterface.TenantAccountService
-	PersonalAccountHandler           *handler.PersonalAccountHandler
-	PersonalAccountActivatedConsumer *redisHandler.PersonalAccountActivatedConsumer
-	TenantCreatedConsumer            *redisHandler.TenantCreatedConsumer
+	PersonalAccountRepo             billingRepoInterface.PersonalAccountRepository
+	TenantAccountRepo               billingRepoInterface.TenantAccountRepository
+	PersonalAccountService          billingSvcInterface.PersonalAccountService
+	TenantAccountService            billingSvcInterface.TenantAccountService
+	PersonalAccountHandler          *handler.PersonalAccountHandler
+	PersonalWalletProvisionConsumer *redisHandler.PersonalWalletProvisionConsumer
+	TenantWalletProvisionConsumer   *redisHandler.TenantWalletProvisionConsumer
 
 	PersonalPaymentRepo    billingRepoInterface.PersonalPaymentRepository
 	TenantPaymentRepo      billingRepoInterface.TenantPaymentRepository
@@ -48,32 +37,29 @@ type Module struct {
 	PersonalPaymentHandler *handler.PersonalPaymentHandler
 	TenantPaymentHandler   *handler.TenantPaymentHandler
 
-	StorageEstimateService    billingSvcInterface.StorageEstimateService
-	StoragePricingHandler     *handler.StoragePricingHandler
-	PricingScheduleHandler    *handler.PricingScheduleHandler
-	HypervisorEstimateService billingSvcInterface.HypervisorEstimateService
-	HypervisorPricingHandler  *handler.HypervisorPricingHandler
-	MailEstimateService       billingSvcInterface.MailEstimateService
-	MailPricingHandler        *handler.MailPricingHandler
+	StoragePricingService  billingSvcInterface.StoragePricingService
+	StoragePricingHandler  *handler.StoragePricingHandler
+	PricingScheduleHandler *handler.PricingScheduleHandler
 
-	ReconcilerRepo    billingRepoInterface.ReconcilerRepository
-	ReconcilerService service.ReconcilerService
-	ReconcilerWorker  *rpc.StorageOwnershipReconcilerWorker
+	HypervisorPricingService billingSvcInterface.HypervisorPricingService
+	HypervisorPricingHandler *handler.HypervisorPricingHandler
+	MailPricingService       billingSvcInterface.MailPricingService
+	MailPricingHandler       *handler.MailPricingHandler
 
 	ResourceOwnershipRepo     billingRepoInterface.ResourceOwnershipRepository
-	ResourceOwnershipService  service.ResourceOwnershipService
+	ResourceOwnershipService  billingSvcInterface.ResourceOwnershipService
 	ResourceOwnershipConsumer *redisHandler.ResourceOwnershipConsumer
 
-	PricingOutboxRepo  billingRepoInterface.PricingOutboxRepository
-	PricingOutboxRelay *service.PricingOutboxRelay
+	PricingScheduleService billingSvcInterface.PricingScheduleService
 
 	WalletAdmissionOutboxRepo  billingRepoInterface.WalletAdmissionOutboxRepository
 	WalletAdmissionOutboxRelay *service.WalletAdmissionOutboxRelay
 
-	AuthorizationResolver *service.AuthorizationResolver
+	PersonalAuthorizationMiddleware *middleware.PersonalAuthorizationMiddleware
+	TenantAuthorizationMiddleware   *middleware.TenantAuthorizationMiddleware
 }
 
-// [COMMENT]: NewModule khởi tạo Module và thực hiện Dependency Injection kèm nil check đầy đủ sau mỗi bước.
+// NewModule khởi tạo Module và thực hiện Dependency Injection kèm nil check đầy đủ sau mỗi bước.
 func NewModule(
 	dbPool *pgxpool.Pool,
 	redisClient *redis.Client,
@@ -89,8 +75,8 @@ func NewModule(
 	if authRedisClient == nil {
 		return nil, fmt.Errorf("authRedisClient infrastructure connection cannot be nil")
 	}
-	// Account dependencies are owner-specific. This prevents a tenant stream
-	// consumer from acquiring the personal referral/account capability.
+
+	// 1. Account DI
 	personalAccountRepo := repository.NewPersonalAccountRepository(dbPool)
 	if personalAccountRepo == nil {
 		return nil, fmt.Errorf("failed to initialize PersonalAccountRepository: instance is nil")
@@ -151,21 +137,22 @@ func NewModule(
 	if personalAccountHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PersonalAccountHandler: instance is nil")
 	}
-	personalAccountActivatedConsumer, err := redisHandler.NewPersonalAccountActivatedConsumer(
+	personalWalletProvisionConsumer := redisHandler.NewPersonalWalletProvisionConsumer(
 		redisClient,
 		personalAccountService,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize PersonalAccountActivatedConsumer: %w", err)
+	if personalWalletProvisionConsumer == nil {
+		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionConsumer: instance is nil")
 	}
-	tenantCreatedConsumer, err := redisHandler.NewTenantCreatedConsumer(
+	tenantWalletProvisionConsumer := redisHandler.NewTenantWalletProvisionConsumer(
 		redisClient,
 		tenantAccountService,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize TenantCreatedConsumer: %w", err)
+	if tenantWalletProvisionConsumer == nil {
+		return nil, fmt.Errorf("failed to initialize TenantWalletProvisionConsumer: instance is nil")
 	}
 
+	// 2. Payment DI
 	personalPaymentRepository := repository.NewPersonalPaymentRepository(dbPool)
 	tenantPaymentRepository := repository.NewTenantPaymentRepository(dbPool)
 	personalPaymentService := service.NewPersonalPaymentService(
@@ -185,17 +172,7 @@ func NewModule(
 	personalPaymentHandler := handler.NewPersonalPaymentHandler(personalPaymentService, paymentPolicy)
 	tenantPaymentHandler := handler.NewTenantPaymentHandler(tenantPaymentService, paymentPolicy)
 
-	// Pricing relay is created before schedule service so the immutable version
-	// transaction can wake the relay after commit.
-	pricingOutboxRepo := repository.NewPricingOutboxRepository(dbPool)
-	if pricingOutboxRepo == nil {
-		return nil, fmt.Errorf("failed to initialize PricingOutboxRepository: instance is nil")
-	}
-
-	pricingOutboxRelay := service.NewPricingOutboxRelay(pricingOutboxRepo, redisClient)
-	if pricingOutboxRelay == nil {
-		return nil, fmt.Errorf("failed to initialize PricingOutboxRelay: instance is nil")
-	}
+	// 3. Admission Outbox DI
 	walletAdmissionOutboxRepo := repository.NewWalletAdmissionOutboxRepository(dbPool)
 	if walletAdmissionOutboxRepo == nil {
 		return nil, fmt.Errorf("failed to initialize WalletAdmissionOutboxRepository: instance is nil")
@@ -205,60 +182,61 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize WalletAdmissionOutboxRelay: instance is nil")
 	}
 
-	// Pricing schedule domain DI.
+	// 4. Pricing Schedule & Storage Pricing DI
 	pricingScheduleRepo := repository.NewPricingScheduleRepository(dbPool)
 	if pricingScheduleRepo == nil {
 		return nil, fmt.Errorf("failed to initialize PricingScheduleRepository: instance is nil")
 	}
 
-	pricingListService := service.NewPricingScheduleListService(pricingScheduleRepo)
-	pricingDetailService := service.NewPricingScheduleDetailService(pricingScheduleRepo)
-	storageEstimateService := service.NewStorageEstimateService(pricingScheduleRepo, pricingScheduleRepo, redisClient)
-	pricingMetadataService := service.NewPricingScheduleMetadataService(pricingScheduleRepo)
-	pricingPublishService := service.NewPricingScheduleVersionPublishService(pricingScheduleRepo, pricingOutboxRelay.Notify)
-	storageAdjustmentService := service.NewStorageZoneAdjustmentPublishService(pricingScheduleRepo)
-	storageAdjustmentListRepo := repository.NewStorageZoneAdjustmentListRepository(dbPool)
-	storageAdjustmentListService := service.NewStorageZoneAdjustmentListService(storageAdjustmentListRepo)
-
-	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingListService, pricingDetailService, pricingMetadataService, pricingPublishService)
-	if pricingScheduleHandler == nil {
-		return nil, fmt.Errorf("failed to initialize PricingScheduleHandler: instance is nil")
+	storagePricingRepo := repository.NewStoragePricingRepository(dbPool)
+	if storagePricingRepo == nil {
+		return nil, fmt.Errorf("failed to initialize StoragePricingRepository: instance is nil")
 	}
-	storagePricingHandler := handler.NewStoragePricingHandler(storageEstimateService, storageAdjustmentService, storageAdjustmentListService)
+
+	pricingScheduleService := service.NewPricingScheduleService(pricingScheduleRepo)
+	if pricingScheduleService == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleService: instance is nil")
+	}
+	storagePricingService := service.NewStoragePricingService(storagePricingRepo, redisClient)
+	if storagePricingService == nil {
+		return nil, fmt.Errorf("failed to initialize StoragePricingService: instance is nil")
+	}
+
+	storagePricingHandler := handler.NewStoragePricingHandler(storagePricingService)
 	if storagePricingHandler == nil {
 		return nil, fmt.Errorf("failed to initialize StoragePricingHandler: instance is nil")
 	}
+
+	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingScheduleService)
+	if pricingScheduleHandler == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleHandler: instance is nil")
+	}
+
+	// 5. Hypervisor & Mail Pricing DI
 	hypervisorPricingRepo := repository.NewHypervisorPricingRepository(dbPool)
 	if hypervisorPricingRepo == nil {
 		return nil, fmt.Errorf("failed to initialize HypervisorPricingRepository: instance is nil")
 	}
-	hypervisorEstimateService := service.NewHypervisorEstimateService(pricingScheduleRepo, hypervisorPricingRepo, redisClient)
-	hypervisorAdjustmentService := service.NewHypervisorZoneAdjustmentPublishService(hypervisorPricingRepo)
-	hypervisorPricingHandler := handler.NewHypervisorPricingHandler(hypervisorEstimateService, hypervisorAdjustmentService)
+	hypervisorPricingService := service.NewHypervisorPricingService(hypervisorPricingRepo, redisClient)
+	if hypervisorPricingService == nil {
+		return nil, fmt.Errorf("failed to initialize HypervisorPricingService: instance is nil")
+	}
+	hypervisorPricingHandler := handler.NewHypervisorPricingHandler(hypervisorPricingService)
 	if hypervisorPricingHandler == nil {
 		return nil, fmt.Errorf("failed to initialize HypervisorPricingHandler: instance is nil")
 	}
+
 	mailPricingRepo := repository.NewMailPricingRepository(dbPool)
-	mailAdjustmentListRepo := repository.NewMailZoneAdjustmentListRepository(dbPool)
-	mailEstimateService := service.NewMailEstimateService(pricingScheduleRepo, mailPricingRepo, redisClient)
-	mailAdjustmentService := service.NewMailZoneAdjustmentPublishService(mailPricingRepo)
-	mailAdjustmentListService := service.NewMailZoneAdjustmentListService(mailAdjustmentListRepo)
-	mailPricingHandler := handler.NewMailPricingHandler(mailEstimateService, mailAdjustmentService, mailAdjustmentListService)
-
-	// 5. Reconciler Worker DI (gRPC)
-	reconcilerRepo := repository.NewReconcilerRepository(dbPool)
-	if reconcilerRepo == nil {
-		return nil, fmt.Errorf("failed to initialize ReconcilerRepository: instance is nil")
+	if mailPricingRepo == nil {
+		return nil, fmt.Errorf("failed to initialize MailPricingRepository: instance is nil")
 	}
-
-	reconcilerService := service.NewReconcilerService(reconcilerRepo)
-	if reconcilerService == nil {
-		return nil, fmt.Errorf("failed to initialize ReconcilerService: instance is nil")
+	mailPricingService := service.NewMailPricingService(mailPricingRepo, redisClient)
+	if mailPricingService == nil {
+		return nil, fmt.Errorf("failed to initialize MailPricingService: instance is nil")
 	}
-
-	reconcilerWorker := rpc.NewStorageOwnershipReconcilerWorker(reconcilerService, 0)
-	if reconcilerWorker == nil {
-		return nil, fmt.Errorf("failed to initialize ReconcilerWorker: instance is nil")
+	mailPricingHandler := handler.NewMailPricingHandler(mailPricingService)
+	if mailPricingHandler == nil {
+		return nil, fmt.Errorf("failed to initialize MailPricingHandler: instance is nil")
 	}
 
 	// 6. Resource ownership consumer DI (Shared Redis Stream, Central-internal)
@@ -272,51 +250,50 @@ func NewModule(
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipService: instance is nil")
 	}
 
-	ownershipConsumer, err := redisHandler.NewResourceOwnershipConsumer(redisClient, ownershipService)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize ResourceOwnershipConsumer: %w", err)
-	}
+	ownershipConsumer := redisHandler.NewResourceOwnershipConsumer(redisClient, ownershipService)
 	if ownershipConsumer == nil {
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipConsumer: instance is nil")
 	}
-	// Initialize authorization after transport consumers so a partial module
-	// construction cannot expose HTTP with an incomplete security resolver.
-	authorizationResolver, err := service.NewAuthorizationResolver(authRedisClient, redisClient)
+
+	// 7. Authorization Middlewares
+	personalAuthorizationMiddleware, err := middleware.NewPersonalAuthorizationMiddleware(authRedisClient, redisClient)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize AuthorizationResolver: %w", err)
+		return nil, fmt.Errorf("failed to initialize PersonalAuthorizationMiddleware: %w", err)
+	}
+	tenantAuthorizationMiddleware, err := middleware.NewTenantAuthorizationMiddleware(authRedisClient, redisClient)
+	if err != nil {
+		personalAuthorizationMiddleware.Close()
+		return nil, fmt.Errorf("failed to initialize TenantAuthorizationMiddleware: %w", err)
 	}
 
 	return &Module{
-		PersonalAccountRepo:              personalAccountRepo,
-		TenantAccountRepo:                tenantAccountRepo,
-		PersonalAccountService:           personalAccountService,
-		TenantAccountService:             tenantAccountService,
-		PersonalAccountHandler:           personalAccountHandler,
-		PersonalAccountActivatedConsumer: personalAccountActivatedConsumer,
-		TenantCreatedConsumer:            tenantCreatedConsumer,
-		PersonalPaymentRepo:              personalPaymentRepository,
-		TenantPaymentRepo:                tenantPaymentRepository,
-		PersonalPaymentService:           personalPaymentService,
-		TenantPaymentService:             tenantPaymentService,
-		PersonalPaymentHandler:           personalPaymentHandler,
-		TenantPaymentHandler:             tenantPaymentHandler,
-		StorageEstimateService:           storageEstimateService,
-		StoragePricingHandler:            storagePricingHandler,
-		PricingScheduleHandler:           pricingScheduleHandler,
-		HypervisorEstimateService:        hypervisorEstimateService,
-		HypervisorPricingHandler:         hypervisorPricingHandler,
-		MailEstimateService:              mailEstimateService,
-		MailPricingHandler:               mailPricingHandler,
-		ReconcilerRepo:                   reconcilerRepo,
-		ReconcilerService:                reconcilerService,
-		ReconcilerWorker:                 reconcilerWorker,
-		ResourceOwnershipRepo:            ownershipRepo,
-		ResourceOwnershipService:         ownershipService,
-		ResourceOwnershipConsumer:        ownershipConsumer,
-		PricingOutboxRepo:                pricingOutboxRepo,
-		PricingOutboxRelay:               pricingOutboxRelay,
-		WalletAdmissionOutboxRepo:        walletAdmissionOutboxRepo,
-		WalletAdmissionOutboxRelay:       walletAdmissionOutboxRelay,
-		AuthorizationResolver:            authorizationResolver,
+		PersonalAccountRepo:             personalAccountRepo,
+		TenantAccountRepo:               tenantAccountRepo,
+		PersonalAccountService:          personalAccountService,
+		TenantAccountService:            tenantAccountService,
+		PersonalAccountHandler:          personalAccountHandler,
+		PersonalWalletProvisionConsumer: personalWalletProvisionConsumer,
+		TenantWalletProvisionConsumer:   tenantWalletProvisionConsumer,
+		PersonalPaymentRepo:             personalPaymentRepository,
+		TenantPaymentRepo:               tenantPaymentRepository,
+		PersonalPaymentService:          personalPaymentService,
+		TenantPaymentService:            tenantPaymentService,
+		PersonalPaymentHandler:          personalPaymentHandler,
+		TenantPaymentHandler:            tenantPaymentHandler,
+		StoragePricingService:           storagePricingService,
+		StoragePricingHandler:           storagePricingHandler,
+		PricingScheduleHandler:          pricingScheduleHandler,
+		HypervisorPricingService:        hypervisorPricingService,
+		HypervisorPricingHandler:        hypervisorPricingHandler,
+		MailPricingService:              mailPricingService,
+		MailPricingHandler:              mailPricingHandler,
+		ResourceOwnershipRepo:           ownershipRepo,
+		ResourceOwnershipService:        ownershipService,
+		ResourceOwnershipConsumer:       ownershipConsumer,
+		PricingScheduleService:          pricingScheduleService,
+		WalletAdmissionOutboxRepo:       walletAdmissionOutboxRepo,
+		WalletAdmissionOutboxRelay:      walletAdmissionOutboxRelay,
+		PersonalAuthorizationMiddleware: personalAuthorizationMiddleware,
+		TenantAuthorizationMiddleware:   tenantAuthorizationMiddleware,
 	}, nil
 }
