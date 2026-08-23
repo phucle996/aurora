@@ -74,18 +74,22 @@ spec:
               value: "Asia/Ho_Chi_Minh"
             - name: ACR_GRPC_PORT
               value: "50051"
-            # [COMMENT]: Kết nối Redis Security-State duy trì phiên làm việc và Challenge Ed25519
-            - name: AUTH_REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: acr-secrets
-                  key: auth-redis-url
-            # [COMMENT]: Kết nối Redis Cache tầng L2
-            - name: CACHE_REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: acr-secrets
-                  key: cache-redis-url
+            # ACR validates these paths at startup; credentials and Redis
+            # connection records themselves remain Vault-owned.
+            - name: VAULT_TRANSIT_KEY_PATH
+              value: "transit/keys/jwt-signer"
+            - name: VAULT_TOTP_KEY_PATH
+              value: "totp/keys/admin"
+            - name: VAULT_ADMIN_API_KEY_PATH
+              value: "secret/data/admin/api-key"
+            - name: APP_ALLOWED_ORIGINS
+              value: "https://adminui.aurora.local,https://cloud.aurora.local,https://cost-manager.aurora.local"
+            # K8s resolves the Vault seed through Redis Cluster; local Compose
+            # keeps the default single-node mode from acr/.env.
+            - name: AUTH_STATE_REDIS_MODE
+              value: "cluster"
+            - name: SHARED_L2_REDIS_MODE
+              value: "cluster"
             # [COMMENT]: Kết nối Vault KMS để thực hiện ký Token qua Transit Engine
             - name: VAULT_ADDR
               value: "http://vault.controlplane.svc.cluster.local:8200"

@@ -2,6 +2,7 @@
 // 📂 sre/zone_resolution.rs — Admin/SRE Zone Context Resolution & Verification
 // ======================================================================================================
 
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::sre::claims::SreClaims;
@@ -15,7 +16,7 @@ use tonic::{Response, Status};
 /// [COMMENT]: Phân giải và xác thực Zone dành riêng cho Admin (SRE).
 pub async fn resolve_and_verify_zone_admin(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     claims: Option<&mut SreClaims>,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,

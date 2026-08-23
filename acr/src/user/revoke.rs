@@ -18,42 +18,6 @@ use crate::pkg::cookie::*;
 use crate::token::TokenManager;
 use prost::Message;
 
-/// [COMMENT]: Giải mã yêu cầu từ bytes, thực thi quét Auth Redis để thu hồi session thuộc thiết bị được chọn.
-pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &[u8]) -> Vec<u8> {
-    use crate::user::device::device_proto::{
-        RevokeUserSessionsByDevicesRequest, RevokeUserSessionsByDevicesResponse,
-    };
-    use prost::Message;
-
-    let req = match RevokeUserSessionsByDevicesRequest::decode(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            Logger::sys_error(
-                "user.revoke",
-                "Failed to decode RevokeUserSessionsByDevicesRequest",
-                &e.to_string(),
-            );
-            return vec![];
-        }
-    };
-
-    match revoke_sessions_by_devices(session_mgr, &req).await {
-        Ok(revoked_count) => {
-            let res = RevokeUserSessionsByDevicesResponse { revoked_count };
-            let mut reply_payload = Vec::new();
-            if res.encode(&mut reply_payload).is_ok() {
-                reply_payload
-            } else {
-                vec![]
-            }
-        }
-        Err(error) => {
-            Logger::sys_error("user.revoke", "Failed to revoke device sessions", &error);
-            vec![]
-        }
-    }
-}
-
 // [COMMENT]: Stream consumer gọi hàm typed này để phân biệt payload hỏng (ACK) với
 // Auth Redis tạm lỗi (giữ pending để replica ACR khác retry).
 pub async fn revoke_sessions_by_devices(
@@ -119,25 +83,32 @@ pub async fn revoke_sessions_by_devices(
         }
 
         let user_index_key = format!("iam:user_access_index:{}", req.user_id);
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-
         for access_key in &access_keys {
-            pipe.cmd("EXPIRE").arg(access_key).arg(5);
-            pipe.cmd("SREM").arg(&user_index_key).arg(access_key);
+            redis::cmd("EXPIRE")
+                .arg(access_key)
+                .arg(5)
+                .query_async::<_, ()>(&mut conn)
+                .await
+                .map_err(|error| error.to_string())?;
+            redis::cmd("SREM")
+                .arg(&user_index_key)
+                .arg(access_key)
+                .query_async::<_, ()>(&mut conn)
+                .await
+                .map_err(|error| error.to_string())?;
         }
-        pipe.cmd("DEL").arg(&dev_index_key);
-        pipe.query_async::<_, ()>(&mut conn).await.map_err(|e| {
-            Logger::sys_error(
-                "user.revoke",
-                &format!(
-                    "Revoke device session pipeline failed for device {}",
-                    device_id
-                ),
-                &e.to_string(),
-            );
-            e.to_string()
-        })?;
+        redis::cmd("DEL")
+            .arg(&dev_index_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| {
+                Logger::sys_error(
+                    "user.revoke",
+                    &format!("Revoke device sessions failed for device {}", device_id),
+                    &e.to_string(),
+                );
+                e.to_string()
+            })?;
         revoked_count += access_keys.len() as i64;
     }
 

@@ -52,7 +52,9 @@ fn sha256_hash(secret: &str) -> String {
 }
 
 impl SessionManager {
-    /// [COMMENT]: Alias và reverse index cùng commit trong Redis Security-State để source revoke không bỏ sót Cost.
+    /// Alias is an independent opaque credential. Verification always rechecks
+    /// its source session, so a source revoke invalidates every alias without a
+    /// cross-slot reverse-index transaction.
     pub async fn register_billing_alias(
         &self,
         alias: &BillingSessionAlias,
@@ -65,20 +67,10 @@ impl SessionManager {
 
         let mut conn = self.get_connection().await?;
         let alias_key = format!("iam:domain_alias:billing:{alias_id}");
-        let source_index = format!("iam:session_alias_index:{}", alias.source_access_key);
-        redis::pipe()
-            .atomic()
-            .cmd("SET")
+        redis::cmd("SET")
             .arg(&alias_key)
             .arg(encoded)
-            .cmd("EXPIRE")
-            .arg(&alias_key)
-            .arg(self.config.session_ttl_secs)
-            .cmd("SADD")
-            .arg(&source_index)
-            .arg(&alias_key)
-            .cmd("EXPIRE")
-            .arg(&source_index)
+            .arg("EX")
             .arg(self.config.session_ttl_secs)
             .query_async::<_, ()>(&mut conn)
             .await
@@ -114,22 +106,17 @@ impl SessionManager {
         .transpose()
     }
 
-    /// [COMMENT]: Grace TTL giữ request đang in-flight, nhưng alias bị loại khỏi source index ngay.
+    /// Grace TTL keeps an in-flight Cost request alive briefly after logout.
     pub async fn delete_billing_alias(
         &self,
         alias_id: &str,
-        source_access_key: &str,
+        _source_access_key: &str,
     ) -> Result<(), AcrError> {
         let mut conn = self.get_connection().await?;
         let alias_key = format!("iam:domain_alias:billing:{alias_id}");
-        redis::pipe()
-            .atomic()
-            .cmd("EXPIRE")
+        redis::cmd("EXPIRE")
             .arg(&alias_key)
             .arg(5)
-            .cmd("SREM")
-            .arg(format!("iam:session_alias_index:{source_access_key}"))
-            .arg(&alias_key)
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|error| {
@@ -137,27 +124,11 @@ impl SessionManager {
             })
     }
 
-    /// [COMMENT]: Logout/device revoke của IAM session gốc thu hồi mọi domain alias cùng family.
-    pub async fn revoke_session_aliases(&self, source_access_key: &str) -> Result<(), AcrError> {
-        let mut conn = self.get_connection().await?;
-        let source_index = format!("iam:session_alias_index:{source_access_key}");
-        let alias_keys: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(&source_index)
-            .query_async(&mut conn)
-            .await
-            .map_err(|error| {
-                AcrError::RedisError(format!("Read session alias index failed: {error}"))
-            })?;
-
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        for alias_key in alias_keys {
-            pipe.cmd("EXPIRE").arg(alias_key).arg(5);
-        }
-        pipe.cmd("DEL").arg(source_index);
-        pipe.query_async::<_, ()>(&mut conn).await.map_err(|error| {
-            AcrError::RedisError(format!("Revoke session aliases failed: {error}"))
-        })
+    /// Source session is the authority for aliases. Keeping this operation
+    /// local makes source revocation safe on Redis Cluster; stale alias keys
+    /// are denied by verify_billing_alias and expire with their own TTL.
+    pub async fn revoke_session_aliases(&self, _source_access_key: &str) -> Result<(), AcrError> {
+        Ok(())
     }
 }
 

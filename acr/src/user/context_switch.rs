@@ -495,7 +495,7 @@ pub async fn handle_personal_switch(
             .ok_or("Missing access_token cookie")?;
         let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
-        let mut claims = token_mgr
+        let claims = token_mgr
             .verify_token(&jwt_token)
             .await
             .map_err(|_| "Invalid access_token")?;
@@ -633,7 +633,7 @@ pub async fn handle_personal_switch(
     builder.set_body(")]}',\n".to_string() + &body);
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             COOKIE_ACCESS_TOKEN, new_jwt, config.session_ttl_secs, domain
         ),
@@ -642,7 +642,7 @@ pub async fn handle_personal_switch(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
             COOKIE_TENANT_ID, domain
         ),
@@ -651,7 +651,7 @@ pub async fn handle_personal_switch(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
             COOKIE_TENANT_DOMAIN, domain
         ),

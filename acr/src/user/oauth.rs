@@ -3,7 +3,7 @@ use crate::infra::iam_proto::auth::{
     LinkExternalIdentityRequest, LinkExternalIdentityResponse, VerifyExternalIdentityRequest,
     VerifyExternalIdentityResponse,
 };
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::vault::VaultClient;
 use crate::observability::logger::Logger;
@@ -101,7 +101,7 @@ struct CanonicalIdentity {
 pub struct OAuthWorkflowContext<'a> {
     pub session_mgr: &'a Arc<SessionManager>,
     pub token_mgr: &'a Arc<TokenManager>,
-    pub shared_redis_client: &'a redis::Client,
+    pub shared_redis_client: &'a RedisRuntimeClient,
     pub shared_redis: &'a Arc<SharedRedisBus>,
     pub config: &'a Config,
 }
@@ -129,7 +129,7 @@ pub struct SocialLinkStartRequest<'a> {
 struct OAuthStartWorkflowContext<'a> {
     session_mgr: &'a Arc<SessionManager>,
     shared_redis: &'a Arc<SharedRedisBus>,
-    shared_redis_client: &'a redis::Client,
+    shared_redis_client: &'a RedisRuntimeClient,
 }
 
 struct OAuthStartRequest<'a> {

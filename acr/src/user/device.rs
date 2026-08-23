@@ -3,6 +3,7 @@
 // ======================================================================================================
 
 use crate::infra::iam_proto::auth::BulkTouchDevicesRequest;
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::redis::SessionManager;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
@@ -28,7 +29,7 @@ const EVICTION_OUTBOX_CONSUMER: &str = "acr-device-eviction-relay";
 
 /// [COMMENT]: Background worker định kỳ gom heartbeat từ Auth Redis và publish bulk sang Shared Redis Controlplane
 pub async fn start_presence_flush_worker(
-    redis_client: Arc<redis::Client>,
+    redis_client: Arc<RedisRuntimeClient>,
     shared_redis: Arc<SharedRedisBus>,
 ) {
     tokio::spawn(async move {
@@ -146,7 +147,7 @@ pub async fn start_presence_flush_worker(
 // [COMMENT]: Relay Auth Redis outbox sang Shared Redis Stream. Source XADD được commit
 // atomically cùng session eviction; ACK chỉ sau khi target stream đã nhận payload.
 pub async fn start_eviction_outbox_relay(
-    auth_redis: Arc<redis::Client>,
+    auth_redis: Arc<RedisRuntimeClient>,
     shared_redis: Arc<SharedRedisBus>,
 ) -> Result<(), String> {
     let mut connection = auth_redis
@@ -248,7 +249,7 @@ pub async fn start_eviction_outbox_relay(
 
 async fn relay_eviction_entries(
     shared_redis: &Arc<SharedRedisBus>,
-    auth_connection: &mut redis::aio::MultiplexedConnection,
+    auth_connection: &mut crate::infra::redis::RedisConnection,
     reply: StreamReadReply,
 ) {
     for key in reply.keys {
@@ -301,22 +302,22 @@ async fn relay_eviction_entries(
 }
 
 async fn acknowledge_eviction_outbox(
-    connection: &mut redis::aio::MultiplexedConnection,
+    connection: &mut crate::infra::redis::RedisConnection,
     entry_id: &str,
 ) {
-    let _: redis::RedisResult<()> = redis::pipe()
-        .atomic()
-        .cmd("XACK")
+    let acked: redis::RedisResult<()> = redis::cmd("XACK")
         .arg(EVICTION_OUTBOX_STREAM)
         .arg(EVICTION_OUTBOX_GROUP)
         .arg(entry_id)
-        .ignore()
-        .cmd("XDEL")
-        .arg(EVICTION_OUTBOX_STREAM)
-        .arg(entry_id)
-        .ignore()
         .query_async(connection)
         .await;
+    if acked.is_ok() {
+        let _: redis::RedisResult<()> = redis::cmd("XDEL")
+            .arg(EVICTION_OUTBOX_STREAM)
+            .arg(entry_id)
+            .query_async(connection)
+            .await;
+    }
 }
 
 /// [COMMENT]: Lấy danh sách các thiết bị đang active của user từ Auth Redis cho internal transport.

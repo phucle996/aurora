@@ -79,13 +79,10 @@ impl SessionManager {
             AcrError::Internal(format!("Protobuf encode SreAccessSession failed: {}", e))
         })?;
 
-        redis::pipe()
-            .atomic()
-            .cmd("SET")
+        redis::cmd("SET")
             .arg(&redis_key)
             .arg(&buf)
-            .cmd("EXPIRE")
-            .arg(&redis_key)
+            .arg("EX")
             .arg(self.config.session_ttl_secs)
             .query_async::<_, ()>(&mut conn)
             .await
@@ -141,23 +138,26 @@ impl SessionManager {
             .encode(&mut buf)
             .map_err(|e| AcrError::Internal(e.to_string()))?;
 
-        // [COMMENT]: 3. Pipeline nguyên tử:
-        //   - Tạo session mới đầy đủ TTL
-        //   - Giảm TTL session cũ về 5s (Grace Period) — tránh 401 cho requests song song
-        redis::pipe()
-            .atomic()
-            .cmd("SET")
+        // Each key is deliberately an independent Redis Cluster slot. The
+        // new credential is written before shortening the old one, so a
+        // failed transition leaves the existing session usable and retryable.
+        redis::cmd("SET")
             .arg(&new_redis_key)
             .arg(&buf)
-            .cmd("EXPIRE")
-            .arg(&new_redis_key)
+            .arg("EX")
             .arg(self.config.session_ttl_secs)
-            .cmd("EXPIRE")
-            .arg(&old_redis_key)
-            .arg(5) // grace period
             .query_async::<_, ()>(&mut conn)
             .await
-            .map_err(|e| AcrError::RedisError(format!("SRE rotation pipeline failed: {}", e)))?;
+            .map_err(|e| {
+                AcrError::RedisError(format!("Create rotated SRE session failed: {}", e))
+            })?;
+
+        redis::cmd("EXPIRE")
+            .arg(&old_redis_key)
+            .arg(5)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Shorten old SRE session failed: {}", e)))?;
 
         // [COMMENT]: 4. Giải phóng lock sớm sau khi pipeline thành công
         let _: () = redis::cmd("DEL")

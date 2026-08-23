@@ -1,3 +1,4 @@
+use crate::infra::redis::RedisRuntimeClient;
 use crate::observability::logger::Logger;
 use futures_util::StreamExt;
 use redis::AsyncCommands;
@@ -10,14 +11,14 @@ use uuid::Uuid;
 // [COMMENT]: SharedRedisBus giữ một PubSub connection lâu dài cho reply fan-in.
 // Mỗi request chỉ cần một multiplexed publish, tránh mở hai TCP connection trên hot path login.
 pub struct SharedRedisBus {
-    client: Arc<redis::Client>,
+    client: Arc<RedisRuntimeClient>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>,
 }
 
 impl SharedRedisBus {
-    pub async fn new(client: Arc<redis::Client>) -> Result<Arc<Self>, String> {
+    pub async fn new(client: Arc<RedisRuntimeClient>) -> Result<Arc<Self>, String> {
         let connection = client
-            .get_async_connection()
+            .get_pubsub_connection()
             .await
             .map_err(|error| format!("open Shared Redis PubSub connection: {error}"))?;
         let mut pubsub = connection.into_pubsub();
@@ -56,7 +57,7 @@ impl SharedRedisBus {
                 );
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                match client.get_async_connection().await {
+                match client.get_pubsub_connection().await {
                     Ok(connection) => {
                         let mut subscriber = connection.into_pubsub();
                         match subscriber.psubscribe("*.reply.*").await {

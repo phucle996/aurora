@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::redis::SessionManager;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
@@ -26,7 +27,7 @@ const REVOKE_CONSUMER: &str = "acr-device-runtime";
 // [COMMENT]: SharedRedisRouter nhận toàn bộ Central-internal auth/device/topology traffic.
 // Query realtime dùng PubSub; security command dùng Stream consumer group để không mất lệnh khi pod restart.
 pub struct SharedRedisRouter {
-    shared_redis: Arc<redis::Client>,
+    shared_redis: Arc<RedisRuntimeClient>,
     shared_bus: Arc<SharedRedisBus>,
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
@@ -36,7 +37,7 @@ pub struct SharedRedisRouter {
 
 impl SharedRedisRouter {
     pub async fn start(
-        shared_redis: Arc<redis::Client>,
+        shared_redis: Arc<RedisRuntimeClient>,
         shared_bus: Arc<SharedRedisBus>,
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
@@ -44,7 +45,7 @@ impl SharedRedisRouter {
         config: Config,
     ) -> Result<Arc<Self>, String> {
         let connection = shared_redis
-            .get_async_connection()
+            .get_pubsub_connection()
             .await
             .map_err(|error| format!("open device PubSub connection: {error}"))?;
         let mut subscriber = connection.into_pubsub();
@@ -256,7 +257,7 @@ impl SharedRedisRouter {
                     "redis_pubsub_disconnected",
                 );
                 tokio::time::sleep(Duration::from_millis(500)).await;
-                match client.get_async_connection().await {
+                match client.get_pubsub_connection().await {
                     Ok(connection) => {
                         let mut subscriber = connection.into_pubsub();
                         if subscriber.subscribe(ACTIVE_SESSIONS_CHANNEL).await.is_ok()
@@ -372,7 +373,7 @@ impl SharedRedisRouter {
 
 async fn process_revoke_entries(
     session_mgr: &Arc<SessionManager>,
-    connection: &mut redis::aio::MultiplexedConnection,
+    connection: &mut crate::infra::redis::RedisConnection,
     reply: StreamReadReply,
 ) {
     for key in reply.keys {
@@ -445,18 +446,18 @@ async fn process_revoke_entries(
     }
 }
 
-async fn acknowledge_revoke(connection: &mut redis::aio::MultiplexedConnection, entry_id: &str) {
-    let _: redis::RedisResult<()> = redis::pipe()
-        .atomic()
-        .cmd("XACK")
+async fn acknowledge_revoke(connection: &mut crate::infra::redis::RedisConnection, entry_id: &str) {
+    let acked: redis::RedisResult<()> = redis::cmd("XACK")
         .arg(REVOKE_STREAM)
         .arg(REVOKE_GROUP)
         .arg(entry_id)
-        .ignore()
-        .cmd("XDEL")
-        .arg(REVOKE_STREAM)
-        .arg(entry_id)
-        .ignore()
         .query_async(connection)
         .await;
+    if acked.is_ok() {
+        let _: redis::RedisResult<()> = redis::cmd("XDEL")
+            .arg(REVOKE_STREAM)
+            .arg(entry_id)
+            .query_async(connection)
+            .await;
+    }
 }

@@ -113,32 +113,43 @@ impl SessionManager {
         let index_key = format!("iam:user_access_index:{}", user_id);
         let dev_index_key = format!("iam:device_access_index:{}", device_id);
 
-        // [COMMENT]: Lưu full redis key vào index để CP (Go) có thể scan/delete đúng
-        redis::pipe()
-            .atomic()
-            .cmd("SET")
+        // The session itself is the authorization authority. Index writes are
+        // best-effort discovery data and intentionally remain independent
+        // slots so the workflow runs on both single Redis and Redis Cluster.
+        redis::cmd("SET")
             .arg(&redis_key)
             .arg(&buf)
-            .cmd("EXPIRE")
-            .arg(&redis_key)
+            .arg("EX")
             .arg(self.config.session_ttl_secs)
-            .cmd("SADD")
-            .arg(&index_key)
-            .arg(&redis_key)
-            .cmd("EXPIRE")
-            .arg(&index_key)
-            .arg(self.config.session_ttl_secs * 3)
-            .cmd("SADD")
-            .arg(&dev_index_key)
-            .arg(&redis_key)
-            .cmd("EXPIRE")
-            .arg(&dev_index_key)
-            .arg(self.config.session_ttl_secs * 3)
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|e| {
                 AcrError::RedisError(format!("Register session in Redis failed: {}", e))
             })?;
+        redis::cmd("SADD")
+            .arg(&index_key)
+            .arg(&redis_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Index user session failed: {e}")))?;
+        redis::cmd("EXPIRE")
+            .arg(&index_key)
+            .arg(self.config.session_ttl_secs * 3)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Set user index TTL failed: {e}")))?;
+        redis::cmd("SADD")
+            .arg(&dev_index_key)
+            .arg(&redis_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Index device session failed: {e}")))?;
+        redis::cmd("EXPIRE")
+            .arg(&dev_index_key)
+            .arg(self.config.session_ttl_secs * 3)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Set device index TTL failed: {}", e)))?;
 
         // [COMMENT]: Evict session cũ nếu vượt quá USER_DEVICE_CAP. Không được coi lỗi
         // đọc Auth Redis là count=0, vì như vậy outage sẽ bypass giới hạn thiết bị.
@@ -168,25 +179,23 @@ impl SessionManager {
             ));
         }
 
-        // [COMMENT]: Pipeline GET toàn bộ session để so sánh lsa
-        let mut pipe = redis::pipe();
-        for key in &all_keys {
-            pipe.cmd("GET").arg(key);
-        }
-        let datas: Vec<Option<Vec<u8>>> = pipe.query_async(&mut conn).await.map_err(|error| {
-            AcrError::RedisError(format!("Read user sessions for eviction failed: {error}"))
-        })?;
-        if datas.len() != all_keys.len() {
-            return Err(AcrError::RedisError(
-                "Auth Redis returned an incomplete session eviction batch".to_string(),
-            ));
-        }
-
         let mut sessions: Vec<(String, String, i64)> = Vec::with_capacity(all_keys.len());
-        for (key, data) in all_keys.into_iter().zip(datas) {
-            let bytes = data.ok_or_else(|| {
-                AcrError::RedisError(format!("Session key disappeared during eviction: {key}"))
-            })?;
+        for key in all_keys {
+            let data: Option<Vec<u8>> = redis::cmd("GET")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| {
+                    AcrError::RedisError(format!("Read user session for eviction failed: {error}"))
+                })?;
+            let Some(bytes) = data else {
+                let _: Result<(), _> = redis::cmd("SREM")
+                    .arg(&index_key)
+                    .arg(&key)
+                    .query_async(&mut conn)
+                    .await;
+                continue;
+            };
             let session = UserAccessSession::decode(bytes.as_slice()).map_err(|error| {
                 AcrError::Internal(format!(
                     "Invalid UserAccessSession payload in {key}: {error}"
@@ -219,32 +228,43 @@ impl SessionManager {
                 ))
             })?;
 
-        let mut del_pipe = redis::pipe();
-        del_pipe.atomic();
-        for (key, tdid, _) in &to_evict {
-            del_pipe.cmd("DEL").arg(key);
-            del_pipe.cmd("SREM").arg(&index_key).arg(key);
-            del_pipe
-                .cmd("SREM")
-                .arg(format!("iam:device_access_index:{tdid}"))
-                .arg(key);
-        }
-        // [COMMENT]: XADD cùng MULTI/EXEC với session deletion là Auth Redis outbox.
-        // Pod chết sau commit vẫn không thể làm mất durable eviction dành cho Controlplane.
-        del_pipe
-            .cmd("XADD")
+        // Persist the outbox before destructive cleanup. Replays are safe and
+        // are preferable to silently losing a device eviction on a crash.
+        redis::cmd("XADD")
             .arg("iam:device:eviction-outbox")
             .arg("*")
             .arg("payload")
-            .arg(notification_bytes);
-        del_pipe
-            .query_async::<_, Vec<redis::Value>>(&mut conn)
+            .arg(notification_bytes)
+            .query_async::<_, String>(&mut conn)
             .await
             .map_err(|error| {
-                AcrError::RedisError(format!(
-                    "Evict sessions and append Auth Redis outbox failed: {error}"
-                ))
+                AcrError::RedisError(format!("Append device eviction outbox failed: {error}"))
             })?;
+        for (key, tdid, _) in &to_evict {
+            let _: () = redis::cmd("DEL")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| {
+                    AcrError::RedisError(format!("Delete evicted session failed: {error}"))
+                })?;
+            let _: () = redis::cmd("SREM")
+                .arg(&index_key)
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| {
+                    AcrError::RedisError(format!("Remove evicted user index failed: {error}"))
+                })?;
+            let _: () = redis::cmd("SREM")
+                .arg(format!("iam:device_access_index:{tdid}"))
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| {
+                    AcrError::RedisError(format!("Remove evicted device index failed: {error}"))
+                })?;
+        }
 
         Ok(evicted_tdids)
     }
@@ -294,13 +314,10 @@ impl SessionManager {
                 .await
                 .unwrap_or(self.config.session_ttl_secs);
 
-            redis::pipe()
-                .atomic()
-                .cmd("SET")
+            redis::cmd("SET")
                 .arg(&redis_key)
                 .arg(&buf)
-                .cmd("EXPIRE")
-                .arg(&redis_key)
+                .arg("EX")
                 .arg(ttl)
                 .query_async::<_, ()>(&mut conn)
                 .await
@@ -338,23 +355,32 @@ impl SessionManager {
                 .map(|s| s.tdid)
         });
 
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .cmd("EXPIRE")
+        redis::cmd("EXPIRE")
             .arg(&redis_key)
             .arg(5)
-            .cmd("SREM")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Expire session in Redis failed: {}", e)))?;
+        redis::cmd("SREM")
             .arg(&index_key)
-            .arg(&redis_key);
+            .arg(&redis_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| {
+                AcrError::RedisError(format!("Remove user session index failed: {}", e))
+            })?;
 
         if let Some(ref device_id) = device_id_opt {
             let dev_index_key = format!("iam:device_access_index:{}", device_id);
-            pipe.cmd("SREM").arg(&dev_index_key).arg(&redis_key);
+            redis::cmd("SREM")
+                .arg(&dev_index_key)
+                .arg(&redis_key)
+                .query_async::<_, ()>(&mut conn)
+                .await
+                .map_err(|e| {
+                    AcrError::RedisError(format!("Remove device session index failed: {}", e))
+                })?;
         }
-
-        pipe.query_async::<_, ()>(&mut conn)
-            .await
-            .map_err(|e| AcrError::RedisError(format!("Expire session in Redis failed: {}", e)))?;
 
         Ok(())
     }
@@ -376,18 +402,14 @@ impl SessionManager {
             return Ok(vec![]);
         }
 
-        let mut pipe = redis::pipe();
-        for key in &session_keys {
-            pipe.cmd("GET").arg(key);
-        }
-
-        let datas: Vec<Option<Vec<u8>>> = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| AcrError::RedisError(format!("MGET sessions failed: {}", e)))?;
-
         let mut active_sessions = Vec::new();
-        for data in datas.into_iter().flatten() {
+        for key in session_keys {
+            let data: Option<Vec<u8>> = redis::cmd("GET")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| AcrError::RedisError(format!("Read active session failed: {}", e)))?;
+            let Some(data) = data else { continue };
             if let Ok(session) = UserAccessSession::decode(data.as_slice()) {
                 active_sessions.push((session.tdid, session.lsa));
             }

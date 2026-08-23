@@ -11,7 +11,7 @@
 
 use crate::config::Config;
 use crate::infra::iam_proto::auth::{VerifyUserCredentialsRequest, VerifyUserCredentialsResponse};
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::COOKIE_REFRESH_TOKEN;
@@ -50,7 +50,7 @@ pub struct LoginPayload {
 pub struct LoginWorkflowContext<'a> {
     pub session_mgr: &'a Arc<SessionManager>,
     pub token_mgr: &'a Arc<TokenManager>,
-    pub redis_client: &'a redis::Client,
+    pub redis_client: &'a RedisRuntimeClient,
     pub shared_redis: &'a Arc<SharedRedisBus>,
     pub config: &'a Config,
 }

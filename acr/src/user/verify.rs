@@ -11,7 +11,7 @@ use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
 use crate::config::Config;
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
@@ -50,7 +50,7 @@ pub struct VerifyEdgeSessionResult {
 pub struct SessionVerificationContext<'a> {
     pub session_mgr: &'a Arc<SessionManager>,
     pub token_mgr: &'a Arc<TokenManager>,
-    pub shared_redis_client: &'a redis::Client,
+    pub shared_redis_client: &'a RedisRuntimeClient,
     pub shared_redis: &'a Arc<SharedRedisBus>,
     pub config: &'a Config,
 }

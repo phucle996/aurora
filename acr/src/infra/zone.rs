@@ -6,6 +6,7 @@
 //   - Nếu miscache mà không dính Negative Cache -> gọi Shared Redis `hierarchy.zone.get_zone_list`.
 // ======================================================================================================
 
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use std::collections::HashMap;
@@ -102,7 +103,7 @@ fn get_l1_cache() -> &'static SharedL1ZoneCache {
 /// [COMMENT]: Phân giải zone_code -> (zone_id, status) qua L1 -> Shared Redis L2 -> CP fallback.
 pub async fn resolve_code_to_id_and_status(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     zone_code: &str,
 ) -> Option<(String, String)> {
     let clean_code = zone_code.trim().to_lowercase();
@@ -158,7 +159,7 @@ pub async fn resolve_code_to_id_and_status(
 /// [COMMENT]: Lấy danh sách toàn bộ zones từ Shared L1 Cache
 pub async fn get_all_zones(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
 ) -> Vec<ZoneItem> {
     sync_zones_from_controlplane(shared_redis, redis_client).await;
 
@@ -290,7 +291,7 @@ async fn l1_set_negative(code: &str) {
 }
 
 async fn l2_lookup_code(
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     code: &str,
 ) -> Option<Option<(String, String)>> {
     let mut conn = redis_client.get_async_connection().await.ok()?;
@@ -315,7 +316,7 @@ async fn l2_lookup_code(
     }
 }
 
-async fn l2_set_negative(redis_client: &redis::Client, code: &str) {
+async fn l2_set_negative(redis_client: &RedisRuntimeClient, code: &str) {
     if let Ok(mut conn) = redis_client.get_async_connection().await {
         let redis_key = format!("zone:code:{}", code);
         let _: Result<(), _> = redis::cmd("SET")
@@ -330,7 +331,7 @@ async fn l2_set_negative(redis_client: &redis::Client, code: &str) {
 
 async fn sync_zones_from_controlplane(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
 ) {
     if catalog_refresh_not_due().await {
         return;

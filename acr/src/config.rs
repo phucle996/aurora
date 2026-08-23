@@ -47,6 +47,10 @@ pub struct Config {
     pub session_ttl_secs: u64,
     // Ngưỡng kích hoạt Trinity Refresh (mặc định: 900 giây - 15 phút)
     pub refresh_threshold_secs: u64,
+    // Redis topology is infrastructure-only. Compose uses a single node while
+    // Kubernetes uses Redis Cluster; business workflows do not branch on it.
+    pub auth_state_redis_mode: RedisMode,
+    pub shared_l2_redis_mode: RedisMode,
     // Địa chỉ kết nối OTLP Collector (gRPC endpoint cho Tracing + Metrics)
     pub otel_exporter_otlp_endpoint: String,
     // [COMMENT]: Danh sách các endpoint được phép bypass không cần kiểm tra token
@@ -58,6 +62,27 @@ pub struct Config {
     // [COMMENT]: Danh sách các origin được phép gọi API (đọc từ APP_ALLOWED_ORIGINS)
     pub allowed_origins: Vec<String>,
     pub oauth: OAuthConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedisMode {
+    Single,
+    Cluster,
+}
+
+fn redis_mode(name: &str) -> Result<RedisMode, AcrError> {
+    match env::var(name)
+        .unwrap_or_else(|_| "single".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "single" => Ok(RedisMode::Single),
+        "cluster" => Ok(RedisMode::Cluster),
+        _ => Err(AcrError::ConfigError(format!(
+            "{name} must be either single or cluster"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +205,8 @@ impl Config {
             .map_err(|_| {
                 AcrError::ConfigError("REFRESH_THRESHOLD_SECS must be a number".to_string())
             })?;
+        let auth_state_redis_mode = redis_mode("AUTH_STATE_REDIS_MODE")?;
+        let shared_l2_redis_mode = redis_mode("SHARED_L2_REDIS_MODE")?;
 
         // Endpoint OTel Collector (mặc định trỏ đến sidecar trong cùng Pod K8s)
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -244,6 +271,8 @@ impl Config {
             vault,
             session_ttl_secs,
             refresh_threshold_secs,
+            auth_state_redis_mode,
+            shared_l2_redis_mode,
             otel_exporter_otlp_endpoint,
             bypass_endpoints,
             app_public_domain,

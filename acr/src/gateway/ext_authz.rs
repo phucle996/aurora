@@ -8,6 +8,7 @@ use tonic::{Request, Response, Status};
 use crate::config::Config;
 use crate::gateway::csrf::verify_csrf_protection;
 use crate::gateway::ratelimit::RateLimiter;
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::redis::SessionManager;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
@@ -31,7 +32,7 @@ pub struct ExtAuthzService {
     sre_token_mgr: Arc<SreTokenManager>,
     config: Config,
     rate_limiter: Arc<RateLimiter>,
-    shared_redis_client: Arc<redis::Client>,
+    shared_redis_client: Arc<RedisRuntimeClient>,
     shared_redis: Arc<SharedRedisBus>,
     oauth: Arc<crate::user::oauth::OAuthProviderService>,
 }
@@ -42,7 +43,7 @@ impl ExtAuthzService {
         token_mgr: Arc<TokenManager>,
         sre_token_mgr: Arc<SreTokenManager>,
         config: Config,
-        shared_redis_client: Arc<redis::Client>,
+        shared_redis_client: Arc<RedisRuntimeClient>,
         shared_redis: Arc<SharedRedisBus>,
         oauth: Arc<crate::user::oauth::OAuthProviderService>,
     ) -> Self {
@@ -137,7 +138,7 @@ fn rewrite_render_context_path(path: &str, tenant_id: Option<&str>) -> Option<St
 }
 
 fn is_personal_only_neutral_path(method: &str, path: &str) -> bool {
-    (path == "/api/v1/tenants" && (method == "GET" || method == "POST"))
+    path == "/api/v1/tenants" && (method == "GET" || method == "POST")
 }
 
 fn rewrite_neutral_owner_path(path: &str, tenant_id: Option<&str>) -> Option<String> {
@@ -1133,6 +1134,7 @@ impl Authorization for ExtAuthzService {
             session_proof_challenge_id = Some(proof_id);
         }
 
+        let zone_control_workspace_id = extract_cookie_value(&cookie_header, COOKIE_WORKSPACE_ID);
         let zone_control_signed_headers = if path_without_query
             == "/zone-control/v1/transfer-tickets"
             || path_without_query.starts_with("/zone-control/v1/transfer-tickets/")
@@ -1160,6 +1162,7 @@ impl Authorization for ExtAuthzService {
             match crate::storage::control_assertion::attest_transfer_ticket_request(
                 crate::storage::control_assertion::GenericTransferTicketRequestContext {
                     claims: transfer_claims,
+                    workspace_id: zone_control_workspace_id.as_deref().unwrap_or_default(),
                     token_mgr: &self.token_mgr,
                     config: &self.config,
                     method,
@@ -1206,12 +1209,12 @@ impl Authorization for ExtAuthzService {
                 .unwrap_or_default();
             match crate::storage::control_assertion::authorize_storage_and_sign(
                 crate::storage::control_assertion::StorageControlWorkflowContext {
-                    session_mgr: &self.session_mgr,
                     token_mgr: &self.token_mgr,
                     config: &self.config,
                 },
                 crate::storage::control_assertion::StorageControlRequest {
                     claims: storage_claims,
+                    workspace_id: zone_control_workspace_id.as_deref().unwrap_or_default(),
                     headers: client_headers,
                     method,
                     path,

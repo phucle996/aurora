@@ -2,6 +2,7 @@
 // 📂 user/zone_resolution.rs — User Zone Context Resolution & Verification
 // ======================================================================================================
 
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
@@ -22,7 +23,7 @@ pub enum ZoneResolutionError {
 /// [COMMENT]: Trích xuất và phân giải zone context từ cookies hoặc headers dành cho User domain
 pub async fn resolve_zone_context(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,
 ) -> Result<(String, String, String), ZoneResolutionError> {
@@ -59,7 +60,7 @@ pub async fn resolve_zone_context(
 /// [COMMENT]: Phân giải và xác thực Zone dành riêng cho User thường.
 pub async fn resolve_and_verify_zone_user(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     claims: Option<&mut Claims>,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,
