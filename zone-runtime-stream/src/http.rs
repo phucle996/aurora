@@ -132,7 +132,15 @@ async fn runtime_stream(
         panel = %scope.panel_id,
         outcome = "allowed"
     );
-    let stream = event_stream(runtime, scope, receiver, permit, subscription, resumed);
+    let subscription_guard = SubscriptionGuard::new(runtime.clone(), scope.clone(), subscription);
+    let stream = event_stream(
+        runtime,
+        scope,
+        receiver,
+        permit,
+        subscription_guard,
+        resumed,
+    );
     let mut response = Sse::new(stream).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -146,15 +154,15 @@ fn event_stream(
     scope: RuntimeScope,
     mut receiver: tokio::sync::broadcast::Receiver<RuntimeFrame>,
     permit: tokio::sync::OwnedSemaphorePermit,
-    subscription: Arc<crate::stream::Subscription>,
+    subscription_guard: SubscriptionGuard,
     resumed: bool,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     stream! {
         let _permit = permit;
-        // The stream future is also dropped on client disconnect. A cleanup
-        // tail after the loop would not run in that case, so the guard owns
-        // the fan-out reference and releases it from Drop.
-        let _subscription_guard = SubscriptionGuard::new(runtime.clone(), scope.clone(), subscription.clone());
+        // The guard was created before the response body. Even if the body is
+        // dropped before its first poll, it still releases the fan-out client
+        // reference and connection accounting from Drop.
+        let _subscription_guard = subscription_guard;
         if resumed {
             yield Ok(Event::default().event("runtime.gap").id(next_event_id()).json_data(json!({"reason": "cursor_not_replayed"})).unwrap());
         }

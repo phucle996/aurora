@@ -32,13 +32,6 @@ pub struct Config {
     pub kubernetes_poll_interval_ms: u64,
     pub kubernetes_readiness_cap_seconds: u64,
 
-    /// [COMMENT]: NATS Core là soft-state Central↔Zone transport cho watch/runtime realtime.
-    /// Đây là endpoint độc lập với Zone-local JetStream KV.
-    pub nats_core_url: String,
-    pub nats_core_ca_cert: Option<String>,
-    pub nats_core_client_cert: Option<String>,
-    pub nats_core_client_key: Option<String>,
-
     /// [COMMENT]: Endpoint JetStream riêng của Zone; tuyệt đối không trỏ sang NATS Core trung tâm.
     pub nats_zone_url: String,
     /// Zone NATS trust root and credential file are deployment-owned secrets. The
@@ -115,8 +108,8 @@ pub struct Config {
     pub mail_stream_ca_cert_path: Option<String>,
     /// [COMMENT]: Plaintext customer/internal Kafka chỉ bật rõ ràng trong isolated dev.
     pub mail_stream_allow_plaintext_kafka: bool,
-    /// [COMMENT]: Consumer reverse report và local health observation có cadence độc lập.
-    pub mail_consumer_report_interval_ms: u64,
+    /// [COMMENT]: OTel runtime projection và local health observation có cadence độc lập.
+    pub mail_runtime_telemetry_interval_ms: u64,
     pub mail_health_observe_interval_ms: u64,
 
     // ============================================================================
@@ -223,26 +216,7 @@ impl Config {
                 3_600_u64,
             )
             .clamp(1, 3_600),
-            nats_core_url: required_env("NATS_URL")?,
-            nats_core_ca_cert: env::var("NATS_CA_CERT").ok(),
-            nats_core_client_cert: env::var("NATS_CLIENT_CERT").ok(),
-            nats_core_client_key: env::var("NATS_CLIENT_KEY").ok(),
-
-            nats_zone_url: {
-                // [COMMENT]: Không fallback NATS_URL vì đó là Core bus trung tâm; cross-wire sẽ phá isolation của Zone.
-                let value = required_env("NATS_ZONE_URL")?;
-                for central_variable in ["NATS_URL", "NATS_ADDR"] {
-                    if env::var(central_variable)
-                        .is_ok_and(|central_url| central_url.trim() == value.trim())
-                    {
-                        return Err(
-                            "NATS_ZONE_URL must not equal the central NATS Core endpoint"
-                                .to_owned(),
-                        );
-                    }
-                }
-                value
-            },
+            nats_zone_url: required_env("NATS_ZONE_URL")?,
             nats_zone_ca_cert: required_env("NATS_ZONE_TLS_CA")?,
             nats_zone_creds: required_env("NATS_ZONE_CREDS")?,
             nats_zone_client_cert: env::var("NATS_ZONE_TLS_CERT").ok(),
@@ -334,8 +308,8 @@ impl Config {
                 .filter(|path| !path.trim().is_empty()),
             mail_stream_allow_plaintext_kafka: env::var("MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA")
                 .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
-            mail_consumer_report_interval_ms: parse_env(
-                "MAIL_CONSUMER_REPORT_INTERVAL_MS",
+            mail_runtime_telemetry_interval_ms: parse_env(
+                "MAIL_RUNTIME_TELEMETRY_INTERVAL_MS",
                 5_000_u64,
             )
             .clamp(1_000, 60_000),

@@ -195,6 +195,60 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Durable handoff for the independent Mail consumer ownership workflow. JO
+-- writes this row only in the same transaction that accepts the Zone result.
+CREATE TABLE IF NOT EXISTS mail_consumer_billing_outbox (
+    source_event_id UUID PRIMARY KEY,
+    event_type VARCHAR(32) NOT NULL,
+    resource_id UUID NOT NULL,
+    resource_name VARCHAR(255) NOT NULL,
+    owner_id UUID NOT NULL,
+    owner_type VARCHAR(16) NOT NULL,
+    zone_id UUID NOT NULL,
+    source_version BIGINT NOT NULL,
+    effective_at TIMESTAMPTZ NOT NULL,
+    published_at TIMESTAMPTZ,
+    locked_by VARCHAR(255),
+    locked_until TIMESTAMPTZ,
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_error VARCHAR(512),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_mail_consumer_billing_version UNIQUE (resource_id, source_version),
+    CONSTRAINT ck_mail_consumer_billing_event CHECK (event_type IN ('RESOURCE_CREATED','RESOURCE_DELETED')),
+    CONSTRAINT ck_mail_consumer_billing_owner CHECK (owner_type IN ('PERSONAL','TENANT')),
+    CONSTRAINT ck_mail_consumer_billing_version CHECK (
+        (event_type='RESOURCE_CREATED' AND source_version=1)
+        OR (event_type='RESOURCE_DELETED' AND source_version=2)
+    ),
+    CONSTRAINT ck_mail_consumer_billing_name CHECK (length(btrim(resource_name)) BETWEEN 1 AND 255),
+    CONSTRAINT ck_mail_consumer_billing_attempt CHECK (attempt_count >= 0),
+    CONSTRAINT ck_mail_consumer_billing_lock CHECK (
+        (locked_by IS NULL AND locked_until IS NULL)
+        OR (locked_by IS NOT NULL AND locked_until IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS commercial_admission_projection (
+    owner_id UUID NOT NULL,
+    owner_type VARCHAR(16) NOT NULL,
+    policy_version BIGINT NOT NULL,
+    decision VARCHAR(32) NOT NULL,
+    restriction_reason VARCHAR(64),
+    effective_at TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ,
+    source_event_id UUID NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (owner_id, owner_type),
+    CONSTRAINT ck_mail_commercial_admission_owner CHECK (owner_type IN ('PERSONAL','TENANT')),
+    CONSTRAINT ck_mail_commercial_decision CHECK (decision IN ('ALLOW','SUSPEND_BILLABLE')),
+    CONSTRAINT ck_mail_commercial_admission_reason CHECK (
+        (decision='ALLOW' AND restriction_reason IS NULL)
+        OR (decision='SUSPEND_BILLABLE' AND restriction_reason IS NOT NULL)
+    ),
+    CONSTRAINT ck_mail_commercial_admission_version CHECK (policy_version > 0),
+    CONSTRAINT ck_mail_commercial_admission_window CHECK (valid_until IS NULL OR valid_until > effective_at)
+);
+
 -- [COMMENT]: JO reconciliation reads only the latest opaque projection. It no
 -- longer reconstructs plaintext commands from Mail business columns.
 CREATE TABLE IF NOT EXISTS mail_protected_projections (

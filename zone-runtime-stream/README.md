@@ -1,8 +1,8 @@
 # Zone Runtime Stream
 
 `zone-runtime-stream` là service runtime read-plane dùng chung cho toàn bộ
-workload trong một Zone. Managed Service là adapter đầu tiên; Hypervisor, Mail
-và Storage sẽ dùng cùng contract sau này.
+workload trong một Zone. Managed Service và Mail đã có adapter riêng;
+Hypervisor/Storage chỉ được bật khi có module-owned query contract tương ứng.
 
 Service này không thay thế Controlplane, Job Orchestrator hoặc Dataplane:
 
@@ -35,9 +35,10 @@ flowchart LR
     E --> B
 ```
 
-The browser does not poll Victoria and does not send PromQL/LogsQL. The Edge
-verifies the generic runtime ticket, strips browser-controlled scope headers and
-injects the trusted owner/workspace/Zone/resource scope.
+The browser does not poll Victoria and does not send PromQL/LogsQL. ACR signs an
+exact, short-lived runtime assertion; the Zone Edge verifies it against the
+module registration head, strips browser-controlled scope headers and injects
+the trusted owner/workspace/Zone/resource scope.
 
 ## Runtime scope
 
@@ -137,7 +138,7 @@ The Zone deployment template is
 [`k8s/zone-runtime-stream.yaml`](../k8s/zone-runtime-stream.yaml). It runs as a
 three-replica, stateless read plane with a read-only NetworkPolicy to the Zone
 Victoria services and ingress only from the Zone Public Edge. The public route
-and scoped `runtime.read` ticket remain a separate security gate; deploying this
+and scoped `runtime.read` assertion remain a separate security gate; deploying this
 service does not expose a direct host or browser path.
 
 `RUNTIME_STREAM_MAX_EVENT_BYTES` bounds each Victoria response embedded in an
@@ -159,10 +160,11 @@ network.
 
 ## Module rollout
 
-Managed Service is the first adapter. Its adapter owns only module-specific
-panel/query definitions. Future Hypervisor, Mail and Storage adapters must map
-their telemetry to the same metadata and event envelope; they must not add a new
-gateway, browser protocol or arbitrary query endpoint.
+Managed Service and Mail each own their module-specific panel/query definition.
+Mail accepts only `mail/consumer` scope and additionally fences every Victoria
+query by consumer, owner, workspace and Zone. Future Hypervisor and Storage
+adapters must follow the same envelope without adding a gateway, browser
+protocol or arbitrary query endpoint.
 
 ## Verification
 

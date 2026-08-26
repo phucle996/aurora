@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
-use crate::{mail_runtime, storage_metering, storage_usage, zone_state};
+use crate::{storage_metering, storage_usage, zone_state};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,21 +10,14 @@ pub struct RuntimeWorkers {
     config: Config,
     cache_redis: redis::Client,
     kafka: Arc<KafkaTransport>,
-    nats_client: async_nats::Client,
 }
 
 impl RuntimeWorkers {
-    pub fn new(
-        config: Config,
-        cache_redis: redis::Client,
-        kafka: Arc<KafkaTransport>,
-        nats_client: async_nats::Client,
-    ) -> Self {
+    pub fn new(config: Config, cache_redis: redis::Client, kafka: Arc<KafkaTransport>) -> Self {
         Self {
             config,
             cache_redis,
             kafka,
-            nats_client,
         }
     }
 
@@ -120,73 +113,6 @@ impl RuntimeWorkers {
             }
         };
 
-        let reports_config = self.config.clone();
-        let reports_redis = self.cache_redis.clone();
-        let reports_worker = async move {
-            let mut failures = 0_u32;
-            loop {
-                if let Err(error) = mail_runtime::reports::run_consumer_report_listener(
-                    &reports_config,
-                    &reports_redis,
-                )
-                .await
-                {
-                    Logger::sys_error(
-                        "workers.mail_reports",
-                        "Mail runtime report worker stopped; retrying",
-                        &error.to_string(),
-                    );
-                }
-                retry_delay("mail_reports", &mut failures).await;
-            }
-        };
-
-        let ingest_config = self.config.clone();
-        let ingest_redis = self.cache_redis.clone();
-        let ingest_nats = self.nats_client.clone();
-        let ingest_worker = async move {
-            let mut failures = 0_u32;
-            loop {
-                if let Err(error) = mail_runtime::ingest::run_runtime_report_nats_bridge(
-                    &ingest_config,
-                    &ingest_redis,
-                    &ingest_nats,
-                )
-                .await
-                {
-                    Logger::sys_error(
-                        "workers.mail_ingest",
-                        "Mail runtime NATS to Redis bridge stopped; retrying",
-                        &error.to_string(),
-                    );
-                }
-                retry_delay("mail_ingest", &mut failures).await;
-            }
-        };
-
-        let watch_config = self.config.clone();
-        let watch_redis = self.cache_redis.clone();
-        let watch_nats = self.nats_client.clone();
-        let watch_worker = async move {
-            let mut failures = 0_u32;
-            loop {
-                if let Err(error) = mail_runtime::watch::run_runtime_watch_bridge(
-                    &watch_config,
-                    &watch_redis,
-                    &watch_nats,
-                )
-                .await
-                {
-                    Logger::sys_error(
-                        "workers.mail_watch",
-                        "Mail runtime Redis to NATS bridge stopped; retrying",
-                        &error.to_string(),
-                    );
-                }
-                retry_delay("mail_watch", &mut failures).await;
-            }
-        };
-
         let watchdog_config = self.config.clone();
         let watchdog_redis = self.cache_redis.clone();
         let watchdog_worker = async move {
@@ -212,9 +138,6 @@ impl RuntimeWorkers {
             _ = metadata_worker => {}
             _ = storage_worker => {}
             _ = metering_worker => {}
-            _ = reports_worker => {}
-            _ = ingest_worker => {}
-            _ = watch_worker => {}
             _ = watchdog_worker => {}
         }
         Ok(())

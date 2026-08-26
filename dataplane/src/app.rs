@@ -29,7 +29,6 @@ use crate::workerpool::runtime::WorkerJobRuntime;
 ///
 pub struct AppContainer {
     pub config: Arc<Config>,
-    pub nats_core: Arc<crate::infra::nats_core::NatsCoreTransport>,
     pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     pub payload_keyring: Arc<crate::security::jobpayload::PayloadKeyring>,
@@ -45,7 +44,6 @@ impl AppContainer {
     pub fn new(boot: BootstrapResult) -> Self {
         Self {
             config: boot.config,
-            nats_core: boot.nats_core,
             kafka: boot.kafka,
             zone_kv: boot.zone_kv,
             payload_keyring: boot.payload_keyring,
@@ -124,11 +122,10 @@ impl AppContainer {
             .consumer_supervisor
             .start_mail_consumer_runtime_supervisor();
 
-        // [COMMENT]: Health aggregate ở Zone KV; consumer runtime realtime đi NATS Core và không chạm Redis.
-        crate::executor::mail::supervisor::MailWorkloadSupervisor::start_mail_runtime_reporting(
+        // [COMMENT]: Health aggregate ở Zone KV; consumer runtime đi thẳng OTel/Victoria của Zone.
+        crate::executor::mail::supervisor::MailWorkloadSupervisor::start_mail_runtime_observation(
             self.config.clone(),
             self.zone_kv.clone(),
-            self.nats_core.clone(),
             self.worker_pool.mail_runtime.clone(),
             self.worker_pool.cancel_token(),
         );

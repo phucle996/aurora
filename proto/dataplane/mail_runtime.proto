@@ -2,11 +2,12 @@ syntax = "proto3";
 
 package mail.runtime.v1;
 
-option go_package = "controlplane/internal/mail/transport/rpc/proto;mailproto";
+option go_package = "controlplane/internal/mail/transport/proto;mailproto";
 
-// [COMMENT]: Contract này chỉ mang desired state/template snapshot từ Controlplane xuống Zone
-// và runtime report từ Dataplane về Controlplane. Zone là routing envelope của mail outbox/stream;
-// workspace chỉ là authorization boundary tại Controlplane, vì vậy cả hai không nằm trong payload.
+// [COMMENT]: Contract này chỉ mang desired state/template snapshot từ Controlplane xuống Zone.
+// Runtime read state được OTel của Zone thu thập vào Victoria, không reverse-stream về Central.
+// Owner/workspace/Zone nằm trong consumer snapshot để Zone Public Edge có durable registration
+// khi kiểm tra ACR runtime assertion; các field này không được Dataplane dùng để authorize command.
 // Broker config chỉ xuất hiện dưới dạng ciphertext envelope; không message nào chứa plaintext credential,
 // rendered body hoặc template variables thô.
 
@@ -14,17 +15,6 @@ enum MailConsumerDesiredState {
   MAIL_CONSUMER_DESIRED_STATE_UNSPECIFIED = 0;
   MAIL_CONSUMER_DESIRED_STATE_PAUSED = 1;
   MAIL_CONSUMER_DESIRED_STATE_ENABLED = 2;
-}
-
-enum MailConsumerRuntimeState {
-  MAIL_CONSUMER_RUNTIME_STATE_UNSPECIFIED = 0;
-  MAIL_CONSUMER_RUNTIME_STATE_STOPPED = 1;
-  MAIL_CONSUMER_RUNTIME_STATE_STARTING = 2;
-  MAIL_CONSUMER_RUNTIME_STATE_RUNNING = 3;
-  MAIL_CONSUMER_RUNTIME_STATE_PAUSED = 4;
-  MAIL_CONSUMER_RUNTIME_STATE_DRAINING = 5;
-  MAIL_CONSUMER_RUNTIME_STATE_ERROR = 6;
-  MAIL_CONSUMER_RUNTIME_STATE_DEGRADED = 7;
 }
 
 message MailEventMetadataV1 {
@@ -111,6 +101,11 @@ message MailConsumerUpsertV1 {
   uint32 parallelism = 11;
   // [COMMENT]: SHA-256 32-byte của canonical config để phát hiện cùng version nhưng khác payload.
   bytes config_sha256 = 12;
+  // [COMMENT]: Runtime read registration phẳng; owner_id là user cho PERSONAL và tenant cho TENANT.
+  bytes owner_id = 13;
+  string owner_type = 14;
+  bytes workspace_id = 15;
+  bytes zone_id = 16;
 }
 
 message MailConsumerDeleteV1 {
@@ -122,46 +117,6 @@ message MailConsumerDeleteV1 {
   uint32 drain_timeout_seconds = 4;
   // [COMMENT]: Sanitized operator reason; không chứa secret hoặc customer payload.
   string reason = 5;
-}
-
-message MailConsumerRuntimeReportedV1 {
-  MailEventMetadataV1 metadata = 1;
-  bytes consumer_id = 2;
-  // [COMMENT]: Config version mà runtime thực tế đã observe/apply.
-  uint64 config_version = 3;
-  MailConsumerRuntimeState runtime_state = 4;
-  // [COMMENT]: Logical runtime instance (V1 là slot:<n>); không dùng làm metric label.
-  string instance_id = 5;
-  // [COMMENT]: Generation tăng sau mỗi COW swap/restart để fence runtime cũ.
-  uint64 runtime_generation = 6;
-  // [COMMENT]: Tổng lag snapshot, không phải source cho billing hay authorization.
-  uint64 consumer_lag = 7;
-  // [COMMENT]: Error taxonomy ổn định; rỗng khi runtime không ERROR.
-  string error_code = 8;
-  // [COMMENT]: Sanitized diagnostics, không chứa endpoint credential/message payload.
-  string error_message = 9;
-  // [COMMENT]: Monotonic trong cùng instance+generation; tạo event id mới cho từng heartbeat.
-  uint64 report_sequence = 10;
-  // [COMMENT]: UUID epoch của active watch lease; JO reject report thuộc watch window cũ.
-  string runtime_epoch = 11;
-}
-
-// [COMMENT]: Central service ghi watch request vào Shared L2 Redis Stream; JO bridge request
-// best-effort sang NATS Core để Controlplane không cần credential NATS và Dataplane không cần Redis.
-message MailConsumerRuntimeWatchRequestedV1 {
-  MailEventMetadataV1 metadata = 1;
-  bytes zone_id = 2;
-  bytes consumer_id = 3;
-  uint64 config_version = 4;
-  string runtime_epoch = 5;
-  int64 expires_at_unix_ms = 6;
-}
-
-// [COMMENT]: Consumer report có cardinality cao nên Dataplane gom bounded delta vào một NATS Core message.
-message MailConsumerRuntimeReportBatchV1 {
-  repeated MailConsumerRuntimeReportedV1 reports = 1;
-  // [COMMENT]: Zone nằm trong signed transport identity/subject và payload để JO fail-close khi cross-wire.
-  bytes zone_id = 2;
 }
 
 message MailTemplateVersionPublishedV1 {

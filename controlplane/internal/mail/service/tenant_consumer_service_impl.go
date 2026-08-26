@@ -3,22 +3,18 @@ package mailSvcImpl
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
-	"unicode"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	mailproto "controlplane/internal/mail/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -27,14 +23,13 @@ import (
 var tenantMailConsumerEventNamespace = uuid.MustParse("43de31a4-0c86-54e9-8384-47b33f541c28")
 
 type tenantConsumerServiceImpl struct {
-	repo        mailRepoInterface.TenantConsumerRepository
-	sharedRedis *goredis.Client
-	metrics     observability.WorkflowRecorder
+	repo    mailRepoInterface.TenantConsumerRepository
+	metrics observability.WorkflowRecorder
 }
 
 // NewTenantConsumerService khoi tao service quản lý consumer o scope Tenant.
-func NewTenantConsumerService(repo mailRepoInterface.TenantConsumerRepository, sharedRedis *goredis.Client, metrics observability.WorkflowRecorder) mailSvcInterface.TenantConsumerService {
-	return &tenantConsumerServiceImpl{repo: repo, sharedRedis: sharedRedis, metrics: metrics}
+func NewTenantConsumerService(repo mailRepoInterface.TenantConsumerRepository, metrics observability.WorkflowRecorder) mailSvcInterface.TenantConsumerService {
+	return &tenantConsumerServiceImpl{repo: repo, metrics: metrics}
 }
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Tenant.
@@ -124,6 +119,10 @@ func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mai
 		SenderVersion:   consumer.SenderVersion,
 		DesiredState:    mailproto.MailConsumerDesiredState_MAIL_CONSUMER_DESIRED_STATE_PAUSED,
 		Parallelism:     consumer.Parallelism,
+		OwnerId:         consumer.TenantID[:],
+		OwnerType:       "TENANT",
+		WorkspaceId:     consumer.WorkspaceID[:],
+		ZoneId:          consumer.ZoneID[:],
 	}
 
 	canonicalConfig, err := proto.MarshalOptions{Deterministic: true}.Marshal(upsert)
@@ -222,6 +221,8 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mai
 			result, reason = observability.ResultRejected, observability.ReasonBusy
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
 			result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
+		case errors.Is(err, mailTaxonomy.ErrCommercialAdmissionUnavailable):
+			result, reason = observability.ResultRejected, observability.ReasonUnavailable
 		}
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
@@ -323,6 +324,10 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mai
 		SenderVersion:   consumer.SenderVersion,
 		DesiredState:    desiredState,
 		Parallelism:     consumer.Parallelism,
+		OwnerId:         consumer.TenantID[:],
+		OwnerType:       "TENANT",
+		WorkspaceId:     consumer.WorkspaceID[:],
+		ZoneId:          consumer.ZoneID[:],
 	}
 
 	canonicalConfig, err := proto.MarshalOptions{Deterministic: true}.Marshal(upsert)
@@ -376,7 +381,6 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mai
 	return consumer, nil
 }
 
-// ChangeConsumerState thay doi trang thai pause/resume cua consumer.
 func (s *tenantConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.ChangeTenantConsumerState) (*mailEntity.ChangeTenantConsumerState, error) {
 	startedAt := time.Now()
 	// [COMMENT]: Lay consumer hien tai tu repository
@@ -529,167 +533,4 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mai
 	}
 	req.OperationID = outbox.EventID
 	return nil
-}
-
-func (s *tenantConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, req *mailEntity.WatchTenantConsumerRuntime) (out *mailEntity.WatchTenantConsumerRuntime, err error) {
-	startedAt := time.Now()
-	defer func() {
-		result, reason := observability.ResultFailure, observability.ReasonInternal
-		switch {
-		case err == nil:
-			result, reason = observability.ResultSuccess, observability.ReasonNone
-		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound):
-			result, reason = observability.ResultRejected, observability.ReasonNotFound
-		case errors.Is(err, mailTaxonomy.ErrRuntimeUnavailable):
-			result, reason = observability.ResultFailure, observability.ReasonUnavailable
-		}
-		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
-	}()
-
-	current, err := s.repo.GetByID(ctx, &mailEntity.GetTenantConsumer{
-		ActorUserID: req.ActorUserID,
-		TenantID:    req.TenantID,
-		ZoneID:      req.ZoneID,
-		ID:          req.ID,
-		WorkspaceID: req.WorkspaceID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	const watchTTL = 30 * time.Second
-	script := goredis.NewScript(`
-local clock=redis.call('TIME')
-local now=(tonumber(clock[1])*1000)+math.floor(tonumber(clock[2])/1000)
-local prefix=ARGV[1]..':'
-local lease=redis.call('GET',KEYS[1])
-if (not lease) or string.sub(lease,1,string.len(prefix)) ~= prefix then
-  lease=prefix..ARGV[3]
-end
-redis.call('SET',KEYS[1],lease,'PX',ARGV[4])
-redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',now)
-redis.call('ZADD',KEYS[2],now+tonumber(ARGV[4]),ARGV[2])
-redis.call('PEXPIRE',KEYS[2],tonumber(ARGV[4])*2)
-local snapshot=redis.call('GET',KEYS[3])
-if not snapshot then snapshot='' end
-return {lease,snapshot,now}
-`)
-	result, err := script.Run(
-		ctx,
-		s.sharedRedis,
-		[]string{
-			fmt.Sprintf("mail:runtime:{%s}:watch-active:%s", req.ID, req.ZoneID),
-			fmt.Sprintf("mail:runtime:{%s}:watchers:%s", req.ID, req.ZoneID),
-			fmt.Sprintf("mail:runtime:{%s}:snapshot:tenant", req.ID),
-		},
-		current.ConfigVersion,
-		req.ActorUserID.String(),
-		uuid.NewString(),
-		watchTTL.Milliseconds(),
-	).Slice()
-	if err != nil {
-		return nil, fmt.Errorf("mail tenant runtime watch: create lease: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
-	}
-	if len(result) != 3 {
-		return nil, fmt.Errorf("mail tenant runtime watch: invalid redis reply: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-
-	req.ConfigVersion = current.ConfigVersion
-	req.WatchLeaseID, _ = result[0].(string)
-	if req.WatchLeaseID == "" {
-		return nil, fmt.Errorf("mail tenant runtime watch: empty lease: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-	serverNowMS, _ := result[2].(int64)
-	_, runtimeEpoch, epochOK := strings.Cut(req.WatchLeaseID, ":")
-	if serverNowMS <= 0 || !epochOK || uuid.Validate(runtimeEpoch) != nil {
-		return nil, fmt.Errorf("mail tenant runtime watch: invalid lease epoch: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-	watchEventID := uuid.NewSHA1(
-		mailRuntimeWatchEventNamespace,
-		[]byte(fmt.Sprintf("%s:%s:%s", req.ZoneID, req.ID, runtimeEpoch)),
-	)
-	watchPayload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.MailConsumerRuntimeWatchRequestedV1{
-		Metadata: &mailproto.MailEventMetadataV1{
-			EventId:          watchEventID[:],
-			SchemaVersion:    1,
-			OccurredAtUnixMs: serverNowMS,
-			Producer:         "controlplane-mail-runtime-watch",
-		},
-		ZoneId:          req.ZoneID[:],
-		ConsumerId:      req.ID[:],
-		ConfigVersion:   current.ConfigVersion,
-		RuntimeEpoch:    runtimeEpoch,
-		ExpiresAtUnixMs: serverNowMS + watchTTL.Milliseconds(),
-	})
-	if marshalErr != nil {
-		return nil, fmt.Errorf("mail tenant runtime watch: encode NATS bridge request: %w", marshalErr)
-	}
-	if err = s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
-		Stream: "mail:runtime:watch-requests",
-		MaxLen: 10_000,
-		Approx: true,
-		Values: map[string]any{"payload": watchPayload},
-	}).Err(); err != nil {
-		return nil, fmt.Errorf("mail tenant runtime watch: enqueue NATS bridge request: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
-	}
-	req.WatchTTLSeconds = uint32(watchTTL / time.Second)
-	rawSnapshot, _ := result[1].(string)
-	if strings.TrimSpace(rawSnapshot) == "" {
-		return req, nil
-	}
-	watchEpoch := runtimeEpoch
-	var snapshot struct {
-		ConfigVersion   uint64                          `json:"config_version"`
-		RuntimeEpoch    string                          `json:"runtime_epoch"`
-		RuntimeRevision uint64                          `json:"runtime_revision"`
-		State           mailEntity.ConsumerRuntimeState `json:"state"`
-		ActiveInstances uint32                          `json:"active_instances"`
-		ConsumerLag     uint64                          `json:"consumer_lag"`
-		ErrorCode       string                          `json:"error_code"`
-		ErrorMessage    string                          `json:"error_message"`
-		ObservedAt      time.Time                       `json:"observed_at"`
-		ExpiresAt       time.Time                       `json:"expires_at"`
-	}
-	if json.Unmarshal([]byte(rawSnapshot), &snapshot) != nil {
-		return req, nil
-	}
-	validState := snapshot.State == mailEntity.ConsumerRuntimeStopped ||
-		snapshot.State == mailEntity.ConsumerRuntimeStarting ||
-		snapshot.State == mailEntity.ConsumerRuntimeRunning ||
-		snapshot.State == mailEntity.ConsumerRuntimePaused ||
-		snapshot.State == mailEntity.ConsumerRuntimeDraining ||
-		snapshot.State == mailEntity.ConsumerRuntimeError ||
-		snapshot.State == mailEntity.ConsumerRuntimeDegraded
-	validError := len(snapshot.ErrorCode) <= 100 && len(snapshot.ErrorMessage) <= 1024
-	for _, char := range snapshot.ErrorCode {
-		if !((char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_') {
-			validError = false
-			break
-		}
-	}
-	if strings.ContainsFunc(snapshot.ErrorMessage, unicode.IsControl) {
-		validError = false
-	}
-	if snapshot.ConfigVersion != current.ConfigVersion ||
-		!epochOK ||
-		snapshot.RuntimeEpoch != watchEpoch ||
-		snapshot.RuntimeRevision == 0 ||
-		!validState ||
-		!validError ||
-		snapshot.ActiveInstances > current.Parallelism ||
-		snapshot.ObservedAt.IsZero() ||
-		!snapshot.ExpiresAt.After(snapshot.ObservedAt) ||
-		!snapshot.ExpiresAt.After(time.Now().UTC()) {
-		return req, nil
-	}
-	req.RuntimeObserved = true
-	req.RuntimeEpoch = snapshot.RuntimeEpoch
-	req.RuntimeRevision = snapshot.RuntimeRevision
-	req.RuntimeState = snapshot.State
-	req.RuntimeActiveInstances = snapshot.ActiveInstances
-	req.RuntimeConsumerLag = snapshot.ConsumerLag
-	req.RuntimeErrorCode = snapshot.ErrorCode
-	req.RuntimeErrorMessage = snapshot.ErrorMessage
-	req.RuntimeObservedAt = snapshot.ObservedAt
-	req.RuntimeExpiresAt = snapshot.ExpiresAt
-	return req, nil
 }

@@ -20,11 +20,20 @@ const CONFIG_RECONCILED_KEY: &str = "mail.projection.reconciled";
 
 #[derive(Serialize)]
 struct ConsumerHeadWrite<'a> {
+    schema_version: u32,
+    runtime_read_enabled: bool,
+    module: &'a str,
+    resource_type: &'a str,
+    resource_id: &'a str,
     version: u64,
     event_id: &'a str,
     config_sha256: &'a str,
     desired_state: &'a str,
     tombstoned: bool,
+    owner_id: &'a str,
+    owner_type: &'a str,
+    workspace_id: &'a str,
+    zone_id: &'a str,
 }
 
 #[derive(Serialize)]
@@ -146,6 +155,10 @@ pub async fn apply_mail_consumer_upsert(
         || event.sender_version == 0
         || !matches!(event.desired_state, 1 | 2)
         || event.parallelism == 0
+        || uuid::Uuid::from_slice(&event.owner_id).is_err()
+        || !matches!(event.owner_type.as_str(), "PERSONAL" | "TENANT")
+        || uuid::Uuid::from_slice(&event.workspace_id).is_err()
+        || uuid::Uuid::from_slice(&event.zone_id).is_err()
     {
         return Err(ExecutorError::ExecutionFailed(
             "MAIL_CONSUMER_UPSERT_INVALID".to_string(),
@@ -228,6 +241,20 @@ pub async fn apply_mail_consumer_upsert(
     let consumer_id = uuid::Uuid::from_slice(&event.consumer_id)
         .map_err(|_| ExecutorError::ExecutionFailed("MAIL_CONSUMER_ID_INVALID".to_string()))?
         .to_string();
+    let owner_id = uuid::Uuid::from_slice(&event.owner_id)
+        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_OWNER_ID_INVALID".to_string()))?
+        .to_string();
+    let workspace_id = uuid::Uuid::from_slice(&event.workspace_id)
+        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_WORKSPACE_ID_INVALID".to_string()))?
+        .to_string();
+    let zone_id = uuid::Uuid::from_slice(&event.zone_id)
+        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_ZONE_ID_INVALID".to_string()))?
+        .to_string();
+    if zone_id != stream_zone_id {
+        return Err(ExecutorError::ExecutionFailed(
+            "MAIL_REGISTRATION_ZONE_MISMATCH".to_string(),
+        ));
+    }
     let event_hash: [u8; 32] =
         event.config_sha256.as_slice().try_into().map_err(|_| {
             ExecutorError::ExecutionFailed("MAIL_CONSUMER_HASH_INVALID".to_string())
@@ -272,9 +299,18 @@ pub async fn apply_mail_consumer_upsert(
                 });
             }
             if event.config_version == head.version {
-                if head.config_sha256 != config_hash
+                if head.schema_version != 1
+                    || !head.runtime_read_enabled
+                    || head.module != "mail"
+                    || head.resource_type != "consumer"
+                    || head.resource_id != consumer_id
+                    || head.config_sha256 != config_hash
                     || head.tombstoned
                     || head.desired_state != desired_state
+                    || head.owner_id != owner_id
+                    || head.owner_type != event.owner_type
+                    || head.workspace_id != workspace_id
+                    || head.zone_id != zone_id
                 {
                     return Err(ExecutorError::ExecutionFailed(
                         "MAIL_CONSUMER_VERSION_HASH_CONFLICT".to_string(),
@@ -305,11 +341,20 @@ pub async fn apply_mail_consumer_upsert(
             );
         }
         let head_value = serde_json::to_vec(&ConsumerHeadWrite {
+            schema_version: 1,
+            runtime_read_enabled: true,
+            module: "mail",
+            resource_type: "consumer",
+            resource_id: &consumer_id,
             version: event.config_version,
             event_id: &event_id,
             config_sha256: &config_hash,
             desired_state,
             tombstoned: false,
+            owner_id: &owner_id,
+            owner_type: &event.owner_type,
+            workspace_id: &workspace_id,
+            zone_id: &zone_id,
         })
         .map_err(|error| ExecutorError::ExecutionFailed(format!("MAIL_HEAD_ENCODE: {error}")))?;
         let result = match current {
@@ -400,11 +445,28 @@ pub async fn apply_mail_consumer_delete(
             }
         }
         let value = serde_json::to_vec(&ConsumerHeadWrite {
+            schema_version: 1,
+            runtime_read_enabled: false,
+            module: "mail",
+            resource_type: "consumer",
+            resource_id: &consumer_id,
             version: event.config_version,
             event_id: &event_id,
             config_sha256: "",
             desired_state: "DELETED",
             tombstoned: true,
+            owner_id: current_head
+                .as_ref()
+                .map_or("", |head| head.owner_id.as_str()),
+            owner_type: current_head
+                .as_ref()
+                .map_or("", |head| head.owner_type.as_str()),
+            workspace_id: current_head
+                .as_ref()
+                .map_or("", |head| head.workspace_id.as_str()),
+            zone_id: current_head
+                .as_ref()
+                .map_or("", |head| head.zone_id.as_str()),
         })
         .map_err(|error| ExecutorError::ExecutionFailed(format!("MAIL_HEAD_ENCODE: {error}")))?;
         let result = match current {

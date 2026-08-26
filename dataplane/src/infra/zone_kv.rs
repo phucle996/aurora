@@ -9,11 +9,24 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConsumerConfigHead {
+    pub schema_version: u32,
+    pub runtime_read_enabled: bool,
+    pub module: String,
+    pub resource_type: String,
+    pub resource_id: String,
     pub version: u64,
     pub event_id: String,
     pub config_sha256: String,
     pub desired_state: String,
     pub tombstoned: bool,
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub owner_type: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    #[serde(default)]
+    pub zone_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -77,13 +90,14 @@ pub struct StorageAccessRecord {
     pub policy_revision: u64,
 }
 
-/// [COMMENT]: Các bucket tách config, health, access và coordination để tải
+/// [COMMENT]: Các bucket tách config, health, access, admission và coordination để tải
 /// authorization ngắn hạn không ép retention hoặc quyền ACL của loại state khác.
 #[derive(Clone)]
 pub struct ZoneKvStore {
     config: kv::Store,
     health: kv::Store,
     access: kv::Store,
+    admission: kv::Store,
     coordination: kv::Store,
 }
 
@@ -202,6 +216,29 @@ impl ZoneKvStore {
                     .map_err(|get_error| format!("create Zone coordination KV: {create_error}; reopen failed: {get_error}"))?,
             },
         };
+        let runtime_replay = match js.get_key_value("AURORA_ZONE_RUNTIME_REPLAY").await {
+            Ok(store) => store,
+            Err(_) => match js
+                .create_key_value(kv::Config {
+                    bucket: "AURORA_ZONE_RUNTIME_REPLAY".to_string(),
+                    description: "Aurora Zone runtime assertion replay fence".to_string(),
+                    history: 1,
+                    max_age: Duration::from_secs(30),
+                    max_value_size: 1,
+                    max_bytes: 64 * 1024 * 1024,
+                    storage: StorageType::File,
+                    num_replicas: replicas,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(store) => store,
+                Err(create_error) => js
+                    .get_key_value("AURORA_ZONE_RUNTIME_REPLAY")
+                    .await
+                    .map_err(|get_error| format!("create Zone runtime replay KV: {create_error}; reopen failed: {get_error}"))?,
+            },
+        };
         let access = match js.get_key_value("AURORA_ZONE_ACCESS").await {
             Ok(store) => store,
             Err(_) => match js
@@ -231,13 +268,43 @@ impl ZoneKvStore {
                 }
             },
         };
+        let admission = match js.get_key_value("AURORA_ZONE_ADMISSION").await {
+            Ok(store) => store,
+            Err(_) => match js
+                .create_key_value(kv::Config {
+                    bucket: "AURORA_ZONE_ADMISSION".to_string(),
+                    description: "Aurora Zone storage commercial admission projections".to_string(),
+                    history: 1,
+                    max_age: Duration::from_secs(86_400 * 30),
+                    max_value_size: 32 * 1024,
+                    max_bytes: 256 * 1024 * 1024,
+                    storage: StorageType::File,
+                    num_replicas: replicas,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(store) => store,
+                Err(create_error) => {
+                    js.get_key_value("AURORA_ZONE_ADMISSION")
+                        .await
+                        .map_err(|get_error| {
+                            format!(
+                            "create Zone admission KV: {create_error}; reopen failed: {get_error}"
+                        )
+                        })?
+                }
+            },
+        };
 
         // [COMMENT]: Bucket tồn tại nhưng sai durability contract phải fail-fast thay vì âm thầm hạ HA.
         for (name, store) in [
             ("config", &config),
             ("health", &health),
             ("access", &access),
+            ("admission", &admission),
             ("coordination", &coordination),
+            ("runtime replay", &runtime_replay),
         ] {
             let status = store
                 .status()
@@ -247,7 +314,14 @@ impl ZoneKvStore {
                 || status.info.config.storage != StorageType::File
                 || status.info.config.num_replicas < replicas
                 || (name == "config" && !status.info.config.max_age.is_zero())
-                || (name != "config" && status.info.config.max_age != Duration::from_secs(86_400))
+                || (name == "admission"
+                    && status.info.config.max_age != Duration::from_secs(86_400 * 30))
+                || (name == "runtime replay"
+                    && status.info.config.max_age != Duration::from_secs(30))
+                || (name != "config"
+                    && name != "admission"
+                    && name != "runtime replay"
+                    && status.info.config.max_age != Duration::from_secs(86_400))
             {
                 return Err(format!(
                     "Zone {name} KV violates history, storage, replica or retention contract"
@@ -259,7 +333,12 @@ impl ZoneKvStore {
             health,
             coordination,
             access,
+            admission,
         }))
+    }
+
+    pub fn admission(&self) -> &kv::Store {
+        &self.admission
     }
 
     /// Idempotent CAS projection. A replay with identical content succeeds;

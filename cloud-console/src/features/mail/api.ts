@@ -3,27 +3,6 @@ import { criticalFetchJSON } from "@/shared/api/critical";
 
 export type MailDesiredState = "paused" | "enabled";
 export type MailSourceType = "kafka" | "redis_stream" | "nats_jetstream" | "rabbitmq";
-export type MailRuntimeState = "stopped" | "starting" | "running" | "paused" | "draining" | "error" | "degraded";
-
-export type MailConsumerRuntime = {
-  runtime_epoch: string;
-  runtime_revision: number;
-  state: MailRuntimeState;
-  active_instances: number;
-  consumer_lag: number;
-  error_code: string;
-  error_message: string;
-  observed_at: string;
-  expires_at: string;
-};
-
-export type MailConsumerRuntimeWatch = {
-  consumer_id: string;
-  config_version: number;
-  watch_lease_id: string;
-  watch_ttl_seconds: number;
-  runtime: MailConsumerRuntime | null;
-};
 
 export type MailConsumer = {
   id: string;
@@ -47,6 +26,17 @@ export type MailConsumer = {
   updated_at: string;
   // [COMMENT]: Mutation responses carry the outbox event ID; read responses may omit it.
   operation_id?: string;
+};
+
+export type RuntimeReadTicket = {
+  assertion: string;
+  signature: string;
+  key_id: string;
+  zone_id: string;
+  zone_code: string;
+  method: "GET";
+  path: string;
+  expires_at: string;
 };
 
 export type MailTemplate = {
@@ -120,12 +110,23 @@ export async function getMailConsumer(id: string, signal?: AbortSignal): Promise
   return requireData(response, "Mail consumer detail is missing");
 }
 
-export async function watchMailConsumerRuntime(id: string, signal?: AbortSignal): Promise<MailConsumerRuntimeWatch> {
-  const response = await fetchJSON<DataEnvelope<MailConsumerRuntimeWatch>>(
-    `/api/v1/mail/consumers/${encodeURIComponent(id)}/runtime/watch`,
-    { method: "POST", signal },
-  );
-  return requireData(response, "Mail consumer runtime watch response is missing");
+export async function mintMailConsumerRuntimeRead(
+  id: string,
+  panel: "health" | "metrics" | "logs" | "events",
+  fromSeconds: number,
+  signal?: AbortSignal,
+): Promise<RuntimeReadTicket> {
+  return fetchJSON<RuntimeReadTicket>("/api/v1/runtime/assertions", {
+    method: "POST",
+    body: {
+      resource_type: "mail_consumer",
+      resource_id: id,
+      panel,
+      from_seconds: fromSeconds,
+    },
+    signal,
+    cache: "no-store",
+  });
 }
 
 export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer & { operation_id: string }> {

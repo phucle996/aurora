@@ -175,6 +175,22 @@ message RoleEntry {
   repeated string permissions = 1;
 }
 
+// RuntimeReadAuthorizationRequestV1 is the flat IAM decision request used
+// before ACR mints a short-lived Zone runtime-read assertion. The browser does
+// not choose permission: ACR maps the reviewed resource type to the exact
+// permission and IAM evaluates it against the current Personal/Tenant role.
+message RuntimeReadAuthorizationRequestV1 {
+  bytes actor_user_id = 1;
+  string actor_username = 2;
+  bytes tenant_id = 3;
+  bytes workspace_id = 4;
+  string permission = 5;
+}
+
+message RuntimeReadAuthorizationResponseV1 {
+  bool allowed = 1;
+}
+
 // Pending self-user MFA enrollment stored in Auth-State Redis.
 // This is an internal short-lived record; it is not a public HTTP payload.
 message MfaSetupPending {

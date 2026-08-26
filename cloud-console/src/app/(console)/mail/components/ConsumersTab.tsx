@@ -14,26 +14,14 @@ import { Label } from "@/components/ui/label";
 import { type APIError } from "@/shared/api/http";
 import { getMailEstimate } from "@/features/billing/api";
 import { formatMicroUnits } from "@/features/billing/money";
-import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, watchMailConsumerRuntime, type ConsumerWrite, type MailConsumer, type MailConsumerRuntimeWatch, type MailRuntimeState, type MailSourceType, updateMailConsumer } from "@/features/mail/api";
+import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, mintMailConsumerRuntimeRead, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/features/mail/api";
 import { useRealtime } from "@/realtime/provider";
+import { publicRuntimeConfig } from "@/runtime-config";
 
 type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type ConsumerForm = ConsumerWrite & { code: string };
 type MailConsumerJobNotification = { operation?: unknown; resource_id?: string; status?: string };
-type MailConsumerRuntimeNotification = {
-  scope?: unknown;
-  consumer_id?: unknown;
-  config_version?: unknown;
-  runtime_epoch?: unknown;
-  runtime_revision?: unknown;
-  state?: unknown;
-  active_instances?: unknown;
-  consumer_lag?: unknown;
-  error_code?: unknown;
-  error_message?: unknown;
-  observed_at?: unknown;
-  expires_at?: unknown;
-};
+type RuntimeHealth = { state: string; activeInstances: number; observedAt: string };
 
 const emptyForm: ConsumerForm = {
   code: "", name: "", source_type: "kafka", broker_resource_id: "", topic: "", consumer_group: "",
@@ -62,6 +50,8 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   const [editing, setEditing] = useState<MailConsumer | null>(null);
   const [form, setForm] = useState<ConsumerForm>(emptyForm);
   const [detailConsumerID, setDetailConsumerID] = useState<string | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth | null>(null);
+  const [runtimeStreamStatus, setRuntimeStreamStatus] = useState<"idle" | "connecting" | "open" | "error">("idle");
 
 	const consumers = useQuery({
     queryKey,
@@ -80,20 +70,6 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     queryFn: ({ signal }) => getMailConsumer(detailConsumerID as string, signal),
     enabled: enabled && Boolean(detailConsumerID),
   });
-  const runtimeWatchKey = useMemo(
-    () => ["mail", scopeKey, "consumer-runtime-watch", detailConsumerID] as const,
-    [detailConsumerID, scopeKey],
-  );
-  const runtimeWatch = useQuery({
-    queryKey: runtimeWatchKey,
-    queryFn: ({ signal }) => watchMailConsumerRuntime(detailConsumerID as string, signal),
-    enabled: enabled && Boolean(detailConsumerID),
-    // [COMMENT]: Đây là lease renewal khi Detail còn mở, không phải status polling. Runtime delta
-    // giữa hai lần renew đi qua Centrifugo và rời màn hình sẽ dừng request hoàn toàn.
-    refetchInterval: 20_000,
-    refetchIntervalInBackground: false,
-    retry: false,
-  });
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return consumers.data ?? [];
@@ -107,63 +83,145 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
       void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumers"] });
       if (detailConsumerID === payload.resource_id) {
         void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumer-detail", detailConsumerID] });
-        // [COMMENT]: Promotion có thể đổi active config version; renew ngay để tạo epoch mới
-        // thay vì giữ runtime generation cũ tới interval kế tiếp.
-        void queryClient.invalidateQueries({ queryKey: runtimeWatchKey });
       }
     });
-  }, [detailConsumerID, queryClient, runtimeWatchKey, scopeKey, subscribeToStream]);
+  }, [detailConsumerID, queryClient, scopeKey, subscribeToStream]);
 
   useEffect(() => {
-    return subscribeToStream("runtime", "mail.consumer.runtime.changed", (payload: MailConsumerRuntimeNotification) => {
-      if (
-        !detailConsumerID ||
-        payload.consumer_id !== detailConsumerID ||
-        typeof payload.config_version !== "number" ||
-        typeof payload.runtime_epoch !== "string" ||
-        typeof payload.runtime_revision !== "number" ||
-        typeof payload.state !== "string" ||
-        typeof payload.active_instances !== "number" ||
-        typeof payload.consumer_lag !== "number" ||
-        typeof payload.error_code !== "string" ||
-        typeof payload.error_message !== "string" ||
-        typeof payload.observed_at !== "string" ||
-        typeof payload.expires_at !== "string"
-      ) return;
-      const configVersion = payload.config_version;
-      const runtimeEpoch = payload.runtime_epoch;
-      const runtimeRevision = payload.runtime_revision;
-      const runtimeState = payload.state as MailRuntimeState;
-      const activeInstances = payload.active_instances;
-      const consumerLag = payload.consumer_lag;
-      const errorCode = payload.error_code;
-      const errorMessage = payload.error_message;
-      const observedAt = payload.observed_at;
-      const expiresAt = payload.expires_at;
-      queryClient.setQueryData<MailConsumerRuntimeWatch>(runtimeWatchKey, (current) => {
-        if (!current || current.consumer_id !== detailConsumerID) return current;
-        const watchEpoch = current.watch_lease_id.split(":", 2)[1];
-        if (watchEpoch !== runtimeEpoch || current.config_version !== configVersion) return current;
-        // [COMMENT]: Realtime revision chỉ tiến lên trong cùng watch epoch; event reorder không
-        // được rollback badge/lag mới hơn.
-        if (current.runtime && current.runtime.runtime_revision >= runtimeRevision) return current;
-        return {
-          ...current,
-          runtime: {
-            runtime_epoch: runtimeEpoch,
-            runtime_revision: runtimeRevision,
-            state: runtimeState,
-            active_instances: activeInstances,
-            consumer_lag: consumerLag,
-            error_code: errorCode,
-            error_message: errorMessage,
-            observed_at: observedAt,
-            expires_at: expiresAt,
-          },
-        };
-      });
-    });
-  }, [detailConsumerID, queryClient, runtimeWatchKey, subscribeToStream]);
+    if (!enabled || !detailConsumerID) {
+      return;
+    }
+    const controller = new AbortController();
+    let latestSampleAt = 0;
+    const freshness = window.setInterval(() => {
+      if (latestSampleAt > 0 && Date.now() - latestSampleAt > 45_000) {
+        latestSampleAt = 0;
+        setRuntimeHealth(null);
+      }
+    }, 5_000);
+
+    void (async () => {
+      while (!controller.signal.aborted) {
+        try {
+          const ticket = await mintMailConsumerRuntimeRead(
+            detailConsumerID,
+            "health",
+            60,
+            controller.signal,
+          );
+          const baseDomain = publicRuntimeConfig()?.zonePublicBaseDomain ?? "";
+          const ticketExpiresAt = Date.parse(ticket.expires_at);
+          const expectedPath = `/zone-public/v1/runtime/mail/consumer/${detailConsumerID}/health?from_seconds=60`;
+          if (
+            !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(ticket.zone_code) ||
+            baseDomain.length > 253 ||
+            !baseDomain.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) ||
+            ticket.method !== "GET" ||
+            ticket.path !== expectedPath ||
+            !Number.isFinite(ticketExpiresAt) ||
+            ticketExpiresAt <= Date.now()
+          ) {
+            throw new Error("Runtime assertion response is invalid");
+          }
+          const response = await fetch(`https://${ticket.zone_code}.${baseDomain}${ticket.path}`, {
+            method: "GET",
+            headers: {
+              Accept: "text/event-stream",
+              "X-Aurora-Runtime-Assertion": ticket.assertion,
+              "X-Aurora-Runtime-Signature": ticket.signature,
+              "X-Aurora-Runtime-Key-Id": ticket.key_id,
+            },
+            credentials: "omit",
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          if (!response.ok || !response.body) throw new Error("Zone runtime stream is unavailable");
+          setRuntimeStreamStatus("open");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let eventType = "message";
+          let dataLines: string[] = [];
+          while (!controller.signal.aborted) {
+            const chunk = await reader.read();
+            buffer += decoder.decode(chunk.value ?? new Uint8Array(), { stream: !chunk.done });
+            let boundary = buffer.indexOf("\n");
+            while (boundary >= 0) {
+              const line = buffer.slice(0, boundary).replace(/\r$/, "");
+              buffer = buffer.slice(boundary + 1);
+              if (line === "") {
+                if ((eventType === "runtime.snapshot" || eventType === "runtime.metric") && dataLines.length > 0) {
+                  const frame = JSON.parse(dataLines.join("\n")) as {
+                    payload?: { data?: { data?: { result?: unknown } } };
+                  };
+                  const result = frame.payload?.data?.data?.result;
+                  if (Array.isArray(result)) {
+                    const states: number[] = [];
+                    let newestSampleAt = 0;
+                    for (const series of result) {
+                      if (!series || typeof series !== "object") continue;
+                      const values = (series as { values?: unknown }).values;
+                      if (!Array.isArray(values) || values.length === 0) continue;
+                      const latest = values[values.length - 1];
+                      if (!Array.isArray(latest) || latest.length < 2) continue;
+                      const sampleAt = Number(latest[0]) * 1_000;
+                      const value = Number(latest[1]);
+                      if (Number.isFinite(sampleAt)) newestSampleAt = Math.max(newestSampleAt, sampleAt);
+                      if (Number.isInteger(value) && value >= 1 && value <= 7) states.push(value);
+                    }
+                    const priority = [6, 7, 5, 2, 3, 4, 1];
+                    const selected = priority.find((state) => states.includes(state));
+                    const labels: Record<number, string> = { 1: "stopped", 2: "starting", 3: "running", 4: "paused", 5: "draining", 6: "error", 7: "degraded" };
+                    if (selected && newestSampleAt > 0 && Date.now() - newestSampleAt <= 45_000) {
+                      latestSampleAt = newestSampleAt;
+                      setRuntimeHealth({
+                        state: labels[selected],
+                        activeInstances: states.filter((state) => state !== 1).length,
+                        observedAt: new Date(newestSampleAt).toISOString(),
+                      });
+                    } else {
+                      latestSampleAt = 0;
+                      setRuntimeHealth(null);
+                    }
+                  }
+                } else if (eventType === "stream.error") {
+                  throw new Error("Zone runtime stream expired");
+                }
+                eventType = "message";
+                dataLines = [];
+              } else if (line.startsWith("event:")) {
+                eventType = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                dataLines.push(line.slice(5).trimStart());
+              }
+              boundary = buffer.indexOf("\n");
+            }
+            if (chunk.done) break;
+          }
+        } catch {
+          if (controller.signal.aborted) return;
+          setRuntimeStreamStatus("error");
+        }
+        await new Promise<void>((resolve) => {
+          const abort = () => {
+            window.clearTimeout(retry);
+            resolve();
+          };
+          const retry = window.setTimeout(() => {
+            controller.signal.removeEventListener("abort", abort);
+            resolve();
+          }, 1_000 + Math.floor(Math.random() * 500));
+          controller.signal.addEventListener("abort", abort, { once: true });
+        });
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      window.clearInterval(freshness);
+    };
+  }, [detailConsumerID, enabled]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -240,8 +298,8 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
       <Dialog open={Boolean(detailConsumerID)} onOpenChange={(open) => {
         if (!open && detailConsumerID) {
-          // [COMMENT]: Xóa soft-state cache local khi đóng để lần mở sau không flash snapshot epoch cũ.
-          queryClient.removeQueries({ queryKey: ["mail", scopeKey, "consumer-runtime-watch", detailConsumerID] });
+          setRuntimeHealth(null);
+          setRuntimeStreamStatus("idle");
           setDetailConsumerID(null);
         }
       }}>
@@ -262,18 +320,17 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
                 <div><div className="text-xs text-muted-foreground">Source</div><div className="mt-1">{sourceLabels[consumerDetail.data.source_type].name} · <span className="font-mono">{consumerDetail.data.topic}</span></div></div>
                 <div><div className="text-xs text-muted-foreground">Template</div><div className="mt-1 font-mono">{consumerDetail.data.template_id} · v{consumerDetail.data.template_version}</div></div>
               </div>
-              {runtimeWatch.data?.runtime ? (
+              {runtimeHealth ? (
                 <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
-                  <div><div className="text-xs text-muted-foreground">Reported runtime</div><Badge variant="outline" className="mt-1">{runtimeWatch.data.runtime.state}</Badge></div>
-                  <div><div className="text-xs text-muted-foreground">Active logical slots</div><div className="mt-1 font-mono">{runtimeWatch.data.runtime.active_instances} / {consumerDetail.data.parallelism}</div></div>
-                  <div><div className="text-xs text-muted-foreground">Reported config</div><div className="mt-1 font-mono">v{runtimeWatch.data.config_version}</div></div>
-                  <div><div className="text-xs text-muted-foreground">Last report</div><div className="mt-1">{new Date(runtimeWatch.data.runtime.observed_at).toLocaleString()}</div></div>
-                  {(runtimeWatch.data.runtime.error_code || runtimeWatch.data.runtime.error_message) && <div className="sm:col-span-2 rounded-md bg-destructive/5 p-3 text-sm text-destructive"><div className="font-mono">{runtimeWatch.data.runtime.error_code}</div>{runtimeWatch.data.runtime.error_message && <div className="mt-1">{runtimeWatch.data.runtime.error_message}</div>}</div>}
+                  <div><div className="text-xs text-muted-foreground">Zone runtime</div><Badge variant="outline" className="mt-1">{runtimeHealth.state}</Badge></div>
+                  <div><div className="text-xs text-muted-foreground">Active logical slots</div><div className="mt-1 font-mono">{runtimeHealth.activeInstances} / {consumerDetail.data.parallelism}</div></div>
+                  <div><div className="text-xs text-muted-foreground">Runtime source</div><div className="mt-1">Zone OTel · Victoria</div></div>
+                  <div><div className="text-xs text-muted-foreground">Last sample</div><div className="mt-1">{new Date(runtimeHealth.observedAt).toLocaleString()}</div></div>
                 </div>
-              ) : runtimeWatch.isError ? (
-                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">Runtime watch is temporarily unavailable. Business configuration remains available.</div>
+              ) : runtimeStreamStatus === "error" ? (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">Zone runtime stream is reconnecting. Business configuration remains available.</div>
               ) : (
-                <div className="flex items-center gap-2 rounded-lg border border-dashed p-5 text-sm text-muted-foreground">{runtimeWatch.isFetching && <Loader2 className="size-4 animate-spin" />}Waiting for a fresh runtime snapshot. This is distinct from a confirmed stopped state.</div>
+                <div className="flex items-center gap-2 rounded-lg border border-dashed p-5 text-sm text-muted-foreground">{runtimeStreamStatus === "connecting" && <Loader2 className="size-4 animate-spin" />}Waiting for a fresh Zone runtime snapshot. This is distinct from a confirmed stopped state.</div>
               )}
             </div>
           ) : null}
@@ -305,7 +362,11 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         {consumers.isLoading ? <div className="flex items-center justify-center gap-2 p-12 text-sm text-muted-foreground"><Loader2 className="animate-spin" />Loading consumers…</div> : consumers.isError ? <div className="p-10 text-center text-sm text-destructive">{errorMessage(consumers.error)}</div> : visible.length === 0 ? <div className="p-12 text-center text-sm text-muted-foreground">No consumers in this workspace.</div> : (
           <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr><th className="px-4 py-3">Consumer</th><th className="px-4 py-3">Stream source</th><th className="px-4 py-3">Template / sender</th><th className="px-4 py-3">Desired state</th><th className="px-4 py-3">Version</th><th className="px-4 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y">
             {visible.map((consumer) => <tr key={consumer.id} className="hover:bg-muted/20"><td className="px-4 py-3"><div className="font-medium">{consumer.name}</div><div className="font-mono text-[11px] text-muted-foreground">{consumer.id}</div></td><td className="px-4 py-3"><Badge variant="outline" className="mb-1">{sourceLabels[consumer.source_type].name}</Badge>{!consumer.source_configured && <Badge variant="outline" className="mb-1 ml-1 text-amber-600">Needs credentials</Badge>}<div className="font-mono text-xs">{consumer.topic}</div><div className="text-xs text-muted-foreground">{consumer.consumer_group}</div></td><td className="px-4 py-3 text-xs"><div>{consumer.template_id} · v{consumer.template_version}</div><div className="text-muted-foreground">{consumer.sender_profile_id} · v{consumer.sender_version}</div></td><td className="px-4 py-3"><Badge variant="outline">{consumer.desired_state}</Badge></td><td className="px-4 py-3 font-mono text-xs">v{consumer.config_version}</td><td className="px-4 py-3"><div className="flex justify-end gap-1">
-              <Button variant="ghost" size="icon-sm" title="View runtime detail" onClick={() => setDetailConsumerID(consumer.id)}><Eye /></Button>
+              <Button variant="ghost" size="icon-sm" title="View runtime detail" onClick={() => {
+                setRuntimeHealth(null);
+                setRuntimeStreamStatus("connecting");
+                setDetailConsumerID(consumer.id);
+              }}><Eye /></Button>
               {canUpdate && <Button variant="ghost" size="icon-sm" title="Edit" onClick={() => openEdit(consumer)}><Pencil /></Button>}
               {canUpdate && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : consumer.source_configured ? "Resume" : "Configure broker credentials before resume"} disabled={stateChange.isPending || (consumer.desired_state !== "enabled" && !consumer.source_configured)} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
               {canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" className="text-destructive" title="Delete" />}><Trash2 /></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {consumer.name}?</AlertDialogTitle><AlertDialogDescription>An enabled consumer will drain before deletion. In-flight messages may finish.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(consumer)}>Request deletion</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}

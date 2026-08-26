@@ -53,6 +53,7 @@ type IAMModule struct {
 	lifecycleFactRelay                   *iamSvcImpl.LifecycleFactRelay
 	deviceRuntimeRevokeRelay             *iamStream.DeviceRuntimeRevokeRelay
 	billingAuthorizationRedisHandler     *iamPubsubHandler.BillingAuthorizationRedisHandler
+	runtimeReadAuthorizationRedisHandler *iamPubsubHandler.RuntimeReadAuthorizationRedisHandler
 	authRedisHandler                     *iamPubsubHandler.AuthRedisHandler
 	devicePresenceProjectionHandler      *iamPubsubHandler.DevicePresenceProjectionRedisHandler
 	deviceSessionCapacityEvictionHandler *iamPubsubHandler.DeviceSessionCapacityEvictionRedisHandler
@@ -165,6 +166,18 @@ func NewModule(
 		rds,
 		authRedis,
 		cacheEngine,
+	)
+	if err != nil {
+		return nil, err
+	}
+	personalRuntimeReadAuthorizationRepo := iamRepoImpl.NewPersonalRuntimeReadAuthorizationRepository(cacheEngine)
+	personalRuntimeReadAuthorizationSvc := iamSvcImpl.NewPersonalRuntimeReadAuthorizationService(personalRuntimeReadAuthorizationRepo)
+	tenantRuntimeReadAuthorizationRepo := iamRepoImpl.NewTenantRuntimeReadAuthorizationRepository(cacheEngine)
+	tenantRuntimeReadAuthorizationSvc := iamSvcImpl.NewTenantRuntimeReadAuthorizationService(tenantRuntimeReadAuthorizationRepo)
+	runtimeReadAuthorizationRedisHandler, err := iamPubsubHandler.NewRuntimeReadAuthorizationRedisHandler(
+		rds,
+		personalRuntimeReadAuthorizationSvc,
+		tenantRuntimeReadAuthorizationSvc,
 	)
 	if err != nil {
 		return nil, err
@@ -391,6 +404,7 @@ func NewModule(
 		devicePlatformSvcImpl:                devicePlatformSvc,
 		SessionRefreshService:                refreshSvc,
 		billingAuthorizationRedisHandler:     billingAuthorizationRedisHandler,
+		runtimeReadAuthorizationRedisHandler: runtimeReadAuthorizationRedisHandler,
 		authRedisHandler:                     authRedisHandler,
 		devicePresenceProjectionHandler:      devicePresenceProjectionHandler,
 		deviceSessionCapacityEvictionHandler: deviceSessionCapacityEvictionHandler,

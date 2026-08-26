@@ -28,6 +28,11 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
+	if m.runtimeReadAuthorizationRedisHandler != nil {
+		if err := m.runtimeReadAuthorizationRedisHandler.Start(); err != nil {
+			return fmt.Errorf("iam bootstrap: start runtime-read authorization Redis handler: %w", err)
+		}
+	}
 	if m.tenantAccessRedisHandler != nil {
 		if err := m.tenantAccessRedisHandler.Start(); err != nil {
 			return err
@@ -74,6 +79,9 @@ func (m *IAMModule) Stop() {
 	}
 	if m.billingAuthorizationRedisHandler != nil {
 		m.billingAuthorizationRedisHandler.Stop()
+	}
+	if m.runtimeReadAuthorizationRedisHandler != nil {
+		m.runtimeReadAuthorizationRedisHandler.Stop()
 	}
 	if m.tenantAccessRedisHandler != nil {
 		m.tenantAccessRedisHandler.Stop()

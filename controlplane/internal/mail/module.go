@@ -1,6 +1,6 @@
 // Mail module chỉ wire bốn luồng rõ ràng:
-// Personal/Tenant × Consumer/Template. PostgreSQL giữ business data; Cache Redis chỉ giữ runtime
-// watch soft state. CDC/job-proxy đọc outbox bằng logical replication và không poll DB trong process này.
+// Personal/Tenant × Consumer/Template. PostgreSQL giữ business data; runtime read thuộc Zone
+// OTel/Victoria. CDC/job-proxy đọc outbox bằng logical replication và không poll DB trong process này.
 
 package mail
 
@@ -47,7 +47,6 @@ type Module struct {
 	TenantTemplateHandler   *mailHandler.TenantTemplateHandler
 
 	CommercialAdmissionProjection *mailStream.CommercialAdmissionProjectionConsumer
-	PricingReadinessProjection    *mailStream.PricingReadinessProjectionConsumer
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -108,35 +107,13 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Clien
 	if commercialAdmissionProjection == nil {
 		return nil, errors.New("mail module: failed to construct commercial admission projection consumer")
 	}
-	commercialAdmissionRepo := mailRepoImpl.NewMailCommercialAdmissionRepo(db, cfg)
-	if commercialAdmissionRepo == nil {
-		return nil, errors.New("mail module: failed to construct commercial admission repository")
-	}
-	pricingReadinessRepo := mailRepoImpl.NewMailPricingReadinessProjectionRepo(runtimeRedis)
-	if pricingReadinessRepo == nil {
-		return nil, errors.New("mail module: failed to construct pricing readiness repository")
-	}
-	pricingReadinessProjectionSvc := mailSvcImpl.NewMailPricingReadinessProjectionService(pricingReadinessRepo)
-	if pricingReadinessProjectionSvc == nil {
-		return nil, errors.New("mail module: failed to construct pricing readiness projection service")
-	}
-	pricingReadinessProjection := mailStream.NewPricingReadinessProjectionConsumer(runtimeRedis, pricingReadinessProjectionSvc)
-	if pricingReadinessProjection == nil {
-		return nil, errors.New("mail module: failed to construct pricing readiness projection consumer")
-	}
-	pricingReadinessGate := mailSvcImpl.NewMailPricingReadinessGateService(pricingReadinessRepo)
-	if pricingReadinessGate == nil {
-		return nil, errors.New("mail module: failed to construct pricing readiness gate service")
-	}
 
-	// [COMMENT]: Cache Redis chỉ giữ watch lease và runtime snapshot có TTL; cấu hình business
-	// vẫn nằm trong PostgreSQL và runtime động không đi qua Zone NATS KV.
 	workflowMetrics := otel.WorkflowRecorder("mail")
-	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, commercialAdmissionRepo, pricingReadinessGate, runtimeRedis, workflowMetrics)
+	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, workflowMetrics)
 	if personalConsumerSvc == nil {
 		return nil, errors.New("mail module: failed to construct personal consumer service")
 	}
-	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, commercialAdmissionRepo, pricingReadinessGate, runtimeRedis, workflowMetrics)
+	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, workflowMetrics)
 	if tenantConsumerSvc == nil {
 		return nil, errors.New("mail module: failed to construct tenant consumer service")
 	}
@@ -181,7 +158,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Clien
 		PersonalTemplateHandler:       personalTemplateHandler,
 		TenantTemplateHandler:         tenantTemplateHandler,
 		CommercialAdmissionProjection: commercialAdmissionProjection,
-		PricingReadinessProjection:    pricingReadinessProjection,
 	}, nil
 }
 
@@ -192,14 +168,6 @@ func (m *Module) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	if m.IsEnabled() && m.PricingReadinessProjection != nil {
-		if err := m.PricingReadinessProjection.Start(); err != nil {
-			if m.CommercialAdmissionProjection != nil {
-				m.CommercialAdmissionProjection.Stop()
-			}
-			return err
-		}
-	}
 	return nil
 }
 
@@ -207,9 +175,6 @@ func (m *Module) Start(ctx context.Context) error {
 func (m *Module) Stop(ctx context.Context) error {
 	if m.IsEnabled() && m.CommercialAdmissionProjection != nil {
 		m.CommercialAdmissionProjection.Stop()
-	}
-	if m.IsEnabled() && m.PricingReadinessProjection != nil {
-		m.PricingReadinessProjection.Stop()
 	}
 	return nil
 }

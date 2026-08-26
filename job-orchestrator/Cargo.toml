@@ -29,7 +29,6 @@ tonic = { version = "0.12", features = ["tls-roots"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-async-nats = "0.47"
 krafka = { version = "0.11.0", default-features = false, features = ["zstd", "native-tls-roots", "ring"] }
 bytes = "1.7"
 ahash = "0.8"

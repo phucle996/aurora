@@ -3,7 +3,6 @@ mod config;
 mod contracts;
 mod infra;
 mod job_topics;
-mod mail_runtime;
 mod observability;
 mod outbox;
 mod reconcile;
@@ -56,7 +55,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     infra::postgres::resolve_result_from_vault(&vault, &mut config.postgres).await?;
     infra::redis::resolve_from_vault(&vault, &mut config.shared_redis).await?;
     infra::kafka::resolve_from_vault(&vault, &mut config.kafka).await?;
-    infra::nats::resolve_from_vault(&vault, &mut config.nats_core).await?;
 
     // Khởi tạo logger có cấu trúc, OpenTelemetry Tracer & Metrics (Push model)
     OtelTracer::init(&config.otel);
@@ -82,15 +80,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     changefeed::bootstrap::verify(&config).await?;
 
     // [COMMENT]: Shared Redis không còn chở Zone Job; chỉ giữ Central
-    // reconciler/runtime bridge, bounded stream và lock/checkpoint.
+    // reconciler, bounded stream và lock/checkpoint.
     let cache_redis = infra::redis::client(&config.shared_redis)?;
     let kafka = infra::kafka::KafkaTransport::connect(&config.kafka)
         .await
         .map_err(std::io::Error::other)?;
     Logger::sys_info("main.init", "Đã khởi tạo Kafka transport và Shared Redis.");
 
-    let nats_client = infra::nats::connect(&config.nats_core).await?;
-    Logger::sys_info("main.init", "Đã kết nối thành công tới NATS Core.");
     let ownership_publisher = outbox::SharedStreamPublisher::connect(
         &cache_redis,
         &config.shared_redis,
@@ -112,12 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let ownership_relay = outbox::OwnershipRelay::new(config.clone(), ownership_publisher);
     contracts::verify_generated_contracts();
-    let runtime_workers = RuntimeWorkers::new(
-        config.clone(),
-        cache_redis.clone(),
-        kafka.clone(),
-        nats_client,
-    );
+    let runtime_workers = RuntimeWorkers::new(config.clone(), cache_redis.clone(), kafka.clone());
     let shutdown = CancellationToken::new();
     let changefeed_future = changefeed_worker.run(shutdown.clone());
     tokio::pin!(changefeed_future);

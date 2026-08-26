@@ -1,6 +1,5 @@
 mod environment;
 mod kafka;
-mod nats_core;
 mod otel;
 mod postgres;
 mod shared_redis;
@@ -9,7 +8,6 @@ mod vault;
 mod workflows;
 
 pub use kafka::{KafkaConfig, KafkaSecurityProtocol};
-pub use nats_core::{NatsAuthMode, NatsCoreConfig};
 pub use otel::OtelConfig;
 pub use postgres::{PostgresConfig, PostgresTlsMode};
 pub use shared_redis::SharedRedisConfig;
@@ -26,7 +24,6 @@ pub struct Config {
     pub postgres: PostgresConfig,
     pub shared_redis: SharedRedisConfig,
     pub kafka: KafkaConfig,
-    pub nats_core: NatsCoreConfig,
     pub otel: OtelConfig,
     pub workflows: WorkflowConfig,
     pub vault: VaultConfig,
@@ -47,7 +44,6 @@ impl Config {
             postgres: PostgresConfig::load(environment)?,
             shared_redis: SharedRedisConfig::load(environment)?,
             kafka: KafkaConfig::load(environment)?,
-            nats_core: NatsCoreConfig::load(environment)?,
             otel: OtelConfig::load(environment)?,
             workflows: WorkflowConfig::load(environment)?,
             vault,

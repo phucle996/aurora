@@ -16,3 +16,4 @@ DROP INDEX IF EXISTS idx_personal_mail_consumers_desired_cursor CASCADE;
 DROP INDEX IF EXISTS idx_personal_mail_consumers_workspace_cursor CASCADE;
 DROP INDEX IF EXISTS ux_personal_mail_consumers_workspace_code CASCADE;
 DROP INDEX IF EXISTS ux_personal_mail_consumers_workspace_name CASCADE;
+DROP INDEX IF EXISTS idx_mail_consumer_billing_pending;

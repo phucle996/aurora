@@ -195,7 +195,7 @@ pub async fn run(
         .await;
     let consumer_name = format!(
         "aurora-{}-{}-{slot}",
-        context.instance_id, configuration.consumer_id
+        context.lease_owner_id, configuration.consumer_id
     );
     let renew_every = (context.lease_ttl / 3).max(Duration::from_secs(1));
     let mut renew = tokio::time::interval(renew_every);

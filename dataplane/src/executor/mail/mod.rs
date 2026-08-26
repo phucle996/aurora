@@ -53,8 +53,7 @@ impl MailRuntime {
             configuration.clone(),
             zone_kv,
             processor,
-            runtime_node_id.clone(),
-            runtime_boot_id,
+            format!("{runtime_node_id}:{runtime_boot_id}"),
         );
         Ok(Arc::new(Self {
             batcher,

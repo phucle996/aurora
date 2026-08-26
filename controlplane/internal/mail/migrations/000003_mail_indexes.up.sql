@@ -49,3 +49,6 @@ ON personal_mail_consumer_projection_tombstones (zone_id, consumer_id);
 
 CREATE INDEX IF NOT EXISTS idx_tenant_mail_consumer_tombstones_zone_cursor
 ON tenant_mail_consumer_projection_tombstones (zone_id, consumer_id);
+CREATE INDEX IF NOT EXISTS idx_mail_consumer_billing_pending
+    ON mail_consumer_billing_outbox(effective_at, source_event_id)
+    WHERE published_at IS NULL;

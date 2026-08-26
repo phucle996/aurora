@@ -48,11 +48,9 @@ impl MailConsumerSupervisor {
         configuration: Arc<MailConfigurationRuntime>,
         zone_kv: Arc<ZoneKvStore>,
         processor: Arc<crate::executor::mail::processor::MailMessageProcessor>,
-        runtime_node_id: String,
-        runtime_boot_id: uuid::Uuid,
+        lease_owner_id: String,
     ) -> Arc<Self> {
-        let context =
-            StreamRuntimeContext::new(config, runtime_node_id, runtime_boot_id, zone_kv, processor);
+        let context = StreamRuntimeContext::new(config, lease_owner_id, zone_kv, processor);
         Arc::new(Self {
             enabled: config.mail_stream_delivery_enabled,
             configuration,
@@ -107,7 +105,7 @@ impl MailConsumerSupervisor {
     async fn run_mail_consumer_runtime_reconciliation_loop(self: Arc<Self>) {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.context.zone_id.hash(&mut hasher);
-        self.context.instance_id.hash(&mut hasher);
+        self.context.lease_owner_id.hash(&mut hasher);
         "mail-stream-supervisor".hash(&mut hasher);
         tokio::select! {
             _ = self.cancel.cancelled() => return,
@@ -219,7 +217,7 @@ impl MailConsumerSupervisor {
                 });
                 let mut retry_hasher = std::collections::hash_map::DefaultHasher::new();
                 key.hash(&mut retry_hasher);
-                self.context.instance_id.hash(&mut retry_hasher);
+                self.context.lease_owner_id.hash(&mut retry_hasher);
                 slots.insert(
                     key,
                     RuntimeSlotHandle {
@@ -246,7 +244,7 @@ impl MailConsumerSupervisor {
         let lease_key = format!("mail.consumer.slot.{}.{}", configuration.consumer_id, slot);
         let owner_id = format!(
             "{}:{}:{}",
-            self.context.instance_id, configuration.consumer_id, slot
+            self.context.lease_owner_id, configuration.consumer_id, slot
         );
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         owner_id.hash(&mut hasher);

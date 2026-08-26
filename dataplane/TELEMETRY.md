@@ -157,10 +157,15 @@ scaling blindly from stale input.
 | dataplane_logs_emitted_total | structured log throughput | none |
 | dataplane_logs_suppressed_total | rate-limiter visibility loss | none |
 | dataplane_logs_dropped_total | bounded queue visibility loss | none |
+| aurora_runtime_health | customer-facing Mail slot state in Zone Victoria only | consumer, owner, workspace, local Zone, slot |
+| aurora_runtime_metric | customer-facing Mail consumer lag in Zone Victoria only | consumer, owner, workspace, local Zone, slot |
 
-No metric label may contain a Zone UUID other than the local runtime Zone
-dimension, a tenant/workspace/user/resource ID, a job/event ID, a Kafka
-coordinate, raw error text, payload, recipient, or endpoint.
+Operational `dataplane_*` metrics may not contain a tenant/workspace/user/resource
+ID, job/event ID, Kafka coordinate, raw error text, payload, recipient or
+endpoint. The two `aurora_runtime_*` families are a separate Zone-local customer
+read contract: they may carry only the bounded registration dimensions listed
+above, never leave the Zone Victoria boundary, and are always queried through
+the signed Zone runtime scope.
 
 ## Tracing and propagation
 

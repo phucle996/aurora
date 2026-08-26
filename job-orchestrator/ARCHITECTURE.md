@@ -1,7 +1,7 @@
 # Job Orchestrator Architecture
 
 Job Orchestrator (JO) is the Central durability bridge between Controlplane,
-Kafka, Shared Redis, and NATS Core. It relays committed encrypted commands,
+Kafka and Shared Redis. It relays committed encrypted commands,
 settles validated Zone results against Controlplane authority, and runs bounded
 repair workers. It never owns a business aggregate, decrypts Zone payloads, or
 calls a Zone workload API.
@@ -28,14 +28,13 @@ calls a Zone workload API.
        +------------------|ResultWorker|--------------|  Kafka   |
                           +-----------+              +----------+
 
- Shared Redis Stream --> mail watch bridge --> NATS Core --> Zone mail watch
- Zone mail report --> NATS Core --> mail ingest --> Redis TTL snapshot/PubSub
  Kafka Zone report --> zone-state and storage-usage workers --> Controlplane PG
 ```
 
-Kafka is the durable Central-to-Zone command/result/report transport. NATS Core
-is soft state only. Shared Redis carries bounded streams, locks, TTL snapshots,
-and Pub/Sub wake-ups; it is not a business source of truth.
+Kafka is the durable Central-to-Zone command/result/report transport. Shared
+Redis carries bounded streams, locks, TTL snapshots, and Pub/Sub wake-ups; it
+is not a business source of truth. Mail runtime telemetry goes from Dataplane
+through Zone OTel/Victoria and is never bridged by JO.
 
 ## Module ownership
 
@@ -47,13 +46,11 @@ and Pub/Sub wake-ups; it is not a business source of truth.
 | Zone state | Kafka Zone reports | Controlplane health/state facts | `zone_state/` |
 | Zone metadata repair | Kafka metadata query | Kafka compacted Zone metadata | `zone_state/metadata.rs` |
 | Storage usage | Kafka Zone snapshot | Controlplane usage state and best-effort Redis wake-up | `storage_usage/` |
-| Mail watch | Shared Redis stream | NATS Core Zone watch | `mail_runtime/watch.rs` |
-| Mail report ingest | NATS Core | Shared Redis TTL snapshot and Pub/Sub | `mail_runtime/ingest.rs` |
 | Mail reconciliation | PostgreSQL snapshot | Kafka Zone command after fencing | `reconcile/mail/` |
 | Managed Service reconciliation | PostgreSQL outbox | Resets delivery marker only; WAL replays the immutable command | `reconcile/managed_service.rs` |
 
-`RuntimeWorkers` owns the Zone state, metadata, storage, mail report, mail
-ingest, mail watch, and watchdog futures directly. They are not detached tasks.
+`RuntimeWorkers` owns the Zone state, metadata, storage and watchdog futures
+directly. They are not detached tasks.
 The process exits on a terminal critical sibling worker and a cancellation token
 stops the changefeed before OpenTelemetry shutdown.
 
@@ -88,8 +85,8 @@ Zone result arrives from Kafka
 ## Dependency and security boundaries
 
 ```text
-JO reads:  PostgreSQL CDC/snapshots, Kafka, Shared Redis, NATS Core
-JO writes: PostgreSQL settlement/markers, Kafka, Shared Redis, NATS Core
+JO reads:  PostgreSQL CDC/snapshots, Kafka, Shared Redis
+JO writes: PostgreSQL settlement/markers, Kafka, Shared Redis
 JO never:  Zone KV, Zone private key, Kubernetes API, workload API, plaintext
            customer credentials, rendered mail, or Controlplane HTTP handlers
 ```

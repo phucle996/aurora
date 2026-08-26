@@ -66,7 +66,7 @@ impl VictoriaSource {
     ) -> Result<RuntimeEvent, SourceError> {
         let query = fixed_query(scope)?;
         let endpoint = match scope.panel_id.as_str() {
-            "logs" => self
+            "logs" | "events" => self
                 .logs_url
                 .join("select/logsql/query")
                 .map_err(|_| SourceError::Scope)?,
@@ -89,7 +89,7 @@ impl VictoriaSource {
         };
         let start = now.saturating_sub(window_seconds);
         let mut request = self.client.get(endpoint).query(&[("query", query)]);
-        if scope.panel_id == "logs" {
+        if matches!(scope.panel_id.as_str(), "logs" | "events") {
             request = request.query(&[
                 ("start", start.to_string()),
                 ("end", now.to_string()),
@@ -123,8 +123,7 @@ impl VictoriaSource {
             }
             response_bytes.extend_from_slice(&chunk);
         }
-        let value: Value =
-            serde_json::from_slice(&response_bytes).map_err(|_| SourceError::Decode)?;
+        let value = decode_victoria_payload(&scope.panel_id, &response_bytes)?;
         let mut payload = BTreeMap::new();
         payload.insert("source".into(), Value::String("victoria".into()));
         payload.insert("panel_id".into(), Value::String(scope.panel_id.clone()));
@@ -139,6 +138,8 @@ impl VictoriaSource {
                 "runtime.snapshot".into()
             } else if scope.panel_id == "logs" {
                 "runtime.log".into()
+            } else if scope.panel_id == "events" {
+                "runtime.event".into()
             } else {
                 "runtime.metric".into()
             },
@@ -150,6 +151,9 @@ impl VictoriaSource {
 }
 
 fn fixed_query(scope: &RuntimeScope) -> Result<String, SourceError> {
+    if scope.module == "mail" {
+        return crate::mail::fixed_query(scope).ok_or(SourceError::Scope);
+    }
     let module = query_label(&scope.module)?;
     let resource_type = query_label(&scope.resource_type)?;
     let resource_id = scope.resource_id.to_string();
@@ -211,6 +215,29 @@ fn regex_escape(value: &str) -> String {
     escaped
 }
 
+// VictoriaMetrics returns one JSON document, while VictoriaLogs can return
+// bounded NDJSON. Decode both shapes without ever buffering beyond the byte
+// budget already enforced while reading the response body.
+fn decode_victoria_payload(panel_id: &str, response: &[u8]) -> Result<Value, SourceError> {
+    if !matches!(panel_id, "logs" | "events") {
+        return serde_json::from_slice(response).map_err(|_| SourceError::Decode);
+    }
+    if response.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(Value::Array(Vec::new()));
+    }
+    if let Ok(value) = serde_json::from_slice(response) {
+        return Ok(value);
+    }
+    let mut records = Vec::new();
+    for line in response
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.iter().all(|byte| byte.is_ascii_whitespace()))
+    {
+        records.push(serde_json::from_slice(line).map_err(|_| SourceError::Decode)?);
+    }
+    Ok(Value::Array(records))
+}
+
 fn bounded_value(value: Value, max_bytes: usize) -> Value {
     let encoded = serde_json::to_vec(&value).unwrap_or_default();
     if encoded.len() <= max_bytes {
@@ -228,43 +255,5 @@ fn chrono_like_now() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use uuid::Uuid;
-
-    fn scope(module: &str) -> RuntimeScope {
-        RuntimeScope {
-            module: module.into(),
-            resource_type: "instance".into(),
-            resource_id: Uuid::new_v4(),
-            owner_id: Uuid::new_v4(),
-            workspace_id: Uuid::new_v4(),
-            zone_id: Uuid::new_v4(),
-            component_id: Some("broker".into()),
-            panel_id: "metrics".into(),
-            snapshot_seconds: 60,
-        }
-    }
-
-    #[test]
-    fn query_builder_rejects_untrusted_label_syntax() {
-        assert!(fixed_query(&scope("managed_service")).is_ok());
-        assert!(fixed_query(&scope("managed\"_service")).is_err());
-    }
-
-    #[test]
-    fn component_regex_is_exactly_escaped() {
-        let mut scoped = scope("managed_service");
-        scoped.component_id = Some("broker.v1".into());
-        let rendered = fixed_query(&scoped).unwrap();
-        assert!(rendered.contains("aurora_component_id=~\"broker\\.v1\""));
-    }
-
-    #[test]
-    fn oversized_payload_is_reduced_to_digest() {
-        let value = Value::String("x".repeat(32));
-        let bounded = bounded_value(value, 8);
-        assert_eq!(bounded["truncated"], true);
-        assert!(bounded["sha256"].is_string());
-    }
-}
+#[path = "../test/source.rs"]
+mod tests;

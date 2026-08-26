@@ -1136,6 +1136,71 @@ impl Authorization for ExtAuthzService {
         }
 
         let zone_control_workspace_id = extract_cookie_value(&cookie_header, COOKIE_WORKSPACE_ID);
+        if method == "POST" && path_without_query == "/api/v1/runtime/assertions" {
+            let Some(ref runtime_claims) = claims else {
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied("Runtime assertion requires a user Trinity session"),
+                )));
+            };
+            let raw_body = req
+                .attributes
+                .as_ref()
+                .and_then(|attributes| attributes.request.as_ref())
+                .and_then(|request| request.http.as_ref())
+                .map(|http| {
+                    if http.body.is_empty() {
+                        http.raw_body.clone()
+                    } else {
+                        http.body.as_bytes().to_vec()
+                    }
+                })
+                .unwrap_or_default();
+            let zone_code = extract_cookie_value(&cookie_header, COOKIE_ZONE_CODE)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            match crate::runtime_read::mint(
+                &self.token_mgr,
+                &self.shared_redis,
+                &self.config,
+                runtime_claims,
+                zone_control_workspace_id.as_deref().unwrap_or_default(),
+                &zone_code,
+                &raw_body,
+            )
+            .await
+            {
+                Ok(ticket) => {
+                    let body = serde_json::to_string(&ticket).unwrap_or_default();
+                    let mut builder = envoy_types::ext_authz::v3::DeniedHttpResponseBuilder::new();
+                    builder.set_http_status(HttpStatusCode::Ok);
+                    builder.add_header("content-type", "application/json", None, false);
+                    builder.add_header("cache-control", "no-store", None, false);
+                    builder.set_body(body);
+                    let mut response = CheckResponse::new();
+                    // ACR owns this endpoint. A non-OK gRPC status makes Envoy
+                    // return the local HTTP 200 instead of forwarding to CP.
+                    response.set_status(Status::unauthenticated("runtime assertion minted"));
+                    response.set_http_response(builder);
+                    return Ok(Response::new(response));
+                }
+                Err(reason) => {
+                    Logger::authz_log(
+                        &runtime_claims.uid,
+                        method,
+                        authz_log_path,
+                        "DENIED",
+                        reason,
+                    );
+                    let status = if reason.contains("unavailable") {
+                        Status::unavailable(reason)
+                    } else {
+                        Status::permission_denied(reason)
+                    };
+                    return Ok(Response::new(CheckResponse::with_status(status)));
+                }
+            }
+        }
         let zone_control_signed_headers = if path_without_query
             == "/zone-control/v1/transfer-tickets"
             || path_without_query.starts_with("/zone-control/v1/transfer-tickets/")
@@ -1340,6 +1405,9 @@ impl Authorization for ExtAuthzService {
                     "x-session-proof-timestamp".to_string(),
                     "x-session-proof-challenge-id".to_string(),
                     "x-session-proof-verified".to_string(),
+                    "x-aurora-runtime-assertion".to_string(),
+                    "x-aurora-runtime-signature".to_string(),
+                    "x-aurora-runtime-key-id".to_string(),
                     // Workspace selection comes only from the workspace_id
                     // cookie below. Remove a direct browser header first so
                     // an absent cookie cannot leave caller input upstream.

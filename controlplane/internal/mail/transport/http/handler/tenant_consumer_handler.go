@@ -253,80 +253,6 @@ func (h *TenantConsumerHandler) Get(c *gin.Context) {
 	}, "mail consumer loaded")
 }
 
-func (h *TenantConsumerHandler) WatchRuntime(c *gin.Context) {
-	const op = "mail.tenant.consumer.runtime.watch"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	actorID, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
-		return
-	}
-	tenantID, ok := pkgcontext.GetTenantID(c, op)
-	if !ok {
-		return
-	}
-	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
-	if !ok {
-		return
-	}
-	zoneID, ok := pkgcontext.GetZoneID(c, op)
-	if !ok {
-		return
-	}
-	consumerID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid consumer id")
-		return
-	}
-
-	// [COMMENT]: Tenant membership được kiểm lại ở repository mỗi lần renew; watcher ZSET chỉ
-	// chứa actor đã được authorize và tự hết hạn cùng lease ngắn.
-	runtime, err := h.svc.WatchConsumerRuntime(ctx, &mailEntity.WatchTenantConsumerRuntime{
-		ActorUserID: actorID,
-		TenantID:    tenantID,
-		WorkspaceID: workspaceID,
-		ZoneID:      zoneID,
-		ID:          consumerID,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound), errors.Is(err, mailTaxonomy.ErrWorkspaceNotFound):
-			apires.RespondNotFound(c, "mail consumer not found")
-		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
-			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, mailTaxonomy.ErrRuntimeUnavailable):
-			apires.RespondServiceUnavailable(c, "mail runtime watch temporarily unavailable")
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-		}
-		return
-	}
-
-	var snapshot any
-	if runtime.RuntimeObserved {
-		snapshot = gin.H{
-			"runtime_epoch":    runtime.RuntimeEpoch,
-			"runtime_revision": runtime.RuntimeRevision,
-			"state":            runtime.RuntimeState,
-			"active_instances": runtime.RuntimeActiveInstances,
-			"consumer_lag":     runtime.RuntimeConsumerLag,
-			"error_code":       runtime.RuntimeErrorCode,
-			"error_message":    runtime.RuntimeErrorMessage,
-			"observed_at":      runtime.RuntimeObservedAt,
-			"expires_at":       runtime.RuntimeExpiresAt,
-		}
-	}
-	apires.RespondSuccess(c, gin.H{
-		"consumer_id":       runtime.ID.String(),
-		"config_version":    runtime.ConfigVersion,
-		"watch_lease_id":    runtime.WatchLeaseID,
-		"watch_ttl_seconds": runtime.WatchTTLSeconds,
-		"runtime":           snapshot,
-	}, "mail consumer runtime watch renewed")
-}
-
 func (h *TenantConsumerHandler) List(c *gin.Context) {
 	const op = "mail.tenant.consumer.list"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
@@ -650,6 +576,10 @@ func (h *TenantConsumerHandler) changeState(c *gin.Context, desiredState mailEnt
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
+		case errors.Is(err, mailTaxonomy.ErrCommercialAdmissionUnavailable):
+			apires.RespondServiceUnavailable(c, "MAIL_WALLET_ADMISSION_UNAVAILABLE")
+		case errors.Is(err, mailTaxonomy.ErrPricingUnavailable):
+			apires.RespondServiceUnavailable(c, "MAIL_PRICING_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
