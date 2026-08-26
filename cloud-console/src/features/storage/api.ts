@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
 function pathSegment(value: string): string {
   if (!value || value.includes("/") || value.includes("\\") || value.includes("\0")) {
@@ -6,6 +7,15 @@ function pathSegment(value: string): string {
   }
   return encodeURIComponent(value);
 }
+
+export type BucketLifecycleRule = {
+  id: string;
+  enabled: boolean;
+  prefix: string;
+  expiration_days: number;
+  noncurrent_version_expiration_days: number;
+  abort_incomplete_multipart_upload_days: number;
+};
 
 // [COMMENT]: BucketItem đại diện cho thông tin một Bucket được trả về từ GET/LIST API.
 // Đã đồng bộ theo cấu trúc JSON snake_case thực tế của Backend.
@@ -16,6 +26,8 @@ export type BucketItem = {
   // [COMMENT]: status đã bị bỏ — bucket tồn tại trong DB là đủ để xác định active
   capacity_quota_bytes: number;
   used_mb?: string; // Dung lượng thực tế cho UI, fixed-point decimal MB
+  versioning_enabled?: boolean;
+  lifecycle_rules?: BucketLifecycleRule[];
   created_at: string;
   updated_at: string;
 };
@@ -69,7 +81,7 @@ export async function createBucket(
   },
   signal?: AbortSignal
 ): Promise<CreatedBucketResult> {
-  const res = await fetchJSON<{ data?: CreatedBucketResult }>("/api/v1/storage/buckets", {
+  const res = await criticalFetchJSON<{ data?: CreatedBucketResult }>("/api/v1/critical/storage/buckets", {
     method: "POST",
     body: {
       name,
@@ -106,7 +118,7 @@ export async function updateBucketQuota(
   quotaBytes: number,
   signal?: AbortSignal
 ): Promise<void> {
-  await fetchJSON(`/api/v1/storage/buckets/${pathSegment(id)}/quota`, {
+  await criticalFetchJSON(`/api/v1/critical/storage/buckets/${pathSegment(id)}/quota`, {
     method: "PATCH",
     body: {
       quota_bytes: quotaBytes,
@@ -120,10 +132,9 @@ export async function updateBucketQuota(
 // [COMMENT]: Yêu cầu xóa bucket
 export async function deleteBucket(
   id: string,
-  name: string,
   signal?: AbortSignal
 ): Promise<void> {
-  await fetchJSON(`/api/v1/storage/buckets/${pathSegment(id)}?name=${encodeURIComponent(name)}`, {
+  await criticalFetchJSON(`/api/v1/critical/storage/buckets/${pathSegment(id)}`, {
     method: "DELETE",
     signal,
   });
@@ -150,8 +161,8 @@ export async function createCredential(
   policy: string,
   signal?: AbortSignal
 ): Promise<CredentialItem> {
-  const res = await fetchJSON<{ data?: CredentialItem }>(
-    `/api/v1/storage/buckets/${pathSegment(bucketName)}/credentials`,
+  const res = await criticalFetchJSON<{ data?: CredentialItem }>(
+    `/api/v1/critical/storage/buckets/${pathSegment(bucketName)}/credentials`,
     {
       method: "POST",
       body: {
@@ -173,7 +184,7 @@ export async function deleteCredential(
   accessKey: string,
   signal?: AbortSignal
 ): Promise<void> {
-  await fetchJSON(`/api/v1/storage/buckets/${pathSegment(bucketId)}/credentials/${pathSegment(credentialID)}`, {
+  await criticalFetchJSON(`/api/v1/critical/storage/buckets/${pathSegment(bucketId)}/credentials/${pathSegment(credentialID)}`, {
     method: "DELETE",
     body: { access_key: accessKey },
     signal,
@@ -195,6 +206,14 @@ export type StorageAccessSession = {
   bucket_id: string;
   expires_at: string;
   gateway_path: string;
+};
+
+export type StorageAccessSessionReadiness = {
+  access_session_id: string;
+  bucket_id: string;
+  status: "PENDING" | "ACTIVE" | "FAILED";
+  completed_at?: string;
+  error_code?: string;
 };
 
 export async function createStorageAccessSession(
@@ -221,4 +240,77 @@ export async function createStorageAccessSession(
     throw new Error("Storage access session response is invalid.");
   }
   return data;
+}
+
+export async function getStorageAccessSessionReadiness(
+  bucketId: string,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<StorageAccessSessionReadiness> {
+  const response = await fetchJSON<{ data?: StorageAccessSessionReadiness }>(
+    `/api/v1/storage/buckets/${pathSegment(bucketId)}/access-sessions/${pathSegment(accessSessionId)}`,
+    { method: "GET", signal, cache: "no-store" },
+  );
+  const data = response.data;
+  if (!data || data.bucket_id !== bucketId || data.access_session_id !== accessSessionId ||
+    !["PENDING", "ACTIVE", "FAILED"].includes(data.status)) {
+    throw new Error("Storage access session readiness response is invalid.");
+  }
+  return data;
+}
+
+export async function updateBucketVersioning(
+  bucketId: string,
+  versioningEnabled: boolean,
+  signal?: AbortSignal,
+): Promise<{ id: string; name: string; versioning_enabled: boolean }> {
+  const res = await criticalFetchJSON<{ data?: { id: string; name: string; versioning_enabled: boolean } }>(
+    `/api/v1/critical/storage/buckets/${pathSegment(bucketId)}/versioning`,
+    {
+      method: "PATCH",
+      body: {
+        versioning_enabled: versioningEnabled,
+      },
+      signal,
+    },
+  );
+  if (!res?.data) {
+    throw new Error("Failed to update bucket versioning");
+  }
+  return res.data;
+}
+
+export async function getBucketLifecycle(
+  bucketId: string,
+  signal?: AbortSignal,
+): Promise<BucketLifecycleRule[]> {
+  const res = await fetchJSON<{ data?: { rules?: BucketLifecycleRule[] } }>(
+    `/api/v1/storage/buckets/${pathSegment(bucketId)}/lifecycle`,
+    {
+      method: "GET",
+      signal,
+    },
+  );
+  return res?.data?.rules || [];
+}
+
+export async function updateBucketLifecycle(
+  bucketId: string,
+  rules: BucketLifecycleRule[],
+  signal?: AbortSignal,
+): Promise<{ id: string; name: string; lifecycle_rules: BucketLifecycleRule[] }> {
+  const res = await criticalFetchJSON<{ data?: { id: string; name: string; lifecycle_rules: BucketLifecycleRule[] } }>(
+    `/api/v1/critical/storage/buckets/${pathSegment(bucketId)}/lifecycle`,
+    {
+      method: "PUT",
+      body: {
+        rules,
+      },
+      signal,
+    },
+  );
+  if (!res?.data) {
+    throw new Error("Failed to update bucket lifecycle rules");
+  }
+  return res.data;
 }

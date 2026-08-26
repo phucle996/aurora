@@ -1,5 +1,7 @@
 # Tenant Storage Credential Delete — God View
 
+> **Critical-route revision (2026-08-26):** credential revocation uses the public `/api/v1/critical/storage/...` route. ACR consumes the exact session proof before the sole `/api/v1/tenant/critical/storage/...` rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 Tenant Credential Deletion is an asynchronous credential revocation mutation. Controlplane
 deletes the credential record in PostgreSQL and writes a sealed Zone outbox command in an atomic
 CTE transaction. Physical service account revocation on MinIO occurs asynchronously via Dataplane

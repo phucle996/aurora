@@ -7,8 +7,8 @@ browser cannot select an arbitrary workspace for deletion.
 
 | Item | Contract |
 |---|---|
-| Browser API | `DELETE /api/v1/hierarchy/workspaces` |
-| Internal target | `DELETE /api/v1/personal/hierarchy/workspaces` |
+| Browser API | `DELETE /api/v1/critical/hierarchy/workspaces` |
+| Internal target | `DELETE /api/v1/personal/critical/hierarchy/workspaces` |
 | Target | verified active `x-workspace-id` only |
 | Authority | personal `hierarchy:workspace:delete` at level `*` |
 | Durable action | hard delete from `hierarchy.personal_workspaces` scoped to verified owner |
@@ -17,6 +17,9 @@ browser cannot select an arbitrary workspace for deletion.
 The Console exposes Delete only on the workspace marked Current. After a
 successful delete it clears active context and shows onboarding to choose where
 to continue; it never auto-selects a replacement.
+
+ACR consumes a session proof bound to the exact empty-body delete before the
+owner rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`.
 
 ## Key contracts
 

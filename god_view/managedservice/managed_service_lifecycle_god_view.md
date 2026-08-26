@@ -191,6 +191,17 @@ resets only stale PENDING/PROCESSING markers; WAL/CDC remains the sole command
 redispatch path. The V1 Dataplane result carries no safe connection fields, so
 `observed_output` remains `{}` and no connection read route is exposed yet.
 
+## Critical customer mutation boundary
+
+Catalog and instance reads, including rename-only metadata, stay on the neutral
+read/metadata routes. Instance create, resize, delete and operation retry use
+`/api/v1/critical/managed-services/**`. ACR consumes a session proof bound to
+the exact method, public path and raw request body, then rewrites only to
+`/api/v1/personal/critical/managed-services/**` or
+`/api/v1/tenant/critical/managed-services/**` from verified session context.
+Controlplane runs `RequireSessionProof` before the owner authorizer; replayed
+cookie material cannot create or change a billable Zone command.
+
 ## 5. Admin catalog lifecycle
 
 Admin catalog routes are registered under:

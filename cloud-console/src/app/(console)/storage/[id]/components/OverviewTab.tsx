@@ -1,9 +1,10 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
+import { Trash2, Edit2, Check, Copy, Loader2, DollarSign, History, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { updateBucketQuota, deleteBucket, type BucketItem } from "@/features/storage/api";
+import { updateBucketQuota, updateBucketVersioning, deleteBucket, type BucketItem } from "@/features/storage/api";
 
 const BYTES_PER_DECIMAL_GB = 1_000_000_000;
 
@@ -75,6 +76,20 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
   };
 
+  const handleToggleVersioning = async (enabled: boolean) => {
+    setUpdatingVersioning(true);
+    try {
+      await updateBucketVersioning(bucket.id, enabled);
+      toast.success(`Bucket versioning ${enabled ? "enabled" : "suspended"}`);
+      onRefresh();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to update versioning");
+    } finally {
+      setUpdatingVersioning(false);
+    }
+  };
+
+  const [updatingVersioning, setUpdatingVersioning] = useState(false);
 
   const handleDelete = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,7 +100,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
     setDeleting(true);
     try {
-      await deleteBucket(bucket.id, bucket.name);
+      await deleteBucket(bucket.id);
       toast.success("Bucket deletion sequence initiated");
       router.push("/storage");
     } catch (err: unknown) {
@@ -126,7 +141,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
           </div>
         </div>
 
-        {/* SECTION 2: General Information */}
+        {/* SECTION 2: Metadata Details */}
         <div className="border-b border-border/60 pb-5">
           <span className="text-[11px] font-bold text-foreground uppercase tracking-wider block mb-3">
             Metadata Details
@@ -154,6 +169,32 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
                 {/* [COMMENT]: Đổi sang bucket.created_at theo snake_case của backend */}
                 {new Date(bucket.created_at).toLocaleString()}
               </span>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <span className="font-bold text-muted-foreground">Object Versioning</span>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                    bucket.versioning_enabled
+                      ? "bg-emerald-500/10 text-emerald-500"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  <History className="h-3 w-3" />
+                  {bucket.versioning_enabled ? "Enabled" : "Disabled"}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <span className="font-bold text-muted-foreground">Lifecycle Rules</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] font-medium text-foreground">
+                  <Clock className="h-3 w-3 text-primary" />
+                  {bucket.lifecycle_rules?.length ? `${bucket.lifecycle_rules.length} active rule(s)` : "No rules configured"}
+                </span>
+              </div>
             </div>
 
           </div>
@@ -218,6 +259,27 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             </div>
           </div>
 
+          {/* Action B: Object Versioning Toggle */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-2 border-t border-border/40">
+            <div className="space-y-0.5 max-w-md">
+              <h4 className="font-bold text-foreground text-sm flex items-center gap-2">
+                <History className="h-4 w-4 text-indigo-400" />
+                Object Versioning
+              </h4>
+              <p className="text-muted-foreground text-[11px] leading-normal font-medium">
+                Keep multiple revisions of objects for disaster recovery and lifecycle management. Suspending retains existing versions.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              {updatingVersioning && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+              <Switch
+                checked={!!bucket.versioning_enabled}
+                disabled={updatingVersioning}
+                onCheckedChange={handleToggleVersioning}
+                aria-label="Toggle bucket versioning"
+              />
+            </div>
+          </div>
 
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-2 border-t border-border/40">
             <div className="space-y-0.5 max-w-md">

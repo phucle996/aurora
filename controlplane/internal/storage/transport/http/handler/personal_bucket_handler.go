@@ -505,17 +505,11 @@ func (h *PersonalBucketHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Lấy bucket name vật lý từ URL query parameter
-	bucketName := strings.TrimSpace(c.Query("name"))
-	if bucketName == "" {
-		apires.RespondBadRequest(c, "missing bucket name query parameter")
-		return
-	}
-
-	// [COMMENT]: Khởi tạo thực thể tham số xóa
+	// The physical bucket name is durable resource authority. The browser only
+	// selects the UUID path target; the service resolves the name under owner
+	// scope before building the Zone command.
 	param := &storageEntity.DeletePersonalBucket{
 		BucketID:    bucketID,
-		BucketName:  bucketName,
 		WorkspaceID: workspaceID,
 		ZoneID:      zoneID,
 		UserID:      userID,

@@ -8,8 +8,12 @@
 ## API scope and edge-routing contract
 
 Mail configuration có personal và tenant owner workflow riêng. Browser gọi
-neutral Mail API; ACR chỉ sau session verification mới chọn verified owner,
-rewrite nội bộ sang `/api/v1/personal/mail/**` hoặc `/api/v1/tenant/mail/**`,
+neutral Mail API for reads/runtime watch. Every consumer/template mutation calls
+`/api/v1/critical/mail/**`; ACR consumes an Ed25519 session proof bound to the
+exact method, path and raw body before choosing the verified owner and rewriting
+nội bộ sang `/api/v1/personal/critical/mail/**` hoặc `/api/v1/tenant/critical/mail/**`.
+The Controlplane route runs `RequireSessionProof` before authorization. Read and
+runtime-watch traffic remains `/api/v1/{owner}/mail/**`,
 overwrite `:path` và set `x-original-path`. Direct owner-prefixed browser route
 bị từ chối. Personal `user_role` hoặc tenant `membership_role` authorizer kiểm
 tra route permission và required level trước handler; repository rechecks
@@ -333,8 +337,9 @@ vừa commit bởi transaction thắng lock dù lock order trông có vẻ đún
 - Console chỉ render hai surface đã có backend thật: `Consumers` và `Templates`. Consumer Detail renew
   runtime watch khi đang mở và merge Centrifugo delta cùng epoch; không hiển thị Dataplane hostname
   hoặc delivery history bằng dữ liệu giả.
-- Browser luôn gọi public path `/api/v1/mail/...`. ACR xác minh session/context rồi rewrite sang
-  `/api/v1/personal/mail/...` hoặc `/api/v1/tenant/mail/...`; UI không tự gửi owner, Tenant, Zone header.
+- Browser calls public `/api/v1/mail/...` only for reads/runtime watch. Consumer and template
+  mutations call `/api/v1/critical/mail/...`; ACR consumes the exact session proof then rewrites
+  only to `/api/v1/personal/critical/mail/...` or `/api/v1/tenant/critical/mail/...`.
 - TanStack Query key bắt buộc chứa Personal/Tenant context và `workspace_id`. Khi đổi context,
   request cũ bị abort và cache cũ không được render sang Workspace mới.
 - Create form đề xuất `code` từ name, cho phép sửa trước create và hiển thị read-only sau create.

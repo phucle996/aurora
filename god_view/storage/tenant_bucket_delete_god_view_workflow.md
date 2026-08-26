@@ -1,5 +1,7 @@
 # Tenant Bucket Delete — God View
 
+> **Critical-route revision (2026-08-26):** the public request is `DELETE /api/v1/critical/storage/buckets/{bucket_id}`; ACR consumes the exact session proof and rewrites only to `/api/v1/tenant/critical/storage/buckets/{bucket_id}`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 Tenant Bucket Deletion is an asynchronous resource teardown mutation. Controlplane deletes
 the bucket and all associated credentials within PostgreSQL and writes a sealed Zone outbox
 command in an atomic CTE transaction. Physical MinIO bucket deletion and credential revocation

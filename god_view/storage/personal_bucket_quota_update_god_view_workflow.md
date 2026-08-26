@@ -1,5 +1,7 @@
 # Personal Bucket Quota Update — God View
 
+> **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/personal/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
+
 Quota update is an asynchronous physical mutation. Controlplane changes desired
 quota and writes a Zone command in one transaction. A `200` means desired
 state is durable, not that MinIO has applied the hard quota.

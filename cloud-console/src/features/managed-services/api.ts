@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 import {
   decodeManagedServiceCatalogItem,
   decodeManagedServiceFormContract,
@@ -216,8 +217,8 @@ export async function createManagedServiceInstance(input: {
   input_schema_sha256: string;
   parameters: Record<string, FormDraftValue>;
 }, signal?: AbortSignal) {
-  const response = await fetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
-    `/api/v1/managed-services/instances`,
+  const response = await criticalFetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
+    `/api/v1/critical/managed-services/instances`,
     { method: "POST", body: input, signal },
   );
   if (!response.data?.instance || !response.data.operation) throw new Error("Managed Service create response is invalid.");
@@ -234,8 +235,8 @@ export async function renameManagedServiceInstance(code: string, input: { name: 
 }
 
 export async function resizeManagedServiceInstance(code: string, input: { expected_generation: number; resources: Record<string, FormDraftValue> }, signal?: AbortSignal) {
-  const response = await fetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
-    `/api/v1/managed-services/instances/${encodeURIComponent(code)}/resize`,
+  const response = await criticalFetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
+    `/api/v1/critical/managed-services/instances/${encodeURIComponent(code)}/resize`,
     { method: "POST", body: input, signal },
   );
   if (!response.data?.instance || !response.data.operation) throw new Error("Managed Service resize response is invalid.");
@@ -243,8 +244,8 @@ export async function resizeManagedServiceInstance(code: string, input: { expect
 }
 
 export async function deleteManagedServiceInstance(code: string, expected_generation: number, signal?: AbortSignal) {
-  const response = await fetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
-    `/api/v1/managed-services/instances/${encodeURIComponent(code)}`,
+  const response = await criticalFetchJSON<{ data?: { instance?: unknown; operation?: unknown } }>(
+    `/api/v1/critical/managed-services/instances/${encodeURIComponent(code)}`,
     { method: "DELETE", body: { expected_generation }, signal },
   );
   if (!response.data?.instance || !response.data.operation) throw new Error("Managed Service delete response is invalid.");
@@ -252,8 +253,8 @@ export async function deleteManagedServiceInstance(code: string, expected_genera
 }
 
 export async function retryManagedServiceOperation(code: string, operationID: string, signal?: AbortSignal) {
-  const response = await fetchJSON<{ data?: { operation?: unknown } }>(
-    `/api/v1/managed-services/instances/${encodeURIComponent(code)}/operations/${encodeURIComponent(operationID)}/retry`,
+  const response = await criticalFetchJSON<{ data?: { operation?: unknown } }>(
+    `/api/v1/critical/managed-services/instances/${encodeURIComponent(code)}/operations/${encodeURIComponent(operationID)}/retry`,
     { method: "POST", signal },
   );
   if (!response.data?.operation) throw new Error("Managed Service retry response is invalid.");

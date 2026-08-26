@@ -1,5 +1,7 @@
 # Personal Storage Credential Create — God View
 
+> **Critical-route revision (2026-08-26):** credential issuance uses the public `/api/v1/critical/storage/...` route. ACR consumes the exact session proof before the sole `/api/v1/personal/critical/storage/...` rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 This workflow creates an additional legacy MinIO access key. It is distinct from
 metadata-only access sessions: it returns a plaintext `secret_key` to browser
 and sends it inside an encrypted asynchronous provisioning command. The

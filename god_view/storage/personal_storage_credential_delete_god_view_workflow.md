@@ -1,5 +1,7 @@
 # Personal Storage Credential Delete — God View
 
+> **Critical-route revision (2026-08-26):** credential revocation uses the public `/api/v1/critical/storage/...` route. ACR consumes the exact session proof before the sole `/api/v1/personal/critical/storage/...` rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 Credential deletion is asynchronous. Central credential record remains until
 Dataplane has successfully deleted the physical MinIO user and policy. The
 current payload binds credential id to an owned bucket, but it does **not** bind

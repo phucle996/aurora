@@ -1,5 +1,7 @@
 # Tenant Bucket Lifecycle Update — God View
 
+> **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/tenant/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
+
 Tenant Bucket Lifecycle update is an asynchronous policy synchronization workflow.
 Controlplane validates lifecycle rules (strictly enforcing that noncurrent version expiration
 requires bucket versioning to be active), persists desired rules to PostgreSQL,

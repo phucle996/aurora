@@ -4,6 +4,15 @@ export type GatewayObject = {
   last_modified: string;
 };
 
+export type GatewayObjectVersion = {
+  versionId: string;
+  isLatest: boolean;
+  isDeleteMarker: boolean;
+  lastModified: string;
+  size: number;
+  etag: string;
+};
+
 export type GatewayObjectHead = {
   contentType?: string;
   etag?: string;
@@ -23,10 +32,16 @@ export class StorageGatewayError extends Error {
   }
 }
 
-export type StorageTransferOperation = "upload" | "download";
+export type StorageTransferOperation =
+  | "upload"
+  | "download"
+  | "multipart_initiate"
+  | "multipart_upload_part"
+  | "multipart_complete"
+  | "multipart_abort";
 
 export type StorageDataTicket = {
-  method: "PUT" | "GET";
+  method: "PUT" | "GET" | "POST" | "DELETE";
   url: string;
   transfer_ticket: string;
   expires_at_unix_seconds: number;
@@ -148,6 +163,75 @@ export async function listGatewayObjects(
   throw new StorageGatewayError(413, "Too many objects; narrow the object scope before listing.", "invalid");
 }
 
+export async function listGatewayObjectVersions(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<GatewayObjectVersion[]> {
+  assertSafeBucketName(bucketName);
+  const versions: GatewayObjectVersion[] = [];
+  let keyMarker: string | undefined;
+  let versionIdMarker: string | undefined;
+
+  for (let page = 0; page < 100; page += 1) {
+    const query = new URLSearchParams({
+      versions: "",
+      prefix: objectKey,
+      "max-keys": "1000",
+    });
+    if (keyMarker) query.set("key-marker", keyMarker);
+    if (versionIdMarker) query.set("version-id-marker", versionIdMarker);
+
+    const response = await gatewayRequest(`${objectPath(bucketName)}?${query}`, accessSessionId, { signal });
+    const document = xmlDocument(await response.text());
+
+    // Parse <Version> elements
+    for (const node of Array.from(document.getElementsByTagNameNS("*", "Version"))) {
+      const key = node.getElementsByTagNameNS("*", "Key")[0]?.textContent ?? "";
+      if (key !== objectKey) continue;
+      const versionId = node.getElementsByTagNameNS("*", "VersionId")[0]?.textContent ?? "";
+      const isLatest = node.getElementsByTagNameNS("*", "IsLatest")[0]?.textContent === "true";
+      const lastModified = node.getElementsByTagNameNS("*", "LastModified")[0]?.textContent ?? "";
+      const size = Number(node.getElementsByTagNameNS("*", "Size")[0]?.textContent ?? 0);
+      const etag = (node.getElementsByTagNameNS("*", "ETag")[0]?.textContent ?? "").replace(/"/g, "");
+
+      versions.push({
+        versionId,
+        isLatest,
+        isDeleteMarker: false,
+        lastModified,
+        size,
+        etag,
+      });
+    }
+
+    // Parse <DeleteMarker> elements
+    for (const node of Array.from(document.getElementsByTagNameNS("*", "DeleteMarker"))) {
+      const key = node.getElementsByTagNameNS("*", "Key")[0]?.textContent ?? "";
+      if (key !== objectKey) continue;
+      const versionId = node.getElementsByTagNameNS("*", "VersionId")[0]?.textContent ?? "";
+      const isLatest = node.getElementsByTagNameNS("*", "IsLatest")[0]?.textContent === "true";
+      const lastModified = node.getElementsByTagNameNS("*", "LastModified")[0]?.textContent ?? "";
+
+      versions.push({
+        versionId,
+        isLatest,
+        isDeleteMarker: true,
+        lastModified,
+        size: 0,
+        etag: "",
+      });
+    }
+
+    const truncated = document.getElementsByTagNameNS("*", "IsTruncated")[0]?.textContent === "true";
+    keyMarker = document.getElementsByTagNameNS("*", "NextKeyMarker")[0]?.textContent || undefined;
+    versionIdMarker = document.getElementsByTagNameNS("*", "NextVersionIdMarker")[0]?.textContent || undefined;
+    if (!truncated || (!keyMarker && !versionIdMarker)) return versions;
+  }
+  return versions;
+}
+
 export async function headGatewayObject(bucketName: string, objectKey: string, accessSessionId: string, signal?: AbortSignal): Promise<GatewayObjectHead> {
   const response = await gatewayRequest(objectPath(bucketName, objectKey), accessSessionId, { method: "HEAD", signal });
   const customMetadata: Record<string, string> = {};
@@ -202,6 +286,9 @@ export async function requestDataTicket(
     objectKey: string;
     contentLength?: number;
     contentType?: string;
+    uploadId?: string;
+    partNumber?: number;
+    versionId?: string;
   },
   signal?: AbortSignal,
 ): Promise<StorageDataTicket> {
@@ -220,6 +307,9 @@ export async function requestDataTicket(
       constraints: {
         ...(request.contentLength === undefined ? {} : { content_length: request.contentLength }),
         ...(request.contentType ? { content_type: request.contentType } : {}),
+        ...(request.uploadId ? { upload_id: request.uploadId } : {}),
+        ...(request.partNumber !== undefined ? { part_number: request.partNumber } : {}),
+        ...(request.versionId ? { version_id: request.versionId } : {}),
       },
     }),
     signal,
@@ -230,7 +320,7 @@ export async function requestDataTicket(
   }
   const value = parsed as Partial<StorageDataTicket>;
   if (
-    (value.method !== "PUT" && value.method !== "GET") ||
+    (value.method !== "PUT" && value.method !== "GET" && value.method !== "POST" && value.method !== "DELETE") ||
     typeof value.url !== "string" ||
     typeof value.transfer_ticket !== "string" ||
     !value.transfer_ticket.includes(".") ||
@@ -245,7 +335,9 @@ export async function requestDataTicket(
   } catch {
     throw new StorageGatewayError(502, "Zone transfer ticket URL is invalid.", "invalid");
   }
-  if (ticketUrl.protocol !== "https:" && ticketUrl.protocol !== "http:") {
+  // Zone Control is configured with an HTTPS-only public base URL. Refuse a
+  // downgraded or arbitrary scheme before attaching the one-time ticket.
+  if (ticketUrl.protocol !== "https:") {
     throw new StorageGatewayError(502, "Zone transfer ticket URL is invalid.", "invalid");
   }
   return {
@@ -330,6 +422,276 @@ export async function downloadGatewayObject(
   if (ticket.method !== "GET") throw new StorageGatewayError(502, "Download ticket method is invalid.", "invalid");
   const response = await transferRequest(ticket, null, undefined, signal);
   return response.blob();
+}
+
+export async function downloadGatewayObjectVersion(
+  bucketName: string,
+  objectKey: string,
+  versionId: string,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const ticket = await requestDataTicket(accessSessionId, {
+    operation: "download",
+    bucketName,
+    objectKey,
+    versionId,
+  }, signal);
+  if (ticket.method !== "GET") throw new StorageGatewayError(502, "Download ticket method is invalid.", "invalid");
+  const response = await transferRequest(ticket, null, undefined, signal);
+  return response.blob();
+}
+
+export async function deleteGatewayObjectVersion(
+  bucketName: string,
+  objectKey: string,
+  versionId: string,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  assertSafeBucketName(bucketName);
+  await gatewayRequest(
+    `${objectPath(bucketName, objectKey)}?versionId=${encodeURIComponent(versionId)}`,
+    accessSessionId,
+    { method: "DELETE", signal },
+  );
+}
+
+export async function restoreGatewayObjectVersion(
+  bucketName: string,
+  objectKey: string,
+  versionId: string,
+  accessSessionId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const blob = await downloadGatewayObjectVersion(bucketName, objectKey, versionId, accessSessionId, signal);
+  const file = new File([blob], objectKey.split("/").pop() || "restored-object", { type: blob.type });
+  await uploadGatewayObject(bucketName, objectKey, file, accessSessionId, signal);
+}
+
+export async function initiateMultipartUpload(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  contentType?: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const mime = contentType || "application/octet-stream";
+  const ticket = await requestDataTicket(
+    accessSessionId,
+    {
+      operation: "multipart_initiate",
+      bucketName,
+      objectKey,
+      contentType: mime,
+    },
+    signal,
+  );
+  if (ticket.method !== "POST") throw new StorageGatewayError(502, "Initiate ticket method is invalid.", "invalid");
+  const response = await transferRequest(ticket, null, mime, signal);
+  const text = await response.text();
+  const document = xmlDocument(text);
+  const uploadId = document.getElementsByTagNameNS("*", "UploadId")[0]?.textContent;
+  if (!uploadId) {
+    throw new StorageGatewayError(502, "Failed to parse S3 UploadId from initiate response.", "invalid");
+  }
+  return uploadId;
+}
+
+export async function uploadPart(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  uploadId: string,
+  partNumber: number,
+  chunk: Blob,
+  signal?: AbortSignal,
+): Promise<string> {
+  const ticket = await requestDataTicket(
+    accessSessionId,
+    {
+      operation: "multipart_upload_part",
+      bucketName,
+      objectKey,
+      uploadId,
+      partNumber,
+      contentLength: chunk.size,
+    },
+    signal,
+  );
+  if (ticket.method !== "PUT") throw new StorageGatewayError(502, "Upload part ticket method is invalid.", "invalid");
+  const response = await transferRequest(ticket, chunk, undefined, signal);
+  const etag = response.headers.get("etag") || response.headers.get("ETag");
+  if (!etag) {
+    throw new StorageGatewayError(502, `Missing ETag for part ${partNumber}.`, "invalid");
+  }
+  return etag.replace(/^"(.*)"$/, "$1");
+}
+
+export async function completeMultipartUpload(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  uploadId: string,
+  parts: { partNumber: number; etag: string }[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+  const xmlBody = `<CompleteMultipartUpload>${sorted
+    .map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>"${p.etag.replace(/"/g, "")}"</ETag></Part>`)
+    .join("")}</CompleteMultipartUpload>`;
+  const ticket = await requestDataTicket(
+    accessSessionId,
+    {
+      operation: "multipart_complete",
+      bucketName,
+      objectKey,
+      uploadId,
+      contentLength: new Blob([xmlBody]).size,
+      contentType: "application/xml",
+    },
+    signal,
+  );
+  if (ticket.method !== "POST") throw new StorageGatewayError(502, "Complete ticket method is invalid.", "invalid");
+  await transferRequest(ticket, xmlBody, "application/xml", signal);
+}
+
+export async function abortMultipartUpload(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  uploadId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    const ticket = await requestDataTicket(
+      accessSessionId,
+      {
+        operation: "multipart_abort",
+        bucketName,
+        objectKey,
+        uploadId,
+      },
+      signal,
+    );
+    if (ticket.method === "DELETE") {
+      await transferRequest(ticket, null, undefined, signal);
+    }
+  } catch (error) {
+    console.warn("Failed to abort multipart upload:", error);
+  }
+}
+
+export type MultipartProgress = {
+  loaded: number;
+  total: number;
+  partIndex: number;
+  totalParts: number;
+  speedBytesPerSec?: number;
+};
+
+export async function uploadLargeFile(
+  bucketName: string,
+  objectKey: string,
+  accessSessionId: string,
+  file: File,
+  options: {
+    chunkSize?: number;
+    concurrency?: number;
+    onProgress?: (progress: MultipartProgress) => void;
+    signal?: AbortSignal;
+  } = {},
+): Promise<void> {
+  const minChunk = 5 * 1024 * 1024;
+  let chunkSize = options.chunkSize || 10 * 1024 * 1024;
+  if (file.size / chunkSize > 9900) {
+    chunkSize = Math.ceil(file.size / 9900);
+  }
+  chunkSize = Math.max(chunkSize, minChunk);
+
+  const totalParts = Math.ceil(file.size / chunkSize);
+  if (totalParts <= 1) {
+    return uploadGatewayObject(bucketName, objectKey, file, accessSessionId, options.signal);
+  }
+
+  const contentType = file.type || "application/octet-stream";
+  const uploadId = await initiateMultipartUpload(bucketName, objectKey, accessSessionId, contentType, options.signal);
+
+  const parts: { partNumber: number; etag: string }[] = [];
+  const partSizes = new Array<number>(totalParts).fill(0);
+  const partBytesUploaded = new Array<number>(totalParts).fill(0);
+  let completedPartsCount = 0;
+  const startTime = Date.now();
+
+  const updateProgress = () => {
+    if (!options.onProgress) return;
+    const loaded = partBytesUploaded.reduce((sum, bytes) => sum + bytes, 0);
+    const elapsedSec = (Date.now() - startTime) / 1000;
+    const speedBytesPerSec = elapsedSec > 0.5 ? loaded / elapsedSec : 0;
+    options.onProgress({
+      loaded,
+      total: file.size,
+      partIndex: completedPartsCount,
+      totalParts,
+      speedBytesPerSec,
+    });
+  };
+
+  const concurrency = Math.min(options.concurrency || 3, 5);
+  let nextIndex = 0;
+  let hasError: unknown = null;
+
+  async function worker() {
+    while (nextIndex < totalParts && !hasError && !options.signal?.aborted) {
+      const index = nextIndex++;
+      const partNumber = index + 1;
+      const start = index * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const chunk = file.slice(start, end);
+      partSizes[index] = chunk.size;
+
+      let partSuccess = false;
+      let lastErr: unknown = null;
+
+      for (let attempt = 1; attempt <= 3 && !partSuccess && !options.signal?.aborted; attempt++) {
+        try {
+          const etag = await uploadPart(bucketName, objectKey, accessSessionId, uploadId, partNumber, chunk, options.signal);
+          parts.push({ partNumber, etag });
+          partBytesUploaded[index] = chunk.size;
+          completedPartsCount++;
+          updateProgress();
+          partSuccess = true;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < 3 && !options.signal?.aborted) {
+            await sleep(attempt * 500, options.signal);
+          }
+        }
+      }
+
+      if (!partSuccess) {
+        hasError = lastErr || new Error(`Upload part ${partNumber} failed after 3 attempts.`);
+        return;
+      }
+    }
+  }
+
+  try {
+    const workers = Array.from({ length: concurrency }, () => worker());
+    await Promise.all(workers);
+
+    if (hasError) {
+      throw hasError;
+    }
+    if (options.signal?.aborted) {
+      throw options.signal.reason || new Error("Upload aborted");
+    }
+
+    await completeMultipartUpload(bucketName, objectKey, accessSessionId, uploadId, parts, options.signal);
+  } catch (error) {
+    void abortMultipartUpload(bucketName, objectKey, accessSessionId, uploadId);
+    throw error;
+  }
 }
 
 export { sleep };

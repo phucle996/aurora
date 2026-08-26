@@ -1,5 +1,7 @@
 # Personal Bucket Create — God View
 
+> **Critical-route revision (2026-08-26):** the public request is `POST /api/v1/critical/storage/buckets`; ACR consumes the session proof bound to its exact method, path and body, then rewrites only to `/api/v1/personal/critical/storage/buckets`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 Tạo bucket cá nhân là một mutation owner-scoped bất đồng bộ. HTTP `201` chỉ
 xác nhận Controlplane đã atomically ghi business row (`PROVISIONING`), bootstrap credential và
 protected outbox command (`PENDING`). Nó **không** chứng minh bucket hoặc credential đã

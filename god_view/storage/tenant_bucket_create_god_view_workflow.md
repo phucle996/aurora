@@ -1,5 +1,7 @@
 # Tenant Bucket Create — God View
 
+> **Critical-route revision (2026-08-26):** the public request is `POST /api/v1/critical/storage/buckets`; ACR consumes the session proof bound to its exact method, path and body, then rewrites only to `/api/v1/tenant/critical/storage/buckets`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 Tenant Bucket creation is an asynchronous provisioning mutation for enterprise workspaces.
 Controlplane executes commercial admission verification for the tenant, generates physical
 bucket identifiers, initial bootstrap credentials, and writes a sealed Zone outbox command

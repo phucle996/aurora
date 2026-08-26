@@ -12,182 +12,189 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 	// ------------------------------------------------------------------------
 	// 👑 PERSONAL API GROUP (Dành cho Quản trị viên hệ thống & Người dùng cá nhân)
 	// ------------------------------------------------------------------------
-	personalGroup := router.Group("/api/v1/personal")
-	{
-		// ========================================================================
-		// 🗄️ PHÂN KHÚC BUCKETS: QUẢN TRỊ STORAGE BUCKETS (PERSONAL)
-		// ========================================================================
+	// ========================================================================
+	// 🗄️ PHÂN KHÚC BUCKETS: QUẢN TRỊ STORAGE BUCKETS (PERSONAL)
+	// ========================================================================
 
-		// [COMMENT]: Tạo mới storage bucket
-		personalGroup.POST("/storage/buckets",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.PersonalBucketHandler.Create,
-		)
+	// [COMMENT]: Tạo mới storage bucket
+	router.POST("/api/v1/personal/critical/storage/buckets",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.PersonalBucketHandler.Create,
+	)
 
-		// [COMMENT]: Liệt kê danh sách tên của tất cả các buckets (truy vấn nhẹ)
-		personalGroup.GET("/storage/buckets/names",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.ListNames,
-		)
+	// [COMMENT]: Liệt kê danh sách tên của tất cả các buckets (truy vấn nhẹ)
+	router.GET("/api/v1/personal/storage/buckets/names",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.PersonalBucketHandler.ListNames,
+	)
 
-		// [COMMENT]: Lấy chi tiết thông tin bucket
-		personalGroup.GET("/storage/buckets/:id",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.Get,
-		)
+	// [COMMENT]: Lấy chi tiết thông tin bucket
+	router.GET("/api/v1/personal/storage/buckets/:id",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.PersonalBucketHandler.Get,
+	)
 
-		// [COMMENT]: Liệt kê danh sách các buckets
-		personalGroup.GET("/storage/buckets",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.List,
-		)
+	// [COMMENT]: Liệt kê danh sách các buckets
+	router.GET("/api/v1/personal/storage/buckets",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.PersonalBucketHandler.List,
+	)
 
-		// [COMMENT]: Cập nhật hạn mức lưu trữ (Quota) của bucket
-		personalGroup.PATCH("/storage/buckets/:id/quota",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.PersonalBucketHandler.UpdateQuota,
-		)
+	// [COMMENT]: Cập nhật hạn mức lưu trữ (Quota) của bucket
+	router.PATCH("/api/v1/personal/critical/storage/buckets/:id/quota",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.PersonalBucketHandler.UpdateQuota,
+	)
 
-		// [COMMENT]: Cập nhật trạng thái Versioning của bucket
-		personalGroup.PATCH("/storage/buckets/:id/versioning",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.PersonalBucketHandler.UpdateVersioning,
-		)
+	// [COMMENT]: Cập nhật trạng thái Versioning của bucket
+	router.PATCH("/api/v1/personal/critical/storage/buckets/:id/versioning",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.PersonalBucketHandler.UpdateVersioning,
+	)
 
-		// [COMMENT]: Lấy cấu hình Lifecycle của bucket
-		personalGroup.GET("/storage/buckets/:id/lifecycle",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.GetLifecycle,
-		)
+	// [COMMENT]: Lấy cấu hình Lifecycle của bucket
+	router.GET("/api/v1/personal/storage/buckets/:id/lifecycle",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.PersonalBucketHandler.GetLifecycle,
+	)
 
-		// [COMMENT]: Cập nhật cấu hình Lifecycle của bucket
-		personalGroup.PUT("/storage/buckets/:id/lifecycle",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.PersonalBucketHandler.UpdateLifecycle,
-		)
+	// [COMMENT]: Cập nhật cấu hình Lifecycle của bucket
+	router.PUT("/api/v1/personal/critical/storage/buckets/:id/lifecycle",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.PersonalBucketHandler.UpdateLifecycle,
+	)
 
-		// [COMMENT]: Yêu cầu xóa bucket
-		personalGroup.DELETE("/storage/buckets/:id",
-			middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
-			module.PersonalBucketHandler.Delete,
-		)
+	// [COMMENT]: Yêu cầu xóa bucket
+	router.DELETE("/api/v1/personal/critical/storage/buckets/:id",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
+		module.PersonalBucketHandler.Delete,
+	)
 
-		// Metadata-only session. ACR authenticates the Trinity cookie and the
-		// Zone Gateway verifies the Central assertion; no client secret is issued.
-		personalGroup.POST("/storage/buckets/:id/access-sessions",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.CreateAccessSession,
-		)
-		personalGroup.GET("/storage/buckets/:id/access-sessions/:access_session_id",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalBucketHandler.GetAccessSessionStatus,
-		)
+	// Metadata-only session. ACR authenticates the Trinity cookie and the
+	// Zone Gateway verifies the Central assertion; no client secret is issued.
+	router.POST("/api/v1/personal/storage/buckets/:id/access-sessions",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.PersonalBucketHandler.CreateAccessSession,
+	)
+	router.GET("/api/v1/personal/storage/buckets/:id/access-sessions/:access_session_id",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.PersonalBucketHandler.GetAccessSessionStatus,
+	)
 
-		// ========================================================================
-		// 🔑 PHÂN KHÚC CREDENTIALS: QUẢN LÝ ACCESS KEYS (PERSONAL)
-		// ========================================================================
+	// ========================================================================
+	// 🔑 PHÂN KHÚC CREDENTIALS: QUẢN LÝ ACCESS KEYS (PERSONAL)
+	// ========================================================================
 
-		// [COMMENT]: Tạo mới cặp Access Key truy cập bucket
-		personalGroup.POST("/storage/buckets/:id/credentials",
-			middleware.Authorize("storage:credential:write", module.L1Registry, "*"),
-			module.PersonalCredentialHandler.Create,
-		)
+	// [COMMENT]: Tạo mới cặp Access Key truy cập bucket
+	router.POST("/api/v1/personal/critical/storage/buckets/:id/credentials",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:credential:write", module.L1Registry, "*"),
+		module.PersonalCredentialHandler.Create,
+	)
 
-		// [COMMENT]: Liệt kê các Access Keys của bucket
-		personalGroup.GET("/storage/buckets/:id/credentials",
-			middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
-			module.PersonalCredentialHandler.List,
-		)
+	// [COMMENT]: Liệt kê các Access Keys của bucket
+	router.GET("/api/v1/personal/storage/buckets/:id/credentials",
+		middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
+		module.PersonalCredentialHandler.List,
+	)
 
-		// [COMMENT]: Xóa bỏ Access Key
-		personalGroup.DELETE("/storage/buckets/:id/credentials/:credential_id",
-			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
-			module.PersonalCredentialHandler.Delete,
-		)
+	// [COMMENT]: Xóa bỏ Access Key
+	router.DELETE("/api/v1/personal/critical/storage/buckets/:id/credentials/:credential_id",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
+		module.PersonalCredentialHandler.Delete,
+	)
 
-		// ========================================================================
-		// 📦 PHÂN KHÚC OBJECTS: QUẢN LÝ ĐỐI TƯỢNG (PERSONAL)
-		// ========================================================================
-
-	}
+	// ========================================================================
+	// 📦 PHÂN KHÚC OBJECTS: QUẢN LÝ ĐỐI TƯỢNG (PERSONAL)
+	// ========================================================================
 
 	// ------------------------------------------------------------------------
 	// 🏢 TENANT API GROUP (Dành cho ngữ cảnh Tenant)
 	// ------------------------------------------------------------------------
-	tenantGroup := router.Group("/api/v1/tenant")
-	{
-		// ========================================================================
-		// 🗄️ PHÂN KHÚC BUCKETS: QUẢN TRỊ STORAGE BUCKETS (TENANT)
-		// ========================================================================
+	// ========================================================================
+	// 🗄️ PHÂN KHÚC BUCKETS: QUẢN TRỊ STORAGE BUCKETS (TENANT)
+	// ========================================================================
 
-		// [COMMENT]: Tạo mới storage bucket
-		tenantGroup.POST("/storage/buckets",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.TenantBucketHandler.Create,
-		)
+	// [COMMENT]: Tạo mới storage bucket
+	router.POST("/api/v1/tenant/critical/storage/buckets",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.TenantBucketHandler.Create,
+	)
 
-		// [COMMENT]: Lấy chi tiết thông tin bucket
-		tenantGroup.GET("/storage/buckets/:id",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.TenantBucketHandler.Get,
-		)
+	// [COMMENT]: Lấy chi tiết thông tin bucket
+	router.GET("/api/v1/tenant/storage/buckets/:id",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.TenantBucketHandler.Get,
+	)
 
-		// [COMMENT]: Liệt kê danh sách các buckets
-		tenantGroup.GET("/storage/buckets",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.TenantBucketHandler.List,
-		)
+	// [COMMENT]: Liệt kê danh sách các buckets
+	router.GET("/api/v1/tenant/storage/buckets",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.TenantBucketHandler.List,
+	)
 
-		// [COMMENT]: Cập nhật hạn mức lưu trữ (Quota) của bucket
-		tenantGroup.PATCH("/storage/buckets/:id/quota",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.TenantBucketHandler.UpdateQuota,
-		)
+	// [COMMENT]: Cập nhật hạn mức lưu trữ (Quota) của bucket
+	router.PATCH("/api/v1/tenant/critical/storage/buckets/:id/quota",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.TenantBucketHandler.UpdateQuota,
+	)
 
-		// [COMMENT]: Cập nhật trạng thái Versioning của bucket
-		tenantGroup.PATCH("/storage/buckets/:id/versioning",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.TenantBucketHandler.UpdateVersioning,
-		)
+	// [COMMENT]: Cập nhật trạng thái Versioning của bucket
+	router.PATCH("/api/v1/tenant/critical/storage/buckets/:id/versioning",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.TenantBucketHandler.UpdateVersioning,
+	)
 
-		// [COMMENT]: Lấy cấu hình Lifecycle của bucket
-		tenantGroup.GET("/storage/buckets/:id/lifecycle",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.TenantBucketHandler.GetLifecycle,
-		)
+	// [COMMENT]: Lấy cấu hình Lifecycle của bucket
+	router.GET("/api/v1/tenant/storage/buckets/:id/lifecycle",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+		module.TenantBucketHandler.GetLifecycle,
+	)
 
-		// [COMMENT]: Cập nhật cấu hình Lifecycle của bucket
-		tenantGroup.PUT("/storage/buckets/:id/lifecycle",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.TenantBucketHandler.UpdateLifecycle,
-		)
+	// [COMMENT]: Cập nhật cấu hình Lifecycle của bucket
+	router.PUT("/api/v1/tenant/critical/storage/buckets/:id/lifecycle",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
+		module.TenantBucketHandler.UpdateLifecycle,
+	)
 
-		// [COMMENT]: Yêu cầu xóa bucket
-		tenantGroup.DELETE("/storage/buckets/:id",
-			middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
-			module.TenantBucketHandler.Delete,
-		)
+	// [COMMENT]: Yêu cầu xóa bucket
+	router.DELETE("/api/v1/tenant/critical/storage/buckets/:id",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
+		module.TenantBucketHandler.Delete,
+	)
 
-		// ========================================================================
-		// 🔑 PHÂN KHÚC CREDENTIALS: QUẢN LÝ ACCESS KEYS (TENANT)
-		// ========================================================================
+	// ========================================================================
+	// 🔑 PHÂN KHÚC CREDENTIALS: QUẢN LÝ ACCESS KEYS (TENANT)
+	// ========================================================================
 
-		// [COMMENT]: Tạo mới cặp Access Key truy cập bucket
-		tenantGroup.POST("/storage/buckets/:id/credentials",
-			middleware.Authorize("storage:credential:write", module.L1Registry, "*"),
-			module.TenantCredentialHandler.Create,
-		)
+	// [COMMENT]: Tạo mới cặp Access Key truy cập bucket
+	router.POST("/api/v1/tenant/critical/storage/buckets/:id/credentials",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:credential:write", module.L1Registry, "*"),
+		module.TenantCredentialHandler.Create,
+	)
 
-		// [COMMENT]: Liệt kê các Access Keys của bucket
-		tenantGroup.GET("/storage/buckets/:id/credentials",
-			middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
-			module.TenantCredentialHandler.List,
-		)
+	// [COMMENT]: Liệt kê các Access Keys của bucket
+	router.GET("/api/v1/tenant/storage/buckets/:id/credentials",
+		middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
+		module.TenantCredentialHandler.List,
+	)
 
-		// [COMMENT]: Xóa bỏ Access Key
-		tenantGroup.DELETE("/storage/buckets/:id/credentials/:credential_id",
-			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
-			module.TenantCredentialHandler.Delete,
-		)
-	}
+	// [COMMENT]: Xóa bỏ Access Key
+	router.DELETE("/api/v1/tenant/critical/storage/buckets/:id/credentials/:credential_id",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
+		module.TenantCredentialHandler.Delete,
+	)
 }

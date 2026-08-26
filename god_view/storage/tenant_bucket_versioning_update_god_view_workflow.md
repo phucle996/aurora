@@ -1,5 +1,7 @@
 # Tenant Bucket Versioning Update — God View
 
+> **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/tenant/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
+
 Tenant Bucket Versioning update is an asynchronous state synchronization workflow.
 Controlplane updates desired versioning state in PostgreSQL and writes a sealed Zone
 outbox command within an atomic CTE transaction. Physical S3 versioning configuration

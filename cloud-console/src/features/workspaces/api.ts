@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
 // [COMMENT]: WorkspaceCatalogItem — dữ liệu tối giản từ hot path catalog, khớp với entity Go (id, code, name)
 export type WorkspaceCatalogItem = {
@@ -56,7 +57,7 @@ export type CreateWorkspaceInput = {
 
 // [COMMENT]: createWorkspace posts to hierarchy api to create a new workspace
 export async function createWorkspace(input: CreateWorkspaceInput, signal?: AbortSignal): Promise<WorkspaceItem> {
-  const res = await fetchJSON<{ data: WorkspaceItem }>("/api/v1/hierarchy/workspaces", {
+  const res = await criticalFetchJSON<{ data: WorkspaceItem }>("/api/v1/critical/hierarchy/workspaces", {
     method: "POST",
     body: {
       name: input.name,
@@ -71,7 +72,7 @@ export async function createWorkspace(input: CreateWorkspaceInput, signal?: Abor
 // [COMMENT]: The API deletes only the active workspace selected by the verified
 // ACR context. The browser never sends a workspace ID for deletion.
 export async function deleteWorkspace(signal?: AbortSignal): Promise<void> {
-  await fetchJSON("/api/v1/hierarchy/workspaces", {
+  await criticalFetchJSON("/api/v1/critical/hierarchy/workspaces", {
     method: "DELETE",
     signal,
   });

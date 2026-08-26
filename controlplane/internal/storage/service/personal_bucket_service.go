@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"controlplane/internal/observability"
+	"controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -465,6 +465,16 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
+	// The bucket name is server-owned durable data, never caller input. It is
+	// resolved under the personal owner fence before it enters the Zone command.
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.UserID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
 	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết để xóa sạch trên MinIO
 	accessKeys, err := s.credSvc.ListAccessKeys(ctx, param.BucketID, param.UserID)
 	if err != nil {
@@ -478,9 +488,9 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync sử dụng tên từ param input
+	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync từ durable bucket name
 	syncEvent := &storageproto.BucketDeleteSync{
-		Name:       param.BucketName,
+		Name:       bucket.Name,
 		AccessKeys: accessKeys,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
@@ -493,10 +503,10 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
-	// [COMMENT]: 3. Cấu hình outbox record với zone_id từ param input
+	// [COMMENT]: 3. Cấu hình outbox record với zone_id từ durable bucket
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:     eventID,
-		ZoneID:      param.ZoneID,
+		ZoneID:      bucket.ZoneID,
 		JobTopic:    "storage.bucket.delete",
 		Payload:     payloadBytes,
 		OwnerID:     param.UserID,
@@ -506,7 +516,7 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),
-		ResourceName:         param.BucketName,
+		ResourceName:         bucket.Name,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,

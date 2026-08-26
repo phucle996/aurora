@@ -104,7 +104,6 @@ type CreatedBucketResult struct {
 // [COMMENT]: DeletePersonalBucket chứa thông tin tham số để thực hiện xóa bucket cá nhân và credentials liên quan.
 type DeletePersonalBucket struct {
 	BucketID    uuid.UUID
-	BucketName  string
 	WorkspaceID uuid.UUID
 	ZoneID      uuid.UUID
 	UserID      uuid.UUID

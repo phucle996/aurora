@@ -138,7 +138,8 @@ fn rewrite_render_context_path(path: &str, tenant_id: Option<&str>) -> Option<St
 }
 
 fn is_personal_only_neutral_path(method: &str, path: &str) -> bool {
-    path == "/api/v1/tenants" && (method == "GET" || method == "POST")
+    (path == "/api/v1/tenants" && method == "GET")
+        || (path == "/api/v1/critical/tenants" && method == "POST")
 }
 
 fn rewrite_neutral_owner_path(path: &str, tenant_id: Option<&str>) -> Option<String> {

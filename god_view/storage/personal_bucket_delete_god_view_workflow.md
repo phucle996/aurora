@@ -1,5 +1,7 @@
 # Personal Bucket Delete — God View
 
+> **Critical-route revision (2026-08-26):** the public request is `DELETE /api/v1/critical/storage/buckets/{bucket_id}` with no body; ACR consumes the exact session proof and rewrites only to `/api/v1/personal/critical/storage/buckets/{bucket_id}`. The bucket name is read from the owner-fenced durable row, never supplied by the browser. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 Bucket deletion requests irreversible Zone work. Controlplane retains the bucket
 and credentials until Dataplane reports physical bucket deletion success. The
 current HTTP contract has a critical name-binding discrepancy below.

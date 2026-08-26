@@ -30,7 +30,9 @@ func TestRegisterRoutesUsesRewrittenPersonalAndTenantPrefixes(t *testing.T) {
 			t.Fatalf("legacy or malformed route registered: %s %s", route.Method, route.Path)
 		}
 		if !strings.HasPrefix(route.Path, "/api/v1/personal/mail") &&
-			!strings.HasPrefix(route.Path, "/api/v1/tenant/mail") {
+			!strings.HasPrefix(route.Path, "/api/v1/tenant/mail") &&
+			!strings.HasPrefix(route.Path, "/api/v1/personal/critical/mail") &&
+			!strings.HasPrefix(route.Path, "/api/v1/tenant/critical/mail") {
 			t.Fatalf("route is outside rewritten scope: %s %s", route.Method, route.Path)
 		}
 		if route.Method == "POST" && strings.HasSuffix(route.Path, "/consumers/:id/runtime/watch") {
