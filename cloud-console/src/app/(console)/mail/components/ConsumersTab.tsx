@@ -12,6 +12,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { type APIError } from "@/shared/api/http";
+import { getMailEstimate } from "@/features/billing/api";
+import { formatMicroUnits } from "@/features/billing/money";
 import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, watchMailConsumerRuntime, type ConsumerWrite, type MailConsumer, type MailConsumerRuntimeWatch, type MailRuntimeState, type MailSourceType, updateMailConsumer } from "@/features/mail/api";
 import { useRealtime } from "@/realtime/provider";
 
@@ -61,11 +63,18 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   const [form, setForm] = useState<ConsumerForm>(emptyForm);
   const [detailConsumerID, setDetailConsumerID] = useState<string | null>(null);
 
-  const consumers = useQuery({
+	const consumers = useQuery({
     queryKey,
     queryFn: ({ signal }) => listMailConsumers(signal),
     enabled,
-  });
+	});
+	const pricing = useQuery({
+		queryKey: ["mail", scopeKey, "accepted-recipient-price", "1000"],
+		queryFn: ({ signal }) => getMailEstimate("1000", signal),
+		enabled,
+		retry: false,
+	});
+	const acceptedRecipientPrice = pricing.data ? formatMicroUnits(pricing.data.estimate_micro_units, pricing.data.currency) : null;
   const consumerDetail = useQuery({
     queryKey: ["mail", scopeKey, "consumer-detail", detailConsumerID],
     queryFn: ({ signal }) => getMailConsumer(detailConsumerID as string, signal),
@@ -214,8 +223,13 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     save.mutate();
   }
 
-  return (
-    <div className="space-y-4">
+	return (
+		<div className="space-y-4">
+			<div className="rounded-lg border bg-card px-4 py-3">
+				<div className="text-sm font-medium">Accepted-recipient pricing</div>
+				{acceptedRecipientPrice ? <div className="mt-1 text-lg font-semibold">{acceptedRecipientPrice} <span className="text-xs font-normal text-muted-foreground">per 1,000 successfully accepted recipients</span></div> : <div className="mt-1 text-xs text-amber-600">Pricing is not active. Consumers remain paused until Cost publishes Mail version 1.</div>}
+				<div className="mt-1 text-xs text-muted-foreground">Rejected, retryable and ambiguous submissions are not charged.</div>
+			</div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, source, consumer or template…" className="max-w-md" />
         <div className="flex gap-2">

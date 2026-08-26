@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
 export type PlatformRoleItem = {
   id: string;
@@ -52,9 +53,9 @@ export async function listPermissions(signal?: AbortSignal): Promise<PermissionI
 
 // [COMMENT]: createRole gửi request tạo mới một vai trò kèm gán permissions
 export async function createRole(input: CreateRoleInput, signal?: AbortSignal): Promise<void> {
-  await fetchJSON("/api/v1/iam/rbac/role", {
-    method: "POST",
-    body: JSON.stringify(input),
+  await criticalFetchJSON("/api/v1/critical/iam/rbac/role", {
+	method: "POST",
+	body: input,
     signal,
   });
 }
@@ -75,7 +76,7 @@ export async function getUserRole(id: string, signal?: AbortSignal): Promise<Pla
 
 // [COMMENT]: assignUserRole gọi endpoint gán vai trò mới cho người dùng
 export async function assignUserRole(userID: string, roleID: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON("/api/v1/iam/rbac/user-role", {
+  await criticalFetchJSON("/api/v1/critical/iam/rbac/user-role", {
     method: "POST",
     body: { user_id: userID, role_id: roleID },
     signal,
@@ -84,7 +85,7 @@ export async function assignUserRole(userID: string, roleID: string, signal?: Ab
 
 // [COMMENT]: deleteRole gọi endpoint xóa vai trò platform hệ thống
 export async function deleteRole(roleID: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/iam/rbac/role/${roleID}`, {
+  await criticalFetchJSON(`/api/v1/critical/iam/rbac/role/${roleID}`, {
     method: "DELETE",
     signal,
   });
@@ -114,9 +115,9 @@ export async function getRoleDetails(roleID: string, signal?: AbortSignal): Prom
 
 // [COMMENT]: updateRole cập nhật thông tin và danh sách permissions của vai trò
 export async function updateRole(roleID: string, input: UpdateRoleInput, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/iam/rbac/role/${roleID}`, {
-    method: "PUT",
-    body: JSON.stringify(input),
+  await criticalFetchJSON(`/api/v1/critical/iam/rbac/role/${roleID}`, {
+	method: "PUT",
+	body: input,
     signal,
   });
 }

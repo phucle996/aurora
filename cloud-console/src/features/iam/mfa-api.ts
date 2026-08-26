@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
 export type PlatformMfaStatus = {
   mfa_enabled: boolean;
@@ -45,7 +46,7 @@ export async function getMyMfa(signal?: AbortSignal): Promise<SelfMfaStatus> {
 }
 
 export async function startMyMfaSetup(): Promise<MfaSetup> {
-  const response = await fetchJSON<{ data?: MfaSetup }>("/api/v1/me/iam/mfa/setup/start", {
+  const response = await criticalFetchJSON<{ data?: MfaSetup }>("/api/v1/me/critical/iam/mfa/setup/start", {
     method: "POST",
   });
   if (!response.data?.setup_id || !response.data.manual_secret || !response.data.provisioning_uri) {
@@ -55,8 +56,8 @@ export async function startMyMfaSetup(): Promise<MfaSetup> {
 }
 
 export async function confirmMyMfaSetup(setupID: string, code: string): Promise<MfaConfirmation> {
-  const response = await fetchJSON<{ data?: MfaConfirmation }>(
-    `/api/v1/me/iam/mfa/setup/${encodeURIComponent(setupID)}/confirm`,
+  const response = await criticalFetchJSON<{ data?: MfaConfirmation }>(
+    `/api/v1/me/critical/iam/mfa/setup/${encodeURIComponent(setupID)}/confirm`,
     { method: "POST", body: { code } },
   );
   if (!response.data || !Array.isArray(response.data.recovery_codes)) {
@@ -66,8 +67,8 @@ export async function confirmMyMfaSetup(setupID: string, code: string): Promise<
 }
 
 export async function regenerateMyRecoveryCodes(code: string): Promise<string[]> {
-  const response = await fetchJSON<{ data?: { recovery_codes?: unknown } }>(
-    "/api/v1/me/iam/mfa/recovery/regenerate",
+  const response = await criticalFetchJSON<{ data?: { recovery_codes?: unknown } }>(
+    "/api/v1/me/critical/iam/mfa/recovery/regenerate",
     { method: "POST", body: { code } },
   );
   if (!Array.isArray(response.data?.recovery_codes) || !response.data.recovery_codes.every((item) => typeof item === "string")) {
@@ -77,7 +78,7 @@ export async function regenerateMyRecoveryCodes(code: string): Promise<string[]>
 }
 
 export async function removeMyMfa(code: string): Promise<void> {
-  await fetchJSON("/api/v1/me/iam/mfa", {
+  await criticalFetchJSON("/api/v1/me/critical/iam/mfa", {
     method: "DELETE",
     body: { code },
   });

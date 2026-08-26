@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
 export type SelfDevice = {
   id: string;
@@ -59,14 +60,14 @@ export async function getMyDevices(signal?: AbortSignal): Promise<{ items: SelfD
 }
 
 export async function revokeMyDevice(deviceID: string): Promise<void> {
-  await fetchJSON(`/api/v1/me/iam/device/delete/${encodeURIComponent(deviceID)}`, {
+  await criticalFetchJSON(`/api/v1/me/critical/iam/device/delete/${encodeURIComponent(deviceID)}`, {
     method: "POST",
   });
 }
 
 export async function logoutOtherDevices(): Promise<number> {
-  const response = await fetchJSON<{ data?: { revoked_sessions?: unknown } }>(
-    "/api/v1/me/iam/device/delete-others",
+  const response = await criticalFetchJSON<{ data?: { revoked_sessions?: unknown } }>(
+    "/api/v1/me/critical/iam/device/delete-others",
     { method: "POST" },
   );
   if (typeof response.data?.revoked_sessions !== "number") {

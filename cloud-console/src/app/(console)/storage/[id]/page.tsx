@@ -11,6 +11,7 @@ import {
   Info,
   KeyRound,
   FolderOpen,
+  Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getBucketDetails, type BucketItem } from "@/features/storage/api";
@@ -25,6 +26,7 @@ import { useConsoleQueryScope } from "@/shared/query/scope";
 import { OverviewTab } from "./components/OverviewTab";
 import { CredentialsTab } from "./components/CredentialsTab";
 import { ObjectsTab } from "./components/ObjectsTab";
+import { LifecycleTab } from "./components/LifecycleTab";
 
 function ViewBucketContent() {
   const router = useRouter();
@@ -77,11 +79,10 @@ function ViewBucketContent() {
   });
 
   const tabs = useMemo(() => {
-    const list = ["Overview"];
+    const list = ["Overview", "Objects", "Lifecycle"];
     if (checkPermission("storage:credential", "read")) {
       list.push("Credentials");
     }
-    list.push("Objects");
     return list;
   }, [checkPermission]);
 
@@ -95,10 +96,17 @@ function ViewBucketContent() {
             onRefresh={() => void loadBucketDetails()}
           />
         );
-      case "Credentials":
-        return <CredentialsTab bucket={bucket} />;
       case "Objects":
         return <ObjectsTab bucket={bucket} />;
+      case "Lifecycle":
+        return (
+          <LifecycleTab
+            bucket={bucket}
+            onRefresh={() => void loadBucketDetails()}
+          />
+        );
+      case "Credentials":
+        return <CredentialsTab bucket={bucket} />;
       default:
         return null;
     }
@@ -108,10 +116,12 @@ function ViewBucketContent() {
     switch (tabName) {
       case "Overview":
         return <Info className="h-3.5 w-3.5" />;
-      case "Credentials":
-        return <KeyRound className="h-3.5 w-3.5" />;
       case "Objects":
         return <FolderOpen className="h-3.5 w-3.5" />;
+      case "Lifecycle":
+        return <Clock className="h-3.5 w-3.5" />;
+      case "Credentials":
+        return <KeyRound className="h-3.5 w-3.5" />;
       default:
         return null;
     }

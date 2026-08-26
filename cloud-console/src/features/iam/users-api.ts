@@ -1,4 +1,5 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
 export type PlatformUserItem = {
   id: string;
@@ -43,15 +44,16 @@ export async function listUsers(limit = 20, offset = 0, signal?: AbortSignal): P
 
 // [COMMENT]: updateUserStatus gọi endpoint cập nhật trạng thái hoạt động của người dùng
 export async function updateUserStatus(id: string, status: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/iam/users/${id}/status?status=${status}`, {
-    method: "PUT",
-    signal,
+  await criticalFetchJSON(`/api/v1/critical/iam/users/${id}/status`, {
+	method: "PUT",
+	body: { status },
+	signal,
   });
 }
 
 // [COMMENT]: resetUserPassword gọi endpoint reset mật khẩu của người dùng bởi Admin
 export async function resetUserPassword(id: string, password: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/iam/users/${id}/password`, {
+  await criticalFetchJSON(`/api/v1/critical/iam/users/${id}/password`, {
     method: "PUT",
     body: { password },
     signal,
