@@ -9,18 +9,18 @@ export type VirtualMachine = {
   name: string;
   image: string;
   image_id?: string | null;
-  image_revision?: number | null;
+  image_revision: string;
   resource_plan_id: string;
   resource_plan_revision_id: string;
   resource_plan_revision_number: string;
   cpu_cores: number;
-  memory_mb: number;
-  boot_disk_gb: number;
-  disk_gb: number;
-  additional_disk_sizes_gb: number[];
+  memory_mb: string;
+  boot_disk_gb: string;
+  disk_gb: string;
+  additional_disk_sizes_gb: string[];
   status: VMStatus;
   zone_id: string;
-  provider_vmid?: number | null;
+  provider_vmid: string;
   ipv4_address?: string | null;
   created_at: string;
   updated_at: string;
@@ -32,7 +32,7 @@ export type CreateVirtualMachineInput = {
   image_id: string;
   resource_plan_id: string;
   resource_plan_revision_id: string;
-  additional_disks: Array<{ size_gb: number }>;
+  additional_disks: Array<{ size_gb: string }>;
   ssh_public_key: string;
 };
 

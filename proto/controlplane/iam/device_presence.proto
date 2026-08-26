@@ -2,7 +2,7 @@ syntax = "proto3";
 package iam.rpc;
 
 // Đường dẫn package Go khi sinh code
-option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
 
 // [COMMENT]: Yêu cầu lấy danh sách thiết bị đang có session hoạt động từ ACR
 message GetActiveDevicesRequest {

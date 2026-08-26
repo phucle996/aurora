@@ -9,7 +9,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/gin-gonic/gin"

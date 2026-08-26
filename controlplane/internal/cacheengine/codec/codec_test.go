@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 )
 
 type simpleStruct struct {

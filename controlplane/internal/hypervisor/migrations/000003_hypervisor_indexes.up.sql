@@ -11,6 +11,9 @@ CREATE INDEX IF NOT EXISTS idx_hypervisor_personal_vms_scope
 CREATE INDEX IF NOT EXISTS idx_hypervisor_personal_vms_image
     ON personal_vms (image_id);
 
+CREATE INDEX IF NOT EXISTS idx_hypervisor_resource_plan_revision_effective
+    ON hypervisor_resource_plan_revisions (plan_id, effective_from DESC, revision_number DESC);
+
 CREATE INDEX IF NOT EXISTS idx_hypervisor_outbox_claim
     ON hypervisor_outbox_records (created_at, id)
     WHERE status IN ('PENDING', 'PROCESSING');

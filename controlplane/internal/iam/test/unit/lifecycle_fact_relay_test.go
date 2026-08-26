@@ -14,15 +14,15 @@ import (
 	iamService "controlplane/internal/iam/service"
 )
 
-type billingOutboxRepositoryStub struct {
+type lifecycleFactOutboxRepositoryStub struct {
 	mu       sync.Mutex
-	events   []iamEntity.BillingOutboxEvent
+	events   []iamEntity.LifecycleFactOutboxEvent
 	claimed  chan struct{}
 	dead     chan struct{}
 	lastDead string
 }
 
-func (r *billingOutboxRepositoryStub) Claim(context.Context, int) ([]iamEntity.BillingOutboxEvent, error) {
+func (r *lifecycleFactOutboxRepositoryStub) Claim(context.Context, int) ([]iamEntity.LifecycleFactOutboxEvent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.claimed != nil {
@@ -36,15 +36,15 @@ func (r *billingOutboxRepositoryStub) Claim(context.Context, int) ([]iamEntity.B
 	return events, nil
 }
 
-func (r *billingOutboxRepositoryStub) MarkPublished(context.Context, int64) error {
+func (r *lifecycleFactOutboxRepositoryStub) MarkPublished(context.Context, int64) error {
 	return nil
 }
 
-func (r *billingOutboxRepositoryStub) MarkFailed(context.Context, int64, string) error {
+func (r *lifecycleFactOutboxRepositoryStub) MarkFailed(context.Context, int64, string) error {
 	return nil
 }
 
-func (r *billingOutboxRepositoryStub) MarkDead(_ context.Context, _ int64, message string) error {
+func (r *lifecycleFactOutboxRepositoryStub) MarkDead(_ context.Context, _ int64, message string) error {
 	r.mu.Lock()
 	r.lastDead = message
 	r.mu.Unlock()
@@ -69,31 +69,34 @@ func newBillingRelayTestRedis(t *testing.T) *goredis.Client {
 	return client
 }
 
-func TestBillingOutboxRelayRejectsInvalidDependencies(t *testing.T) {
+func TestLifecycleFactRelayRejectsInvalidDependencies(t *testing.T) {
 	redisClient := newBillingRelayTestRedis(t)
-	repo := &billingOutboxRepositoryStub{}
+	repo := &lifecycleFactOutboxRepositoryStub{}
 
-	if _, err := iamService.NewBillingOutboxRelay(nil, redisClient, 0, time.Second); err == nil {
+	if _, err := iamService.NewLifecycleFactRelay(nil, redisClient, 0, time.Second); err == nil {
 		t.Fatal("nil repository must fail fast")
 	}
-	if _, err := iamService.NewBillingOutboxRelay(repo, nil, 0, time.Second); err == nil {
+	if _, err := iamService.NewLifecycleFactRelay(repo, nil, 0, time.Second); err == nil {
 		t.Fatal("nil Redis client must fail fast")
 	}
-	if _, err := iamService.NewBillingOutboxRelay(repo, redisClient, -1, time.Second); err == nil {
+	if _, err := iamService.NewLifecycleFactRelay(repo, redisClient, -1, time.Second); err == nil {
 		t.Fatal("negative replica ACK count must fail fast")
 	}
-	if _, err := iamService.NewBillingOutboxRelay(repo, redisClient, 0, 0); err == nil {
+	if _, err := iamService.NewLifecycleFactRelay(repo, redisClient, 0, 0); err == nil {
 		t.Fatal("non-positive durability wait must fail fast")
+	}
+	if _, err := iamService.NewLifecycleFactRelay(repo, redisClient, 0, 30*time.Second); err == nil {
+		t.Fatal("durability wait must fit inside the outbox lease")
 	}
 }
 
-func TestBillingOutboxRelayStartStopAndNilSafety(t *testing.T) {
-	var nilRelay *iamService.BillingOutboxRelay
+func TestLifecycleFactRelayStartStopAndNilSafety(t *testing.T) {
+	var nilRelay *iamService.LifecycleFactRelay
 	nilRelay.Notify()
 	nilRelay.Stop()
 
-	repo := &billingOutboxRepositoryStub{claimed: make(chan struct{}, 1)}
-	relay, err := iamService.NewBillingOutboxRelay(repo, newBillingRelayTestRedis(t), 0, time.Second)
+	repo := &lifecycleFactOutboxRepositoryStub{claimed: make(chan struct{}, 1)}
+	relay, err := iamService.NewLifecycleFactRelay(repo, newBillingRelayTestRedis(t), 0, time.Second)
 	if err != nil {
 		t.Fatalf("new billing relay: %v", err)
 	}
@@ -108,9 +111,9 @@ func TestBillingOutboxRelayStartStopAndNilSafety(t *testing.T) {
 	}
 }
 
-func TestBillingOutboxRelayMarksUnsupportedEventDead(t *testing.T) {
-	repo := &billingOutboxRepositoryStub{
-		events: []iamEntity.BillingOutboxEvent{{
+func TestLifecycleFactRelayMarksUnsupportedEventDead(t *testing.T) {
+	repo := &lifecycleFactOutboxRepositoryStub{
+		events: []iamEntity.LifecycleFactOutboxEvent{{
 			ID:        42,
 			EventID:   uuid.New(),
 			EventType: "unsupported.event",
@@ -120,7 +123,7 @@ func TestBillingOutboxRelayMarksUnsupportedEventDead(t *testing.T) {
 		}},
 		dead: make(chan struct{}, 1),
 	}
-	relay, err := iamService.NewBillingOutboxRelay(repo, newBillingRelayTestRedis(t), 0, time.Second)
+	relay, err := iamService.NewLifecycleFactRelay(repo, newBillingRelayTestRedis(t), 0, time.Second)
 	if err != nil {
 		t.Fatalf("new billing relay: %v", err)
 	}

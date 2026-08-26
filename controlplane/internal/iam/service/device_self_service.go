@@ -14,7 +14,7 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 	"controlplane/pkg/apperr"
 
@@ -152,100 +152,9 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 	return &iamEntity.DeviceListResult{Devices: items, Total: int64(len(items))}, nil
 }
 
-// [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định theo client_device_id
-func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID uuid.UUID, currentDeviceID uuid.UUID) error {
-	startedAt := time.Now()
-	result, reason := observability.ResultFailure, observability.ReasonInternal
-	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-
-	revokeErr := s.deviceRepo.RevokeMyDevice(ctx, clientDeviceID, userID, currentDeviceID)
-	if revokeErr != nil {
-		if errors.Is(revokeErr, iamTaxonomy.ErrActionNotAllowed) {
-			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
-			return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
-		}
-		if errors.Is(revokeErr, iamTaxonomy.ErrZeroRowsAffected) {
-			result, reason = observability.ResultRejected, observability.ReasonNotFound
-			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, revokeErr, "invalid_session")
-		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
-	}
-
-	req := &iamproto.RevokeUserSessionsByDevicesRequest{
-		UserId:          userID.String(),
-		ClientDeviceIds: []string{clientDeviceID.String()},
-	}
-	reqBytes, err := proto.Marshal(req)
-	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
-	}
-	// [COMMENT]: Revoke là security command nên ghi Redis Stream durable. Repository là
-	// idempotent, do đó client retry sau lỗi XADD sẽ enqueue lại mà không làm hỏng DB state.
-	if err := s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
-		Stream: "iam:device:revoke-requests",
-		Values: map[string]any{"payload": reqBytes},
-	}).Err(); err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
-	}
-
-	result, reason = observability.ResultSuccess, observability.ReasonNone
-	return nil
-}
-
-// [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
-func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentDeviceID uuid.UUID) (int64, error) {
-	startedAt := time.Now()
-	result, reason := observability.ResultFailure, observability.ReasonInternal
-	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-
-	otherDeviceIDs, revokeErr := s.deviceRepo.RevokeMyOtherDevices(ctx, userID, &currentDeviceID)
-	if revokeErr != nil {
-		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
-	}
-
-	if len(otherDeviceIDs) > 0 {
-		clientDeviceIDs := make([]string, len(otherDeviceIDs))
-		for i, id := range otherDeviceIDs {
-			clientDeviceIDs[i] = id.String()
-		}
-		req := &iamproto.RevokeUserSessionsByDevicesRequest{
-			UserId:          userID.String(),
-			ClientDeviceIds: clientDeviceIDs,
-		}
-		reqBytes, err := proto.Marshal(req)
-		if err != nil {
-			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
-		}
-		if err := s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
-			Stream: "iam:device:revoke-requests",
-			Values: map[string]any{"payload": reqBytes},
-		}).Err(); err != nil {
-			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
-		}
-	}
-
-	result, reason = observability.ResultSuccess, observability.ReasonNone
-	return int64(len(otherDeviceIDs)), nil
-}
-
 // [COMMENT]: RegisterLoginDevice đăng ký thiết bị mới đăng nhập
 func (s *DeviceSelfService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
 	return s.deviceRepo.UpsertLoginDevice(ctx, device)
-}
-
-// [COMMENT]: BulkTouchDevices cập nhật trạng thái hoạt động hàng loạt
-func (s *DeviceSelfService) BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error {
-	return s.deviceRepo.BulkTouchDevices(ctx, updates)
-}
-
-// [COMMENT]: EvictDevices thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
-// đồng thời xóa bỏ Refresh Token tương ứng trong database. Được gọi khi nhận eviction từ ACR qua Shared Redis.
-func (s *DeviceSelfService) EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
-
-	if len(clientDeviceIDs) == 0 {
-		return nil
-	}
-	return s.deviceRepo.EvictDevices(ctx, userID, clientDeviceIDs)
 }
 
 // [COMMENT]: ResolveDeviceIDByKey trả về ID thiết bị khớp với fingerprint của khóa công khai

@@ -33,9 +33,9 @@ BEGIN
         SELECT 1
         FROM pg_type t
         JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'billing_owner_type' AND n.nspname = current_schema()
+        WHERE t.typname = 'lifecycle_owner_type' AND n.nspname = current_schema()
     ) THEN
-        CREATE TYPE billing_owner_type AS ENUM ('PERSONAL', 'TENANT');
+        CREATE TYPE lifecycle_owner_type AS ENUM ('PERSONAL', 'TENANT');
     END IF;
 END
 $$;

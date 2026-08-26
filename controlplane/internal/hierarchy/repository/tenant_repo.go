@@ -136,7 +136,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 			INSERT INTO %s.cost_outbox_records
 				(event_id, event_type, aggregate_type, aggregate_id, aggregate_version,
 				 owner_id, owner_type, actor_user_id, payload, occurred_at)
-			SELECT $11, '%s', 1, 'TENANT', tenant_inserted.id, 1,
+			SELECT $11, '%s', 'TENANT', tenant_inserted.id, 1,
 			       tenant_inserted.id, 'TENANT', $6, $12, $13
 			FROM tenant_inserted CROSS JOIN assignment_inserted
 			RETURNING event_id

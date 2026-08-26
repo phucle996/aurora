@@ -37,9 +37,15 @@ BEFORE UPDATE ON mfa_settings
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
-DROP TRIGGER IF EXISTS trg_billing_outbox_records_updated_at ON billing_outbox_records;
-CREATE TRIGGER trg_billing_outbox_records_updated_at
-BEFORE UPDATE ON billing_outbox_records
+DROP TRIGGER IF EXISTS trg_lifecycle_fact_outbox_records_updated_at ON lifecycle_fact_outbox_records;
+CREATE TRIGGER trg_lifecycle_fact_outbox_records_updated_at
+BEFORE UPDATE ON lifecycle_fact_outbox_records
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_device_runtime_revoke_outbox_records_updated_at ON device_runtime_revoke_outbox_records;
+CREATE TRIGGER trg_device_runtime_revoke_outbox_records_updated_at
+BEFORE UPDATE ON device_runtime_revoke_outbox_records
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

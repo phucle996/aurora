@@ -134,7 +134,7 @@ export function CreateComputeScreen() {
             image_id: selectedImage.id,
             resource_plan_id: selectedProfile.plan_id,
             resource_plan_revision_id: selectedProfile.revision_id,
-            additional_disks: additionalDisks.map((sizeGB) => ({ size_gb: sizeGB })),
+            additional_disks: additionalDisks.map((sizeGB) => ({ size_gb: String(sizeGB) })),
             ssh_public_key: key,
           });
         }}

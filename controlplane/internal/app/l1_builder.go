@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"

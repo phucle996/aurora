@@ -7,27 +7,27 @@
 
 ## API-scope contract
 
-### Lộ trình Người dùng Cá nhân (`/api/v1/personal/hypervisor/vms`)
+### Lộ trình Người dùng Cá nhân (`/api/v1/personal/critical/hypervisor/vms`)
 
-- **Neutral Client Route**: Browser/Web Console gọi route trung lập `/api/v1/hypervisor/vms` kèm Session Cookie phiên người dùng.
+- **Neutral Client Route**: Browser/Web Console gọi `POST /api/v1/critical/hypervisor/vms`; ACR xác thực session proof ký đúng raw body trước khi chọn owner route.
 - **ACR ExtAuthz Boundary**: 
   - ACR xác thực Session Cookie qua Trinity / Auth-State Redis.
-  - ACR xác định Context cá nhân của người dùng, thực hiện **Path Rewrite** nội bộ sang `/api/v1/personal/hypervisor/vms` (ghi đè `:path` sang upstream và gán `x-original-path`).
+  - ACR xác thực session proof dùng chung cho mọi critical mutation, rồi rewrite nội bộ sang `/api/v1/personal/critical/hypervisor/vms`.
   - ACR xóa toàn bộ header do client tự gửi (`x-user-id`, `x-workspace-id`, `x-zone-id`, `x-user-level`), sau đó **inject tập header tin cậy**:
     * `x-user-id`: UUID của người dùng cá nhân (Owner).
     * `x-workspace-id`: UUID của Personal Workspace tương ứng.
     * `x-zone-id`: UUID của Zone Datacenter đích.
     * `x-user-level`: Cấp độ bảo mật/xác thực của session.
 - **Controlplane Boundary**:
-  - Route `/api/v1/personal/hypervisor/vms` được bảo vệ bởi middleware `middleware.Authorize("hypervisor:vm:create", L1Registry, "*")`.
+  - Route `/api/v1/personal/critical/hypervisor/vms` yêu cầu `RequireSessionProof()` và `middleware.Authorize("hypervisor:vm:create", L1Registry, "*")`.
   - Handler trích xuất `userID`, `workspaceID`, `zoneID` an toàn qua các context helper (`pkgcontext.GetUserID`, `pkgcontext.GetWorkspaceID`, `pkgcontext.GetZoneID`).
-  - Repository tái thẩm định toàn diện bộ 4 khóa thẩm quyền: `(workspace_id, zone_id, owner_user_id)` và kiểm tra trạng thái Zone `active` + Service `hypervisor` kích hoạt trong cùng một câu lệnh SQL.
+  - Hypervisor service đọc revision từ L2 do chính Hypervisor projection workflow làm nóng để dựng job; CTE tái thẩm định revision/window/hash cùng `(workspace_id, zone_id, owner_user_id)`, Zone `active` và service `hypervisor` trong transaction tạo VM.
 
 | Thành phần | Vai trò & Trách nhiệm thẩm quyền | Durable State lưu trữ |
 |---|---|---|
 | **Cloud Console (UI)** | Tiếp nhận input từ user, render trạng thái `PROVISIONING` $\to$ `READY`. | None (State nằm tại Backend) |
 | **Envoy + ACR ExtAuthz** | Xác thực session, trích xuất Personal Context, Rewrite Path & Inject trusted headers. | Auth-State Redis |
-| **Controlplane Hypervisor** | Thẩm định Commercial Admission & Pricing Readiness, mã hóa X25519 Payload, ghi Outbox nguyên tử. | PostgreSQL (`personal_vms`, `hypervisor_outbox_records`) |
+| **Controlplane Hypervisor** | Đọc L2 resource-plan để dựng payload; CTE thẩm định Commercial Admission và revision rồi ghi Outbox nguyên tử. | PostgreSQL (`personal_vms`, `hypervisor_outbox_records`, resource-plan projection) + Hypervisor L2 |
 | **Job Orchestrator (JO)** | CDC Outbox Dispatcher, phân phối Command qua Kafka, tiếp nhận Result và thực hiện DB Settlement. | PostgreSQL & Kafka Commit Offset |
 | **Kafka Transport** | Kênh vận chuyển phân tán bất biến 2 chiều (Command & Result) giữa Central và Zone. | Kafka Brokers |
 | **Dataplane (Zone Rust)** | Unseal Payload X25519, CAS Provider Binding & VMID trong Zone KV, Clone & Provision Proxmox VE, đo baseline mạng. | Proxmox VE Cluster & Zone NATS JetStream KV |
@@ -48,13 +48,14 @@
 | `x-user-level` | **ACR $\to$ Controlplane** | **Được ACR inject** (Cấp độ phân quyền tài khoản). |
 | `traceparent` | Toàn hệ thống | Lan truyền W3C Distributed Tracing xuyên suốt các service. |
 
-### 2. JSON Request Payload (`POST /api/v1/hypervisor/vms`)
+### 2. JSON Request Payload (`POST /api/v1/critical/hypervisor/vms`)
 
 ```json
 {
   "name": "dev-ubuntu-box",
   "image_id": "018e6a12-8888-7123-9abc-def012345678",
-  "resource_profile_code": "standard",
+  "resource_plan_id": "018e6a34-9999-7abc-def0-123456789abc",
+  "resource_plan_revision_id": "018e6a34-9999-7abc-def0-fedcba987654",
   "additional_disks": [
     {
       "size_gb": 50
@@ -67,12 +68,8 @@
 * **Chi tiết ràng buộc các trường trong Request Body**:
   - `name` *(string, bắt buộc)*: Tên máy ảo, 1-63 ký tự chữ thường, số hoặc dấu gạch đơn, bắt đầu bằng chữ cái (`^[a-z][a-z0-9-]{0,61}[a-z0-9]$|^[a-z]$`), không chứa hai dấu gạch nối liên tiếp (`--`).
   - `image_id` *(string UUID, bắt buộc)*: UUID của Image OS Template đã ở trạng thái `AVAILABLE` trong đúng Zone chỉ định.
-  - `resource_profile_code` *(string, bắt buộc)*: Mã cấu hình tài nguyên phần cứng chuẩn. Chỉ chấp nhận một trong 3 giá trị:
-    * `"basic"`: 1 vCPU, 2048 MB RAM, 32 GB Boot Disk.
-    * `"standard"`: 2 vCPU, 4096 MB RAM, 64 GB Boot Disk.
-    * `"performance"`: 4 vCPU, 8192 MB RAM, 128 GB Boot Disk.
-    *(Người dùng không được tự do tùy biến CPU/RAM lẻ để bảo đảm packing density trên cụm Proxmox).*
-  - `additional_disks` *(array of objects, tùy chọn)*: Danh sách đĩa dữ liệu gắn thêm (tối đa 15 đĩa). Mỗi đĩa từ 8 GiB đến 4096 GiB; tổng dung lượng đĩa (boot + data) không vượt quá 65536 GiB.
+  - `resource_plan_id` và `resource_plan_revision_id` *(UUID, bắt buộc)*: revision bất biến do Cost Console định nghĩa. Cloud Console không gửi CPU/RAM/boot disk tự chọn; Hypervisor service lấy capacity/hash từ L2 của module, còn CTE Controlplane là authority xác nhận revision/window/hash trong durable projection.
+  - `additional_disks` *(array of objects, tùy chọn)*: Danh sách đĩa dữ liệu gắn thêm (tối đa 15 đĩa). `size_gb` là decimal string BIGINT, từ `"8"` đến `"4096"`; tổng dung lượng đĩa (boot + data) không vượt quá 65536 GiB.
   - `ssh_public_key` *(string, bắt buộc)*: Khóa công khai SSH để inject qua Cloud-Init, tối đa 16384 bytes, bắt đầu bằng `ssh-ed25519 `, `ssh-rsa ` hoặc `ecdsa-sha2-`.
 
 ### 3. JSON Response Payload (`202 Accepted` / `200 OK`)
@@ -87,16 +84,18 @@
     "name": "dev-ubuntu-box",
     "image": "Ubuntu 24.04 LTS Server",
     "image_id": "018e6a12-8888-7123-9abc-def012345678",
-    "image_revision": 1,
-    "resource_profile_code": "standard",
+    "image_revision": "1",
+    "resource_plan_id": "018e6a34-9999-7abc-def0-123456789abc",
+    "resource_plan_revision_id": "018e6a34-9999-7abc-def0-fedcba987654",
+    "resource_plan_revision_number": "1",
     "cpu_cores": 2,
-    "memory_mb": 4096,
-    "boot_disk_gb": 64,
-    "disk_gb": 114,
-    "additional_disk_sizes_gb": [50],
+    "memory_mb": "4096",
+    "boot_disk_gb": "64",
+    "disk_gb": "114",
+    "additional_disk_sizes_gb": ["50"],
     "status": "PROVISIONING",
     "zone_id": "7b0b2e8a-e555-4a18-97c3-21c6014e7a88",
-    "provider_vmid": null,
+    "provider_vmid": "",
     "ipv4_address": null,
     "created_at": "2026-08-21T20:30:00Z",
     "updated_at": "2026-08-21T20:30:00Z",
@@ -148,14 +147,14 @@ sequenceDiagram
     participant Centri as Notification Service (Centrifugo)
 
     %% Phase 1
-    User->>Edge: POST /api/v1/hypervisor/vms (Cookie, Body)
+    User->>Edge: POST /api/v1/critical/hypervisor/vms (Cookie, session proof, Body)
     Edge->>Edge: ExtAuthz Check, Verify Trinity Session, Resolve Personal Context
-    Edge->>CP: POST /api/v1/personal/hypervisor/vms (Injected trusted headers)
+    Edge->>CP: POST /api/v1/personal/critical/hypervisor/vms (Injected trusted headers)
 
     %% Phase 2
-    CP->>CP: Handler validates schema & Profile (basic/standard/performance)
+    CP->>CP: Handler validates schema, UUIDs and additional disks
     CP->>CP: CommercialAdmissionGate: Check ALLOW in Redis Projection
-    CP->>CP: PricingReadinessGate: Check READY in Redis Projection
+    CP->>CP: Read Cost-owned resource-plan revision from Hypervisor L2
     CP->>DB: Resolve Available Image in Zone (GetAvailableImage)
     CP->>CP: Compute spec_hash (SHA-256 binary packing)
     CP->>CP: Marshal VmCreateV1 & Seal Payload with Zone X25519 Public Key
@@ -202,7 +201,7 @@ sequenceDiagram
 #### Hop 1.1: Web Console Client $\to$ Envoy Gateway
 * **HTTP Wire Request**:
 ```http
-POST /api/v1/hypervisor/vms HTTP/1.1
+POST /api/v1/critical/hypervisor/vms HTTP/1.1
 Host: api.aurora.local
 Cookie: aurora_session=sess_sec_987abc...; zone_context=hn-zone-01; x_client_device_id=dev-mac-018e
 Content-Type: application/json
@@ -213,27 +212,29 @@ traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 {
   "name": "dev-ubuntu-box",
   "image_id": "018e6a12-8888-7123-9abc-def012345678",
-  "resource_profile_code": "standard",
+  "resource_plan_id": "018e6a34-9999-7abc-def0-123456789abc",
+  "resource_plan_revision_id": "018e6a34-9999-7abc-def0-fedcba987654",
   "additional_disks": [
-    { "size_gb": 50 }
+    { "size_gb": "50" }
   ],
   "ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... user@workstation"
 }
 ```
 
 #### Hop 1.2: Envoy $\to$ ACR ExtAuthz (`CheckRequest`)
-- **Input**: Envoy forward toàn bộ Cookie, Method `POST`, Path `/api/v1/hypervisor/vms`.
+- **Input**: Envoy forward toàn bộ Cookie, Method `POST`, Path `/api/v1/critical/hypervisor/vms`.
 - **Thẩm định & Khử trùng tại ACR**:
   1. Tra cứu token trong `Auth-State Redis`, xác thực danh tính người dùng `user_id`.
   2. Đọc ngữ cảnh Zone `zone_context` (`zone_code`) $\to$ phân giải thành `zone_id` (UUID).
   3. Xác định Personal Workspace mặc định của user trong Zone đó $\to$ `workspace_id` (UUID).
-  4. Thực hiện **Path Rewrite** nội bộ sang `/api/v1/personal/hypervisor/vms`.
-  5. Xóa bỏ toàn bộ header nguy hại do client tự gửi và **Inject các trusted headers**:
+  4. Xác thực session proof ký đúng method, neutral path và raw body, dùng chung cho mọi critical mutation.
+  5. Thực hiện **Path Rewrite** nội bộ sang `/api/v1/personal/critical/hypervisor/vms`.
+  6. Xóa bỏ toàn bộ header nguy hại do client tự gửi và **Inject các trusted headers**:
      * `x-user-id`: `018e6a00-1111-7abc-def0-123456789abc`
      * `x-workspace-id`: `018e6a00-2222-7abc-def0-123456789abc`
      * `x-zone-id`: `7b0b2e8a-e555-4a18-97c3-21c6014e7a88`
      * `x-user-level`: `"1"`
-     * `x-original-path`: `"/api/v1/hypervisor/vms"`
+     * `x-original-path`: `"/api/v1/critical/hypervisor/vms"`
 - **Output Schema**: `CheckResponse` OK (0) forward sang Controlplane Hypervisor Upstream.
 
 ---
@@ -243,9 +244,9 @@ traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 #### Hop 2.1: Controlplane Handler & Security Preconditions
 1. **Context Extraction**: Trích xuất `userID`, `workspaceID`, `zoneID` qua `pkgcontext`.
 2. **Payload Validation**: Kiểm tra Regex `name`, giới hạn số đĩa $\le 15$, kích thước đĩa $8 \le \text{size} \le 4096$, SSH Key hợp lệ.
-3. **Commercial Admission Gate**: Gọi `RequirePersonalOwnerAdmission(ctx, userID)` kiểm tra Projection trong Redis Shared Cache (trạng thái `ALLOW`, còn hiệu lực `valid_until > NOW()`).
-4. **Pricing Readiness Gate**: Gọi `RequireHypervisorPricing(ctx)` kiểm tra bảng giá Hypervisor nội vùng có đang ở trạng thái `READY` hay không. Nếu thiếu hoặc hết hạn $\to$ `503 Service Unavailable` (`HYPERVISOR_PRICING_UNAVAILABLE`).
-5. **Image Verification**: Truy vấn `GetAvailableImage` xác nhận Image tồn tại trong Zone, trạng thái `AVAILABLE` và đã có `provider_template_vmid`.
+3. **Resource Plan Fast Path**: Hypervisor service đọc revision từ L2 do projection workflow của Hypervisor sở hữu để dựng payload. Cache miss hoặc payload lỗi trả retryable unavailable; request path không fallback DB.
+4. **Image Verification**: Truy vấn `GetAvailableImage` xác nhận Image tồn tại trong Zone, trạng thái `AVAILABLE` và đã có `provider_template_vmid`.
+5. **Durable Recheck**: CTE cùng transaction kiểm tra Commercial Admission, resource-plan revision/window/hash, workspace, Zone và image trước khi insert VM và outbox.
 
 #### Hop 2.2: Payload Sealing & Atomic SQL CTE
 * **Mã hóa Payload**:
@@ -253,9 +254,35 @@ traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
   - Gọi `jobpayload.Protector.Seal(ctx, Metadata, payload)` mã hóa bằng X25519 Public Key của Zone đích.
 * **Atomic SQL CTE (`CreateOrGet`)**:
 ```sql
-WITH authorized_scope AS (
+WITH commercial_admission AS (
     SELECT 1
-    FROM hierarchy.personal_workspaces workspace
+    FROM hypervisor.commercial_admission_projection admission
+    WHERE admission.owner_id = $owner_user_id
+      AND admission.owner_type = 'PERSONAL'
+      AND admission.decision = 'ALLOW'
+      AND admission.effective_at <= NOW()
+      AND (admission.valid_until IS NULL OR admission.valid_until > NOW())
+),
+resource_plan AS (
+    SELECT 1
+    FROM hypervisor.hypervisor_resource_plan_revisions
+    WHERE plan_id = $plan_id
+      AND revision_id = $plan_revision_id
+      AND revision_number = $plan_revision_number
+      AND content_sha256 = $plan_content_sha256
+      AND cpu_cores = $cpu_cores
+      AND memory_mib = $memory_mb
+      AND boot_disk_gib = $boot_disk_gb
+      AND state = 'ACTIVE'
+      AND allow_create = TRUE
+      AND effective_from <= NOW()
+      AND (effective_to IS NULL OR NOW() < effective_to)
+),
+authorized_scope AS (
+    SELECT 1
+    FROM commercial_admission
+    CROSS JOIN resource_plan
+    CROSS JOIN hierarchy.personal_workspaces workspace
     JOIN hierarchy.zones zone
       ON zone.id = workspace.zone_id
     JOIN hypervisor.image_artifacts image
@@ -281,13 +308,15 @@ inserted_vm AS (
     INSERT INTO hypervisor.personal_vms (
         id, workspace_id, zone_id, owner_user_id, name, image,
         image_id, image_revision, image_sha256,
-        resource_profile_code, cpu_cores, memory_mb, boot_disk_gb,
+        resource_plan_id, resource_plan_revision_id, resource_plan_revision_number, resource_plan_content_sha256,
+        cpu_cores, memory_mb, boot_disk_gb,
         disk_gb, additional_disk_sizes_gb, ssh_public_key, spec_hash,
         status, operation_id, provider_name, created_at, updated_at
     )
     SELECT $vm_id, $workspace_id, $zone_id, $owner_user_id, $name, $image_name,
            $image_id, $image_revision, $image_sha256,
-           $profile_code, $cpu_cores, $memory_mb, $boot_disk_gb,
+           $plan_id, $plan_revision_id, $plan_revision_number, $plan_content_sha256,
+           $cpu_cores, $memory_mb, $boot_disk_gb,
            $disk_gb, $additional_disks, $ssh_public_key, $spec_hash,
            'PROVISIONING', $operation_id, $provider_name, NOW(), NOW()
     FROM authorized_scope
@@ -310,7 +339,8 @@ inserted_outbox AS (
 )
 SELECT id, workspace_id, zone_id, owner_user_id, name, image,
        image_id, image_revision, image_sha256,
-       resource_profile_code, cpu_cores, memory_mb, boot_disk_gb,
+       resource_plan_id, resource_plan_revision_id, resource_plan_revision_number, resource_plan_content_sha256,
+       cpu_cores, memory_mb, boot_disk_gb,
        disk_gb, additional_disk_sizes_gb, ssh_public_key, spec_hash,
        status, operation_id, provider_name, provider_vmid,
        host(ipv4_address),

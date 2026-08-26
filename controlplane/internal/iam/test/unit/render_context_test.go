@@ -15,7 +15,7 @@ import (
 	iamService "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 	pkgcontext "controlplane/pkg/context"
 

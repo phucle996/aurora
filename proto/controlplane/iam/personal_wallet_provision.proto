@@ -1,7 +1,10 @@
 syntax = "proto3";
 package iamproto;
-option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
 
+// Command issued by IAM after the account-activation transaction commits.
+// Cost owns the resulting wallet and is the only component that can publish a
+// wallet-provisioned fact after its own transaction succeeds.
 message PersonalWalletProvisionRequestedV1 {
   bytes event_id = 1;
   int32 schema_version = 2;

@@ -143,7 +143,7 @@ export function ComputeScreen() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{vm.image}</td>
                       <td className="px-4 py-3 font-semibold">{vm.cpu_cores}</td>
-                      <td className="px-4 py-3 font-semibold">{Math.round(vm.memory_mb / 1024)} GiB</td>
+                      <td className="px-4 py-3 font-semibold">{Math.round(Number(vm.memory_mb) / 1024)} GiB</td>
                       <td className="px-4 py-3 font-semibold">{vm.disk_gb} GiB</td>
                     </tr>
                   ))}

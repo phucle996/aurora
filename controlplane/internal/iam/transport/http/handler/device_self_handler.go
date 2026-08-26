@@ -19,12 +19,23 @@ import (
 
 // [COMMENT]: DeviceSelfHandler quản lý thiết bị cá nhân của chính user đang hoạt động
 type DeviceSelfHandler struct {
-	deviceSvc domainservice.DeviceSelfService
+	deviceSvc           domainservice.DeviceSelfService
+	runtimeRevokeSvc    domainservice.DeviceRuntimeRevokeService
+	notifyRuntimeRevoke func()
 }
 
-// [COMMENT]: NewDeviceSelfHandler khởi tạo một thể hiện mới của DeviceSelfHandler
-func NewDeviceSelfHandler(deviceSvc domainservice.DeviceSelfService) *DeviceSelfHandler {
-	return &DeviceSelfHandler{deviceSvc: deviceSvc}
+// NewDeviceSelfHandler wires the read workflow and the separate resource-first
+// runtime revoke workflow at the HTTP boundary.
+func NewDeviceSelfHandler(
+	deviceSvc domainservice.DeviceSelfService,
+	runtimeRevokeSvc domainservice.DeviceRuntimeRevokeService,
+	notifyRuntimeRevoke func(),
+) *DeviceSelfHandler {
+	return &DeviceSelfHandler{
+		deviceSvc:           deviceSvc,
+		runtimeRevokeSvc:    runtimeRevokeSvc,
+		notifyRuntimeRevoke: notifyRuntimeRevoke,
+	}
 }
 
 // [COMMENT]: ListMyDevices trả về danh sách thiết bị của chính user
@@ -110,7 +121,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	err = h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentDeviceID)
+	err = h.runtimeRevokeSvc.RevokeDevice(ctx, userID, clientDeviceID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "action not allowed - cannot revoke current device")
@@ -131,6 +142,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
+	h.notifyRuntimeRevoke()
 	c.Status(http.StatusNoContent)
 }
 
@@ -150,7 +162,7 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, currentDeviceID)
+	affected, err := h.runtimeRevokeSvc.RevokeOtherDevices(ctx, userID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
@@ -166,5 +178,6 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
+	h.notifyRuntimeRevoke()
 	apires.RespondSuccess(c, gin.H{"revoked_sessions": affected}, "ok")
 }

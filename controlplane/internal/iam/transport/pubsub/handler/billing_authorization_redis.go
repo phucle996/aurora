@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/cacheengine"
+	iamproto "controlplane/internal/iam/transport/proto"
 	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
@@ -20,17 +20,31 @@ import (
 )
 
 const (
+	// billingAuthorizationRequestChannel là kênh Pub/Sub trên Shared Redis nhận yêu cầu nạp lại Cache quyền hạn từ Cost Manager.
 	billingAuthorizationRequestChannel = "iam.authorization.billing.get"
-	billingAuthorizationReplyPrefix    = "iam.authorization.billing.reply."
+
+	// billingAuthorizationReplyPrefix là tiền tố kênh Pub/Sub phản hồi kết quả nạp quyền về cho Cost Manager theo từng request ID.
+	billingAuthorizationReplyPrefix = "iam.authorization.billing.reply."
+
+	// maxConcurrentSlots là số lượng luồng tối đa xử lý phân giải quyền đồng thời trên mỗi Pod IAM để bảo vệ PostgreSQL.
+	maxConcurrentSlots = 32
+
+	// dispatchLockTTL là thời hạn sống của khóa phân tán ngăn chặn nhiều Pod IAM cùng tranh chấp giải mã 1 request.
+	dispatchLockTTL = 2 * time.Second
+
+	// authDataTTL là thời gian sống của dữ liệu quyền hạn Billing lưu trong Auth Redis (120 giây).
+	authDataTTL = 120 * time.Second
+
+	// generationTTL là thời gian sống của khóa phiên bản Generation (24 giờ).
+	generationTTL = 86400 * time.Second
 )
 
-// BillingAuthorizationRedisHandler resolves Cost authorization cache misses through the
-// central Shared Redis bus. Auth Redis remains the security-state projection store.
+// BillingAuthorizationRedisHandler lắng nghe các yêu cầu giải quyết Cache Miss quyền hạn từ Cost Manager
+// qua Shared Redis Pub/Sub, truy vấn RBAC Role từ PostgreSQL/L1 Cache và nạp quyền vào Auth Redis.
 type BillingAuthorizationRedisHandler struct {
-	sharedRedis  *goredis.Client
-	authRedis    *goredis.Client
-	platformRepo iamRepoInterface.RbacPlatformRepository
-	tenantRepo   iamRepoInterface.RbacTenantRepository
+	sharedRedis *goredis.Client
+	authRedis   *goredis.Client
+	cacheEngine *cacheengine.CacheRegistry
 
 	cancel context.CancelFunc
 	pubsub *goredis.PubSub
@@ -39,37 +53,41 @@ type BillingAuthorizationRedisHandler struct {
 	slots  chan struct{}
 }
 
+// NewBillingAuthorizationRedisHandler khởi tạo handler với các kết nối Shared Redis, Auth Redis và IAM Cache Registry.
 func NewBillingAuthorizationRedisHandler(
 	sharedRedis *goredis.Client,
 	authRedis *goredis.Client,
-	platformRepo iamRepoInterface.RbacPlatformRepository,
-	tenantRepo iamRepoInterface.RbacTenantRepository,
+	cacheEngine *cacheengine.CacheRegistry,
 ) (*BillingAuthorizationRedisHandler, error) {
-	if sharedRedis == nil || authRedis == nil || platformRepo == nil || tenantRepo == nil {
-		return nil, errors.New("billing authorization Redis handler requires Shared Redis, Auth Redis and both RBAC repositories")
+	if sharedRedis == nil || authRedis == nil || cacheEngine == nil {
+		return nil, errors.New("billing authorization Redis handler requires Shared Redis, Auth Redis and the IAM cache registry")
 	}
+
 	return &BillingAuthorizationRedisHandler{
-		sharedRedis:  sharedRedis,
-		authRedis:    authRedis,
-		platformRepo: platformRepo,
-		tenantRepo:   tenantRepo,
-		// [COMMENT]: Bound DB concurrency per replica; overload becomes a short Cost timeout instead of exhausting PostgreSQL.
-		slots: make(chan struct{}, 32),
+		sharedRedis: sharedRedis,
+		authRedis:   authRedis,
+		cacheEngine: cacheEngine,
+		// Giới hạn số lượng worker đồng thời trên mỗi replica để tránh làm kiệt quệ Connection Pool của PostgreSQL
+		slots: make(chan struct{}, maxConcurrentSlots),
 	}, nil
 }
 
+// Start đăng ký Subscriber trên kênh Pub/Sub của Shared Redis và khởi chạy Dispatcher Goroutine.
 func (h *BillingAuthorizationRedisHandler) Start() error {
 	if h == nil {
 		return errors.New("billing authorization Redis handler is nil")
 	}
+
 	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "iam.authorization.billing.subscribe"))
 	pubsub := h.sharedRedis.Subscribe(ctx, billingAuthorizationRequestChannel)
-	// [COMMENT]: Receive is the readiness fence: Cost must never see this replica as a subscriber before Redis accepted SUBSCRIBE.
+
+	// Readiness Fence: Đảm bảo Redis Server đã chấp nhận SUBSCRIBE trước khi thông báo sẵn sàng
 	if _, err := pubsub.Receive(ctx); err != nil {
 		cancel()
 		_ = pubsub.Close()
 		return fmt.Errorf("subscribe Billing authorization request channel: %w", err)
 	}
+
 	h.cancel = cancel
 	h.pubsub = pubsub
 
@@ -77,6 +95,7 @@ func (h *BillingAuthorizationRedisHandler) Start() error {
 	go func() {
 		defer h.loopWG.Done()
 		channel := pubsub.Channel(goredis.WithChannelSize(256))
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -85,6 +104,8 @@ func (h *BillingAuthorizationRedisHandler) Start() error {
 				if !ok {
 					return
 				}
+
+				// Điều phối vào worker pool nếu còn slot trống
 				select {
 				case h.slots <- struct{}{}:
 					h.workWG.Add(1)
@@ -94,43 +115,51 @@ func (h *BillingAuthorizationRedisHandler) Start() error {
 						h.resolve([]byte(payload))
 					}(message.Payload)
 				default:
-					// [COMMENT]: Every CP replica receives Pub/Sub; a saturated replica declines without taking the distributed lock.
+					// Tất cả Pod IAM đều nhận được Pub/Sub message. Nếu Pod này đang bận (hết slot),
+					// nó sẽ chủ động từ chối để Pod IAM khác rảnh rỗi hơn tranh chấp khóa xử lý.
 				}
 			}
 		}
 	}()
+
 	return nil
 }
 
+// resolve giải mã yêu cầu, chiếm khóa phân tán, phân giải quyền hạn RBAC và nạp vào Auth Redis.
 func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
-	// [COMMENT]: Platform wire is request+user UUID; tenant wire appends the
-	// edge-verified tenant UUID. Fixed widths prevent parser ambiguity and
-	// payload amplification on the Shared Redis security bridge.
-	if len(payload) != 32 && len(payload) != 48 {
+	// 1. Kiểm tra cấu trúc nhị phân của payload yêu cầu:
+	// - Độ dài 33 bytes: Personal Scope [mode (1B) + requestID (16B) + userID (16B)]
+	// - Độ dài 49 bytes: Tenant Scope   [mode (1B) + requestID (16B) + userID (16B) + tenantID (16B)]
+	if (len(payload) != 33 && len(payload) != 49) || payload[0] > 1 {
 		return
 	}
-	requestID, requestErr := uuid.FromBytes(payload[:16])
-	userID, userErr := uuid.FromBytes(payload[16:32])
+
+	critical := payload[0] == 1
+	requestID, requestErr := uuid.FromBytes(payload[1:17])
+	userID, userErr := uuid.FromBytes(payload[17:33])
 	if requestErr != nil || userErr != nil || requestID == uuid.Nil || userID == uuid.Nil {
 		return
 	}
+
 	tenantID := uuid.Nil
-	if len(payload) == 48 {
-		parsedTenantID, tenantErr := uuid.FromBytes(payload[32:48])
+	if len(payload) == 49 {
+		parsedTenantID, tenantErr := uuid.FromBytes(payload[33:49])
 		if tenantErr != nil || parsedTenantID == uuid.Nil {
 			return
 		}
 		tenantID = parsedTenantID
 	}
+
 	replyChannel := billingAuthorizationReplyPrefix + requestID.String()
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.authorization.billing.resolve"), 700*time.Millisecond)
 	defer cancel()
-	respond := func(ok bool, response []byte) {
-		wire := make([]byte, 1, len(response)+1)
+
+	// respond gửi phản hồi nhị phân {1: Thành công, 0: Thất bại} về cho Cost Manager
+	respond := func(ok bool) {
+		wire := []byte{0}
 		if ok {
 			wire[0] = 1
 		}
-		wire = append(wire, response...)
 		responseCtx, responseCancel := context.WithTimeout(context.WithoutCancel(ctx), 300*time.Millisecond)
 		defer responseCancel()
 		if err := h.sharedRedis.Publish(responseCtx, replyChannel, wire).Err(); err != nil {
@@ -138,14 +167,17 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 		}
 	}
 
+	// 2. Chiếm khóa phân tán (Distributed Lock qua SetNX):
+	// Đảm bảo trong cụm IAM chỉ có DUY NHẤT 1 Pod thực thi nạp dữ liệu cho requestID này.
 	lockKey := "iam:authorization:billing:dispatch:" + requestID.String()
 	lockToken := uuid.NewString()
-	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, lockToken, 2*time.Second).Result()
+	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, lockToken, dispatchLockTTL).Result()
 	if err != nil || !acquired {
 		return
 	}
+
+	// Compare-and-Delete: Giải phóng khóa an toàn, tránh xóa nhầm khóa của tiến trình khác nếu bị trễ TTL
 	defer func() {
-		// [COMMENT]: Compare-delete avoids deleting a replacement lock if Redis stalls past the original TTL.
 		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 300*time.Millisecond)
 		defer releaseCancel()
 		_ = h.sharedRedis.Eval(releaseCtx, `
@@ -156,28 +188,37 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 		`, []string{lockKey}, lockToken).Err()
 	}()
 
+	// ========================================================================
+	// NHÁNH A: PHÂN GIẢI QUYỀN HẠN TỔ CHỨC (TENANT SCOPED RESOLUTION)
+	// ========================================================================
 	if tenantID != uuid.Nil {
-		binaryEntry, loadErr := h.tenantRepo.GetUserTenantBillingPermissions(ctx, userID, tenantID)
-		if loadErr != nil {
-			respond(false, []byte("tenant billing permission is required"))
-			return
+		if critical {
+			// Yêu cầu critical -> Xóa L1 Cache cục bộ để ép đọc dữ liệu tươi mới từ PostgreSQL
+			h.cacheEngine.L1.Delete("membership_role:" + userID.String() + ":" + tenantID.String())
 		}
-		var roleEntry iamproto.RoleEntry
-		if proto.Unmarshal(binaryEntry, &roleEntry) != nil {
-			respond(false, []byte("authorization snapshot is invalid"))
+
+		cacheValue, loadErr := h.cacheEngine.GetOrLoad(ctx, "membership_role", userID.String()+":"+tenantID.String())
+		if loadErr != nil {
+			respond(false)
 			return
 		}
 
+		roleEntry, ok := cacheValue.(*iamproto.RoleEntry)
+		if !ok || roleEntry == nil {
+			respond(false)
+			return
+		}
+
+		// Ràng buộc bảo mật (Security Invariant):
+		// Tuyệt đối không cho phép quyền hạn cấp Tenant bị mở rộng thành quyền cấp Platform.
 		expectedPrefix := tenantID.String() + ":" + uuid.Nil.String() + ":billing:"
 		permissions := make([]string, 0, len(roleEntry.Permissions))
 		seen := make(map[string]struct{}, len(roleEntry.Permissions))
+
 		for _, permission := range roleEntry.Permissions {
 			parts := strings.Split(permission, ":")
-			if len(parts) != 5 || !strings.HasPrefix(permission, expectedPrefix) ||
-				parts[3] == "" || parts[4] == "" {
-				// [COMMENT]: Never flatten a tenant permission into a platform
-				// permission; an invalid snapshot fails the whole decision closed.
-				respond(false, []byte("authorization snapshot is invalid"))
+			if len(parts) != 5 || !strings.HasPrefix(permission, expectedPrefix) || parts[3] == "" || parts[4] == "" {
+				respond(false)
 				return
 			}
 			if _, exists := seen[permission]; !exists {
@@ -185,78 +226,103 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 				permissions = append(permissions, permission)
 			}
 		}
+
 		if len(permissions) == 0 {
-			respond(false, []byte("tenant billing permission is required"))
+			respond(false)
 			return
 		}
+
 		sort.Strings(permissions)
 		responseBinary, marshalErr := proto.Marshal(&iamproto.RoleEntry{Permissions: permissions})
 		if marshalErr != nil {
-			respond(false, []byte("authorization snapshot is invalid"))
+			respond(false)
 			return
 		}
-		// [COMMENT]: Critical tenant mutations bypass Cost caches, so this reply
-		// is deliberately not projected into the platform authorization keys.
-		respond(true, responseBinary)
+
+		// Ghi quyền hạn Tenant vào Auth Redis (TTL 5 giây cho luồng ngắn hạn)
+		dataKey := fmt.Sprintf("authz:billing:tenant:{%s}:%s:data", tenantID, userID)
+		if writeErr := h.authRedis.Set(ctx, dataKey, responseBinary, 5*time.Second).Err(); writeErr != nil {
+			respond(false)
+			return
+		}
+
+		respond(true)
 		return
 	}
 
+	// ========================================================================
+	// NHÁNH B: PHÂN GIẢI QUYỀN HẠN CÁ NHÂN / PLATFORM (PERSONAL SCOPED RESOLUTION)
+	// ========================================================================
 	dataKey := fmt.Sprintf("authz:billing:{%s}:data", userID)
 	generationKey := fmt.Sprintf("authz:billing:{%s}:generation", userID)
 	dataGenerationKey := fmt.Sprintf("authz:billing:{%s}:data_generation", userID)
+
+	// Thử tối đa 2 lần để đối phó với hiện tượng Generation Fencing Conflict
 	for attempt := 0; attempt < 2; attempt++ {
+		if critical {
+			h.cacheEngine.L1.Delete("user_role:" + userID.String())
+		}
+
+		// Lấy số phiên bản Generation hiện tại trong Auth Redis
 		expectedGeneration, generationErr := h.authRedis.Get(ctx, generationKey).Result()
 		if errors.Is(generationErr, goredis.Nil) {
 			expectedGeneration = "0"
 		} else if generationErr != nil {
-			respond(false, []byte("authorization cache is unavailable"))
+			respond(false)
 			return
 		}
 
-		binaryEntry, loadErr := h.platformRepo.GetUserRolePermissions(ctx, userID)
+		// Truy vấn RoleEntry từ Cache Registry / DB
+		cacheValue, loadErr := h.cacheEngine.GetOrLoad(ctx, "user_role", userID.String())
 		if loadErr != nil {
 			logger.SysErrorCtx(ctx, "redis.BillingAuthorization", "Failed to load user authorization")
-			respond(false, []byte("authorization service unavailable"))
-			return
-		}
-		var roleEntry iamproto.RoleEntry
-		if proto.Unmarshal(binaryEntry, &roleEntry) != nil {
-			respond(false, []byte("authorization snapshot is invalid"))
+			respond(false)
 			return
 		}
 
-		// [COMMENT]: A workspace-scoped role must never be promoted into global Billing permission.
+		roleEntry, ok := cacheValue.(*iamproto.RoleEntry)
+		if !ok || roleEntry == nil {
+			respond(false)
+			return
+		}
+
+		// Chuẩn hóa và lọc danh sách quyền hạn Billing
 		permissions := make([]string, 0, len(roleEntry.Permissions))
 		seen := make(map[string]struct{}, len(roleEntry.Permissions))
+
 		for _, raw := range roleEntry.Permissions {
 			parts := strings.Split(raw, ":")
 			permission := ""
 			switch {
 			case len(parts) == 3 && parts[0] == "billing":
 				permission = raw
-			case len(parts) == 5 && parts[2] == "billing" &&
-				(parts[1] == "*" || parts[1] == uuid.Nil.String()):
+			case len(parts) == 5 && parts[2] == "billing" && (parts[1] == "*" || parts[1] == uuid.Nil.String()):
 				permission = strings.Join(parts[2:], ":")
 			default:
 				continue
 			}
+
 			if _, exists := seen[permission]; !exists {
 				seen[permission] = struct{}{}
 				permissions = append(permissions, permission)
 			}
 		}
+
 		sort.Strings(permissions)
 		if len(permissions) == 0 {
-			respond(false, []byte("billing permission is required"))
-			return
-		}
-		responseBinary, marshalErr := proto.Marshal(&iamproto.RoleEntry{Permissions: permissions})
-		if marshalErr != nil {
-			respond(false, []byte("authorization snapshot is invalid"))
+			respond(false)
 			return
 		}
 
-		// [COMMENT]: Generation fencing rejects the DB snapshot when RBAC mutates during the query.
+		responseBinary, marshalErr := proto.Marshal(&iamproto.RoleEntry{Permissions: permissions})
+		if marshalErr != nil {
+			respond(false)
+			return
+		}
+
+		// Generation Fencing Lua Script:
+		// Kiểm tra xem số hiệu Generation có bị thay đổi trong lúc IAM đang query DB hay không.
+		// Nếu Generation bị lệch (do quyền vừa bị chỉnh sửa/thu hồi) -> Script từ chối ghi (trả về 0) để thử lại.
 		written, writeErr := h.authRedis.Eval(ctx, `
 			local current = redis.call("GET", KEYS[2]) or "0"
 			if current ~= ARGV[2] then return 0 end
@@ -267,19 +333,24 @@ func (h *BillingAuthorizationRedisHandler) resolve(payload []byte) {
 			end
 			return 1
 		`, []string{dataKey, generationKey, dataGenerationKey},
-			responseBinary, expectedGeneration, int64(120), int64(86400)).Int()
+			responseBinary, expectedGeneration, int64(authDataTTL.Seconds()), int64(generationTTL.Seconds())).Int()
+
 		if writeErr != nil {
-			respond(false, []byte("authorization cache is unavailable"))
+			respond(false)
 			return
 		}
+
 		if written == 1 {
-			respond(true, responseBinary)
+			// Nạp dữ liệu vào Auth Redis thành công -> Báo OK cho Cost Manager
+			respond(true)
 			return
 		}
 	}
-	respond(false, []byte("authorization changed while it was being resolved"))
+
+	respond(false)
 }
 
+// Stop dừng tiến trình lắng nghe Pub/Sub và chờ toàn bộ worker hoàn tất.
 func (h *BillingAuthorizationRedisHandler) Stop() {
 	if h == nil {
 		return
@@ -290,7 +361,8 @@ func (h *BillingAuthorizationRedisHandler) Stop() {
 	if h.pubsub != nil {
 		_ = h.pubsub.Close()
 	}
-	// [COMMENT]: Stop dispatcher before waiting workers so no WaitGroup Add can race with Wait.
+
+	// Đảm bảo đóng dispatcher trước khi chờ workers để tránh Data Race giữa Add và Wait
 	h.loopWG.Wait()
 	h.workWG.Wait()
 }

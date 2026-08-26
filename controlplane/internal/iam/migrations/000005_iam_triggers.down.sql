@@ -2,6 +2,8 @@
 -- Drop all triggers.
 
 DROP TRIGGER IF EXISTS trg_membership_role_updated_at ON membership_role;
+DROP TRIGGER IF EXISTS trg_device_runtime_revoke_outbox_records_updated_at ON device_runtime_revoke_outbox_records;
+DROP TRIGGER IF EXISTS trg_lifecycle_fact_outbox_records_updated_at ON lifecycle_fact_outbox_records;
 DROP TRIGGER IF EXISTS trg_tenant_roles_updated_at ON tenant_roles;
 DROP TRIGGER IF EXISTS trg_platform_roles_updated_at ON platform_roles;
 DROP TRIGGER IF EXISTS trg_permissions_updated_at ON permissions;

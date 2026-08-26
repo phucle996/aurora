@@ -49,17 +49,24 @@ CREATE INDEX IF NOT EXISTS mfa_recovery_codes_setting_idx
 CREATE UNIQUE INDEX IF NOT EXISTS mfa_recovery_codes_setting_hash_uidx
     ON mfa_recovery_codes(mfa_setting_id, code_hash);
 
--- Billing Outbox Indexes
-CREATE INDEX IF NOT EXISTS idx_billing_outbox_claim
-    ON billing_outbox_records (available_at, id)
+-- Lifecycle Fact Outbox Indexes
+CREATE INDEX IF NOT EXISTS idx_lifecycle_fact_outbox_claim
+    ON lifecycle_fact_outbox_records (available_at, id)
     WHERE status IN ('PENDING', 'PUBLISHING');
 
-CREATE INDEX IF NOT EXISTS idx_billing_outbox_owner_audit
-    ON billing_outbox_records (owner_type, owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_fact_outbox_owner_audit
+    ON lifecycle_fact_outbox_records (owner_type, owner_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_billing_outbox_published_cleanup
-    ON billing_outbox_records (published_at, id)
+CREATE INDEX IF NOT EXISTS idx_lifecycle_fact_outbox_published_cleanup
+    ON lifecycle_fact_outbox_records (published_at, id)
     WHERE status = 'PUBLISHED' AND published_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_device_runtime_revoke_outbox_claim
+    ON device_runtime_revoke_outbox_records (available_at, id)
+    WHERE status IN ('PENDING', 'PUBLISHING');
+
+CREATE INDEX IF NOT EXISTS idx_device_runtime_revoke_outbox_user_audit
+    ON device_runtime_revoke_outbox_records (user_id, created_at DESC);
 
 -- Permissions & Roles Indexes
 CREATE INDEX IF NOT EXISTS permissions_module_idx ON permissions(module);

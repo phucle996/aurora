@@ -25,21 +25,21 @@ import (
 // Đây là module Tier-1 (Non-Critical): Lỗi khởi tạo phân hệ này không được phép
 // gây sập hệ thống (Crash-Loopback) mà chỉ làm suy giảm tính năng (Graceful Degradation).
 type HypervisorModule struct {
-	enabled            bool
-	err                error // Lưu vết lỗi khởi tạo để phục vụ Observability (SRE monitor)
-	db                 *pgxpool.Pool
-	cfg                *config.Config
-	L1Registry         *cacheengine.CacheRegistry
-	VMRepository       hypervisorRepoInterface.PersonalVMRepository
-	VMService          hypervisorSvcInterface.PersonalVMService
-	VMHandler          *hypervisorHandler.PersonalVMHandler
-	ImageRepository    hypervisorRepoInterface.ImageRepository
-	ImageService       hypervisorSvcInterface.ImageService
-	ImageHandler       *hypervisorHandler.ImageHandler
+	enabled         bool
+	err             error // Lưu vết lỗi khởi tạo để phục vụ Observability (SRE monitor)
+	db              *pgxpool.Pool
+	cfg             *config.Config
+	L1Registry      *cacheengine.CacheRegistry
+	VMRepository    hypervisorRepoInterface.PersonalVMRepository
+	VMService       hypervisorSvcInterface.PersonalVMService
+	VMHandler       *hypervisorHandler.PersonalVMHandler
+	ImageRepository hypervisorRepoInterface.ImageRepository
+	ImageService    hypervisorSvcInterface.ImageService
+	ImageHandler    *hypervisorHandler.ImageHandler
 
 	// Background workflow transports
 	CommercialAdmissionProjection *hypervisorStream.CommercialAdmissionProjectionConsumer
-	PricingReadinessProjection    *hypervisorStream.PricingReadinessProjectionConsumer
+	ResourcePlanProjection        *hypervisorStream.ResourcePlanProjectionConsumer
 }
 
 // IsEnabled trả về true nếu module được khởi tạo thành công và sẵn sàng phục vụ.
@@ -92,26 +92,6 @@ func NewModule(
 	if vmRepo == nil {
 		return nil, errors.New("hypervisor module: failed to construct personal VM repository")
 	}
-	commercialAdmissionRepo := hypervisorRepoImpl.NewHypervisorCommercialAdmissionRepo(db, cfg)
-	if commercialAdmissionRepo == nil {
-		return nil, errors.New("hypervisor module: failed to construct commercial admission repository")
-	}
-	pricingReadinessRepo := hypervisorRepoImpl.NewHypervisorPricingReadinessProjectionRepo(rds)
-	if pricingReadinessRepo == nil {
-		return nil, errors.New("hypervisor module: failed to construct pricing readiness repository")
-	}
-	pricingReadinessProjectionSvc := hypervisorSvcImpl.NewHypervisorPricingReadinessProjectionService(pricingReadinessRepo)
-	if pricingReadinessProjectionSvc == nil {
-		return nil, errors.New("hypervisor module: failed to construct pricing readiness projection service")
-	}
-	pricingReadinessProjection := hypervisorStream.NewPricingReadinessProjectionConsumer(rds, pricingReadinessProjectionSvc)
-	if pricingReadinessProjection == nil {
-		return nil, errors.New("hypervisor module: failed to construct pricing readiness projection consumer")
-	}
-	pricingReadinessGate := hypervisorSvcImpl.NewHypervisorPricingReadinessGateService(pricingReadinessRepo)
-	if pricingReadinessGate == nil {
-		return nil, errors.New("hypervisor module: failed to construct pricing readiness gate service")
-	}
 	commercialAdmissionProjectionRepo := hypervisorRepoImpl.NewHypervisorCommercialAdmissionProjectionRepo(db, cfg.SchemaSQL.Hypervisor)
 	if commercialAdmissionProjectionRepo == nil {
 		return nil, errors.New("hypervisor module: failed to construct commercial admission projection repository")
@@ -124,7 +104,19 @@ func NewModule(
 	if commercialAdmissionProjection == nil {
 		return nil, errors.New("hypervisor module: failed to construct commercial admission projection consumer")
 	}
-	vmSvc := hypervisorSvcImpl.NewPersonalVMService(vmRepo, commercialAdmissionRepo, pricingReadinessGate, workflowMetrics)
+	resourcePlanProjectionRepo := hypervisorRepoImpl.NewHypervisorResourcePlanProjectionRepository(db, cfg)
+	if resourcePlanProjectionRepo == nil {
+		return nil, errors.New("hypervisor module: failed to construct resource plan projection repository")
+	}
+	resourcePlanProjectionSvc := hypervisorSvcImpl.NewHypervisorResourcePlanProjectionService(resourcePlanProjectionRepo, rds)
+	if resourcePlanProjectionSvc == nil {
+		return nil, errors.New("hypervisor module: failed to construct resource plan projection service")
+	}
+	resourcePlanProjection := hypervisorStream.NewResourcePlanProjectionConsumer(rds, resourcePlanProjectionSvc)
+	if resourcePlanProjection == nil {
+		return nil, errors.New("hypervisor module: failed to construct resource plan projection consumer")
+	}
+	vmSvc := hypervisorSvcImpl.NewPersonalVMService(vmRepo, rds, workflowMetrics)
 	if vmSvc == nil {
 		return nil, errors.New("hypervisor module: failed to construct personal VM service")
 	}
@@ -154,7 +146,7 @@ func NewModule(
 		VMService:                     vmSvc,
 		VMHandler:                     vmHandler,
 		CommercialAdmissionProjection: commercialAdmissionProjection,
-		PricingReadinessProjection:    pricingReadinessProjection,
+		ResourcePlanProjection:        resourcePlanProjection,
 		ImageRepository:               imageRepo,
 		ImageService:                  imageSvc,
 		ImageHandler:                  imageHandler,
@@ -181,8 +173,8 @@ func (m *HypervisorModule) Bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
-	if m.PricingReadinessProjection != nil {
-		if err := m.PricingReadinessProjection.Start(); err != nil {
+	if m.ResourcePlanProjection != nil {
+		if err := m.ResourcePlanProjection.Start(); err != nil {
 			if m.CommercialAdmissionProjection != nil {
 				m.CommercialAdmissionProjection.Stop()
 			}
@@ -199,7 +191,7 @@ func (m *HypervisorModule) Stop() {
 	if m.CommercialAdmissionProjection != nil {
 		m.CommercialAdmissionProjection.Stop()
 	}
-	if m.PricingReadinessProjection != nil {
-		m.PricingReadinessProjection.Stop()
+	if m.ResourcePlanProjection != nil {
+		m.ResourcePlanProjection.Stop()
 	}
 }

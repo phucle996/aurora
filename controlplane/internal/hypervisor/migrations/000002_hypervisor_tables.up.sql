@@ -41,6 +41,38 @@ CREATE TABLE IF NOT EXISTS image_artifacts (
         CHECK (provider_template_vmid IS NULL OR provider_template_vmid > 0)
 );
 
+-- Cost owns the catalog; Hypervisor keeps this immutable projection only so
+-- the VM create CTE can make its final durable decision without trusting a
+-- browser payload or a volatile cache hit.
+CREATE TABLE IF NOT EXISTS hypervisor_resource_plan_revisions (
+    revision_id UUID PRIMARY KEY,
+    plan_id UUID NOT NULL,
+    revision_number BIGINT NOT NULL,
+    code VARCHAR(128) NOT NULL,
+    display_name VARCHAR(256) NOT NULL,
+    description TEXT NOT NULL,
+    billing_model VARCHAR(32) NOT NULL,
+    cpu_cores INT NOT NULL,
+    memory_mib BIGINT NOT NULL,
+    boot_disk_gib BIGINT NOT NULL,
+    content_sha256 BYTEA NOT NULL,
+    effective_from TIMESTAMPTZ NOT NULL,
+    effective_to TIMESTAMPTZ,
+    state VARCHAR(16) NOT NULL,
+    allow_create BOOLEAN NOT NULL,
+    source_event_id UUID NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ux_hypervisor_resource_plan_revision_number UNIQUE (plan_id, revision_number),
+    CONSTRAINT ck_hypervisor_resource_plan_code CHECK (code ~ '^[a-z0-9][a-z0-9._-]{0,127}$'),
+    CONSTRAINT ck_hypervisor_resource_plan_billing_model CHECK (billing_model = 'LIMIT_HOURLY'),
+    CONSTRAINT ck_hypervisor_resource_plan_cpu CHECK (cpu_cores BETWEEN 1 AND 1024),
+    CONSTRAINT ck_hypervisor_resource_plan_memory CHECK (memory_mib BETWEEN 1 AND 4194304),
+    CONSTRAINT ck_hypervisor_resource_plan_boot_disk CHECK (boot_disk_gib BETWEEN 1 AND 1048576),
+    CONSTRAINT ck_hypervisor_resource_plan_hash CHECK (octet_length(content_sha256) = 32),
+    CONSTRAINT ck_hypervisor_resource_plan_state CHECK (state IN ('ACTIVE', 'RETIRED')),
+    CONSTRAINT ck_hypervisor_resource_plan_window CHECK (effective_to IS NULL OR effective_to > effective_from)
+);
+
 CREATE TABLE IF NOT EXISTS personal_vms (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL,
@@ -51,7 +83,10 @@ CREATE TABLE IF NOT EXISTS personal_vms (
     image_id UUID NOT NULL,
     image_revision BIGINT NOT NULL,
     image_sha256 BYTEA NOT NULL,
-    resource_profile_code TEXT NOT NULL,
+    resource_plan_id UUID NOT NULL,
+    resource_plan_revision_id UUID NOT NULL,
+    resource_plan_revision_number BIGINT NOT NULL,
+    resource_plan_content_sha256 BYTEA NOT NULL,
     cpu_cores INT NOT NULL,
     memory_mb BIGINT NOT NULL,
     boot_disk_gb BIGINT NOT NULL,
@@ -78,12 +113,8 @@ CREATE TABLE IF NOT EXISTS personal_vms (
         CHECK (image_revision > 0),
     CONSTRAINT ck_hypervisor_personal_vms_image_sha256
         CHECK (octet_length(image_sha256) = 32),
-    CONSTRAINT ck_hypervisor_personal_vms_resource_profile
-        CHECK (
-            (resource_profile_code = 'basic' AND cpu_cores = 1 AND memory_mb = 2048 AND boot_disk_gb = 32)
-            OR (resource_profile_code = 'standard' AND cpu_cores = 2 AND memory_mb = 4096 AND boot_disk_gb = 64)
-            OR (resource_profile_code = 'performance' AND cpu_cores = 4 AND memory_mb = 8192 AND boot_disk_gb = 128)
-        ),
+    CONSTRAINT ck_hypervisor_personal_vms_resource_plan_revision CHECK (resource_plan_revision_number > 0),
+    CONSTRAINT ck_hypervisor_personal_vms_resource_plan_hash CHECK (octet_length(resource_plan_content_sha256) = 32),
     CONSTRAINT ck_hypervisor_personal_vms_disk
         CHECK (disk_gb BETWEEN boot_disk_gb AND 65536),
     CONSTRAINT ck_hypervisor_personal_vms_additional_disks

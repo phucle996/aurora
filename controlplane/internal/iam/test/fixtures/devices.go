@@ -6,8 +6,8 @@ import (
 
 // [COMMENT]: Mock device IDs và Ed25519 fingerprints cho kiểm thử xác thực gắn thiết bị (Device-Bound Authentication)
 var (
-	TestDeviceID           = uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	TestClientDeviceID     = "client-device-ed25519-abc123xyz"
+	TestDeviceID             = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	TestClientDeviceID       = "client-device-ed25519-abc123xyz"
 	TestPublicKeyFingerprint = "fp_ed25519_sha256_mock_fingerprint_hash_value"
 )
 

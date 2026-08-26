@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package iam.rpc;
 
-option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
 
 service SessionService {
   // [NEW] RPC to revoke runtime L2 sessions belonging to specific devices of a user

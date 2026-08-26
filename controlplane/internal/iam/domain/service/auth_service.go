@@ -21,9 +21,9 @@ type AuthService interface {
 	VerifyMfaLogin(ctx context.Context, req iamEntity.MFALoginRequest) (*iamEntity.VerifyUserCredentialsResult, error)
 }
 
-// BillingOutboxNotifier chỉ là tín hiệu đánh thức best-effort sau commit;
+// LifecycleFactNotifier chỉ là tín hiệu đánh thức best-effort sau commit;
 // durability vẫn thuộc PostgreSQL outbox và reconciliation fallback của relay.
-type BillingOutboxNotifier interface {
+type LifecycleFactNotifier interface {
 	Notify()
 }
 

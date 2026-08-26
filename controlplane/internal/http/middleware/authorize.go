@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"controlplane/internal/cacheengine"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	apires "controlplane/pkg/apires"
 	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"

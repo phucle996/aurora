@@ -124,8 +124,8 @@ CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
 
 COMMENT ON TABLE mfa_recovery_codes IS 'Unused recovery-code hashes only. Consuming a code hard-deletes its row.';
 
--- [COMMENT]: Outbox dùng chung cho mọi domain event từ IAM sang Billing
-CREATE TABLE IF NOT EXISTS billing_outbox_records (
+-- [COMMENT]: Bounded outbox for the two reviewed IAM/Hierarchy lifecycle facts.
+CREATE TABLE IF NOT EXISTS lifecycle_fact_outbox_records (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID NOT NULL UNIQUE,
     event_type VARCHAR(128) NOT NULL,
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS billing_outbox_records (
     aggregate_id UUID NOT NULL,
     aggregate_version BIGINT NOT NULL CHECK (aggregate_version > 0),
     owner_id UUID NOT NULL,
-    owner_type billing_owner_type NOT NULL,
+    owner_type lifecycle_owner_type NOT NULL,
     actor_user_id UUID NOT NULL,
     payload BYTEA NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'PENDING'
@@ -148,11 +148,32 @@ CREATE TABLE IF NOT EXISTS billing_outbox_records (
     occurred_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT ck_billing_outbox_event_type_format
+    CONSTRAINT ck_lifecycle_fact_outbox_event_type_format
         CHECK (event_type ~ '^[a-z0-9]+([._][a-z0-9]+)*\.v[1-9][0-9]*$'),
-    CONSTRAINT ck_billing_outbox_trace_id
+    CONSTRAINT ck_lifecycle_fact_outbox_trace_id
         CHECK (trace_id IS NULL OR octet_length(trace_id) = 16)
 );
+
+-- Resource-first revoke workflow: the same PostgreSQL transaction changes the
+-- device state, removes refresh tokens and records the runtime command. ACR
+-- receives the command only from the relay after this durable boundary commits.
+CREATE TABLE IF NOT EXISTS device_runtime_revoke_outbox_records (
+    id BIGSERIAL PRIMARY KEY,
+    event_id UUID NOT NULL UNIQUE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_device_ids TEXT[] NOT NULL CHECK (cardinality(client_device_ids) > 0),
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'DEAD')),
+    attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until TIMESTAMPTZ,
+    published_at TIMESTAMPTZ,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE device_runtime_revoke_outbox_records IS 'Durable handoff from IAM device revoke mutations to ACR runtime session eviction.';
 
 -- [COMMENT]: Danh mục quyền tĩnh 3 cấp (<module>:<object>:<behavior>)
 CREATE TABLE IF NOT EXISTS permissions (
