@@ -19,18 +19,25 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ImageServiceImpl triển khai Domain Service ImageService cho Hypervisor Controlplane.
+// Quản lý toàn bộ vòng đời OS Image Artifact từ đăng ký metadata, import template đến xóa hạ tầng.
 type ImageServiceImpl struct {
 	repo    hypervisorRepoInterface.ImageRepository
 	metrics observability.WorkflowRecorder
 }
 
+// NewImageService khởi tạo một instance mới của ImageServiceImpl.
 func NewImageService(
 	repo hypervisorRepoInterface.ImageRepository,
 	metrics observability.WorkflowRecorder,
 ) hypervisorSvcInterface.ImageService {
-	return &ImageServiceImpl{repo: repo, metrics: metrics}
+	return &ImageServiceImpl{
+		repo:    repo,
+		metrics: metrics,
+	}
 }
 
+// RegisterImageMetadata khởi tạo bản ghi Image Artifact mới ở trạng thái UPLOADING và tạo đường dẫn ObjectKey bất biến trên MinIO.
 func (s *ImageServiceImpl) RegisterImageMetadata(
 	ctx context.Context,
 	input *hypervisorEntity.RegisterImageMetadata,
@@ -49,11 +56,24 @@ func (s *ImageServiceImpl) RegisterImageMetadata(
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
 
+	// [COMMENT]: 1. Sinh UUIDv7 cho ImageID để đảm bảo tính tuần tự theo thời gian
 	imageID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
+
+	// [COMMENT]: 2. Đường dẫn ObjectKey được sinh cố định từ các định danh bất biến (Immutable Identifiers).
+	// Cả browser và Zone đều không được tự ý chọn đường dẫn tùy ý trên MinIO.
+	objectKey := fmt.Sprintf(
+		"images/%s/revisions/%d/%s.%s",
+		imageID.String(),
+		input.Revision,
+		hex.EncodeToString(input.SHA256),
+		input.Format,
+	)
+
+	// [COMMENT]: 3. Khởi tạo đối tượng ImageArtifact ở trạng thái UPLOADING ban đầu
 	image := &hypervisorEntity.ImageArtifact{
 		ID:           imageID,
 		ZoneID:       input.ZoneID,
@@ -66,23 +86,17 @@ func (s *ImageServiceImpl) RegisterImageMetadata(
 		Format:       input.Format,
 		SizeBytes:    input.SizeBytes,
 		SHA256:       input.SHA256,
-		// The object key is derived from immutable identifiers. Neither the
-		// browser nor a Zone may choose an arbitrary MinIO path.
-		ObjectKey: fmt.Sprintf(
-			"images/%s/revisions/%d/%s.%s",
-			imageID.String(),
-			input.Revision,
-			hex.EncodeToString(input.SHA256),
-			input.Format,
-		),
-		State:     hypervisorEntity.ImageStateUploading,
-		CreatedBy: input.CreatedBy,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ObjectKey:    objectKey,
+		State:        hypervisorEntity.ImageStateUploading,
+		CreatedBy:    input.CreatedBy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
+
 	return s.repo.RegisterImageMetadata(ctx, image)
 }
 
+// ListAdmin truy vấn danh sách tất cả các Image Artifact trong một Zone cho giao diện SRE Admin.
 func (s *ImageServiceImpl) ListAdmin(
 	ctx context.Context,
 	zoneID uuid.UUID,
@@ -96,9 +110,11 @@ func (s *ImageServiceImpl) ListAdmin(
 		}
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
+
 	return s.repo.ListAdmin(ctx, zoneID, limit)
 }
 
+// ListCatalog truy vấn danh mục OS Images đang ở trạng thái AVAILABLE để người dùng lựa chọn khi tạo VM.
 func (s *ImageServiceImpl) ListCatalog(
 	ctx context.Context,
 	zoneID uuid.UUID,
@@ -111,9 +127,11 @@ func (s *ImageServiceImpl) ListCatalog(
 		}
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
+
 	return s.repo.ListCatalog(ctx, zoneID)
 }
 
+// BeginImport kích hoạt quy trình Import chuyển đổi file nhị phân trên MinIO thành Proxmox VM Template.
 func (s *ImageServiceImpl) BeginImport(
 	ctx context.Context,
 	input *hypervisorEntity.ImageImportRequest,
@@ -132,10 +150,13 @@ func (s *ImageServiceImpl) BeginImport(
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
 
+	// [COMMENT]: 1. Đọc thông tin hiện tại của Image từ repository
 	image, err := s.repo.Get(ctx, input.ImageID, input.ZoneID)
 	if err != nil {
 		return nil, err
 	}
+
+	// [COMMENT]: 2. Đóng gói Protobuf payload cho job import template
 	payload, err := proto.Marshal(&hypervisorproto.ImageImportV1{
 		SchemaVersion: 1,
 		ImageId:       image.ID[:],
@@ -150,15 +171,20 @@ func (s *ImageServiceImpl) BeginImport(
 	if err != nil {
 		return nil, err
 	}
+
+	// [COMMENT]: 3. Sinh EventID và trích xuất OpenTelemetry TraceID nếu có
 	eventID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
 	}
+
 	var traceID []byte
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
 		id := spanContext.TraceID()
 		traceID = id[:]
 	}
+
+	// [COMMENT]: 4. Thực thi CTE chuyển trạng thái sang IMPORTING và ghi Outbox record
 	return s.repo.BeginImport(ctx, image.ID, image.ZoneID, &hypervisorEntity.HypervisorOutboxRecord{
 		EventID:              eventID,
 		ZoneID:               image.ZoneID,
@@ -173,6 +199,7 @@ func (s *ImageServiceImpl) BeginImport(
 	})
 }
 
+// BeginDelete kích hoạt quy trình xóa Image Artifact khỏi Zone và thu hồi tài nguyên template trên hạ tầng.
 func (s *ImageServiceImpl) BeginDelete(
 	ctx context.Context,
 	input *hypervisorEntity.ImageDeleteRequest,
@@ -191,14 +218,18 @@ func (s *ImageServiceImpl) BeginDelete(
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
 
+	// [COMMENT]: 1. Đọc thông tin hiện tại của Image từ repository
 	image, err := s.repo.Get(ctx, input.ImageID, input.ZoneID)
 	if err != nil {
 		return nil, err
 	}
+
 	var providerTemplateVMID uint64
 	if image.ProviderTemplateVMID != nil {
 		providerTemplateVMID = uint64(*image.ProviderTemplateVMID)
 	}
+
+	// [COMMENT]: 2. Đóng gói Protobuf payload cho job xóa image template và storage
 	payload, err := proto.Marshal(&hypervisorproto.ImageDeleteV1{
 		SchemaVersion:        1,
 		ImageId:              image.ID[:],
@@ -211,15 +242,20 @@ func (s *ImageServiceImpl) BeginDelete(
 	if err != nil {
 		return nil, err
 	}
+
+	// [COMMENT]: 3. Sinh EventID và trích xuất OpenTelemetry TraceID nếu có
 	eventID, err := uuid.NewV7()
 	if err != nil {
 		return nil, err
 	}
+
 	var traceID []byte
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
 		id := spanContext.TraceID()
 		traceID = id[:]
 	}
+
+	// [COMMENT]: 4. Thực thi CTE chuyển trạng thái sang DELETING và ghi Outbox record
 	return s.repo.BeginDelete(ctx, image.ID, image.ZoneID, &hypervisorEntity.HypervisorOutboxRecord{
 		EventID:              eventID,
 		ZoneID:               image.ZoneID,
