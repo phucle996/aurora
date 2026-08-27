@@ -43,7 +43,7 @@ func TestHypervisorResourcePlanCreateWritesTypedOutboxPayload(t *testing.T) {
 		t.Fatalf("outbox is not typed protobuf: %v", err)
 	}
 	if event.GetPlanId() == nil || event.GetRevisionId() == nil || event.GetCpuCores() != 2 || event.GetMemoryMib() != 4096 || event.GetBootDiskGib() != 64 || event.GetBillingModel() != "LIMIT_HOURLY" || len(event.GetContentSha256()) != 32 {
-		t.Fatalf("unexpected resource plan event: %#v", event)
+		t.Fatalf("unexpected resource plan event: %s", event.String())
 	}
 }
 

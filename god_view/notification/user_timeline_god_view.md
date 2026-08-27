@@ -74,6 +74,13 @@ flowchart LR
 
 - API derive principal solely from the verified cookie; client không truyền
   `user_id`.
+- At the Notification HTTP handler, the current implementation re-verifies the
+  cookie through `ConnectAuthorizer`; it does not trust an incoming `x-user-id`
+  as a substitute. Missing/invalid credentials return `401`, unavailable auth
+  returns `503`, and malformed auth replies return `500`, all with the generic
+  body `request rejected`. A defensive UUID-conversion failure remains an empty
+  `500`. Timeline authorization carries a compact local error; only the HTTP
+  boundary constructs a response. This does not impose a response-size limit.
 - Activity metadata bị giới hạn 16 KiB và không được chứa token, secret hoặc
   raw customer payload.
 - Redis consumer ACK chỉ sau Scylla durability; lỗi dependency giữ PEL để retry.
