@@ -103,7 +103,7 @@ func (a *App) Init() error {
 
 	// 5. Initialize Modules. Ownership is Central-internal and uses Shared Redis;
 	// Cost Manager no longer receives a cross-boundary NATS credential.
-	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment, a.resourcePlanRedis, a.Cfg.ResourcePlanRelay)
+	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment, a.resourcePlanRedis, a.Cfg.ResourcePlanRelay, a.Cfg.WalletAdmissionRelay)
 	if err != nil {
 		return err
 	}

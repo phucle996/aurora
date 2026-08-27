@@ -20,3 +20,8 @@ type WalletAdmissionOutboxRow struct {
 	OccurredAt        time.Time
 	ClaimToken        uuid.UUID
 }
+
+type WalletAdmissionRelayPolicy struct {
+	ReplicaAcks int
+	DurableWait time.Duration
+}

@@ -221,6 +221,7 @@ services:
     environment:
       HYPERVISOR_RESOURCE_PLAN_REDIS_CLUSTER: "false"
       HYPERVISOR_RESOURCE_PLAN_REPLICA_ACKS: "0"
+      WALLET_ADMISSION_REPLICA_ACKS: "0"
     depends_on:
       billing-psql:
         condition: service_healthy

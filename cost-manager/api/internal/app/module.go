@@ -69,6 +69,7 @@ func NewModule(
 	paymentCfg config.PaymentCfg,
 	resourcePlanRedis redis.UniversalClient,
 	relayCfg config.ResourcePlanRelayCfg,
+	walletAdmissionRelayCfg config.WalletAdmissionRelayCfg,
 ) (*Module, error) {
 	if dbPool == nil {
 		return nil, fmt.Errorf("dbPool infrastructure connection cannot be nil")
@@ -181,7 +182,17 @@ func NewModule(
 	if walletAdmissionOutboxRepo == nil {
 		return nil, fmt.Errorf("failed to initialize WalletAdmissionOutboxRepository: instance is nil")
 	}
-	walletAdmissionOutboxRelay := service.NewWalletAdmissionOutboxRelay(walletAdmissionOutboxRepo, redisClient)
+	if walletAdmissionRelayCfg.ReplicaAcks < 0 || walletAdmissionRelayCfg.DurableWait < time.Millisecond || walletAdmissionRelayCfg.DurableWait > 5*time.Second {
+		return nil, fmt.Errorf("invalid wallet admission durability policy")
+	}
+	walletAdmissionOutboxRelay := service.NewWalletAdmissionOutboxRelay(
+		walletAdmissionOutboxRepo,
+		redisClient,
+		entity.WalletAdmissionRelayPolicy{
+			ReplicaAcks: walletAdmissionRelayCfg.ReplicaAcks,
+			DurableWait: walletAdmissionRelayCfg.DurableWait,
+		},
+	)
 	if walletAdmissionOutboxRelay == nil {
 		return nil, fmt.Errorf("failed to initialize WalletAdmissionOutboxRelay: instance is nil")
 	}

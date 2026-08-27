@@ -14,7 +14,7 @@ internal/iam/
 │   ├── repo/            # Repository Interfaces (AuthRepo, MfaRepo, UserRepo, RBACRepo)
 │   └── service/         # Service Interfaces
 ├── migration.go         # Tích hợp Go embedFS runner cho SQL migrations
-├── migrations/          # 6-step SQL Migration Baseline (000001 -> 000006)
+├── migrations/          # Immutable baseline (000001 -> 000006) plus forward-only migrations
 │   ├── 000001_iam_enums.up.sql    # Shared ENUM types (user_status, lifecycle_owner_type, role_scope_type)
 │   ├── 000002_iam_tables.up.sql   # DDL các bảng chính thức (users, devices, mfa_settings, billing_outbox,...)
 │   ├── 000003_iam_indexes.up.sql  # Indexes tối ưu hóa truy vấn & uniqueness partial constraints
@@ -114,9 +114,9 @@ không sinh personal/tenant variant.
 
 ## 🎨 Quy chuẩn Viết Code (Code Style & Guidelines)
 
-### 1. Quy định về Database Migration (Baseline Clean Standard)
-* **Giới hạn tuyệt đối 6 bước Migration**: Thư mục `migrations/` chỉ được phép duy trì đúng **6 cặp file migration** (`000001` -> `000006_iam_seeds`).
-* **Không tạo thêm file migration mới**: Khi phát triển feature mới hoặc bổ sung DDL/Seeds, **bắt buộc phải cập nhật trực tiếp (update)** vào 6 file migration hiện có (ví dụ: bổ sung bảng/cột vào `000002_iam_tables.up.sql`, bổ sung index vào `000003_iam_indexes.up.sql`, bổ sung seed vào `000006_iam_seeds.up.sql`). **Tuyệt đối không tạo file migration thứ 7 (`000007_...`)**.
+### 1. Quy định về Database Migration
+* **Baseline bất biến**: `000001` -> `000006_iam_seeds` mô tả clean install ban đầu. Không sửa nội dung của file đã được apply vì `iam_schema_migrations` pin SHA-256 và fail-close khi checksum drift.
+* **Forward-only cho existing state**: DDL, contract hoặc data backfill sau baseline phải dùng migration có sequence mới. Migration phải idempotent tại durable boundary của workflow và không ghi chéo sang database do module khác sở hữu.
 
 ### 2. Comment cho invariant (`// [COMMENT]: ...`)
 * Chỉ comment tại invariant, race, security boundary hoặc quyết định khó suy ra
@@ -144,6 +144,8 @@ không sinh personal/tenant variant.
   bậc cùng role version/hash.
 * `000006_iam_seeds.up.sql` chỉ dành cho clean install từ con số 0, không dùng
   `ON CONFLICT` để merge state cũ và không seed tenant role.
+* Thay đổi cần reconcile dữ liệu đã tồn tại phải dùng forward migration
+  tiếp theo; clean install cũng chạy các migration này sau baseline.
 * `iam_schema_migrations` pin SHA-256 theo filename. Pod/restart bỏ qua file đã
   apply; checksum drift fail-close thay vì replay seed hoặc âm thầm đổi schema.
 * `tenant_root` level 3 được tạo atomically cùng tenant và owner membership.

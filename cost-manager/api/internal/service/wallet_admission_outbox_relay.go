@@ -59,19 +59,22 @@ var walletAdmissionStreams = [...]string{
 // - Chống Thundering Herd: Giãn cách chu kỳ quét từ 60s đến 90s kèm Jitter giữa các batch xử lý.
 // - Bảo vệ hạ tầng: Áp dụng Exponential Backoff (5s -> 60s) khi PostgreSQL hoặc Redis gặp sự cố.
 type WalletAdmissionOutboxRelay struct {
-	repo  billingRepoInterface.WalletAdmissionOutboxRepository
-	redis *redis.Client
-	wake  chan struct{}
+	repo        billingRepoInterface.WalletAdmissionOutboxRepository
+	redis       *redis.Client
+	relayPolicy entity.WalletAdmissionRelayPolicy
+	wake        chan struct{}
 }
 
 // NewWalletAdmissionOutboxRelay khởi tạo một instance mới của WalletAdmissionOutboxRelay.
 func NewWalletAdmissionOutboxRelay(
 	repo billingRepoInterface.WalletAdmissionOutboxRepository,
 	sharedRedis *redis.Client,
+	relayPolicy entity.WalletAdmissionRelayPolicy,
 ) *WalletAdmissionOutboxRelay {
 	return &WalletAdmissionOutboxRelay{
-		repo:  repo,
-		redis: sharedRedis,
+		repo:        repo,
+		redis:       sharedRedis,
+		relayPolicy: relayPolicy,
 		// Buffer = 1: Tự động gộp (coalesce) nhiều yêu cầu đánh thức dồn dập trong cùng một thời điểm.
 		wake: make(chan struct{}, 1),
 	}
@@ -238,13 +241,13 @@ func (r *WalletAdmissionOutboxRelay) publishRow(ctx context.Context, row *entity
 		}
 	}
 
-	// 4. Redis AOF Durability Fence: Chờ đồng bộ AOF ít nhất 1 node trong vòng 500ms
-	aofAcks, aofErr := connection.Do(ctx, "WAITAOF", 1, 1, 500).Int64Slice()
+	// 4. Redis AOF Durability Fence: local AOF is mandatory; replica acknowledgements follow this workflow's deployment policy.
+	aofAcks, aofErr := connection.Do(ctx, "WAITAOF", 1, r.relayPolicy.ReplicaAcks, r.relayPolicy.DurableWait.Milliseconds()).Int64Slice()
 	if aofErr != nil {
 		_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, aofErr.Error())
 		return aofErr
 	}
-	if len(aofAcks) != 2 || aofAcks[0] < 1 || aofAcks[1] < 1 {
+	if len(aofAcks) != 2 || aofAcks[0] < 1 || aofAcks[1] < int64(r.relayPolicy.ReplicaAcks) {
 		durabilityErr := fmt.Sprintf("Redis admission durability fence not met: %v", aofAcks)
 		_ = r.repo.RecordWalletAdmissionError(ctx, row.EventID, row.ClaimToken, durabilityErr)
 		return errors.New(durabilityErr)
