@@ -1,24 +1,34 @@
 package handler
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
 
-func TestValidTraceparent(t *testing.T) {
+	"cost-manager/api/internal/config"
+	"cost-manager/api/internal/domain/entity"
+)
+
+type mockOwnershipService struct {
+	events []*entity.ResourceOwnershipEvent
+}
+
+func (m *mockOwnershipService) ProcessResourceOwnershipEvent(ctx context.Context, event *entity.ResourceOwnershipEvent) error {
+	m.events = append(m.events, event)
+	return nil
+}
+
+func TestNewResourceOwnershipConsumer(t *testing.T) {
 	t.Parallel()
 
-	if !validTraceparent("") {
-		t.Fatal("empty propagation context must remain rolling-compatible")
+	mockSvc := &mockOwnershipService{}
+	consumer := NewResourceOwnershipConsumer(nil, mockSvc)
+	if consumer == nil {
+		t.Fatal("expected non-nil consumer instance")
 	}
-	if !validTraceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01") {
-		t.Fatal("valid W3C traceparent was rejected")
-	}
-	for _, candidate := range []string{
-		"00-00000000000000000000000000000000-00f067aa0ba902b7-01",
-		"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
-		"ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-		"not-a-traceparent",
-	} {
-		if validTraceparent(candidate) {
-			t.Fatalf("malformed traceparent accepted: %s", candidate)
-		}
+
+	expectedPrefix := config.GetNodeHostname() + "-"
+	if !strings.HasPrefix(consumer.consumer, expectedPrefix) {
+		t.Fatalf("expected consumer identity to start with %q, got %q", expectedPrefix, consumer.consumer)
 	}
 }

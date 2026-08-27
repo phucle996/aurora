@@ -8,7 +8,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
@@ -20,6 +20,8 @@ const ENVELOPE_NONCE_BYTES: usize = 12;
 /// [COMMENT]: Fence thuộc Aurora runtime generation, không giả lập ACK semantics của bất kỳ broker nào.
 #[derive(Debug)]
 pub struct RuntimeGenerationFence {
+    drain_requested: AtomicBool,
+    drain_completed: AtomicBool,
     accepting: AtomicBool,
     gate: Arc<RwLock<()>>,
     // [COMMENT]: Monotonic local deadline chặn stale settlement nếu runtime bị stall quá Zone lease TTL trước renew tick kế tiếp.
@@ -29,6 +31,9 @@ pub struct RuntimeGenerationFence {
 impl RuntimeGenerationFence {
     pub fn new(lease_ttl: Duration) -> Arc<Self> {
         Arc::new(Self {
+            drain_requested: AtomicBool::new(false),
+            // Connection setup has not admitted any broker work yet.
+            drain_completed: AtomicBool::new(true),
             accepting: AtomicBool::new(true),
             gate: Arc::new(RwLock::new(())),
             lease_deadline: StdRwLock::new(Instant::now() + lease_ttl),
@@ -45,6 +50,22 @@ impl RuntimeGenerationFence {
 
     pub fn is_accepting(&self) -> bool {
         self.accepting.load(Ordering::Acquire) && self.lease_is_live()
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.drain_requested.load(Ordering::Acquire)
+    }
+    pub fn request_drain(&self) {
+        self.drain_requested.store(true, Ordering::Release);
+    }
+    pub fn mark_running(&self) {
+        self.drain_completed.store(false, Ordering::Release);
+    }
+    pub fn mark_drained(&self) {
+        self.drain_completed.store(true, Ordering::Release);
+    }
+    pub fn drain_is_complete(&self) -> bool {
+        self.drain_completed.load(Ordering::Acquire)
     }
 
     pub fn lease_is_live(&self) -> bool {
@@ -73,34 +94,34 @@ impl RuntimeGenerationFence {
 pub(crate) struct RuntimeHealthSnapshot {
     pub state: String,
     pub consumer_id: String,
+    pub owner_id: String,
+    pub owner_type: String,
+    pub workspace_id: String,
+    pub zone_id: String,
     pub config_version: u64,
     pub runtime_generation: u64,
     pub slot: u32,
     pub fencing_token: u64,
     pub heartbeat_unix_ms: u64,
     pub instance_id: String,
-    pub report_sequence: u64,
     pub consumer_lag: u64,
     pub error_code: String,
-    pub runtime_node_id: String,
-    pub runtime_boot_id: String,
 }
 
 /// [COMMENT]: Context này chỉ chứa Aurora scheduling/config/JMAP dependencies; broker connection và settlement vẫn nằm trong từng suite.
 pub struct StreamRuntimeContext {
     pub zone_id: String,
-    pub instance_id: String,
-    pub runtime_boot_id: uuid::Uuid,
+    // Lease ownership must identify one process incarnation. Reusing only the
+    // hostname after a restart could let a fresh pod appear to be the stale
+    // owner while the old Zone lease is still live.
+    pub lease_owner_id: String,
     pub zone_kv: Arc<ZoneKvStore>,
     pub processor: Arc<MailMessageProcessor>,
     pub lease_ttl: Duration,
     pub max_message_bytes: usize,
     pub max_slot_inflight: usize,
-    // [COMMENT]: Một sequence dùng chung trong pod làm mọi state transition/heartbeat có thứ tự ổn định;
-    // runtime_generation vẫn là fence riêng của logical slot.
-    report_sequence: AtomicU64,
-    // [COMMENT]: Lag/state/heartbeat là pod-local soft state. Không ghi Zone NATS KV vì
-    // snapshot theo customer chỉ được xuất sang runtime Redis khi Controlplane có watch lease.
+    // Lag/state/heartbeat là pod-local soft state và chỉ được export sang Zone
+    // OTel/Victoria. Zone KV vẫn chỉ giữ desired projection/lease authority.
     runtime_snapshots: StdRwLock<HashMap<(String, u32), RuntimeHealthSnapshot>>,
     envelope_key: Option<Arc<Zeroizing<[u8; 32]>>>,
 }
@@ -108,8 +129,7 @@ pub struct StreamRuntimeContext {
 impl StreamRuntimeContext {
     pub fn new(
         config: &Config,
-        instance_id: String,
-        runtime_boot_id: uuid::Uuid,
+        lease_owner_id: String,
         zone_kv: Arc<ZoneKvStore>,
         processor: Arc<MailMessageProcessor>,
     ) -> Arc<Self> {
@@ -141,20 +161,12 @@ impl StreamRuntimeContext {
         };
         Arc::new(Self {
             zone_id: config.zone_id.clone(),
-            instance_id,
-            runtime_boot_id,
+            lease_owner_id,
             zone_kv,
             processor,
             lease_ttl: Duration::from_secs(config.mail_stream_slot_lease_ttl_seconds),
             max_message_bytes: config.mail_max_message_bytes,
             max_slot_inflight: config.mail_stream_max_inflight_per_slot,
-            report_sequence: AtomicU64::new(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-                    .unwrap_or(1)
-                    .max(1),
-            ),
             runtime_snapshots: StdRwLock::new(HashMap::new()),
             envelope_key,
         })
@@ -213,6 +225,33 @@ impl StreamRuntimeContext {
             Ok(true) => {
                 // [COMMENT]: Chỉ server-acknowledged renew mới đẩy local deadline; lỗi mạng không được tự gia hạn quyền settlement.
                 generation_fence.refresh_lease(self.lease_ttl);
+                // This is the control/renewal path, not a read per message.
+                let key = format!("mail.consumer.head.{}", configuration.consumer_id);
+                match self.zone_kv.config_get(&key).await {
+                    Ok(Some(bytes)) => {
+                        match serde_json::from_slice::<crate::infra::zone_kv::ConsumerConfigHead>(
+                            &bytes,
+                        ) {
+                            Ok(head)
+                                if !head.tombstoned
+                                    && head.version >= configuration.config_version
+                                    && (matches!(
+                                        head.desired_state.as_str(),
+                                        "DRAINING" | "PAUSED"
+                                    ) || (head.version > configuration.config_version
+                                        && head.desired_state == "ENABLED")) =>
+                            {
+                                generation_fence.request_drain();
+                            }
+                            Ok(head)
+                                if head.version == configuration.config_version
+                                    && head.desired_state == "ENABLED"
+                                    && !head.tombstoned => {}
+                            _ => return false,
+                        }
+                    }
+                    _ => return false,
+                }
                 self.write_health("RUNNING", configuration, slot, generation, lease, "")
                     .await;
                 true
@@ -266,12 +305,16 @@ impl StreamRuntimeContext {
         lease: &ZoneLease,
         error_code: &str,
     ) {
-        // [COMMENT]: Instance của runtime snapshot là logical slot, không phải hostname. Snapshot
-        // chỉ sống trong app; JO aggregator sẽ fence generation sau khi nhận report qua NATS Core.
+        // Instance của runtime snapshot là logical slot, không phải hostname.
+        // Zone lease fencing remains the only slot ownership authority.
         let runtime_instance_id = format!("slot:{slot}");
         let snapshot = RuntimeHealthSnapshot {
             state: state.to_string(),
             consumer_id: configuration.consumer_id.clone(),
+            owner_id: configuration.owner_id.clone(),
+            owner_type: configuration.owner_type.clone(),
+            workspace_id: configuration.workspace_id.clone(),
+            zone_id: configuration.zone_id.clone(),
             config_version: configuration.config_version,
             runtime_generation: generation,
             slot,
@@ -281,16 +324,10 @@ impl StreamRuntimeContext {
                 .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
                 .unwrap_or_default(),
             instance_id: runtime_instance_id,
-            report_sequence: self
-                .report_sequence
-                .fetch_add(1, Ordering::AcqRel)
-                .saturating_add(1),
             // [COMMENT]: Suite-specific lag sampler chưa được triển khai; 0 hiện là protobuf V1 default,
             // không được dùng một giá trị ước lượng hoặc Kafka platform lag thay cho customer broker.
             consumer_lag: 0,
             error_code: error_code.to_string(),
-            runtime_node_id: self.instance_id.clone(),
-            runtime_boot_id: self.runtime_boot_id.to_string(),
         };
         let key = (configuration.consumer_id.clone(), slot);
         let previous = self
@@ -305,6 +342,28 @@ impl StreamRuntimeContext {
                 || previous.fencing_token != lease.fencing_token
         });
         if changed {
+            // Runtime diagnostics are a Zone-owned read model. These flat,
+            // bounded labels let OTel route only this consumer's records to
+            // Victoria without a Central report/watch workflow.
+            tracing::event!(
+                target: "aurora-dataplane",
+                tracing::Level::INFO,
+                level = "info",
+                service_name = "aurora-dataplane",
+                log_type = "runtime",
+                aurora_module = "mail",
+                aurora_resource_type = "consumer",
+                aurora_resource_id = configuration.consumer_id.as_str(),
+                aurora_owner_id = configuration.owner_id.as_str(),
+                aurora_owner_type = configuration.owner_type.as_str(),
+                aurora_workspace_id = configuration.workspace_id.as_str(),
+                aurora_zone_id = configuration.zone_id.as_str(),
+                aurora_component_id = format!("slot-{slot}"),
+                event_code = "MAIL_STREAM_RUNTIME_STATE_CHANGED",
+                runtime_state = state,
+                error_code = error_code,
+                message = "Mail consumer runtime state changed",
+            );
             let fields = LogFields {
                 operation_id: Some(&configuration.consumer_id),
                 job_version: Some(configuration.config_version),
@@ -348,8 +407,8 @@ impl StreamRuntimeContext {
             .runtime_snapshots
             .write()
             .expect("mail runtime snapshot lock poisoned");
-        // [COMMENT]: Slot đã mất lease/pod-local task đã dừng tự rời memory; không cần tombstone
-        // hoặc cleanup record trong NATS KV/Redis.
+        // Slot đã mất lease/pod-local task đã dừng tự rời memory; không cần
+        // tombstone hoặc cleanup record trong Zone KV/Victoria.
         snapshots.retain(|_, snapshot| {
             now_ms.saturating_sub(snapshot.heartbeat_unix_ms) <= freshness_ms
         });

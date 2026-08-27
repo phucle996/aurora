@@ -16,19 +16,17 @@ import (
 )
 
 type TenantService struct {
-	repo                hierarchyRepoInterface.TenantRepository
-	notifyBillingOutbox func()
-	metrics             observability.WorkflowRecorder
+	repo                        hierarchyRepoInterface.TenantRepository
+	notifyTenantWalletProvision func()
+	metrics                     observability.WorkflowRecorder
 }
 
-func NewTenantService(repo hierarchyRepoInterface.TenantRepository, metrics observability.WorkflowRecorder) hierarchySvcInterface.TenantService {
-	return &TenantService{repo: repo, metrics: metrics}
-}
-
-// SetBillingOutboxNotifier is wired before readiness. The notification is only
-// a latency hint; the transactional outbox remains the recovery boundary.
-func (s *TenantService) SetBillingOutboxNotifier(notify func()) {
-	s.notifyBillingOutbox = notify
+func NewTenantService(
+	repo hierarchyRepoInterface.TenantRepository,
+	metrics observability.WorkflowRecorder,
+	notifyTenantWalletProvision func(),
+) hierarchySvcInterface.TenantService {
+	return &TenantService{repo: repo, metrics: metrics, notifyTenantWalletProvision: notifyTenantWalletProvision}
 }
 
 func (s *TenantService) CreateTenant(ctx context.Context, in *hierarchyEntity.CreateTenant) (*hierarchyEntity.CreateTenant, error) {
@@ -73,7 +71,9 @@ func (s *TenantService) CreateTenant(ctx context.Context, in *hierarchyEntity.Cr
 		}
 		return nil, err
 	}
-	s.notifyBillingOutbox()
+	if s.notifyTenantWalletProvision != nil {
+		s.notifyTenantWalletProvision()
+	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return out, nil
 }

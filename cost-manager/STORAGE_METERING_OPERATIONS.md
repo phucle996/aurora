@@ -25,11 +25,18 @@ user, bucket name, object key, ticket, or access key.
 | `UNRATED` storage lines | 0 new lines after ownership/wallet projection lag clears | Repair the missing durable projection or wallet, then replay the report |
 | `DEAD` reports | 0 unexpected reports | Review the stable error code; corrections remain quarantined until signed adjustment policy exists |
 | Reconciliation delta | 0 for a closed window | Compare Zone report totals with accepted, relayed, inbox, settled, and unrated totals |
+| Cost workload readiness | `/health/ready` is continuously successful | A failure means Engine bootstrap/process, Billing PostgreSQL or Shared Redis is unavailable; do not route the pod |
 
 Important events include `ZONE_STORAGE_REPORT_OUTBOXED`,
 `ZONE_STORAGE_REPORT_KAFKA_PUBLISHED`, `ZONE_STORAGE_METERING_AGGREGATION_FAILED`,
 `ZONE_STORAGE_SCAN_ASSIGNMENT_LOST`, and the JO/Cost storage-metering relay
 events. Assignment epoch and report ID are safe correlation fields.
+
+The Cost API supervises the Engine process. `/health/live` checks only API
+process liveness; `/health/ready` additionally requires the Engine readiness
+marker plus Billing PostgreSQL and Shared Redis. If a critical Engine workflow
+exits, both processes terminate so the workload controller restarts a complete
+billing unit. Do not override readiness to keep an API-only pod in service.
 
 ## Reconciliation procedure
 

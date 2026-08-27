@@ -44,7 +44,7 @@ impl ZoneControlAuthorizer {
     async fn authorize(
         &self,
         request: &CheckRequest,
-    ) -> Result<(ControlAssertion, Option<String>), AuthzError> {
+    ) -> Result<(ControlAssertion, Arc<AccessRecord>, Option<String>), AuthzError> {
         let headers = request
             .get_client_headers()
             .ok_or(AuthzError::Denied("HTTP_CONTEXT_MISSING"))?;
@@ -76,8 +76,33 @@ impl ZoneControlAuthorizer {
                 .get(&verified.access_session_id)
                 .await?
                 .ok_or(AuthzError::NotReady("ZONE_ACCESS_RECORD_MISSING"))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| AuthzError::Dependency("system clock invalid".into()))?
+                .as_secs();
+            if record.access_session_id != verified.access_session_id
+                || record.actor_id != verified.actor_id
+                || record.workspace_id != verified.workspace_id
+                || record.zone_id != verified.zone_id
+                || record.expires_at_unix_seconds <= now
+                || record.policy_revision == 0
+                || uuid::Uuid::parse_str(&record.resource_id).is_err()
+                || record.binding_hash.len() != 64
+                || !record
+                    .binding_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || record.bucket_name.is_empty()
+            {
+                return Err(AuthzError::Denied("ZONE_ACCESS_RECORD_MISMATCH"));
+            }
+            if method == "POST" {
+                self.access
+                    .require_billable_admission(&record.resource_id)
+                    .await?;
+            }
             let grant = storage_object_grant(&verified, &record, method, path, body)?;
-            return Ok((verified, Some(grant)));
+            return Ok((verified, record, Some(grant)));
         }
         if !storage_body_is_allowed(&verified.action, body) {
             return Err(AuthzError::Denied("CONTROL_BODY_SEMANTICS_FORBIDDEN"));
@@ -88,7 +113,10 @@ impl ZoneControlAuthorizer {
             .await?
             .ok_or(AuthzError::NotReady("ZONE_ACCESS_RECORD_MISSING"))?;
         match_storage_record(&verified, &record, method, path)?;
-        Ok((verified, None))
+        self.access
+            .require_billable_admission(&record.resource_id)
+            .await?;
+        Ok((verified, record, None))
     }
 }
 
@@ -108,7 +136,7 @@ impl Authorization for ZoneControlAuthorizer {
         };
         let _observation = self.telemetry.observe_check();
         match self.authorize(request.get_ref()).await {
-            Ok((assertion, transfer_grant)) => {
+            Ok((assertion, record, transfer_grant)) => {
                 self.telemetry.allowed();
                 let mut response = CheckResponse::with_status(Status::ok("authorized"));
                 response.set_http_response(
@@ -118,11 +146,11 @@ impl Authorization for ZoneControlAuthorizer {
                     use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
                     for (key, value) in [
                         ("x-aurora-actor-id", assertion.actor_id),
-                        ("x-aurora-resource-id", assertion.resource_id),
+                        ("x-aurora-resource-id", record.resource_id.clone()),
                         ("x-aurora-control-capability", assertion.capability),
                         ("x-aurora-control-action", assertion.action),
                         ("x-aurora-operation-id", assertion.operation_id),
-                        ("x-aurora-bucket-name", assertion.resource_name),
+                        ("x-aurora-bucket-name", record.bucket_name.clone()),
                     ] {
                         let option = HeaderValueOption {
                             header: Some(HeaderValue {
@@ -197,15 +225,18 @@ fn match_storage_record(
         .map_err(|_| AuthzError::Dependency("system clock invalid".into()))?
         .as_secs();
     if record.access_session_id != assertion.access_session_id
-        || record.binding_hash != assertion.binding_hash
         || record.actor_id != assertion.actor_id
-        || record.resource_id != assertion.resource_id
-        || record.bucket_name != assertion.resource_name
         || record.workspace_id != assertion.workspace_id
         || record.zone_id != assertion.zone_id
-        || record.policy_revision != assertion.policy_revision
+        || record.binding_hash.len() != 64
+        || !record
+            .binding_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || uuid::Uuid::parse_str(&record.resource_id).is_err()
+        || record.bucket_name.is_empty()
+        || record.policy_revision == 0
         || record.expires_at_unix_seconds <= now
-        || record.key_prefix != assertion.scope
         || !record
             .actions
             .iter()
@@ -217,3 +248,7 @@ fn match_storage_record(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/authorization.rs"]
+mod tests;

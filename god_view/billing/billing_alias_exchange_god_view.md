@@ -26,7 +26,7 @@ Ed25519 public key; the owner context comes solely from the consumed handoff.
 | Key | Store | Operation / TTL | Invariant |
 |---|---|---|---|
 | `billing:handoff:{sha256(code)}` | Auth-State Redis | `GETDEL`, 60s | Burned even when verifier is wrong |
-| Billing alias key + source reverse index | Auth-State Redis | create with `SESSION_TTL_SECS` | Alias stores identity/routing, source access key, source proof key, Cost proof public key and secret hash |
+| `iam:domain_alias:billing:{alias_id}` | Auth-State Redis | `SET EX SESSION_TTL_SECS` | Alias stores identity/routing, source access key, source proof key, Cost proof public key and secret hash; no source reverse index |
 
 
 ## Complete edge execution
@@ -66,8 +66,9 @@ are neither accepted nor emitted.
    access-key session and requires its proof public key equal the record's
    source key.
 7. `release_billing_alias` generates UUIDv7 alias ID and 64 hex secret,
-   stores only SHA-256(secret) in a Prost alias, and atomically writes both
-   alias and source reverse-index with the configured session TTL.
+   stores only SHA-256(secret) in a Prost alias, and writes that single alias
+   key with the configured session TTL. Source-session verification remains
+   the revocation authority; no cross-slot reverse-index write is required.
 8. ACR returns a local `204` with two host-only Cost cookies. It never creates
    a JWT, refresh token, permission snapshot or upstream request.
 
@@ -81,6 +82,12 @@ are neither accepted nor emitted.
 | `403` | ACR CSRF/CORS denial | no alias cookie | None |
 | `429` | ACR rate-limit denial | no alias cookie | None |
 | `503` | ACR unavailable denial | no alias cookie | None |
+
+Alias registration errors return gRPC `Internal` with
+`Failed to save billing alias: ...`, not `Unavailable`. The issuer returns a
+compact `AcrError`; the exchange handler constructs that same transport status.
+The `503` row applies to earlier unavailable source-session operations, not to
+alias registration. Envoy owns rendering a transport-level gRPC error.
 
 ```mermaid
 sequenceDiagram
@@ -110,8 +117,8 @@ sequenceDiagram
         EH->>SM: Recheck source IAM session
         SM->>AR: GET exact source session
         EH->>AI: Release new host-only Billing Alias
-        AI->>SM: Persist alias and reverse index
-        SM->>AR: MULTI SET alias EX and SADD source index
+        AI->>SM: Persist alias
+        SM->>AR: SET alias EX session TTL
         AI->>CR: Build local 204 Set-Cookie response
         CR-->>X: CheckResponse denied local response
     end
@@ -123,12 +130,11 @@ sequenceDiagram
 
 `GETDEL` is the consumption boundary: retrying after a network loss cannot
 produce a second alias from the same code. Alias registration failure after
-consume is a `503`; the user begins a new handoff rather than reusing burned
-credentials. The alias expires with session TTL. Source session logout/revoke
-uses `iam:session_alias_index:{source_access_key}` to give aliases a five-second
-grace expiry, while every later request independently rechecks the source
-session/proof key and therefore fails closed even if reverse-index cleanup
-fails.
+consume returns gRPC `Internal`; the user begins a new handoff rather than
+reusing burned credentials. The alias expires with session TTL. Every later
+alias verification independently rechecks the source session/proof key, so a
+source session revoke invalidates the alias without reverse-index enumeration
+or cleanup. Billing logout may separately shorten the alias TTL to five seconds.
 
 ## State and security invariants
 
@@ -136,7 +142,7 @@ fails.
   brute force and replay.
 - ACR rejects a missing/revoked source session before setting any alias cookie.
 - Alias verification rechecks the source session on every later Cost request;
-  reverse-index invalidation accelerates revocation but is not its authority.
+  alias existence alone is never sufficient authority.
 
 ## Code map
 

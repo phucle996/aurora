@@ -13,7 +13,7 @@ use crate::workerpool::pool::WorkerLifecycleManager;
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Nạp các tệp cấu hình môi trường (.env), logger hệ thống.
-///   - Mở Kafka transport, NATS Core và NATS JetStream KV dạng fail-fast.
+///   - Mở Kafka transport và NATS JetStream KV dạng fail-fast.
 ///   - Trả về đồ thị tài nguyên `BootstrapResult` để dựng AppContainer.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
@@ -21,11 +21,10 @@ use crate::workerpool::pool::WorkerLifecycleManager;
 ///
 /// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
 ///   - Kiểm soát tính hợp lệ của cấu hình hệ thống ngay khi boot.
-///   - Nếu Kafka, NATS Core hoặc Zone KV lỗi, bootstrap thất bại trước khi nhận workload.
+///   - Nếu Kafka hoặc Zone KV lỗi, bootstrap thất bại trước khi nhận workload.
 ///
 pub struct BootstrapResult {
     pub config: Arc<Config>,
-    pub nats_core: Arc<crate::infra::nats_core::NatsCoreTransport>,
     pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     pub payload_keyring: Arc<crate::security::jobpayload::PayloadKeyring>,
@@ -62,15 +61,6 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         .await
         .map_err(|error| format!("initialize Kafka transport failed: {error}"))?;
 
-    // [COMMENT]: Dataplane không còn credential Redis trung tâm; watch/report realtime chỉ đi NATS Core.
-    let nats_core = crate::infra::nats_core::NatsCoreTransport::connect(&cfg)
-        .await
-        .map_err(|error| format!("initialize NATS Core transport failed: {error}"))?;
-    nats_core
-        .start_watch_listener()
-        .await
-        .map_err(|error| format!("initialize NATS Core runtime watch failed: {error}"))?;
-
     // [COMMENT]: Toàn bộ shared Zone state/lease nằm trong JetStream KV; Dataplane không bootstrap Internal Redis.
     let zone_kv = crate::infra::zone_kv::ZoneKvStore::connect(
         crate::infra::zone_kv::ZoneKvConnectionConfig {
@@ -89,8 +79,9 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // max_workers sẽ được quản lý tĩnh qua biến môi trường nạp từ Config.
 
     // [COMMENT]: JMAP client + batcher được tạo đúng một lần cho toàn pod; cấu hình/auth sai làm bootstrap fail-fast.
-    let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone())
-        .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
+    let mail_runtime =
+        crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone(), kafka.clone())
+            .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
     let hypervisor_runtime =
         crate::executor::hypervisor::HypervisorRuntime::new(&cfg, zone_kv.clone())
             .map_err(|error| format!("initialize Hypervisor runtime failed: {error}"))?;
@@ -108,7 +99,6 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
 
     Ok(BootstrapResult {
         config: Arc::new(cfg),
-        nats_core,
         kafka,
         zone_kv,
         payload_keyring: Arc::new(payload_keyring),

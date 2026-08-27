@@ -3,7 +3,7 @@ use crate::infra::iam_proto::auth::{
     LinkExternalIdentityRequest, LinkExternalIdentityResponse, VerifyExternalIdentityRequest,
     VerifyExternalIdentityResponse,
 };
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::vault::VaultClient;
 use crate::observability::logger::Logger;
@@ -17,6 +17,7 @@ use crate::user::login::{
     UserSessionIssueContext,
 };
 use crate::user::session_proof::canonicalize_public_key;
+
 use base64::Engine;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
@@ -45,6 +46,14 @@ const STATE_TTL_SECONDS: u64 = 300;
 const GOOGLE_JWKS_CACHE_TTL: Duration = Duration::from_secs(600);
 const OAUTH_CALLBACK_CONCURRENCY: usize = 64;
 const SOCIAL_LINK_LOCK_MILLIS: usize = 15_000;
+
+// OAuth start may fail before a redirect exists. Keep the reason local and
+// construct the gRPC status only in the edge handler; callbacks always redirect.
+#[derive(Debug, PartialEq, Eq)]
+enum OAuthStartError {
+    StateSerialization,
+    StateUnavailable,
+}
 
 #[derive(Clone)]
 pub struct OAuthProviderService {
@@ -101,7 +110,7 @@ struct CanonicalIdentity {
 pub struct OAuthWorkflowContext<'a> {
     pub session_mgr: &'a Arc<SessionManager>,
     pub token_mgr: &'a Arc<TokenManager>,
-    pub shared_redis_client: &'a redis::Client,
+    pub shared_redis_client: &'a RedisRuntimeClient,
     pub shared_redis: &'a Arc<SharedRedisBus>,
     pub config: &'a Config,
 }
@@ -129,7 +138,7 @@ pub struct SocialLinkStartRequest<'a> {
 struct OAuthStartWorkflowContext<'a> {
     session_mgr: &'a Arc<SessionManager>,
     shared_redis: &'a Arc<SharedRedisBus>,
-    shared_redis_client: &'a redis::Client,
+    shared_redis_client: &'a RedisRuntimeClient,
 }
 
 struct OAuthStartRequest<'a> {
@@ -529,7 +538,15 @@ impl OAuthProviderService {
                         client_headers,
                     },
                 )
-                .await,
+                .await
+                .map_err(|error| match error {
+                    OAuthStartError::StateSerialization => {
+                        Status::internal("OAuth state serialization failed")
+                    }
+                    OAuthStartError::StateUnavailable => {
+                        Status::unavailable("OAuth state service unavailable")
+                    }
+                }),
             );
         }
         if method != "GET" {
@@ -560,7 +577,7 @@ impl OAuthProviderService {
         );
         Some(
             match tokio::time::timeout(Duration::from_secs(13), callback).await {
-                Ok(result) => result,
+                Ok(response) => Ok(response),
                 Err(_) => {
                     Logger::sys_warn(
                         "user.oauth",
@@ -788,7 +805,7 @@ impl OAuthProviderService {
         &self,
         workflow: CompleteSocialLinkWorkflowContext<'_>,
         request: CompleteSocialLinkRequest<'_>,
-    ) -> Result<Response<CheckResponse>, Status> {
+    ) -> Response<CheckResponse> {
         let CompleteSocialLinkWorkflowContext {
             session_mgr,
             shared_redis,
@@ -807,11 +824,11 @@ impl OAuthProviderService {
         let mut auth_connection = match session_mgr.get_connection().await {
             Ok(connection) => connection,
             Err(_) => {
-                return Ok(Response::new(oauth_social_link_redirect(
+                return Response::new(oauth_social_link_redirect(
                     &state.return_to,
                     "failed",
                     cookies_to_set,
-                )))
+                ))
             }
         };
         let acquired = redis::Script::new(
@@ -837,11 +854,11 @@ impl OAuthProviderService {
                 "Social link callback was fenced before persistence",
                 "link_operation_fenced",
             );
-            return Ok(Response::new(oauth_social_link_redirect(
+            return Response::new(oauth_social_link_redirect(
                 &state.return_to,
                 "failed",
                 cookies_to_set,
-            )));
+            ));
         }
 
         let request = LinkExternalIdentityRequest {
@@ -931,18 +948,18 @@ impl OAuthProviderService {
             );
         }
 
-        Ok(Response::new(oauth_social_link_redirect(
+        Response::new(oauth_social_link_redirect(
             &state.return_to,
             if linked { "linked" } else { "failed" },
             cookies_to_set,
-        )))
+        ))
     }
 
     async fn handle_start(
         &self,
         workflow: OAuthStartWorkflowContext<'_>,
         request: OAuthStartRequest<'_>,
-    ) -> Result<Response<CheckResponse>, Status> {
+    ) -> Result<Response<CheckResponse>, OAuthStartError> {
         let OAuthStartWorkflowContext {
             session_mgr,
             shared_redis,
@@ -1062,12 +1079,12 @@ impl OAuthProviderService {
         };
         let state_token = random_token();
         let key = state_key(provider, &state_token);
-        let state_json = serde_json::to_string(&state)
-            .map_err(|_| Status::internal("OAuth state serialization failed"))?;
+        let state_json =
+            serde_json::to_string(&state).map_err(|_| OAuthStartError::StateSerialization)?;
         let mut connection = session_mgr
             .get_connection()
             .await
-            .map_err(|_| Status::unavailable("OAuth state service unavailable"))?;
+            .map_err(|_| OAuthStartError::StateUnavailable)?;
         let stored: Option<String> = redis::cmd("SET")
             .arg(key)
             .arg(state_json)
@@ -1076,11 +1093,11 @@ impl OAuthProviderService {
             .arg("NX")
             .query_async(&mut connection)
             .await
-            .map_err(|_| Status::unavailable("OAuth state service unavailable"))?;
+            .map_err(|_| OAuthStartError::StateUnavailable)?;
         // NX is the one-time state write boundary. A missing reply means Redis did not
         // persist the state, so never send a provider redirect that cannot complete.
         if stored.is_none() {
-            return Err(Status::unavailable("OAuth state service unavailable"));
+            return Err(OAuthStartError::StateUnavailable);
         }
         let url = self.authorization_url(provider, runtime, &state, &state_token);
         let body = serde_json::json!({
@@ -1094,7 +1111,7 @@ impl OAuthProviderService {
         &self,
         workflow: OAuthWorkflowContext<'_>,
         request: OAuthCallbackRequest<'_>,
-    ) -> Result<Response<CheckResponse>, Status> {
+    ) -> Response<CheckResponse> {
         let OAuthCallbackRequest {
             client_headers,
             runtime,
@@ -1111,7 +1128,7 @@ impl OAuthProviderService {
                 "OAuth callback query rejected",
                 "query_too_large",
             );
-            return Ok(Response::new(oauth_failure_redirect("/")));
+            return Response::new(oauth_failure_redirect("/"));
         }
         let mut params = HashMap::new();
         for (key, value) in form_urlencoded::parse(query.as_bytes()).into_owned() {
@@ -1121,7 +1138,7 @@ impl OAuthProviderService {
                     "OAuth callback query rejected",
                     "duplicate_security_parameter",
                 );
-                return Ok(Response::new(oauth_failure_redirect("/")));
+                return Response::new(oauth_failure_redirect("/"));
             }
             params.insert(key, value);
         }
@@ -1132,7 +1149,7 @@ impl OAuthProviderService {
                 "OAuth callback state rejected",
                 "invalid_state",
             );
-            return Ok(Response::new(oauth_failure_redirect("/")));
+            return Response::new(oauth_failure_redirect("/"));
         }
         let state_json = match consume_state(workflow.session_mgr, provider, &state_token).await {
             Ok(Some(state_json)) => state_json,
@@ -1144,7 +1161,7 @@ impl OAuthProviderService {
                     "OAuth callback state rejected",
                     "state_missing",
                 );
-                return Ok(Response::new(oauth_failure_redirect("/")));
+                return Response::new(oauth_failure_redirect("/"));
             }
             Err(_) => {
                 Logger::sys_error(
@@ -1152,7 +1169,7 @@ impl OAuthProviderService {
                     "OAuth callback state service unavailable",
                     "state_store_error",
                 );
-                return Ok(Response::new(oauth_failure_redirect("/")));
+                return Response::new(oauth_failure_redirect("/"));
             }
         };
         let state: OAuthState = match serde_json::from_str(&state_json) {
@@ -1163,7 +1180,7 @@ impl OAuthProviderService {
                     "OAuth callback state rejected",
                     "state_decode",
                 );
-                return Ok(Response::new(oauth_failure_redirect("/")));
+                return Response::new(oauth_failure_redirect("/"));
             }
         };
         if state.provider != provider {
@@ -1172,7 +1189,7 @@ impl OAuthProviderService {
                 "OAuth callback state rejected",
                 "provider_mismatch",
             );
-            return Ok(Response::new(oauth_state_failure_redirect(&state, &[])));
+            return Response::new(oauth_state_failure_redirect(&state, &[]));
         }
         if !matches!(state.flow.as_str(), "login" | "link") {
             Logger::sys_warn(
@@ -1180,7 +1197,7 @@ impl OAuthProviderService {
                 "OAuth callback state rejected",
                 "flow_mismatch",
             );
-            return Ok(Response::new(oauth_failure_redirect("/")));
+            return Response::new(oauth_failure_redirect("/"));
         }
         let link_session_cookies = if state.flow == "link" {
             match self
@@ -1207,7 +1224,7 @@ impl OAuthProviderService {
                         "Social link callback session rejected",
                         &error,
                     );
-                    return Ok(Response::new(oauth_state_failure_redirect(&state, &[])));
+                    return Response::new(oauth_state_failure_redirect(&state, &[]));
                 }
             }
         } else {
@@ -1219,18 +1236,12 @@ impl OAuthProviderService {
                 "OAuth provider denied callback",
                 "provider_denied",
             );
-            return Ok(Response::new(oauth_state_failure_redirect(
-                &state,
-                &link_session_cookies,
-            )));
+            return Response::new(oauth_state_failure_redirect(&state, &link_session_cookies));
         }
         let code = params.get("code").cloned().unwrap_or_default();
         if code.is_empty() || code.len() > 4096 {
             Logger::sys_warn("user.oauth", "OAuth callback code rejected", "invalid_code");
-            return Ok(Response::new(oauth_state_failure_redirect(
-                &state,
-                &link_session_cookies,
-            )));
+            return Response::new(oauth_state_failure_redirect(&state, &link_session_cookies));
         }
         let identity = match self
             .exchange_and_verify(provider, runtime, &code, &state)
@@ -1239,10 +1250,7 @@ impl OAuthProviderService {
             Ok(identity) => identity,
             Err(error) => {
                 Logger::sys_warn("user.oauth", "Provider identity rejected", &error);
-                return Ok(Response::new(oauth_state_failure_redirect(
-                    &state,
-                    &link_session_cookies,
-                )));
+                return Response::new(oauth_state_failure_redirect(&state, &link_session_cookies));
             }
         };
         if state.flow == "link" {
@@ -1293,7 +1301,7 @@ impl OAuthProviderService {
                 "OAuth IAM request serialization failed",
                 "request_encode",
             );
-            return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            return Response::new(oauth_failure_redirect(&state.return_to));
         }
         let response_payload = match workflow
             .shared_redis
@@ -1312,7 +1320,7 @@ impl OAuthProviderService {
                     "OAuth IAM request failed",
                     "authentication_service_unavailable",
                 );
-                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                return Response::new(oauth_failure_redirect(&state.return_to));
             }
         };
         let response = match VerifyExternalIdentityResponse::decode(response_payload.as_slice()) {
@@ -1323,7 +1331,7 @@ impl OAuthProviderService {
                     "OAuth IAM response decode failed",
                     "response_decode",
                 );
-                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                return Response::new(oauth_failure_redirect(&state.return_to));
             }
         };
         if !response.valid {
@@ -1337,7 +1345,7 @@ impl OAuthProviderService {
                 "OAuth identity login rejected by IAM",
                 internal_reason,
             );
-            return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            return Response::new(oauth_failure_redirect(&state.return_to));
         }
         if response.zone_code != state.zone_code {
             Logger::sys_error(
@@ -1345,7 +1353,7 @@ impl OAuthProviderService {
                 "OAuth IAM response violated zone binding",
                 "zone_mismatch",
             );
-            return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+            return Response::new(oauth_failure_redirect(&state.return_to));
         }
         if response.mfa_required {
             if Uuid::parse_str(&response.mfa_setting_id).is_err() {
@@ -1354,7 +1362,7 @@ impl OAuthProviderService {
                     "OAuth MFA response violated enrollment binding",
                     "mfa_setting_id_invalid",
                 );
-                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                return Response::new(oauth_failure_redirect(&state.return_to));
             }
             let context = MfaChallengeContext {
                 user_id: response.user_id.clone(),
@@ -1384,14 +1392,14 @@ impl OAuthProviderService {
                 match issue_mfa_challenge(workflow.session_mgr, context).await {
                     Ok(value) => value,
                     Err(_) => {
-                        return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                        return Response::new(oauth_failure_redirect(&state.return_to));
                     }
                 };
-            return Ok(Response::new(oauth_mfa_redirect(
+            return Response::new(oauth_mfa_redirect(
                 &state.return_to,
                 &challenge_id,
                 expires_in,
-            )));
+            ));
         }
         let refresh_max_age = if state.trust_device {
             let max_age = response.refresh_token_expires_at - chrono::Utc::now().timestamp();
@@ -1401,7 +1409,7 @@ impl OAuthProviderService {
                     "OAuth IAM response contained invalid refresh state",
                     "refresh_state_invalid",
                 );
-                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                return Response::new(oauth_failure_redirect(&state.return_to));
             }
             Some(max_age)
         } else {
@@ -1411,6 +1419,7 @@ impl OAuthProviderService {
             UserSessionIssueContext {
                 session_mgr: workflow.session_mgr.as_ref(),
                 token_mgr: workflow.token_mgr.as_ref(),
+                shared_redis: workflow.shared_redis.as_ref(),
                 config: workflow.config,
             },
             ReleaseUserSessionCommand {
@@ -1433,17 +1442,17 @@ impl OAuthProviderService {
                     "OAuth session issuance failed",
                     "session_issue",
                 );
-                return Ok(Response::new(oauth_failure_redirect(&state.return_to)));
+                return Response::new(oauth_failure_redirect(&state.return_to));
             }
         };
-        Ok(oauth_session_response(
+        oauth_session_response(
             workflow.config,
             session,
             &response.refresh_token,
             refresh_max_age,
             &state.zone_code,
             &state.return_to,
-        ))
+        )
     }
 }
 

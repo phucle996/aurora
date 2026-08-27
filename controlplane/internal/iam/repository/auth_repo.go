@@ -12,7 +12,7 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -361,7 +361,7 @@ func (r *AuthRepository) ActivateUser(
 
 	// One CTE activates the pending row, snapshots every active Zone under a
 	// shared lock, fans out a deterministic owner-and-Zone code, and writes the
-	// Billing outbox. Retried activation only inserts rows for newly active Zones
+	// wallet-provision command. Retried activation only inserts rows for newly active Zones
 	// because the owner/code conflict is idempotent.
 	var activeZoneCount int
 	err = tx.QueryRow(ctx, fmt.Sprintf(`
@@ -382,11 +382,11 @@ func (r *AuthRepository) ActivateUser(
 			FROM active_zones AS zone
 			ON CONFLICT (owner_id, code) DO NOTHING
 			RETURNING id
-		), billing_outbox AS (
-			INSERT INTO %s.billing_outbox_records
+		), lifecycle_fact_outbox AS (
+			INSERT INTO %s.lifecycle_fact_outbox_records
 				(event_id, event_type, schema_version, aggregate_type, aggregate_id, aggregate_version,
 				 owner_id, owner_type, actor_user_id, payload, occurred_at)
-			VALUES ($7, 'billing.wallet.personal.provision.requested.v1', 1, 'IAM_USER', $4, 1,
+			VALUES ($7, 'billing.personal_wallet.provision.requested.v1', 1, 'IAM_USER', $4, 1,
 			        $4, 'PERSONAL', $4, $8, NOW())
 			ON CONFLICT (event_id) DO NOTHING
 			RETURNING id
@@ -399,8 +399,8 @@ func (r *AuthRepository) ActivateUser(
 		workspaces.OwnerID,
 		workspaces.CreatedAt,
 		workspaces.UpdatedAt,
-		activation.BillingEventID,
-		activation.BillingEventPayload,
+		activation.LifecycleEventID,
+		activation.LifecycleEventPayload,
 	).Scan(&activeZoneCount)
 	if err != nil {
 		return fmt.Errorf("iam repo: seed activation workspaces and outbox: %w", err)

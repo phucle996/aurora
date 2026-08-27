@@ -1,8 +1,11 @@
 # Personal Bucket Quota Update — God View
 
-Quota update is an asynchronous physical mutation. Controlplane changes desired
-quota and writes a Zone command in one transaction. A `200` means desired
-state is durable, not that MinIO has applied the hard quota.
+> **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/personal/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
+
+Quota update is an asynchronous physical mutation. Controlplane keeps the last
+confirmed quota unchanged, transitions the bucket `READY -> UPDATING`, and writes
+the requested target only inside the sealed Zone command. A `200` means the
+operation promise is durable, not that MinIO has applied the hard quota.
 
 ## API-scope contract
 
@@ -39,7 +42,7 @@ the owned bucket row and does not trust Zone in browser input.
 
 | Status | Payload |
 |---|---|
-| `200` | `data: null`, message `bucket quota updated` after desired-state commit |
+| `200` | `data: null`, message `bucket quota updated` after transition/outbox commit |
 | `400` | Invalid UUID/body or quota leaves less than one GiB free |
 | `403` | ACR, context or permission failure |
 | `404` | Bucket absent or not owned by user |
@@ -50,9 +53,9 @@ the owned bucket row and does not trust Zone in browser input.
 | Key / transport | Store | Operation | Invariant |
 |---|---|---|---|
 | Auth-State session and workspace cookie | ACR | Verify then overwrite context headers | Browser cannot set authoritative user, Zone or workspace header. |
-| `storage.personal_buckets.capacity_quota_bytes` | PostgreSQL | Locked update | This becomes desired state before physical MinIO update. |
+| `storage.personal_buckets.capacity_quota_bytes` | PostgreSQL | Read, then JO actual update | Always the latest Zone-confirmed hard quota. |
 | `storage.personal_buckets.used_bytes` | PostgreSQL | Read under `FOR UPDATE` | Last size projection is the one-GiB safety input. |
-| `storage.storage_outbox_records` | PostgreSQL | Insert `storage.bucket.resize` | Protected `BucketResizeSync`, bucket Zone, resource name and rollback quota. |
+| `storage.storage_outbox_records` | PostgreSQL | Insert `storage.bucket.resize` | Generic transport metadata plus protected `BucketResizeSync`; the requested quota exists only in the sealed payload. |
 | Zone command and result topics | Kafka | At-least-once command/result | Job id plus topic guard terminal settlement. |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -84,15 +87,15 @@ sequenceDiagram
     end
 ```
 
-## Phase 2 — Controlplane desired-state transaction
+## Phase 2 — Controlplane transition transaction
 
 Handler parses bucket UUID and body under a five-second context. Service first
 loads owned bucket to construct a `BucketResizeSync` containing old and
 requested quota. It prepares outbox metadata from the bucket's durable Zone.
 Repository seals payload, starts a transaction, `SELECT ... FOR UPDATE` joins
-bucket to owner workspace, enforces headroom, updates quota and inserts outbox.
-The locked row overwrites resource name and rollback quota in outbox so later
-settlement has a durable fence.
+bucket to owner workspace, enforces headroom, transitions only `status` to
+`UPDATING`, and inserts outbox. The actual quota is not overwritten before Zone
+success and the generic outbox does not become a resource-state projection.
 
 ```mermaid
 sequenceDiagram
@@ -114,22 +117,24 @@ sequenceDiagram
     R->>PG: BEGIN and SELECT FOR UPDATE owned bucket
     R->>R: Require requested quota minus used bytes at least one GiB
     alt invariant holds
-        R->>PG: UPDATE desired quota and INSERT outbox
+        R->>PG: UPDATE status=UPDATING and INSERT sealed-target outbox
         R->>PG: COMMIT
-        H-->>M: 200 desired state accepted
+        H-->>M: 200 transition accepted
     else missing or headroom fails
         R->>PG: ROLLBACK
         H-->>M: 404 or 400
     end
 ```
 
-## Phase 3 — MinIO application and rollback settlement
+## Phase 3 — MinIO application and actual-state settlement
 
 JO consumes the durable row through WAL, publishes protected
-`storage.bucket.resize` to exact Zone. Dataplane validates payload then calls
-`mc admin bucket quota ... --hard`. It does not modify PostgreSQL. A failure
-locks outbox, restores its committed rollback quota into matching owner table,
-then writes FAILED in the same SQL statement.
+`storage.bucket.resize` to exact Zone. Dataplane validates payload and
+`resource_id`, applies the MinIO hard quota, then returns typed
+`BucketQuotaAppliedV1 { bucket_id, actual_quota_bytes }`. JO validates result
+schema and identity. Success writes the confirmed quota and `READY` first, then
+settles the outbox in the same CTE. Failure leaves the last confirmed quota
+unchanged, restores only `UPDATING -> READY`, then marks the outbox failed.
 
 ```mermaid
 sequenceDiagram
@@ -144,13 +149,13 @@ sequenceDiagram
     KC-->>DP: protected command
     DP->>M: Set hard bucket quota
     alt MinIO accepts quota
-        DP->>KR: SUCCEEDED
+        DP->>KR: SUCCEEDED + BucketQuotaAppliedV1
         KR-->>JO: result
-        JO->>PG: Mark outbox SUCCEEDED and retain audit row
+        JO->>PG: Write actual quota + READY, then mark outbox SUCCEEDED
     else MinIO rejects or is unavailable
         DP->>KR: FAILED
         KR-->>JO: result
-        JO->>PG: Restore rollback quota and mark FAILED atomically
+        JO->>PG: Keep actual quota, restore READY, then mark FAILED
     end
 ```
 
@@ -160,7 +165,7 @@ sequenceDiagram
 |---|---|
 | Concurrent resize | Repository serializes desired-state writes with bucket row lock. |
 | Database update succeeds, process dies | WAL delivery eventually produces the same stable command. |
-| Physical resize fails | JO restores prior quota from durable outbox, not ciphertext or Dataplane result. |
+| Physical resize fails | Confirmed quota was never overwritten; JO restores only lifecycle state to `READY`. |
 | Result replay | Only PENDING or PROCESSING outbox state can settle. |
 | Cross-workspace bucket UUID | Authorization key uses current workspace, while service/repository ownership lookup uses user id only. A user knowing another personal bucket UUID can mutate its quota if current grant permits the operation. |
 | Usage projection is stale | One-GiB check uses last Kafka snapshot, not live S3 measurement. |
@@ -173,3 +178,29 @@ sequenceDiagram
 - `controlplane/internal/storage/repository/personal_bucket_repo.go`
 - `dataplane/src/executor/storage/resize.rs`
 - `job-orchestrator/src/results/storage/bucket.rs`
+
+## Wallet admission gate
+
+Quota increase is a billable expansion and requires the local personal owner
+projection to be current `ALLOW`. The service checks this before the repository
+locks `used_bytes`; missing, expired or suspended admission maps to `503
+STORAGE_WALLET_ADMISSION_UNAVAILABLE`. Quota decrease remains a cleanup and
+footprint-reduction action and does not use this gate.
+
+```mermaid
+sequenceDiagram
+    participant S as PersonalBucketService
+    participant W as CommercialAdmissionRepository
+    participant R as PersonalBucketRepository
+    participant DB as Controlplane PostgreSQL
+
+    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
+    W->>DB: Read effective owner projection
+    alt not admitted
+        W-->>S: ErrCommercialAdmissionDenied
+    else ALLOW
+        S->>R: UpdateQuota after direction check
+        R->>DB: Lock bucket, compare used_bytes, update quota and outbox
+        DB-->>R: Commit
+    end
+```

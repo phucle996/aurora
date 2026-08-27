@@ -40,7 +40,7 @@ export async function switchToPersonal(): Promise<void> {
 }
 
 export async function createTenant(payload: CreateTenantPayload) {
-	const response = await fetchJSON<{ data?: CreateTenantResponse }>("/api/v1/tenants", {
+	const response = await criticalFetchJSON<{ data?: CreateTenantResponse }>("/api/v1/critical/tenants", {
 		method: "POST",
 		body: payload,
 	});

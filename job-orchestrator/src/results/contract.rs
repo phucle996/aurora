@@ -42,7 +42,6 @@ pub struct ValidatedManagedServiceResult {
     pub status: &'static str,
     pub error_code: Option<String>,
     pub sanitized_message: String,
-    pub observed_state: &'static str,
     pub delivery_epoch: i64,
 }
 
@@ -250,7 +249,7 @@ fn decode_managed_service_result(
             "managed service observed state is unknown",
         )
     })?;
-    let (status, error_code, observed_state) = match (outcome, observed) {
+    let (status, error_code) = match (outcome, observed) {
         (
             ManagedServiceOutcomeV1::ManagedServiceOutcomeSucceeded,
             ManagedServiceObservedStateV1::ManagedServiceObservedStateReady,
@@ -258,7 +257,7 @@ fn decode_managed_service_result(
             && inner.error_code.is_empty()
             && wire.error_code.is_none() =>
         {
-            ("SUCCEEDED", None, "ready")
+            ("SUCCEEDED", None)
         }
         (
             ManagedServiceOutcomeV1::ManagedServiceOutcomeTerminalFailure,
@@ -267,7 +266,7 @@ fn decode_managed_service_result(
             && !inner.error_code.is_empty()
             && wire.error_code.as_deref() == Some(inner.error_code.as_str()) =>
         {
-            ("FAILED", Some(inner.error_code.clone()), "degraded")
+            ("FAILED", Some(inner.error_code.clone()))
         }
         (
             ManagedServiceOutcomeV1::ManagedServiceOutcomeTerminalFailure,
@@ -276,7 +275,7 @@ fn decode_managed_service_result(
             && !inner.error_code.is_empty()
             && wire.error_code.as_deref() == Some(inner.error_code.as_str()) =>
         {
-            ("FAILED", Some(inner.error_code.clone()), "unknown")
+            ("FAILED", Some(inner.error_code.clone()))
         }
         _ => {
             return Err(ContractError::new(
@@ -301,7 +300,6 @@ fn decode_managed_service_result(
         status,
         error_code,
         sanitized_message: inner.sanitized_message,
-        observed_state,
         delivery_epoch: inner.delivery_epoch as i64,
     })
 }

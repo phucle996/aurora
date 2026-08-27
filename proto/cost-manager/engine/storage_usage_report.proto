@@ -31,5 +31,7 @@ message StorageUsageAggregateV1 {
   string resource_name = 5;      // STORAGE capacity reference, never an object key
   uint64 storage_bytes = 6;      // end-of-hour occupied capacity snapshot
   // Fixed-point billable quantity: one million units equals one GB_HOUR.
-  uint64 storage_gb_hours_micros = 7;
+  // Exact occupied byte-hours for the fixed one-hour report window. Keeping
+  // the observation in bytes avoids rounding before the PAYG money boundary.
+  uint64 storage_byte_hours = 7;
 }

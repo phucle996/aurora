@@ -4,28 +4,172 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
-	"strings"
+	"errors"
 	"testing"
-	"time"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcImpl "controlplane/internal/mail/service"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	mailTaxonomy "controlplane/internal/mail/taxonomy"
+	mailproto "controlplane/internal/mail/transport/proto"
 	"controlplane/internal/observability"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: Mock repository capture hỗ trợ kiểm tra thao tác tạo/sửa/xóa Personal Consumer và lưu vệt outbox
 type personalConsumerRepoCapture struct {
-	created *mailEntity.CreatePersonalConsumer
-	current *mailEntity.GetPersonalConsumer
-	updated *mailEntity.UpdatePersonalConsumer
-	outbox  *mailEntity.MailOutboxRecord
+	drainTarget mailEntity.PersonalConsumerDrainTarget
+	created     *mailEntity.CreatePersonalConsumer
+	current     *mailEntity.GetPersonalConsumer
+	updated     *mailEntity.UpdatePersonalConsumer
+	outbox      *mailEntity.MailOutboxRecord
+	updateErr   error
+}
+
+type tenantConsumerRepoCapture struct {
+	drainTarget mailEntity.TenantConsumerDrainTarget
+	updated     *mailEntity.UpdateTenantConsumer
+	outbox      *mailEntity.MailOutboxRecord
+	current     *mailEntity.GetTenantConsumer
+	updateErr   error
+}
+
+func (r *personalConsumerRepoCapture) LoadDrainTarget(context.Context, mailEntity.PersonalConsumerDrainCommand) (mailEntity.PersonalConsumerDrainTarget, error) {
+	return r.drainTarget, nil
+}
+func (r *personalConsumerRepoCapture) RequestDrain(_ context.Context, _ mailEntity.PersonalConsumerDrainCommand, _ uint32, outbox mailEntity.MailOutboxRecord) error {
+	r.outbox = &outbox
+	return r.updateErr
+}
+func (r *tenantConsumerRepoCapture) LoadDrainTarget(context.Context, mailEntity.TenantConsumerDrainCommand) (mailEntity.TenantConsumerDrainTarget, error) {
+	return r.drainTarget, nil
+}
+func (r *tenantConsumerRepoCapture) RequestDrain(_ context.Context, _ mailEntity.TenantConsumerDrainCommand, _ uint32, outbox mailEntity.MailOutboxRecord) error {
+	r.outbox = &outbox
+	return r.updateErr
+}
+
+func TestConsumerDrainUsesCurrentVersionAndScopedOutbox(t *testing.T) {
+	for _, scope := range []string{"personal", "tenant"} {
+		t.Run(scope, func(t *testing.T) {
+			id, actor, workspace, zone := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			var operation uuid.UUID
+			var err error
+			var outbox *mailEntity.MailOutboxRecord
+			if scope == "personal" {
+				repo := &personalConsumerRepoCapture{drainTarget: mailEntity.PersonalConsumerDrainTarget{ConfigVersion: 7, Parallelism: 4, State: mailEntity.ConsumerEnabled}}
+				service := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder())
+				operation, err = service.Drain(context.Background(), mailEntity.PersonalConsumerDrainCommand{ActorUserID: actor, WorkspaceID: workspace, ZoneID: zone, ConsumerID: id, ExpectedConfigVersion: 7, TimeoutSeconds: 30})
+				outbox = repo.outbox
+			} else {
+				repo := &tenantConsumerRepoCapture{drainTarget: mailEntity.TenantConsumerDrainTarget{ConfigVersion: 7, Parallelism: 4, State: mailEntity.ConsumerPaused}}
+				service := mailSvcImpl.NewTenantConsumerService(repo, observability.NewNoopWorkflowRecorder())
+				operation, err = service.Drain(context.Background(), mailEntity.TenantConsumerDrainCommand{ActorUserID: actor, WorkspaceID: workspace, ZoneID: zone, TenantID: uuid.New(), ConsumerID: id, ExpectedConfigVersion: 7, TimeoutSeconds: 30})
+				outbox = repo.outbox
+			}
+			if err != nil || operation == uuid.Nil || outbox == nil {
+				t.Fatalf("drain: operation=%v err=%v", operation, err)
+			}
+			if outbox.EventID != operation || outbox.JobTopic != "mail.consumer.drain" || outbox.ZoneID != zone || outbox.ResourceID != id.String() || outbox.ActorUserID != actor {
+				t.Fatalf("wrong outbox: %#v", outbox)
+			}
+			var command mailproto.MailConsumerDrainV1
+			if err = proto.Unmarshal(outbox.Payload, &command); err != nil {
+				t.Fatal(err)
+			}
+			if command.SchemaVersion != 1 || command.ConfigVersion != 7 || command.Parallelism != 4 || command.TimeoutSeconds != 30 || !bytes.Equal(command.ConsumerId, id[:]) {
+				t.Fatalf("wrong command: %v", &command)
+			}
+		})
+	}
+}
+
+func TestConsumerDrainRejectsStaleVersionAndBusyState(t *testing.T) {
+	for _, state := range []mailEntity.ConsumerDesiredState{mailEntity.ConsumerEnabled, mailEntity.ConsumerDraining, mailEntity.ConsumerDrained, mailEntity.ConsumerDeleting} {
+		for _, scope := range []string{"personal", "tenant"} {
+			expected := uint64(7)
+			want := mailTaxonomy.ErrOperationInProgress
+			if state == mailEntity.ConsumerEnabled {
+				expected = 6
+				want = mailTaxonomy.ErrVersionConflict
+			}
+			var err error
+			var outbox *mailEntity.MailOutboxRecord
+			if scope == "personal" {
+				repo := &personalConsumerRepoCapture{drainTarget: mailEntity.PersonalConsumerDrainTarget{ConfigVersion: 7, Parallelism: 1, State: state}}
+				_, err = mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).Drain(context.Background(), mailEntity.PersonalConsumerDrainCommand{ExpectedConfigVersion: expected})
+				outbox = repo.outbox
+			} else {
+				repo := &tenantConsumerRepoCapture{drainTarget: mailEntity.TenantConsumerDrainTarget{ConfigVersion: 7, Parallelism: 1, State: state}}
+				_, err = mailSvcImpl.NewTenantConsumerService(repo, observability.NewNoopWorkflowRecorder()).Drain(context.Background(), mailEntity.TenantConsumerDrainCommand{ExpectedConfigVersion: expected})
+				outbox = repo.outbox
+			}
+			if !errors.Is(err, want) || outbox != nil {
+				t.Fatalf("%s/%s: err=%v outbox=%v", scope, state, err, outbox)
+			}
+		}
+	}
+}
+
+func (r *tenantConsumerRepoCapture) Create(context.Context, *mailEntity.CreateTenantConsumer, *mailEntity.MailOutboxRecord) error {
+	return nil
+}
+func (r *tenantConsumerRepoCapture) GetByID(context.Context, *mailEntity.GetTenantConsumer) (*mailEntity.GetTenantConsumer, error) {
+	return r.current, nil
+}
+func (r *tenantConsumerRepoCapture) List(context.Context, *mailEntity.ListTenantConsumer) ([]*mailEntity.ListTenantConsumer, error) {
+	return nil, nil
+}
+func (r *tenantConsumerRepoCapture) Update(_ context.Context, update *mailEntity.UpdateTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	r.updated, r.outbox = update, outbox
+	return nil
+}
+func (r *tenantConsumerRepoCapture) Delete(context.Context, *mailEntity.DeleteTenantConsumer, *mailEntity.MailOutboxRecord) error {
+	return nil
+}
+
+func TestPersonalResumeFailsWhenCommercialAdmissionIsUnavailable(t *testing.T) {
+	repo := &personalConsumerRepoCapture{
+		current: &mailEntity.GetPersonalConsumer{
+			ID:                   uuid.New(),
+			ConfigVersion:        1,
+			SourceConfigEnvelope: []byte{1, 2, 3},
+		},
+		updateErr: mailTaxonomy.ErrCommercialAdmissionUnavailable,
+	}
+	service := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder())
+	_, err := service.ChangeConsumerState(context.Background(), &mailEntity.ChangePersonalConsumerState{
+		ActorUserID:           uuid.New(),
+		ExpectedConfigVersion: 1,
+		DesiredState:          mailEntity.ConsumerEnabled,
+	})
+	if !errors.Is(err, mailTaxonomy.ErrCommercialAdmissionUnavailable) {
+		t.Fatalf("expected commercial admission failure, got %v", err)
+	}
+}
+
+func TestTenantResumeFailsWhenTenantCommercialAdmissionIsUnavailable(t *testing.T) {
+	repo := &tenantConsumerRepoCapture{
+		current: &mailEntity.GetTenantConsumer{
+			ID:                   uuid.New(),
+			ConfigVersion:        1,
+			SourceConfigEnvelope: []byte{1, 2, 3},
+		},
+		updateErr: mailTaxonomy.ErrCommercialAdmissionUnavailable,
+	}
+	service := mailSvcImpl.NewTenantConsumerService(repo, observability.NewNoopWorkflowRecorder())
+	_, err := service.ChangeConsumerState(context.Background(), &mailEntity.ChangeTenantConsumerState{
+		TenantID:              uuid.New(),
+		ExpectedConfigVersion: 1,
+		DesiredState:          mailEntity.ConsumerEnabled,
+	})
+	if !errors.Is(err, mailTaxonomy.ErrCommercialAdmissionUnavailable) {
+		t.Fatalf("expected Tenant commercial admission failure, got %v", err)
+	}
 }
 
 // [COMMENT]: Giả lập lưu PersonalConsumer entity và record outbox tương ứng khi tạo mới
@@ -46,6 +190,9 @@ func (r *personalConsumerRepoCapture) List(_ context.Context, _ *mailEntity.List
 
 // [COMMENT]: Cập nhật thông tin PersonalConsumer entity và ghi nhận record outbox mới
 func (r *personalConsumerRepoCapture) Update(_ context.Context, entity *mailEntity.UpdatePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
 	r.updated, r.outbox = entity, outbox
 	return nil
 }
@@ -106,7 +253,7 @@ func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
 	command := validPersonalConsumerUpdate(current)
 
 	// [COMMENT]: Gọi service thực thi lệnh cập nhật consumer
-	updated, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).UpdateConsumer(context.Background(), command)
+	updated, err := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).UpdateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("UpdateConsumer() error = %v", err)
 	}
@@ -157,7 +304,7 @@ func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T)
 		command.DesiredState = mailEntity.ConsumerPaused
 		mutate(command)
 		// [COMMENT]: Kiểm tra service trả về lỗi do thay đổi AAD identity mà không có ciphertext mới
-		if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).UpdateConsumer(context.Background(), command); err == nil {
+		if _, err := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).UpdateConsumer(context.Background(), command); err == nil {
 			t.Fatal("AAD identity changed without a replacement encrypted envelope")
 		}
 	}
@@ -167,7 +314,7 @@ func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T)
 func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 	repo, command := &personalConsumerRepoCapture{}, validPersonalConsumer()
 	// [COMMENT]: Thực thi khởi tạo consumer qua mail service implementation
-	consumer, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command)
+	consumer, err := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("CreateConsumer() error = %v", err)
 	}
@@ -187,124 +334,19 @@ func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 func TestPersonalCreateUsesFreshRuntimeIdentity(t *testing.T) {
 	command := validPersonalConsumer()
 	firstRepo := &personalConsumerRepoCapture{}
-	first, err := mailSvcImpl.NewPersonalConsumerService(firstRepo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command)
+	first, err := mailSvcImpl.NewPersonalConsumerService(firstRepo, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
 	}
 	retry := *command
 	secondRepo := &personalConsumerRepoCapture{}
-	second, err := mailSvcImpl.NewPersonalConsumerService(secondRepo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), &retry)
+	second, err := mailSvcImpl.NewPersonalConsumerService(secondRepo, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), &retry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// [COMMENT]: Khẳng định hai consumer không bị trùng runtime ID
 	if first.ID == second.ID {
 		t.Fatal("recreated consumer reused a tombstoned runtime identity")
-	}
-}
-
-func TestPersonalRuntimeWatchUsesShortLeaseAndRejectsPreviousEpoch(t *testing.T) {
-	redisServer, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("start miniredis: %v", err)
-	}
-	defer redisServer.Close()
-	redisClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
-	defer redisClient.Close()
-
-	current := &mailEntity.GetPersonalConsumer{
-		ActorUserID:   uuid.New(),
-		WorkspaceID:   uuid.New(),
-		ZoneID:        uuid.New(),
-		ID:            uuid.New(),
-		ConfigVersion: 4,
-		Parallelism:   3,
-	}
-	repo := &personalConsumerRepoCapture{current: current}
-	service := mailSvcImpl.NewPersonalConsumerService(repo, redisClient, observability.NewNoopWorkflowRecorder())
-	request := &mailEntity.WatchPersonalConsumerRuntime{
-		ActorUserID: current.ActorUserID,
-		WorkspaceID: current.WorkspaceID,
-		ZoneID:      current.ZoneID,
-		ID:          current.ID,
-	}
-
-	first, err := service.WatchConsumerRuntime(context.Background(), request)
-	if err != nil {
-		t.Fatalf("first WatchConsumerRuntime() error = %v", err)
-	}
-	if first.WatchTTLSeconds != 30 || first.RuntimeObserved || !strings.HasPrefix(first.WatchLeaseID, "4:") {
-		t.Fatalf("unexpected first watch: %+v", first)
-	}
-	_, epoch, ok := strings.Cut(first.WatchLeaseID, ":")
-	if !ok {
-		t.Fatalf("invalid watch lease ID: %q", first.WatchLeaseID)
-	}
-	watchRequests, err := redisClient.XRangeN(
-		context.Background(),
-		"mail:runtime:watch-requests",
-		"-",
-		"+",
-		1,
-	).Result()
-	if err != nil || len(watchRequests) != 1 {
-		t.Fatalf("runtime watch was not enqueued for JO bridge: entries=%v err=%v", watchRequests, err)
-	}
-	rawWatch, ok := watchRequests[0].Values["payload"].(string)
-	if !ok {
-		t.Fatalf("runtime watch payload has unexpected type: %T", watchRequests[0].Values["payload"])
-	}
-	var watch mailproto.MailConsumerRuntimeWatchRequestedV1
-	if err := proto.Unmarshal([]byte(rawWatch), &watch); err != nil {
-		t.Fatalf("decode runtime watch request: %v", err)
-	}
-	if !bytes.Equal(watch.ZoneId, current.ZoneID[:]) ||
-		!bytes.Equal(watch.ConsumerId, current.ID[:]) ||
-		watch.ConfigVersion != current.ConfigVersion ||
-		watch.RuntimeEpoch != epoch {
-		t.Fatalf("unexpected runtime watch request: %+v", &watch)
-	}
-	snapshot, err := json.Marshal(map[string]any{
-		"config_version":   4,
-		"runtime_epoch":    epoch,
-		"runtime_revision": 7,
-		"state":            mailEntity.ConsumerRuntimeRunning,
-		"active_instances": 2,
-		"consumer_lag":     3,
-		"error_code":       "",
-		"error_message":    "",
-		"observed_at":      time.Now().UTC(),
-		"expires_at":       time.Now().UTC().Add(time.Minute),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshotKey := "mail:runtime:{" + current.ID.String() + "}:snapshot:personal"
-	redisServer.Set(snapshotKey, string(snapshot))
-
-	second, err := service.WatchConsumerRuntime(context.Background(), &mailEntity.WatchPersonalConsumerRuntime{
-		ActorUserID: current.ActorUserID,
-		WorkspaceID: current.WorkspaceID,
-		ZoneID:      current.ZoneID,
-		ID:          current.ID,
-	})
-	if err != nil || !second.RuntimeObserved || second.RuntimeRevision != 7 {
-		t.Fatalf("matching epoch snapshot was not returned: result=%+v err=%v", second, err)
-	}
-
-	// [COMMENT]: Lease expiry tạo epoch mới; snapshot cũ dù còn TTL/future expires_at cũng phải là cache miss.
-	redisServer.FastForward(31 * time.Second)
-	third, err := service.WatchConsumerRuntime(context.Background(), &mailEntity.WatchPersonalConsumerRuntime{
-		ActorUserID: current.ActorUserID,
-		WorkspaceID: current.WorkspaceID,
-		ZoneID:      current.ZoneID,
-		ID:          current.ID,
-	})
-	if err != nil {
-		t.Fatalf("third WatchConsumerRuntime() error = %v", err)
-	}
-	if third.RuntimeObserved || third.WatchLeaseID == first.WatchLeaseID {
-		t.Fatalf("previous epoch leaked into new watch: first=%q third=%+v", first.WatchLeaseID, third)
 	}
 }
 
@@ -322,10 +364,9 @@ func TestPersonalDeleteUsesNextAllocatorAsTombstoneFence(t *testing.T) {
 		ZoneID:                current.ZoneID,
 		ID:                    current.ID,
 		ExpectedConfigVersion: 4,
-		DrainTimeoutSeconds:   30,
 	}
 	// [COMMENT]: Thực thi yêu cầu xóa consumer qua service
-	if err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).DeleteConsumer(context.Background(), command); err != nil {
+	if err := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).DeleteConsumer(context.Background(), command); err != nil {
 		t.Fatalf("DeleteConsumer() error = %v", err)
 	}
 	var event mailproto.MailConsumerDeleteV1
@@ -357,7 +398,7 @@ func TestPersonalCreateEncodesTheSelectedStreamSuite(t *testing.T) {
 			command.SourceType = test.sourceType
 			repo := &personalConsumerRepoCapture{}
 			// [COMMENT]: Tạo consumer với từng loại Stream Source cụ thể
-			if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command); err != nil {
+			if _, err := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).CreateConsumer(context.Background(), command); err != nil {
 				t.Fatalf("CreateConsumer() error = %v", err)
 			}
 

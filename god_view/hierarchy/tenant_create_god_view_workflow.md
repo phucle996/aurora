@@ -7,12 +7,12 @@ A Tenant has no Zone placement; its future workspaces select Zones separately.
 
 | Item | Contract |
 |---|---|
-| Browser API | `POST /api/v1/tenants` |
-| Internal target | `POST /api/v1/personal/tenants` only |
+| Browser API | `POST /api/v1/critical/tenants` |
+| Internal target | `POST /api/v1/personal/critical/tenants` only |
 | Owner | authenticated personal user; a tenant session cannot create a sibling tenant |
 | Authorization | personal `hierarchy:tenant:create` at the required level before the handler |
 | Durable SoT | one Controlplane PostgreSQL transaction |
-| Follow-up | transactional billing-wallet outbox; it never changes the successful HTTP result |
+| Follow-up | transactional Hierarchy-to-Cost wallet-provision command; it never changes the successful HTTP result |
 
 Browser must not call `/api/v1/personal/**`. ACR alone selects the owner branch,
 rewrites the path, overwrites `:path`, and adds `x-original-path`.
@@ -25,7 +25,9 @@ rewrites the path, overwrites `:path`, and adds `x-original-path`.
 | `code` | required, lowercase; `^[a-z0-9][a-z0-9_-]{0,99}$` |
 | `primary_domain` | required, lowercase, valid bounded DNS-style domain |
 
-Only normal browser session material is used at the edge. Client-supplied
+ACR consumes a one-time session proof bound to the exact method, path and raw
+body before the owner rewrite; Controlplane runs `RequireSessionProof` before
+authorization. Client-supplied
 identity, tenant, Zone, workspace, permission, or ACR marker headers are not
 trusted.
 
@@ -37,7 +39,7 @@ trusted.
 | `hierarchy.tenant_domains` | PostgreSQL | exactly one primary domain created with the tenant |
 | `hierarchy.tenant_memberships` | PostgreSQL | active ownership membership for creator |
 | `iam.tenant_roles` + `iam.membership_role` | PostgreSQL | tenant-root role and compiled creator authority |
-| `billing_outbox_records` | PostgreSQL | `billing.wallet.tenant.provision.requested.v1` recovery boundary |
+| `cost_outbox_records` | PostgreSQL | `billing.tenant_wallet.provision.requested.v1` recovery boundary owned by Hierarchy |
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -49,7 +51,7 @@ sequenceDiagram
     participant S as Session Redis
     participant C as Controlplane
 
-    B->>E: POST /api/v1/tenants with JSON body
+    B->>E: POST /api/v1/critical/tenants with JSON body and session proof
     E->>A: CheckRequest method path headers and body
     A->>A: Remove client trusted-context headers
     A->>S: Verify Trinity session and current account state
@@ -62,7 +64,7 @@ sequenceDiagram
     else verified personal session
         A->>A: Rate limit then rewrite to personal target
         A-->>E: allow with verified headers and rewritten path
-        E->>C: POST /api/v1/personal/tenants
+        E->>C: POST /api/v1/personal/critical/tenants
     end
 ```
 
@@ -76,12 +78,12 @@ The request body is forwarded unchanged.
 | Boundary | Exact contract |
 |---|---|
 | Client headers | `Content-Type: application/json`, `Cookie` carrying `access_token`, `access_key`, `access_secret`, and device cookie; unsafe cross-site mutation is rejected by CSRF validation. Bearer JWT is only a JWT source, not a replacement for the two opaque Trinity cookies. |
-| Envoy `CheckRequest` | original `POST /api/v1/tenants`, authority, all request headers, and raw JSON body are sent to ACR before any upstream route is chosen. |
+| Envoy `CheckRequest` | original `POST /api/v1/critical/tenants`, authority, all request headers, and raw JSON body are sent to ACR before any upstream route is chosen. |
 | ACR local order | validate `Origin` against configured CORS allowlist; pre-auth IP/device rate-limit; verify JWT, access-key binding, Redis session record and access-secret hash; update last-seen/rotate cookies; post-auth user/device rate-limit; CSRF check; resolve verified Zone and Tenant session context. |
 | Local state | session record is read through `SessionManager`; Zone resolution uses rebuildable Shared Redis state. A failed session store is not bypassed. |
 | Denials | disallowed Origin, rate exhaustion, invalid/revoked Trinity session, CSRF failure, or a concrete selected Tenant returns locally through Envoy; Controlplane is not called. |
 | Remove / overwrite | ACR removes proof markers and cryptographic proof headers; it overwrites client `x-user-id`, `x-user-name`, `x-user-level`, `x-tenant-id`, `x-zone-id`, `x-client-device-id`, and any `x-original-path`. |
-| Inject / forward | inject verified identity/context, `x-session-proof-verified: false`; set `x-original-path: /api/v1/tenants`; replace `:path` with `/api/v1/personal/tenants`; forward the original body only after allow. |
+| Inject / forward | after consuming the exact session proof, inject verified identity/context and `x-session-proof-verified: true`; set `x-original-path: /api/v1/critical/tenants`; replace `:path` with `/api/v1/personal/critical/tenants`; forward the original body only after allow. |
 
 ## Phase 2 — Controlplane transaction
 
@@ -108,37 +110,35 @@ sequenceDiagram
 ```
 
 The commit is all-or-nothing: no tenant may exist without its primary domain,
-creator ownership membership, tenant-root role assignment, or billing intent.
+creator ownership membership, tenant-root role assignment, or its Cost outbox command.
 Duplicate code/domain identity returns `409`; invalid input returns `400`; an
 infrastructure or serialization failure returns `500`. After commit, the service
 wakes the relay only as a latency hint.
 
-## Phase 3 — Tenant wallet provisioning
+## Phase 3 — Hierarchy Cost outbox relay
 
 ```mermaid
 sequenceDiagram
-    participant O as Billing outbox relay
+    participant O as Hierarchy Cost outbox relay
     participant Q as Shared Redis stream
     participant CM as Cost Manager
     participant B as Billing PostgreSQL
 
-    O->>Q: Publish deterministic tenant-wallet event
+    O->>Q: XADD deterministic tenant wallet provision command
+    O->>Q: WAITAOF master and configured replicas
     Q->>CM: At-least-once delivery
     CM->>B: Inbox fence and USD tenant-wallet upsert
     B-->>CM: Commit
     CM->>Q: ACK after commit
 ```
 
-The deterministic event ID, Cost inbox, and wallet uniqueness converge replay.
-Relay or Cost failure leaves the outbox recoverable; it never rolls back the
-already-created tenant.
-
-## Current implementation discrepancy
-
-The intended personal sentinel is `platform`, but ACR currently injects
-`x-tenant-id: platform` while `TenantHandler.CreateTenant` rejects every
-non-empty `x-tenant-id`. Therefore the current implementation rejects an
-otherwise valid personal request with `400`. In addition, the registered
-personal route currently lacks the required `middleware.Authorize` call. This
-God View is the target contract; those two code paths must be reconciled in a
-separate implementation change before tenant creation is operational.
+The request-owning pod sends a non-blocking local wake after commit. Every pod
+also runs a startup drain staggered by 0–2 seconds, then a 30-second fallback
+scan with 0–10-second jitter. `FOR UPDATE SKIP LOCKED` partitions claimed rows
+across pods; a 30-second lease reclaims a row from a dead pod. The complete
+`XADD` plus `WAITAOF` call is deadline-bounded below that lease. The relay
+validates the envelope and immutable Protobuf command before publication and
+marks the PostgreSQL outbox row `PUBLISHED` only after the Redis AOF durability
+fence succeeds. The deterministic event ID, Cost inbox, and wallet uniqueness
+converge replay; a relay or Cost failure leaves the outbox recoverable and
+never rolls back the already-created tenant.

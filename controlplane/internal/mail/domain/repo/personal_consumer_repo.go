@@ -11,4 +11,6 @@ type PersonalConsumerRepository interface {
 	List(context.Context, *mailEntity.ListPersonalConsumer) ([]*mailEntity.ListPersonalConsumer, error)
 	Update(context.Context, *mailEntity.UpdatePersonalConsumer, *mailEntity.MailOutboxRecord) error
 	Delete(context.Context, *mailEntity.DeletePersonalConsumer, *mailEntity.MailOutboxRecord) error
+	LoadDrainTarget(context.Context, mailEntity.PersonalConsumerDrainCommand) (mailEntity.PersonalConsumerDrainTarget, error)
+	RequestDrain(context.Context, mailEntity.PersonalConsumerDrainCommand, uint32, mailEntity.MailOutboxRecord) error
 }

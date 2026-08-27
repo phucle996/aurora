@@ -3,7 +3,7 @@ package billingTaxonomy
 
 import "errors"
 
-// Sentinel errors chính cho hệ thống Cost & Billing (Packs, Plans, Subscriptions, Wallets)
+// Sentinel errors chính cho hệ thống Cost & Billing (pricing schedules, wallets and payments).
 var (
 	// Lỗi hệ thống và cơ sở dữ liệu chung
 	ErrInternalError      = errors.New("billing: internal server error")
@@ -14,16 +14,17 @@ var (
 
 	ErrNotFound = errors.New("billing: not found")
 
-	// Lỗi liên quan đến Pack & Resource SKU Plan Catalog
-	ErrPackNotFound          = errors.New("billing: pack not found")
-	ErrPackNotActive         = errors.New("billing: pack is deprecated or inactive")
-	ErrPlanNotFound          = errors.New("billing: resource plan not found")
-	ErrPlanNotActive         = errors.New("billing: resource plan is inactive")
-	ErrTierNotFound          = errors.New("billing: tier not found")
-	ErrTierVersionConflict   = errors.New("billing: tier version conflict")
-	ErrTierMetadataConflict  = errors.New("billing: tier metadata version conflict")
-	ErrTierEffectiveConflict = errors.New("billing: tier effective time conflict")
-	ErrInvalidTierRanges     = errors.New("billing: invalid tier ranges")
+	// Pricing schedule catalog errors.
+	ErrPricingScheduleNotFound          = errors.New("billing: pricing schedule not found")
+	ErrPricingScheduleVersionConflict   = errors.New("billing: pricing schedule version conflict")
+	ErrPricingScheduleMetadataConflict  = errors.New("billing: pricing schedule metadata version conflict")
+	ErrPricingScheduleEffectiveConflict = errors.New("billing: pricing schedule effective time conflict")
+	ErrInvalidPricingBrackets           = errors.New("billing: invalid pricing schedule brackets")
+	ErrStorageZoneAdjustmentConflict    = errors.New("billing: Storage Zone adjustment version conflict")
+	ErrHypervisorZoneAdjustmentConflict = errors.New("billing: Hypervisor Zone adjustment version conflict")
+	ErrMailZoneAdjustmentConflict       = errors.New("billing: Mail Zone adjustment version conflict")
+	ErrHypervisorResourcePlanNotFound   = errors.New("billing: Hypervisor resource plan not found")
+	ErrHypervisorResourcePlanConflict   = errors.New("billing: Hypervisor resource plan revision conflict")
 
 	// Lỗi liên quan đến Thuê bao Subscription
 	ErrSubscriptionNotFound = errors.New("billing: active subscription not found")
@@ -46,4 +47,7 @@ var (
 	ErrSettlementMismatch         = errors.New("billing: settlement does not match payment intent")
 	ErrWebhookReplayConflict      = errors.New("billing: webhook event replayed with different payload")
 	ErrPaymentProviderUnavailable = errors.New("billing: payment provider unavailable")
+
+	// Lỗi liên quan đến Quyền sở hữu tài nguyên (Resource Ownership Projection)
+	ErrResourceOwnershipIntegrity = errors.New("billing: resource ownership integrity violation")
 )

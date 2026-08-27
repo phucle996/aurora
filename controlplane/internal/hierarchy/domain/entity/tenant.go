@@ -40,3 +40,13 @@ type TenantCatalogItem struct {
 	RoleName      string
 	RoleLevel     int
 }
+
+// TenantWalletProvisionOutbox is the flat durable command claimed only by the
+// tenant wallet-provision relay. It is not a cross-workflow outbox entity.
+type TenantWalletProvisionOutbox struct {
+	ID          int64
+	EventID     uuid.UUID
+	TenantID    uuid.UUID
+	ActorUserID uuid.UUID
+	Payload     []byte
+}

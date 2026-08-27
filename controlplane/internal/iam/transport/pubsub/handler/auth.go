@@ -15,7 +15,7 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"

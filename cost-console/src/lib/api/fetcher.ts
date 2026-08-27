@@ -3,8 +3,15 @@
 // module evaluation or accidentally route `/billing/*` back to the frontend.
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || "/api/v1").replace(/\/+$/, "");
 
+export function apiRequestPath(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = `${BASE_URL}${normalizedPath}`;
+  if (/^https?:\/\//i.test(url)) return new URL(url).pathname;
+  return url;
+}
+
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const url = `${BASE_URL}${path}`;
+	const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
   const headers = new Headers(options?.headers);
   if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   headers.set('X-Requested-With', 'XMLHttpRequest');

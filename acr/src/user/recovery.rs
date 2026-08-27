@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::error::AcrError;
-use crate::infra::redis::{RecoverySessionCache, SessionManager};
+use crate::infra::redis::{RecoverySessionCache, RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
@@ -214,7 +214,7 @@ fn build_denied_json(
 pub async fn try_handle_recovery_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     shared_redis: &Arc<SharedRedisBus>,
     config: &Config,
     cookie_header: &str,
@@ -476,6 +476,7 @@ pub async fn try_handle_recovery_session(
         UserSessionIssueContext {
             session_mgr: session_mgr.as_ref(),
             token_mgr: token_mgr.as_ref(),
+            shared_redis: shared_redis.as_ref(),
             config,
         },
         ReleaseUserSessionCommand {
@@ -553,7 +554,7 @@ impl SessionManager {
         recovery_key: &str,
     ) -> Result<Option<RecoverySessionCache>, AcrError> {
         let mut connection = self.get_connection().await?;
-        let redis_key = format!("iam:recovery_cache:{}", recovery_key);
+        let redis_key = format!("iam:recovery:{{{recovery_key}}}:cache");
         let data: Option<String> = redis::cmd("GET")
             .arg(&redis_key)
             .query_async(&mut connection)
@@ -575,7 +576,7 @@ impl SessionManager {
         lock_owner: &str,
     ) -> Result<bool, AcrError> {
         let mut connection = self.get_connection().await?;
-        let lock_key = format!("iam:lock:recovery:{}", recovery_key);
+        let lock_key = format!("iam:recovery:{{{recovery_key}}}:lock");
         redis::cmd("SET")
             .arg(&lock_key)
             .arg(lock_owner)
@@ -596,8 +597,10 @@ impl SessionManager {
         cache: &RecoverySessionCache,
     ) -> Result<(), AcrError> {
         let mut connection = self.get_connection().await?;
-        let cache_key = format!("iam:recovery_cache:{}", recovery_key);
-        let lock_key = format!("iam:lock:recovery:{}", recovery_key);
+        // The lock and cache participate in one Lua transaction, so they must
+        // be pinned to the same Redis Cluster hash slot.
+        let cache_key = format!("iam:recovery:{{{recovery_key}}}:cache");
+        let lock_key = format!("iam:recovery:{{{recovery_key}}}:lock");
         let encoded = serde_json::to_string(cache).map_err(|error| {
             AcrError::Internal(format!("Encode recovery cache failed: {}", error))
         })?;
@@ -629,7 +632,7 @@ impl SessionManager {
 
     pub async fn is_recovery_locked(&self, recovery_key: &str) -> Result<bool, AcrError> {
         let mut connection = self.get_connection().await?;
-        let lock_key = format!("iam:lock:recovery:{}", recovery_key);
+        let lock_key = format!("iam:recovery:{{{recovery_key}}}:lock");
         let exists: isize = redis::cmd("EXISTS")
             .arg(&lock_key)
             .query_async(&mut connection)
@@ -646,7 +649,7 @@ impl SessionManager {
         lock_owner: &str,
     ) -> Result<(), AcrError> {
         let mut connection = self.get_connection().await?;
-        let lock_key = format!("iam:lock:recovery:{}", recovery_key);
+        let lock_key = format!("iam:recovery:{{{recovery_key}}}:lock");
         let _: i32 = redis::Script::new(
             r#"
             if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -665,3 +668,7 @@ impl SessionManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/user/recovery.rs"]
+mod tests;

@@ -16,13 +16,21 @@ import (
 // - Bootstrap chỉ orchestration, không chứa persistence logic.
 func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	// [COMMENT]: Relay sở hữu runtime context riêng; bootstrap timeout không được dừng worker sau 20 giây.
-	if m.billingOutboxRelay != nil {
-		m.billingOutboxRelay.Start()
+	if m.lifecycleFactRelay != nil {
+		m.lifecycleFactRelay.Start()
+	}
+	if m.deviceRuntimeRevokeRelay != nil {
+		m.deviceRuntimeRevokeRelay.Start()
 	}
 	// [COMMENT]: Cost authz miss stays inside Central through Shared Redis; the resolved projection is fenced in Auth Redis.
 	if m.billingAuthorizationRedisHandler != nil {
 		if err := m.billingAuthorizationRedisHandler.Start(); err != nil {
 			return err
+		}
+	}
+	if m.runtimeReadAuthorizationRedisHandler != nil {
+		if err := m.runtimeReadAuthorizationRedisHandler.Start(); err != nil {
+			return fmt.Errorf("iam bootstrap: start runtime-read authorization Redis handler: %w", err)
 		}
 	}
 	if m.tenantAccessRedisHandler != nil {
@@ -41,10 +49,14 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
-	// [COMMENT]: Khởi động Shared Redis PubSub subscriber cho Device domain (bulk presence & evicted)
-	if m.deviceRedisHandler != nil {
-		if err := m.deviceRedisHandler.Start(); err != nil {
-			return err
+	if m.devicePresenceProjectionHandler != nil {
+		if err := m.devicePresenceProjectionHandler.Start(); err != nil {
+			return fmt.Errorf("iam bootstrap: start device presence projection handler: %w", err)
+		}
+	}
+	if m.deviceSessionCapacityEvictionHandler != nil {
+		if err := m.deviceSessionCapacityEvictionHandler.Start(); err != nil {
+			return fmt.Errorf("iam bootstrap: start device session-capacity eviction handler: %w", err)
 		}
 	}
 	return nil
@@ -56,8 +68,11 @@ func (m *IAMModule) Stop() {
 		return
 	}
 
-	if m.deviceRedisHandler != nil {
-		m.deviceRedisHandler.Stop()
+	if m.deviceSessionCapacityEvictionHandler != nil {
+		m.deviceSessionCapacityEvictionHandler.Stop()
+	}
+	if m.devicePresenceProjectionHandler != nil {
+		m.devicePresenceProjectionHandler.Stop()
 	}
 	if m.authRedisHandler != nil {
 		m.authRedisHandler.Stop()
@@ -65,13 +80,19 @@ func (m *IAMModule) Stop() {
 	if m.billingAuthorizationRedisHandler != nil {
 		m.billingAuthorizationRedisHandler.Stop()
 	}
+	if m.runtimeReadAuthorizationRedisHandler != nil {
+		m.runtimeReadAuthorizationRedisHandler.Stop()
+	}
 	if m.tenantAccessRedisHandler != nil {
 		m.tenantAccessRedisHandler.Stop()
 	}
 	if m.personalAccessRedisHandler != nil {
 		m.personalAccessRedisHandler.Stop()
 	}
-	if m.billingOutboxRelay != nil {
-		m.billingOutboxRelay.Stop()
+	if m.deviceRuntimeRevokeRelay != nil {
+		m.deviceRuntimeRevokeRelay.Stop()
+	}
+	if m.lifecycleFactRelay != nil {
+		m.lifecycleFactRelay.Stop()
 	}
 }

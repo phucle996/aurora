@@ -198,42 +198,59 @@ impl SessionManager {
             .encode(&mut buf)
             .map_err(|e| AcrError::Internal(e.to_string()))?;
 
-        // [COMMENT]: 2. Pipeline nguyên tử:
-        //   - SET session mới + EXPIRE đầy đủ TTL
-        //   - EXPIRE session cũ về 5s (Grace Period — tránh 401 cho requests bay lơ lửng)
-        //   - Cập nhật user index và device index
-        redis::pipe()
-            .atomic()
-            .cmd("SET")
+        // Session is authoritative; indexes are idempotent discovery data.
+        // Write the new credential first so a failed cross-slot cleanup never
+        // invalidates the caller before a retry can complete the rotation.
+        redis::cmd("SET")
             .arg(&new_redis_key)
             .arg(&buf)
-            .cmd("EXPIRE")
-            .arg(&new_redis_key)
+            .arg("EX")
             .arg(self.config.session_ttl_secs)
-            .cmd("EXPIRE")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Create rotated session failed: {}", e)))?;
+        redis::cmd("EXPIRE")
             .arg(&old_redis_key)
             .arg(5)
-            .cmd("SADD")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Shorten old session failed: {}", e)))?;
+        redis::cmd("SADD")
             .arg(&index_key)
             .arg(&new_redis_key)
-            .cmd("SREM")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Index rotated session failed: {}", e)))?;
+        redis::cmd("SREM")
             .arg(&index_key)
             .arg(&old_redis_key)
-            .cmd("EXPIRE")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Remove old session index failed: {}", e)))?;
+        redis::cmd("EXPIRE")
             .arg(&index_key)
             .arg(self.config.session_ttl_secs * 3)
-            .cmd("SADD")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Set user index TTL failed: {}", e)))?;
+        redis::cmd("SADD")
             .arg(&dev_index_key)
             .arg(&new_redis_key)
-            .cmd("SREM")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Index rotated device failed: {}", e)))?;
+        redis::cmd("SREM")
             .arg(&dev_index_key)
             .arg(&old_redis_key)
-            .cmd("EXPIRE")
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Remove old device index failed: {}", e)))?;
+        redis::cmd("EXPIRE")
             .arg(&dev_index_key)
             .arg(self.config.session_ttl_secs * 3)
             .query_async::<_, ()>(&mut conn)
             .await
-            .map_err(|e| AcrError::RedisError(format!("Rotation pipeline failed: {}", e)))?;
+            .map_err(|e| AcrError::RedisError(format!("Set device index TTL failed: {}", e)))?;
 
         // [COMMENT]: 3. Giải phóng lock sớm (không cần chờ 5s hết hạn)
         let _: () = redis::cmd("DEL")

@@ -13,42 +13,36 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		return
 	}
 
-	personal := router.Group("/api/v1/personal/mail")
-	{
-		// [COMMENT]: `email` là RBAC capability; `mail` trong URL chỉ là transport namespace tương thích.
-		personal.POST("/consumers", middleware.Authorize("email:consumer:create", module.L1Registry, "*"), module.PersonalConsumerHandler.Create)
-		personal.GET("/consumers", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.List)
-		personal.GET("/consumers/:id", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.Get)
-		personal.POST("/consumers/:id/runtime/watch", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.WatchRuntime)
-		personal.PATCH("/consumers/:id", middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.PersonalConsumerHandler.Update)
-		personal.POST("/consumers/:id/pause", middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.PersonalConsumerHandler.Pause)
-		personal.POST("/consumers/:id/resume", middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.PersonalConsumerHandler.Resume)
-		personal.DELETE("/consumers/:id", middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.PersonalConsumerHandler.Delete)
+	// [COMMENT]: `email` là RBAC capability; `mail` trong URL chỉ là transport namespace tương thích.
+	router.POST("/api/v1/tenant/critical/mail/consumers/:id/drain", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.TenantConsumerHandler.Drain)
+	router.POST("/api/v1/personal/critical/mail/consumers/:id/drain", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.PersonalConsumerHandler.Drain)
+	router.POST("/api/v1/personal/critical/mail/consumers", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:create", module.L1Registry, "*"), module.PersonalConsumerHandler.Create)
+	router.GET("/api/v1/personal/mail/consumers", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.List)
+	router.GET("/api/v1/personal/mail/consumers/:id", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.Get)
+	router.PATCH("/api/v1/personal/critical/mail/consumers/:id", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.PersonalConsumerHandler.Update)
+	router.POST("/api/v1/personal/critical/mail/consumers/:id/pause", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.PersonalConsumerHandler.Pause)
+	router.POST("/api/v1/personal/critical/mail/consumers/:id/resume", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.PersonalConsumerHandler.Resume)
+	router.DELETE("/api/v1/personal/critical/mail/consumers/:id", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.PersonalConsumerHandler.Delete)
 
-		personal.POST("/templates", middleware.Authorize("email:template:create", module.L1Registry, "*"), module.PersonalTemplateHandler.Create)
-		personal.GET("/templates", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.PersonalTemplateHandler.List)
-		personal.GET("/templates/:id", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.PersonalTemplateHandler.Get)
-		personal.POST("/templates/:id/versions", middleware.Authorize("email:template:publish", module.L1Registry, "*"), module.PersonalTemplateHandler.PublishVersion)
-		personal.GET("/templates/:id/versions", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.PersonalTemplateHandler.ListVersions)
-		personal.DELETE("/templates/:id", middleware.Authorize("email:template:delete", module.L1Registry, "*"), module.PersonalTemplateHandler.Delete)
-	}
+	router.POST("/api/v1/personal/critical/mail/templates", middleware.RequireSessionProof(), middleware.Authorize("email:template:create", module.L1Registry, "*"), module.PersonalTemplateHandler.Create)
+	router.GET("/api/v1/personal/mail/templates", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.PersonalTemplateHandler.List)
+	router.GET("/api/v1/personal/mail/templates/:id", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.PersonalTemplateHandler.Get)
+	router.POST("/api/v1/personal/critical/mail/templates/:id/versions", middleware.RequireSessionProof(), middleware.Authorize("email:template:publish", module.L1Registry, "*"), module.PersonalTemplateHandler.PublishVersion)
+	router.GET("/api/v1/personal/mail/templates/:id/versions", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.PersonalTemplateHandler.ListVersions)
+	router.DELETE("/api/v1/personal/critical/mail/templates/:id", middleware.RequireSessionProof(), middleware.Authorize("email:template:delete", module.L1Registry, "*"), module.PersonalTemplateHandler.Delete)
 
-	tenant := router.Group("/api/v1/tenant/mail")
-	{
-		tenant.POST("/consumers", middleware.Authorize("email:consumer:create", module.L1Registry, "*"), module.TenantConsumerHandler.Create)
-		tenant.GET("/consumers", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.TenantConsumerHandler.List)
-		tenant.GET("/consumers/:id", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.TenantConsumerHandler.Get)
-		tenant.POST("/consumers/:id/runtime/watch", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.TenantConsumerHandler.WatchRuntime)
-		tenant.PATCH("/consumers/:id", middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.TenantConsumerHandler.Update)
-		tenant.POST("/consumers/:id/pause", middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.TenantConsumerHandler.Pause)
-		tenant.POST("/consumers/:id/resume", middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.TenantConsumerHandler.Resume)
-		tenant.DELETE("/consumers/:id", middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.TenantConsumerHandler.Delete)
+	router.POST("/api/v1/tenant/critical/mail/consumers", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:create", module.L1Registry, "*"), module.TenantConsumerHandler.Create)
+	router.GET("/api/v1/tenant/mail/consumers", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.TenantConsumerHandler.List)
+	router.GET("/api/v1/tenant/mail/consumers/:id", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.TenantConsumerHandler.Get)
+	router.PATCH("/api/v1/tenant/critical/mail/consumers/:id", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.TenantConsumerHandler.Update)
+	router.POST("/api/v1/tenant/critical/mail/consumers/:id/pause", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.TenantConsumerHandler.Pause)
+	router.POST("/api/v1/tenant/critical/mail/consumers/:id/resume", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:update", module.L1Registry, "*"), module.TenantConsumerHandler.Resume)
+	router.DELETE("/api/v1/tenant/critical/mail/consumers/:id", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.TenantConsumerHandler.Delete)
 
-		tenant.POST("/templates", middleware.Authorize("email:template:create", module.L1Registry, "*"), module.TenantTemplateHandler.Create)
-		tenant.GET("/templates", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.TenantTemplateHandler.List)
-		tenant.GET("/templates/:id", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.TenantTemplateHandler.Get)
-		tenant.POST("/templates/:id/versions", middleware.Authorize("email:template:publish", module.L1Registry, "*"), module.TenantTemplateHandler.PublishVersion)
-		tenant.GET("/templates/:id/versions", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.TenantTemplateHandler.ListVersions)
-		tenant.DELETE("/templates/:id", middleware.Authorize("email:template:delete", module.L1Registry, "*"), module.TenantTemplateHandler.Delete)
-	}
+	router.POST("/api/v1/tenant/critical/mail/templates", middleware.RequireSessionProof(), middleware.Authorize("email:template:create", module.L1Registry, "*"), module.TenantTemplateHandler.Create)
+	router.GET("/api/v1/tenant/mail/templates", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.TenantTemplateHandler.List)
+	router.GET("/api/v1/tenant/mail/templates/:id", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.TenantTemplateHandler.Get)
+	router.POST("/api/v1/tenant/critical/mail/templates/:id/versions", middleware.RequireSessionProof(), middleware.Authorize("email:template:publish", module.L1Registry, "*"), module.TenantTemplateHandler.PublishVersion)
+	router.GET("/api/v1/tenant/mail/templates/:id/versions", middleware.Authorize("email:template:read", module.L1Registry, "*"), module.TenantTemplateHandler.ListVersions)
+	router.DELETE("/api/v1/tenant/critical/mail/templates/:id", middleware.RequireSessionProof(), middleware.Authorize("email:template:delete", module.L1Registry, "*"), module.TenantTemplateHandler.Delete)
 }

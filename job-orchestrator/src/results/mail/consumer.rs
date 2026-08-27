@@ -1,7 +1,11 @@
+use crate::contracts::mail::MailConsumerDrainedV1;
+use crate::results::contract::ValidatedResult;
+use prost::Message;
+use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
 /// [COMMENT]: Upsert result dùng payload đã khóa trong PostgreSQL, không tin resource identity
-/// từ Dataplane result. Create FAILED xóa aggregate; update dùng candidate COW rồi promote sau ACK.
+/// từ Dataplane result. Create FAILED giữ record; update dùng candidate COW rồi promote sau ACK.
 pub async fn apply_upsert_result(
     pg_client: &mut tokio_postgres::Client,
     event_id: Uuid,
@@ -111,18 +115,19 @@ pub async fn apply_upsert_result(
 
     if status == "FAILED" {
         let cleaned = if config_version == 1 {
-            // [COMMENT]: Create chưa có historical generation; terminal failure trả business state về trước create.
+            // Failed provisioning is not deletion evidence. Keep the V1 record
+            // and last configuration; only the delete workflow may remove it.
             if personal_exists {
                 transaction
                     .execute(
-                        "DELETE FROM mail.personal_mail_consumers WHERE id=$1 AND config_version=1",
+                        "UPDATE mail.personal_mail_consumers SET updated_at=NOW() WHERE id=$1 AND config_version=1",
                         &[&resource_id],
                     )
                     .await?
             } else {
                 transaction
                     .execute(
-                        "DELETE FROM mail.tenant_mail_consumers WHERE id=$1 AND config_version=1",
+                        "UPDATE mail.tenant_mail_consumers SET updated_at=NOW() WHERE id=$1 AND config_version=1",
                         &[&resource_id],
                     )
                     .await?
@@ -214,6 +219,52 @@ pub async fn apply_upsert_result(
         };
         if exists.is_none() {
             return Err("Mail consumer create ACK has no V1 aggregate".into());
+        }
+    }
+    // The first successful apply can follow a failed V1 create. Stage ownership
+    // once per resource, including when a later COW revision is the first success.
+    if status == "SUCCEEDED" {
+        let ownership_staged = if personal_exists {
+            transaction
+                .execute(
+                    "INSERT INTO mail.mail_consumer_billing_outbox
+                     (source_event_id,event_type,resource_id,resource_name,owner_id,owner_type,
+                      zone_id,source_version,effective_at)
+                     SELECT $1,'RESOURCE_CREATED',c.id,c.code,w.owner_id,'PERSONAL',w.zone_id,1,NOW()
+                     FROM mail.personal_mail_consumers c
+                     JOIN hierarchy.personal_workspaces w ON w.id=c.workspace_id
+                     WHERE c.id=$2 AND w.zone_id=$3
+                     ON CONFLICT (resource_id,source_version) DO NOTHING",
+                    &[&event_id, &resource_id, &_zone_id],
+                )
+                .await?
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO mail.mail_consumer_billing_outbox
+                     (source_event_id,event_type,resource_id,resource_name,owner_id,owner_type,
+                      zone_id,source_version,effective_at)
+                     SELECT $1,'RESOURCE_CREATED',c.id,c.code,w.tenant_id,'TENANT',w.zone_id,1,NOW()
+                     FROM mail.tenant_mail_consumers c
+                     JOIN hierarchy.tenant_workspaces w ON w.id=c.workspace_id
+                     WHERE c.id=$2 AND w.zone_id=$3
+                     ON CONFLICT (resource_id,source_version) DO NOTHING",
+                    &[&event_id, &resource_id, &_zone_id],
+                )
+                .await?
+        };
+        if ownership_staged != 1 {
+            let exists: bool = transaction
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM mail.mail_consumer_billing_outbox
+                     WHERE resource_id=$1 AND source_version=1)",
+                    &[&resource_id],
+                )
+                .await?
+                .get(0);
+            if !exists {
+                return Err("Mail consumer create ACK did not stage billing ownership".into());
+            }
         }
     }
 
@@ -328,6 +379,48 @@ pub async fn apply_delete_result(
         if active_version >= config_version {
             return Err("Mail consumer delete fence is not newer than active version".into());
         }
+        let ownership_staged = if personal_exists {
+            transaction
+                .execute(
+                    "INSERT INTO mail.mail_consumer_billing_outbox
+                     (source_event_id,event_type,resource_id,resource_name,owner_id,owner_type,
+                      zone_id,source_version,effective_at)
+                     SELECT $1,'RESOURCE_DELETED',c.id,c.code,w.owner_id,'PERSONAL',w.zone_id,2,NOW()
+                     FROM mail.personal_mail_consumers c
+                     JOIN hierarchy.personal_workspaces w ON w.id=c.workspace_id
+                     WHERE c.id=$2 AND w.zone_id=$3
+                     ON CONFLICT (source_event_id) DO NOTHING",
+                    &[&event_id, &resource_id, &zone_id],
+                )
+                .await?
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO mail.mail_consumer_billing_outbox
+                     (source_event_id,event_type,resource_id,resource_name,owner_id,owner_type,
+                      zone_id,source_version,effective_at)
+                     SELECT $1,'RESOURCE_DELETED',c.id,c.code,w.tenant_id,'TENANT',w.zone_id,2,NOW()
+                     FROM mail.tenant_mail_consumers c
+                     JOIN hierarchy.tenant_workspaces w ON w.id=c.workspace_id
+                     WHERE c.id=$2 AND w.zone_id=$3
+                     ON CONFLICT (source_event_id) DO NOTHING",
+                    &[&event_id, &resource_id, &zone_id],
+                )
+                .await?
+        };
+        if ownership_staged != 1 {
+            let exists: bool = transaction
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM mail.mail_consumer_billing_outbox
+                     WHERE source_event_id=$1 AND resource_id=$2 AND source_version=2)",
+                    &[&event_id, &resource_id],
+                )
+                .await?
+                .get(0);
+            if !exists {
+                return Err("Mail consumer delete ACK did not stage billing ownership".into());
+            }
+        }
         // [COMMENT]: Tombstone là rebuild authority; command fence phải lớn hơn active version.
         let tombstoned = if personal_exists {
             transaction
@@ -362,14 +455,14 @@ pub async fn apply_delete_result(
         let deleted = if personal_exists {
             transaction
                 .execute(
-                    "DELETE FROM mail.personal_mail_consumers WHERE id=$1 AND config_version < $2",
+                    "DELETE FROM mail.personal_mail_consumers WHERE id=$1 AND config_version < $2 AND desired_state='deleting'",
                     &[&resource_id, &config_version],
                 )
                 .await?
         } else {
             transaction
                 .execute(
-                    "DELETE FROM mail.tenant_mail_consumers WHERE id=$1 AND config_version < $2",
+                    "DELETE FROM mail.tenant_mail_consumers WHERE id=$1 AND config_version < $2 AND desired_state='deleting'",
                     &[&resource_id, &config_version],
                 )
                 .await?
@@ -393,5 +486,102 @@ pub async fn apply_delete_result(
         )
         .await?;
     transaction.commit().await?;
+    Ok(row)
+}
+
+pub async fn apply_drain_result(
+    client: &mut Client,
+    result: &ValidatedResult,
+) -> Result<Option<Row>, Box<dyn std::error::Error>> {
+    let wire = &result.wire;
+    let tx = client.transaction().await?;
+    let authority = tx
+        .query_opt(
+            "SELECT resource_id,zone_id,status,result_attempt FROM mail.mail_outbox_records
+         WHERE event_id=$1 AND job_topic='mail.consumer.drain' FOR UPDATE",
+            &[&result.job_id],
+        )
+        .await?;
+    let Some(authority) = authority else {
+        return Ok(None);
+    };
+    let state: String = authority.get(2);
+    if !matches!(state.as_str(), "PENDING" | "PROCESSING") {
+        // Business mutation is terminal; replay still retries the durable notification.
+        let notification = if state == wire.result_status
+            && matches!(state.as_str(), "SUCCEEDED" | "FAILED")
+        {
+            tx.query_opt("SELECT actor_user_id::text,job_topic,trace_id,resource_id FROM mail.mail_outbox_records WHERE event_id=$1", &[&result.job_id]).await?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        return Ok(notification);
+    }
+    let current_attempt: i32 = authority.get(3);
+    let attempt = i32::try_from(wire.attempt)?;
+    if wire.result_status != "SUCCEEDED" && attempt < current_attempt {
+        return Ok(None);
+    }
+    let resource_id = uuid::Uuid::parse_str(authority.get::<_, &str>(0))?;
+    let zone_id: uuid::Uuid = authority.get(1);
+    match wire.result_status.as_str() {
+        "SUCCEEDED" => {
+            if wire.result_payload_schema_version != 1 {
+                return Err("MAIL_DRAIN_RESULT_SCHEMA_INVALID".into());
+            }
+            let drained = MailConsumerDrainedV1::decode(wire.result_payload.as_slice())?;
+            if drained.schema_version != 1
+                || drained.consumer_id.as_slice() != resource_id.as_bytes()
+                || drained.config_version == 0
+                || drained.config_version > i64::MAX as u64
+                || drained.settled_slots == 0
+                || drained.settled_slots > 1024
+            {
+                return Err("MAIL_DRAIN_RESULT_INVALID".into());
+            }
+            let version = drained.config_version as i64;
+            let slots = drained.settled_slots as i32;
+            let personal = tx.execute(
+                "UPDATE mail.personal_mail_consumers c SET desired_state='drained',updated_at=NOW()
+                 FROM hierarchy.personal_workspaces w WHERE c.id=$1 AND c.workspace_id=w.id AND w.zone_id=$2
+                 AND c.config_version=$3 AND c.parallelism=$4 AND c.desired_state='draining'",
+                &[&resource_id,&zone_id,&version,&slots],
+            ).await?;
+            let tenant = tx.execute(
+                "UPDATE mail.tenant_mail_consumers c SET desired_state='drained',updated_at=NOW()
+                 FROM hierarchy.tenant_workspaces w WHERE c.id=$1 AND c.workspace_id=w.id AND w.zone_id=$2
+                 AND c.config_version=$3 AND c.parallelism=$4 AND c.desired_state='draining'",
+                &[&resource_id,&zone_id,&version,&slots],
+            ).await?;
+            if personal + tenant != 1 {
+                return Err("MAIL_DRAIN_RESULT_FENCE_MISMATCH".into());
+            }
+        }
+        "PROCESSING" | "FAILED" => {
+            if !wire.result_payload.is_empty() || wire.result_payload_schema_version != 0 {
+                return Err("MAIL_DRAIN_NON_SUCCESS_PAYLOAD".into());
+            }
+        }
+        _ => return Err("MAIL_DRAIN_STATUS_INVALID".into()),
+    }
+    let row = tx
+        .query_opt(
+            "UPDATE mail.mail_outbox_records
+         SET status=$2,completed_at=CASE WHEN $2='PROCESSING' THEN NULL ELSE NOW() END,
+             updated_at=NOW(),result_attempt=GREATEST(result_attempt,$3),error_code=$4,
+             error_message=CASE WHEN $2='FAILED' THEN $5 ELSE NULL END
+         WHERE event_id=$1 AND status IN ('PENDING','PROCESSING')
+         RETURNING actor_user_id::text,job_topic,trace_id,resource_id",
+            &[
+                &result.job_id,
+                &wire.result_status,
+                &attempt,
+                &wire.error_code,
+                &wire.message,
+            ],
+        )
+        .await?;
+    tx.commit().await?;
     Ok(row)
 }

@@ -1,10 +1,9 @@
-mod consumer_reporter;
+mod consumer_telemetry;
 mod local_observer;
 mod metrics;
 
 use super::MailRuntime;
 use crate::config::Config;
-use crate::infra::nats_core::NatsCoreTransport;
 use crate::infra::zone_kv::ZoneKvStore;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -22,19 +21,14 @@ pub(crate) struct LocalMailNodeSnapshot {
     pub(crate) observed_at_unix_ms: u64,
 }
 
-#[cfg(test)]
-#[path = "../test/report_contract.rs"]
-mod report_contract_tests;
-
-/// [COMMENT]: Mọi pod chỉ xuất local runtime snapshot/report. JMAP/Stalwart
-/// health probing and Zone aggregation belong to assigned Zone Control work.
+/// Mỗi pod chỉ xuất local capacity snapshot và consumer telemetry. JMAP/Stalwart
+/// health probing cùng Zone aggregation thuộc assigned Zone Control work.
 pub struct MailWorkloadSupervisor;
 
 impl MailWorkloadSupervisor {
-    pub fn start_mail_runtime_reporting(
+    pub fn start_mail_runtime_observation(
         config: Arc<Config>,
         zone_kv: Arc<ZoneKvStore>,
-        nats_core: Arc<NatsCoreTransport>,
         runtime: Arc<MailRuntime>,
         shutdown: CancellationToken,
     ) {
@@ -44,8 +38,6 @@ impl MailWorkloadSupervisor {
             runtime.clone(),
             shutdown.clone(),
         );
-        consumer_reporter::start_mail_consumer_runtime_reporter(
-            config, nats_core, runtime, shutdown,
-        );
+        consumer_telemetry::start_mail_consumer_runtime_telemetry(config, runtime, shutdown);
     }
 }

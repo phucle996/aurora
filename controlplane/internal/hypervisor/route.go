@@ -2,67 +2,60 @@ package hypervisor
 
 import (
 	"controlplane/internal/http/middleware"
+	"controlplane/pkg/apires"
 
 	"github.com/gin-gonic/gin"
 )
 
-// RegisterRoutes thực hiện đăng ký các API endpoints cho HypervisorModule khi nó hoạt động bình thường.
+// RegisterRoutes thực hiện đăng ký toàn bộ các API endpoints cho HypervisorModule một cách tường minh,
+// phẳng hóa toàn bộ URL path và không sử dụng router.Group.
 func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 	if !module.IsEnabled() {
 		return
 	}
 
-	adminImages := router.Group("/admin/hypervisor/zones/:zone_id/images")
-	adminImages.GET(
-		"",
-		middleware.Authorize("hypervisor:image:read", module.L1Registry, "*"),
-		module.ImageHandler.ListAdmin,
-	)
-	adminImages.POST(
-		"",
-		middleware.Authorize("hypervisor:image:create", module.L1Registry, "*"),
-		module.ImageHandler.RegisterMetadata,
-	)
-	adminImages.POST(
-		"/:image_id/import",
-		middleware.Authorize("hypervisor:image:publish", module.L1Registry, "*"),
-		module.ImageHandler.BeginImport,
-	)
-	adminImages.DELETE(
-		"/:image_id",
-		middleware.Authorize("hypervisor:image:delete", module.L1Registry, "*"),
-		module.ImageHandler.BeginDelete,
-	)
+	// 1. Phân hệ Admin - Quản lý Image mẫu
+	router.GET("/admin/hypervisor/images", module.ImageHandler.ListAdmin)
+	router.POST("/admin/hypervisor/images", module.ImageHandler.RegisterMetadata)
+	router.POST("/admin/hypervisor/images/:image_id/import", module.ImageHandler.BeginImport)
+	router.DELETE("/admin/hypervisor/images/:image_id", module.ImageHandler.BeginDelete)
 
-	statusGroup := router.Group("/api/v1/hypervisor")
-	{
-		statusGroup.GET("/status", func(c *gin.Context) {
-			c.JSON(200, gin.H{
-				"status":  "healthy",
-				"message": "Phân hệ Hypervisor đang hoạt động ổn định.",
-			})
-		})
-	}
+	// 2. Health & Status Probe
+	router.GET("/api/v1/hypervisor/status", func(c *gin.Context) {
+		apires.RespondSuccess(c, gin.H{
+			"status":  "healthy",
+			"message": "Phân hệ Hypervisor đang hoạt động ổn định.",
+		}, "Hypervisor status normal")
+	})
 
-	personal := router.Group("/api/v1/personal/hypervisor")
-	personal.GET(
-		"/images/catalog",
+	// 3. Phân hệ Personal - Image Catalog
+	router.GET(
+		"/api/v1/personal/hypervisor/images/catalog",
 		middleware.Authorize("hypervisor:image:read", module.L1Registry, "*"),
 		module.ImageHandler.ListCatalog,
 	)
-	personal.POST(
-		"/vms",
+
+	// 4. Phân hệ Personal - Quản lý máy ảo (VM)
+	router.POST(
+		"/api/v1/personal/critical/hypervisor/vms",
+		middleware.RequireSessionProof(),
 		middleware.Authorize("hypervisor:vm:create", module.L1Registry, "*"),
 		module.VMHandler.Create,
 	)
-	personal.GET(
-		"/vms",
+	router.GET(
+		"/api/v1/personal/hypervisor/vms",
 		middleware.Authorize("hypervisor:vm:read", module.L1Registry, "*"),
 		module.VMHandler.List,
 	)
-	personal.GET(
-		"/vms/:id",
+	router.GET(
+		"/api/v1/personal/hypervisor/vms/:id",
 		middleware.Authorize("hypervisor:vm:read", module.L1Registry, "*"),
 		module.VMHandler.Get,
+	)
+	router.DELETE(
+		"/api/v1/personal/critical/hypervisor/vms/:id",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("hypervisor:vm:delete", module.L1Registry, "*"),
+		module.VMHandler.Delete,
 	)
 }

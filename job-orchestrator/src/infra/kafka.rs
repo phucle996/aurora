@@ -354,6 +354,12 @@ impl KafkaTransport {
     pub fn storage_usage_reports_topic(&self) -> String {
         format!("{}.storage.usage.reports.v1", self.topic_prefix)
     }
+    pub fn hypervisor_network_usage_reports_topic(&self) -> String {
+        format!("{}.hypervisor.network.usage.reports.v1", self.topic_prefix)
+    }
+    pub fn mail_accepted_usage_topic(&self) -> String {
+        format!("{}.mail.accepted.usage.v1", self.topic_prefix)
+    }
     pub fn dead_letter_topic(&self) -> String {
         format!("{}.jobs.dlq.v1", self.topic_prefix)
     }

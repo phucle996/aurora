@@ -88,6 +88,7 @@ VALUES
     (gen_random_uuid(), 'hierarchy', 'workspace', 'read', 'Read workspace'),
     (gen_random_uuid(), 'hierarchy', 'workspace', 'update', 'Update workspace'),
     (gen_random_uuid(), 'hierarchy', 'workspace', 'delete', 'Delete workspace'),
+    (gen_random_uuid(), 'hierarchy', 'tenant', 'create', 'Create tenant'),
     (gen_random_uuid(), 'hierarchy', 'tenant-invitation', 'create', 'Create tenant invitation'),
     (gen_random_uuid(), 'hierarchy', 'tenant-invitation', 'read', 'Read tenant invitation'),
     (gen_random_uuid(), 'hierarchy', 'tenant-invitation', 'delete', 'Revoke tenant invitation'),
@@ -144,9 +145,11 @@ WHERE
  OR (role.code='platform_support_operator'
         AND (permission.behavior='read'
              OR (permission.module='iam' AND permission.object='mfa' AND permission.behavior='view')))
- OR (role.code='platform_user' AND (
+	OR (role.code='platform_user' AND (
 		(permission.module='hierarchy' AND permission.object='workspace'
 			AND permission.behavior IN ('create', 'read', 'delete'))
+	 OR (permission.module='hierarchy' AND permission.object='tenant'
+			AND permission.behavior='create')
 	 OR
         (permission.module='managed-service' AND permission.object IN ('catalog', 'instance')
             AND permission.behavior IN ('read', 'write'))

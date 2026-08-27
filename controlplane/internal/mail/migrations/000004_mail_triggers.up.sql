@@ -1,4 +1,20 @@
 -- [COMMENT]: COW là invariant tại database.
+CREATE OR REPLACE FUNCTION reject_mail_consumer_delete_unless_deleting()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.desired_state <> 'deleting' THEN
+        RAISE EXCEPTION 'consumer must be deleting before physical record deletion' USING ERRCODE = '55000';
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_personal_mail_consumer_delete_state
+BEFORE DELETE ON personal_mail_consumers FOR EACH ROW
+EXECUTE FUNCTION reject_mail_consumer_delete_unless_deleting();
+CREATE TRIGGER trg_tenant_mail_consumer_delete_state
+BEFORE DELETE ON tenant_mail_consumers FOR EACH ROW
+EXECUTE FUNCTION reject_mail_consumer_delete_unless_deleting();
 CREATE OR REPLACE FUNCTION reject_mail_template_version_mutation()
 RETURNS TRIGGER AS $$
 BEGIN

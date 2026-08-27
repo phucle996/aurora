@@ -1,7 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -73,6 +76,16 @@ func setMigrationSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath 
 }
 
 func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module string, files fs.FS) error {
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS storage_schema_migrations (
+			name text PRIMARY KEY,
+			checksum bytea NOT NULL CHECK (octet_length(checksum)=32),
+			applied_at timestamptz NOT NULL DEFAULT now()
+		)
+	`); err != nil {
+		return fmt.Errorf("storage migration: create migration ledger: %w", err)
+	}
+
 	entries, err := fs.ReadDir(files, ".")
 	if err != nil {
 		return fmt.Errorf("storage migration: read embedded directories for %s: %w", module, err)
@@ -100,9 +113,23 @@ func applyEmbeddedMigrations(ctx context.Context, conn *pgxpool.Conn, module str
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
-		// [COMMENT]: Sử dụng QueryExecModeSimpleProtocol để cho phép chạy script SQL nhiều câu lệnh (multi-statement)
+		checksum := sha256.Sum256(queryBytes)
+		var appliedChecksum []byte
+		err = conn.QueryRow(ctx, `SELECT checksum FROM storage_schema_migrations WHERE name=$1`, name).Scan(&appliedChecksum)
+		switch {
+		case err == nil:
+			if !bytes.Equal(appliedChecksum, checksum[:]) {
+				return fmt.Errorf("storage migration: checksum changed for applied baseline %s", name)
+			}
+			continue
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("storage migration: read ledger for %s: %w", name, err)
+		}
 		if _, err := conn.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
-			return fmt.Errorf("storage migration: execute script %s/%s failed: %w", module, name, err)
+			return fmt.Errorf("storage migration: apply %s/%s: %w", module, name, err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO storage_schema_migrations (name, checksum) VALUES ($1, $2)`, name, checksum[:]); err != nil {
+			return fmt.Errorf("storage migration: record %s/%s: %w", module, name, err)
 		}
 	}
 

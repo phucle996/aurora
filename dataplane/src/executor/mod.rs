@@ -29,7 +29,9 @@ use std::sync::Arc;
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
 ///   - Mọi Executor khi triển khai bắt buộc phải tuân thủ nghiêm ngặt hai quy tắc:
 ///     1. **Idempotency (Tính duy nhất)**: Phải kiểm tra trùng lặp bản ghi trước khi thay đổi trạng thái hạ tầng.
-///     2. **Deadline Enforcement (Thời hạn chờ)**: Phải tự hủy và Rollback nếu thời gian thực thi vượt quá timeout cho phép.
+///     2. **Deadline Enforcement**: Dừng execution cục bộ khi watchdog hủy. Timeout
+///        không chứng minh provider đã dừng hoặc chưa mutate; cùng command sẽ replay
+///        idempotently. Không tự rollback resource và không suy diễn terminal failure.
 ///
 #[derive(Debug)]
 pub enum ExecutorError {
@@ -42,6 +44,9 @@ pub enum ExecutorError {
 
     /// [COMMENT]: Hạ tầng tạm thời chưa sẵn sàng; Redis Stream entry phải ở lại PEL để pod claim và thử lại.
     Retryable(String),
+    /// An external effect may already have happened. Replay the same operation
+    /// without converting a retry budget into fabricated terminal failure.
+    OutcomeUnknown(String),
 
     /// A domain with a versioned result contract owns its terminal taxonomy
     /// and payload. Generic completion may wrap it, but must not flatten it to

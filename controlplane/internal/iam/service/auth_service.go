@@ -21,7 +21,7 @@ import (
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/logger"
 
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -36,7 +36,7 @@ type AuthService struct {
 	registry              *cacheengine.CacheRegistry
 	ott                   iamSvcInterface.OneTimeTokenService
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher
-	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier
+	lifecycleFactNotifier iamSvcInterface.LifecycleFactNotifier
 	mfaSvc                iamSvcInterface.MfaService
 	acrClient             iamproto.SessionServiceClient
 	metrics               observability.WorkflowRecorder
@@ -49,7 +49,7 @@ func NewAuthService(
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher,
-	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier,
+	lifecycleFactNotifier iamSvcInterface.LifecycleFactNotifier,
 	mfaSvc iamSvcInterface.MfaService,
 	acrClient iamproto.SessionServiceClient,
 	metrics observability.WorkflowRecorder,
@@ -61,7 +61,7 @@ func NewAuthService(
 		registry:              registry,
 		ott:                   ott,
 		verificationPublisher: verificationPublisher,
-		billingOutboxNotifier: billingOutboxNotifier,
+		lifecycleFactNotifier: lifecycleFactNotifier,
 		mfaSvc:                mfaSvc,
 		acrClient:             acrClient,
 		metrics:               metrics,
@@ -157,10 +157,11 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 		}
 	}
 
-	// [COMMENT]: Event ID deterministic theo user giúp HTTP retry không sinh logical event thứ hai.
-	billingEventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("billing.wallet.personal.provision:"+userID.String()))
+	// [COMMENT]: IAM starts the Cost-owned wallet-provision workflow only after
+	// account activation commits. Cost owns the resulting wallet state.
+	lifecycleEventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("billing.personal_wallet.provision.requested:"+userID.String()))
 	event := &iamproto.PersonalWalletProvisionRequestedV1{
-		EventId:       billingEventID[:],
+		EventId:       lifecycleEventID[:],
 		SchemaVersion: 1,
 		OwnerId:       userID[:],
 		OwnerType:     "PERSONAL",
@@ -169,15 +170,15 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 	}
 	payload, err := proto.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("iam service: marshal account verified event: %w", err)
+		return fmt.Errorf("iam service: marshal personal wallet provision command: %w", err)
 	}
 
 	now := time.Now().UTC()
 	activation := iamEntity.AccountActivation{
-		UserID:              userID,
-		RoleCode:            "platform_user",
-		BillingEventID:      billingEventID,
-		BillingEventPayload: payload,
+		UserID:                userID,
+		RoleCode:              "platform_user",
+		LifecycleEventID:      lifecycleEventID,
+		LifecycleEventPayload: payload,
 	}
 	bootstrapWorkspaces := iamEntity.BootstrapPersonalWorkspaces{
 		OwnerID:     userID,
@@ -189,12 +190,12 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 	}
 
 	// [COMMENT]: Repository commits activation, role, per-active-Zone workspace
-	// bootstrap, and the Billing event in one PostgreSQL transaction.
+	// bootstrap, and the Cost wallet-provision command in one PostgreSQL transaction.
 	if err := s.repo.ActivateUser(ctx, activation, bootstrapWorkspaces); err != nil {
 		return err
 	}
 	// [COMMENT]: Chỉ wake sau commit; channel đầy hoặc pod crash không làm mất event vì fallback vẫn quét durable outbox.
-	s.billingOutboxNotifier.Notify()
+	s.lifecycleFactNotifier.Notify()
 	// [COMMENT]: Concurrent verify có cùng deterministic event; chỉ một request xóa token, cả hai đều idempotent.
 	if !active {
 		// [COMMENT]: Consume sau commit chỉ là cleanup; Redis outage không được biến activation đã commit thành HTTP 500.
@@ -671,7 +672,7 @@ func (s *AuthService) VerifyExternalIdentity(
 			return nil, err
 		}
 	}
-	s.billingOutboxNotifier.Notify()
+	s.lifecycleFactNotifier.Notify()
 
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &iamEntity.ExternalLoginResult{

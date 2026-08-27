@@ -3,39 +3,33 @@ package mailSvcImpl
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
-	"unicode"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	mailproto "controlplane/internal/mail/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: Namespace cố định giữ consumer/event ID deterministic qua mọi replica Personal.
 var personalMailConsumerEventNamespace = uuid.MustParse("43de31a4-0c86-54e9-8384-47b33f541c28")
-var mailRuntimeWatchEventNamespace = uuid.MustParse("ebf49ec8-ce95-5ddb-9a44-dd88b75e3494")
 
 type personalConsumerServiceImpl struct {
-	repo        mailRepoInterface.PersonalConsumerRepository
-	sharedRedis *goredis.Client
-	metrics     observability.WorkflowRecorder
+	repo    mailRepoInterface.PersonalConsumerRepository
+	metrics observability.WorkflowRecorder
 }
 
 // NewPersonalConsumerService khoi tao service quản lý consumer o scope Personal.
-func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepository, sharedRedis *goredis.Client, metrics observability.WorkflowRecorder) mailSvcInterface.PersonalConsumerService {
-	return &personalConsumerServiceImpl{repo: repo, sharedRedis: sharedRedis, metrics: metrics}
+func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepository, metrics observability.WorkflowRecorder) mailSvcInterface.PersonalConsumerService {
+	return &personalConsumerServiceImpl{repo: repo, metrics: metrics}
 }
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal.
@@ -122,6 +116,10 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *m
 		SenderVersion:   consumer.SenderVersion,
 		DesiredState:    mailproto.MailConsumerDesiredState_MAIL_CONSUMER_DESIRED_STATE_PAUSED,
 		Parallelism:     consumer.Parallelism,
+		OwnerId:         consumer.ActorUserID[:],
+		OwnerType:       "PERSONAL",
+		WorkspaceId:     consumer.WorkspaceID[:],
+		ZoneId:          consumer.ZoneID[:],
 	}
 
 	canonicalConfig, err := proto.MarshalOptions{Deterministic: true}.Marshal(upsert)
@@ -219,6 +217,8 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 			result, reason = observability.ResultRejected, observability.ReasonBusy
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
 			result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
+		case errors.Is(err, mailTaxonomy.ErrCommercialAdmissionUnavailable):
+			result, reason = observability.ResultRejected, observability.ReasonUnavailable
 		}
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
@@ -316,6 +316,10 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 		SenderVersion:   consumer.SenderVersion,
 		DesiredState:    desiredState,
 		Parallelism:     consumer.Parallelism,
+		OwnerId:         consumer.ActorUserID[:],
+		OwnerType:       "PERSONAL",
+		WorkspaceId:     consumer.WorkspaceID[:],
+		ZoneId:          consumer.ZoneID[:],
 	}
 
 	canonicalConfig, err := proto.MarshalOptions{Deterministic: true}.Marshal(upsert)
@@ -369,7 +373,6 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 	return consumer, nil
 }
 
-// ChangeConsumerState thay doi trang thai pause/resume cua consumer.
 func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.ChangePersonalConsumerState) (*mailEntity.ChangePersonalConsumerState, error) {
 	startedAt := time.Now()
 	// [COMMENT]: Lay consumer hien tai tu repository
@@ -454,7 +457,7 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *m
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
 
-	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
+	// Delete yêu cầu drained; repository chuyển cùng cột state sang deleting và append outbox nguyên tử.
 	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
 		ActorUserID: req.ActorUserID,
 		ZoneID:      req.ZoneID,
@@ -479,10 +482,9 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *m
 			OccurredAtUnixMs: updatedAt.UnixMilli(),
 			Producer:         "controlplane-mail",
 		},
-		ConsumerId:          req.ID[:],
-		ConfigVersion:       deleteFence,
-		DrainTimeoutSeconds: req.DrainTimeoutSeconds,
-		Reason:              req.Reason,
+		ConsumerId:    req.ID[:],
+		ConfigVersion: deleteFence,
+		Reason:        req.Reason,
 	}
 
 	var traceID []byte
@@ -509,7 +511,7 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *m
 		ResourceID:           req.ID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
-		Idle:                 req.DrainTimeoutSeconds + 30,
+		Idle:                 60,
 	}
 
 	// [COMMENT]: Repository khóa aggregate và chỉ insert outbox; JO hard-delete record sau Zone ACK.
@@ -521,169 +523,30 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *m
 	return nil
 }
 
-func (s *personalConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, req *mailEntity.WatchPersonalConsumerRuntime) (out *mailEntity.WatchPersonalConsumerRuntime, err error) {
-	startedAt := time.Now()
-	defer func() {
-		result, reason := observability.ResultFailure, observability.ReasonInternal
-		switch {
-		case err == nil:
-			result, reason = observability.ResultSuccess, observability.ReasonNone
-		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound):
-			result, reason = observability.ResultRejected, observability.ReasonNotFound
-		case errors.Is(err, mailTaxonomy.ErrRuntimeUnavailable):
-			result, reason = observability.ResultFailure, observability.ReasonUnavailable
-		}
-		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
-	}()
-
-	// [COMMENT]: PostgreSQL vẫn là authorization boundary; Redis key không bao giờ được dùng để chứng minh ownership.
-	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
-		ActorUserID: req.ActorUserID,
-		ZoneID:      req.ZoneID,
-		ID:          req.ID,
-		WorkspaceID: req.WorkspaceID,
+func (s *personalConsumerServiceImpl) Drain(ctx context.Context, cmd mailEntity.PersonalConsumerDrainCommand) (uuid.UUID, error) {
+	target, err := s.repo.LoadDrainTarget(ctx, cmd)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if target.ConfigVersion != cmd.ExpectedConfigVersion {
+		return uuid.Nil, mailTaxonomy.ErrVersionConflict
+	}
+	if target.State != mailEntity.ConsumerEnabled && target.State != mailEntity.ConsumerPaused {
+		return uuid.Nil, mailTaxonomy.ErrOperationInProgress
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.MailConsumerDrainV1{
+		SchemaVersion: 1, ConsumerId: cmd.ConsumerID[:], ConfigVersion: target.ConfigVersion,
+		Parallelism: target.Parallelism, TimeoutSeconds: cmd.TimeoutSeconds,
 	})
 	if err != nil {
-		return nil, err
+		return uuid.Nil, err
 	}
-	const watchTTL = 30 * time.Second
-	leaseSeed := uuid.NewString()
-	script := goredis.NewScript(`
-local clock=redis.call('TIME')
-local now=(tonumber(clock[1])*1000)+math.floor(tonumber(clock[2])/1000)
-local prefix=ARGV[1]..':'
-local lease=redis.call('GET',KEYS[1])
-if (not lease) or string.sub(lease,1,string.len(prefix)) ~= prefix then
-  lease=prefix..ARGV[3]
-end
-redis.call('SET',KEYS[1],lease,'PX',ARGV[4])
-redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',now)
-redis.call('ZADD',KEYS[2],now+tonumber(ARGV[4]),ARGV[2])
-redis.call('PEXPIRE',KEYS[2],tonumber(ARGV[4])*2)
-local snapshot=redis.call('GET',KEYS[3])
-if not snapshot then snapshot='' end
-return {lease,snapshot,now}
-`)
-	result, err := script.Run(
-		ctx,
-		s.sharedRedis,
-		[]string{
-			fmt.Sprintf("mail:runtime:{%s}:watch-active:%s", req.ID, req.ZoneID),
-			fmt.Sprintf("mail:runtime:{%s}:watchers:%s", req.ID, req.ZoneID),
-			fmt.Sprintf("mail:runtime:{%s}:snapshot:personal", req.ID),
-		},
-		current.ConfigVersion,
-		req.ActorUserID.String(),
-		leaseSeed,
-		watchTTL.Milliseconds(),
-	).Slice()
-	if err != nil {
-		return nil, fmt.Errorf("mail personal runtime watch: create lease: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
+	id := uuid.New()
+	outbox := mailEntity.MailOutboxRecord{EventID: id, ZoneID: cmd.ZoneID, JobTopic: "mail.consumer.drain",
+		Payload: payload, ActorUserID: cmd.ActorUserID, Status: mailEntity.OutboxStatusPending, JobVersion: 1,
+		ResourceID: cmd.ConsumerID.String(), PayloadSchemaVersion: 1, Idle: min(cmd.TimeoutSeconds+30, 3600)}
+	if err = s.repo.RequestDrain(ctx, cmd, target.Parallelism, outbox); err != nil {
+		return uuid.Nil, err
 	}
-	if len(result) != 3 {
-		return nil, fmt.Errorf("mail personal runtime watch: invalid redis reply: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-
-	req.ConfigVersion = current.ConfigVersion
-	req.WatchLeaseID, _ = result[0].(string)
-	if req.WatchLeaseID == "" {
-		return nil, fmt.Errorf("mail personal runtime watch: empty lease: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-	serverNowMS, _ := result[2].(int64)
-	_, runtimeEpoch, epochOK := strings.Cut(req.WatchLeaseID, ":")
-	if serverNowMS <= 0 || !epochOK || uuid.Validate(runtimeEpoch) != nil {
-		return nil, fmt.Errorf("mail personal runtime watch: invalid lease epoch: %w", mailTaxonomy.ErrRuntimeUnavailable)
-	}
-	watchEventID := uuid.NewSHA1(
-		mailRuntimeWatchEventNamespace,
-		[]byte(fmt.Sprintf("%s:%s:%s", req.ZoneID, req.ID, runtimeEpoch)),
-	)
-	watchPayload, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.MailConsumerRuntimeWatchRequestedV1{
-		Metadata: &mailproto.MailEventMetadataV1{
-			EventId:          watchEventID[:],
-			SchemaVersion:    1,
-			OccurredAtUnixMs: serverNowMS,
-			Producer:         "controlplane-mail-runtime-watch",
-		},
-		ZoneId:          req.ZoneID[:],
-		ConsumerId:      req.ID[:],
-		ConfigVersion:   current.ConfigVersion,
-		RuntimeEpoch:    runtimeEpoch,
-		ExpiresAtUnixMs: serverNowMS + watchTTL.Milliseconds(),
-	})
-	if marshalErr != nil {
-		return nil, fmt.Errorf("mail personal runtime watch: encode NATS bridge request: %w", marshalErr)
-	}
-	// [COMMENT]: CP chỉ ghi Shared Redis Stream. JO ACK/XDEL sau khi publish NATS Core;
-	// retry GET tái-enqueue cùng epoch nên mất kết nối giữa Central↔Zone tự phục hồi.
-	if err = s.sharedRedis.XAdd(ctx, &goredis.XAddArgs{
-		Stream: "mail:runtime:watch-requests",
-		MaxLen: 10_000,
-		Approx: true,
-		Values: map[string]any{"payload": watchPayload},
-	}).Err(); err != nil {
-		return nil, fmt.Errorf("mail personal runtime watch: enqueue NATS bridge request: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
-	}
-	req.WatchTTLSeconds = uint32(watchTTL / time.Second)
-	rawSnapshot, _ := result[1].(string)
-	if strings.TrimSpace(rawSnapshot) == "" {
-		return req, nil
-	}
-	watchEpoch := runtimeEpoch
-	var snapshot struct {
-		ConfigVersion   uint64                          `json:"config_version"`
-		RuntimeEpoch    string                          `json:"runtime_epoch"`
-		RuntimeRevision uint64                          `json:"runtime_revision"`
-		State           mailEntity.ConsumerRuntimeState `json:"state"`
-		ActiveInstances uint32                          `json:"active_instances"`
-		ConsumerLag     uint64                          `json:"consumer_lag"`
-		ErrorCode       string                          `json:"error_code"`
-		ErrorMessage    string                          `json:"error_message"`
-		ObservedAt      time.Time                       `json:"observed_at"`
-		ExpiresAt       time.Time                       `json:"expires_at"`
-	}
-	if json.Unmarshal([]byte(rawSnapshot), &snapshot) != nil {
-		return req, nil
-	}
-	validState := snapshot.State == mailEntity.ConsumerRuntimeStopped ||
-		snapshot.State == mailEntity.ConsumerRuntimeStarting ||
-		snapshot.State == mailEntity.ConsumerRuntimeRunning ||
-		snapshot.State == mailEntity.ConsumerRuntimePaused ||
-		snapshot.State == mailEntity.ConsumerRuntimeDraining ||
-		snapshot.State == mailEntity.ConsumerRuntimeError ||
-		snapshot.State == mailEntity.ConsumerRuntimeDegraded
-	validError := len(snapshot.ErrorCode) <= 100 && len(snapshot.ErrorMessage) <= 1024
-	for _, char := range snapshot.ErrorCode {
-		if !((char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_') {
-			validError = false
-			break
-		}
-	}
-	if strings.ContainsFunc(snapshot.ErrorMessage, unicode.IsControl) {
-		validError = false
-	}
-	if snapshot.ConfigVersion != current.ConfigVersion ||
-		!epochOK ||
-		snapshot.RuntimeEpoch != watchEpoch ||
-		snapshot.RuntimeRevision == 0 ||
-		!validState ||
-		!validError ||
-		snapshot.ActiveInstances > current.Parallelism ||
-		snapshot.ObservedAt.IsZero() ||
-		!snapshot.ExpiresAt.After(snapshot.ObservedAt) ||
-		!snapshot.ExpiresAt.After(time.Now().UTC()) {
-		// [COMMENT]: Corrupt/stale runtime là cache miss; business GET/watch vẫn thành công.
-		return req, nil
-	}
-	req.RuntimeObserved = true
-	req.RuntimeEpoch = snapshot.RuntimeEpoch
-	req.RuntimeRevision = snapshot.RuntimeRevision
-	req.RuntimeState = snapshot.State
-	req.RuntimeActiveInstances = snapshot.ActiveInstances
-	req.RuntimeConsumerLag = snapshot.ConsumerLag
-	req.RuntimeErrorCode = snapshot.ErrorCode
-	req.RuntimeErrorMessage = snapshot.ErrorMessage
-	req.RuntimeObservedAt = snapshot.ObservedAt
-	req.RuntimeExpiresAt = snapshot.ExpiresAt
-	return req, nil
+	return id, nil
 }

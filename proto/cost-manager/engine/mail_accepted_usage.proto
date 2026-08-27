@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package aurora.mail.metering.v1;
+
+// One Zone-owned, content-free billing fact emitted only after JMAP confirms
+// one recipient submission. Owner and wallet authority are resolved centrally.
+message MailAcceptedUsageV1 {
+  uint32 schema_version = 1;
+  string evidence_id = 2;
+  string zone_id = 3;
+  string resource_id = 4;
+  int64 accepted_at_unix_ms = 5;
+  uint64 recipient_quantity = 6;
+  bytes evidence_sha256 = 7;
+}

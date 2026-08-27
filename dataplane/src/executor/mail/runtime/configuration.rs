@@ -136,6 +136,10 @@ pub struct RuntimeTemplateToken {
 #[derive(Clone, Debug)]
 pub struct RuntimeConsumerConfiguration {
     pub consumer_id: String,
+    pub owner_id: String,
+    pub owner_type: String,
+    pub workspace_id: String,
+    pub zone_id: String,
     pub config_version: u64,
     pub config_sha256: [u8; 32],
     pub stream: RuntimeStreamSource,
@@ -476,6 +480,26 @@ impl MailConfigurationRuntime {
             let head: ConsumerConfigHead = serde_json::from_slice(&bytes).map_err(|_| {
                 ConfigurationLoadError::new("MAIL_CONFIG_HEAD_INVALID", "consumer head is invalid")
             })?;
+            if head.schema_version != 1
+                || head.module != "mail"
+                || head.resource_type != "consumer"
+                || head.resource_id != normalized_id
+                || head.version == 0
+                || head.runtime_read_enabled != !head.tombstoned
+                || (!head.tombstoned && head.zone_id != self.zone_id)
+            {
+                self.record_load_error(&ConfigurationLoadError::new(
+                    "MAIL_CONFIG_HEAD_SCOPE_INVALID",
+                    "consumer head registration scope is invalid",
+                ));
+                continue;
+            }
+            // Drain is an operation barrier, not a new immutable configuration.
+            // Existing slots finish through their renewal path; do not cancel
+            // their in-flight work or try to decode DRAINING as an upsert.
+            if head.desired_state == "DRAINING" {
+                continue;
+            }
             let record = RegistryRecord {
                 config_version: head.version,
                 state: if head.tombstoned {
@@ -570,10 +594,17 @@ impl MailConfigurationRuntime {
             ConfigurationLoadError::new("MAIL_CONFIG_HEAD_INVALID", "consumer head is invalid")
         })?;
         let config_version = head.version;
-        if config_version == 0 {
+        if head.schema_version != 1
+            || head.module != "mail"
+            || head.resource_type != "consumer"
+            || head.resource_id != consumer_id
+            || config_version == 0
+            || head.runtime_read_enabled != !head.tombstoned
+            || (!head.tombstoned && head.zone_id != self.zone_id)
+        {
             return Err(ConfigurationLoadError::new(
-                "MAIL_CONFIG_HEAD_INVALID",
-                "consumer head version is invalid",
+                "MAIL_CONFIG_HEAD_SCOPE_INVALID",
+                "consumer head registration scope is invalid",
             ));
         }
         if config_version < minimum_version {
@@ -654,6 +685,32 @@ impl MailConfigurationRuntime {
         })?;
         self.validate_consumer_contract(metadata.schema_version, &event, stream)?;
 
+        let event_owner_id = uuid::Uuid::from_slice(&event.owner_id)
+            .expect("validated owner UUID")
+            .to_string();
+        let event_workspace_id = uuid::Uuid::from_slice(&event.workspace_id)
+            .expect("validated workspace UUID")
+            .to_string();
+        let event_zone_id = uuid::Uuid::from_slice(&event.zone_id)
+            .expect("validated Zone UUID")
+            .to_string();
+        let expected_desired_state = if event.desired_state == 2 {
+            "ENABLED"
+        } else {
+            "PAUSED"
+        };
+        if head.owner_id != event_owner_id
+            || head.owner_type != event.owner_type
+            || head.workspace_id != event_workspace_id
+            || head.zone_id != event_zone_id
+            || head.desired_state != expected_desired_state
+        {
+            return Err(ConfigurationLoadError::new(
+                "MAIL_CONFIG_HEAD_SCOPE_INVALID",
+                "consumer head scope does not match its immutable snapshot",
+            ));
+        }
+
         let desired_state = if event.desired_state == 2 {
             RuntimeDesiredState::Enabled
         } else {
@@ -667,6 +724,10 @@ impl MailConfigurationRuntime {
         Ok(LoadedConsumerObservation::Active(Arc::new(
             RuntimeConsumerConfiguration {
                 consumer_id: consumer_id.to_string(),
+                owner_id: event_owner_id,
+                owner_type: event.owner_type.clone(),
+                workspace_id: event_workspace_id,
+                zone_id: event_zone_id,
                 config_version,
                 config_sha256: event_hash,
                 stream: RuntimeStreamSource {
@@ -804,6 +865,13 @@ impl MailConfigurationRuntime {
             || !matches!(event.desired_state, 1 | 2)
             || event.parallelism == 0
             || event.parallelism > 256
+            || uuid::Uuid::from_slice(&event.owner_id).is_err()
+            || !matches!(event.owner_type.as_str(), "PERSONAL" | "TENANT")
+            || uuid::Uuid::from_slice(&event.workspace_id).is_err()
+            || uuid::Uuid::from_slice(&event.zone_id).is_err()
+            || uuid::Uuid::from_slice(&event.zone_id)
+                .ok()
+                .is_none_or(|zone_id| zone_id.to_string() != self.zone_id)
         {
             return Err(ConfigurationLoadError::new(
                 "MAIL_CONFIG_CONTRACT_INVALID",
@@ -1189,6 +1257,10 @@ pub(crate) fn canonical_consumer_sha256(event: &MailConsumerUpsertV1) -> [u8; 32
     push_varint_field(&mut bytes, 9, event.sender_version);
     push_varint_field(&mut bytes, 10, event.desired_state as u64);
     push_varint_field(&mut bytes, 11, event.parallelism as u64);
+    push_bytes_field(&mut bytes, 13, &event.owner_id);
+    push_string_field(&mut bytes, 14, &event.owner_type);
+    push_bytes_field(&mut bytes, 15, &event.workspace_id);
+    push_bytes_field(&mut bytes, 16, &event.zone_id);
     Sha256::digest(bytes).into()
 }
 

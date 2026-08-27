@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS billing.unrated_usage CASCADE;
+DROP TABLE IF EXISTS billing.wallet_ledger_entries CASCADE;
+DROP TABLE IF EXISTS billing.mail_accepted_usage_inbox CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_network_usage_lines CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_network_usage_report_inbox CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_allocation_lines CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_allocation_windows CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_allocation_intervals CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_allocation_heads CASCADE;
+DROP TABLE IF EXISTS billing.hypervisor_allocation_event_inbox CASCADE;
+DROP TABLE IF EXISTS billing.storage_usage_line_inbox CASCADE;
+DROP TABLE IF EXISTS billing.storage_usage_report_inbox CASCADE;

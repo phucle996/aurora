@@ -15,7 +15,7 @@ internal/iam/
 │   └── service/         # Service Interfaces
 ├── migration.go         # Tích hợp Go embedFS runner cho SQL migrations
 ├── migrations/          # 6-step SQL Migration Baseline (000001 -> 000006)
-│   ├── 000001_iam_enums.up.sql    # Shared ENUM types (user_status, billing_owner_type, role_scope_type)
+│   ├── 000001_iam_enums.up.sql    # Shared ENUM types (user_status, lifecycle_owner_type, role_scope_type)
 │   ├── 000002_iam_tables.up.sql   # DDL các bảng chính thức (users, devices, mfa_settings, billing_outbox,...)
 │   ├── 000003_iam_indexes.up.sql  # Indexes tối ưu hóa truy vấn & uniqueness partial constraints
 │   ├── 000004_iam_funcs.up.sql    # Stored procedures & utility functions

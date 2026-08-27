@@ -1,7 +1,22 @@
 use crate::observability::logger::Logger;
 
-// Access preparation has no business aggregate mutation. It only settles the
-// durable command fence after Dataplane has applied the matching Zone record.
+/// [COMMENT]: Xử lý khép lại vòng đời của job `storage.access.prepare`.
+///
+/// Bối cảnh nghiệp vụ:
+/// - Khi người dùng yêu cầu upload/download file trực tiếp từ trình duyệt mà không để lộ
+///   S3 Secret Key dài hạn, Controlplane phát lệnh `storage.access.prepare` qua Outbox.
+/// - Zone Dataplane (`StorageAccessPrepareExecutor`) nhận job và tạo một bản ghi quyền truy cập
+///   tạm thời (`StorageAccessRecord`) lưu vào Zone KV Store.
+/// - Khi Dataplane thực hiện xong và gửi kết quả về Kafka:
+///   + `SUCCEEDED`: Hàm này cập nhật `storage_outbox_records.status = 'SUCCEEDED'`, đánh dấu
+///     phiên (Access Session) đã ACTIVE. Browser sau đó có thể lấy Transfer Ticket qua Zone Control
+///     để tải/đẩy dữ liệu trực tiếp vào MinIO.
+///   + `PROCESSING`: Cập nhật trạng thái outbox sang `PROCESSING`.
+///   + `FAILED`: Đánh dấu outbox `FAILED` kèm mã lỗi.
+///
+/// Lưu ý kiến trúc:
+/// - Access Session là token tạm thời (ephemeral capability), không tạo bảng resource vật lý lâu dài
+///   trong PostgreSQL. Dòng outbox chính là Source of Truth duy nhất ở Central kiểm tra tính sẵn sàng.
 pub async fn resolve_access_prepare(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
@@ -21,7 +36,9 @@ pub async fn resolve_access_prepare(
     let row = if status == "SUCCEEDED" {
         pg_client
             .query_opt(
-                "DELETE FROM storage.storage_outbox_records \
+                "UPDATE storage.storage_outbox_records \
+                 SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW(), \
+                     error_code = NULL, error_message = NULL \
                  WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&job_uuid, &job_topic],
@@ -31,7 +48,7 @@ pub async fn resolve_access_prepare(
         pg_client
             .query_opt(
                 "UPDATE storage.storage_outbox_records \
-                 SET status = $1, error_code = NULL, error_message = NULL \
+                 SET status = $1, updated_at = NOW(), error_code = NULL, error_message = NULL \
                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&status, &job_uuid, &job_topic],
@@ -41,7 +58,7 @@ pub async fn resolve_access_prepare(
         pg_client
             .query_opt(
                 "UPDATE storage.storage_outbox_records \
-                 SET status = 'FAILED', error_code = $1, error_message = $2 \
+                 SET status = 'FAILED', completed_at = NOW(), updated_at = NOW(), error_code = $1, error_message = $2 \
                  WHERE event_id = $3::uuid AND job_topic = $4 AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&error_code, &error_message, &job_uuid, &job_topic],

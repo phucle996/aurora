@@ -18,7 +18,7 @@ grant is the authority for one exact object.
 |---|---|
 | X-Aurora-Transfer-Ticket | Opaque ticket id and secret, memory only. |
 | Origin | Allowed Cloud Console origin. |
-| :path | Exact bucket/object path bound by Zone Control. |
+| :path | Exact bucket/object path bound by Zone Control (`/{bucket}/{key}` or `/{bucket}/{key}?versionId={version_id}` for version-specific download). |
 | Request body | Empty. |
 | Cookies and AWS auth | Not sent and removed if supplied. |
 
@@ -114,3 +114,8 @@ retrying.
 - zone-public-edge-gateway/envoy.yaml
 - zone-public-edge-gateway/authorizer/src/main.rs
 - proto/zone/transfer_ticket.proto
+
+Public Authorizer also reads `AURORA_ZONE_ADMISSION/{resource_id}` before it
+CASes the ticket to `Consuming`. Missing, expired or suspended admission is a
+`403` with no MinIO request; only a current `ALLOW` record reaches the signed
+upstream GET.

@@ -44,13 +44,36 @@ static_resources:
                                 regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
                             - exact: "http://localhost:3000"
                             - exact: "http://localhost:5173"
-                          allow_methods: "GET, PUT, OPTIONS"
-                          allow_headers: "Accept, Content-Type, X-Aurora-Transfer-Ticket"
-                          expose_headers: "ETag, Content-Length, Content-Type"
+                          allow_methods: "GET, PUT, POST, HEAD, DELETE, OPTIONS"
+                          allow_headers: "Accept, Authorization, Content-Type, X-Amz-Content-Sha256, X-Amz-Date, X-Amz-Security-Token, X-Aurora-Transfer-Ticket"
+                          expose_headers: "ETag, Content-Length, Content-Type, Location"
                           allow_credentials:
                             value: false
                           max_age: "86400"
                       routes:
+                        - match:
+                            safe_regex:
+                              regex: "^/zone-public/v1/runtime/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63}/[0-9a-fA-F-]{36}/(health|metrics|logs|events)(/[A-Za-z0-9._-]{1,128})?$"
+                          route:
+                            cluster: zone_runtime_stream
+                            timeout: 0s
+                            idle_timeout: 330s
+                            regex_rewrite:
+                              pattern:
+                                regex: "^/zone-public/v1/runtime/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63}/[0-9a-fA-F-]{36}/(health|metrics|logs|events)(/[A-Za-z0-9._-]{1,128})?$"
+                              substitution: "/runtime/stream"
+                          typed_per_filter_config:
+                            envoy.filters.http.cors:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                              allow_origin_string_match:
+                                - safe_regex:
+                                    regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+                              allow_methods: "GET, OPTIONS"
+                              allow_headers: "Accept, Cache-Control, Last-Event-ID, X-Aurora-Runtime-Assertion, X-Aurora-Runtime-Signature, X-Aurora-Runtime-Key-Id"
+                              expose_headers: "Content-Type"
+                              allow_credentials:
+                                value: false
+                              max_age: "600"
                         - match:
                             prefix: "/"
                             headers:
@@ -65,11 +88,13 @@ static_resources:
                             cluster: minio
                             timeout: 0s
                             idle_timeout: 900s
-                          typed_per_filter_config:
-                            envoy.filters.http.ext_authz:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                              disabled: true
                 http_filters:
+                  # CORS must answer browser preflight before assertion
+                  # verification; the actual GET still flows through both the
+                  # sanitizer and the fail-closed Zone authorizer.
+                  - name: envoy.filters.http.cors
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
                   - name: envoy.filters.http.lua
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
@@ -77,9 +102,13 @@ static_resources:
                         inline_string: |
                           function envoy_on_request(handle)
                             local transfer_request = handle:headers():get("x-aurora-transfer-ticket") ~= nil
+                            local path = handle:headers():get(":path") or ""
+                            local runtime_request = string.sub(path, 1, 24) == "/zone-public/v1/runtime/"
                             local remove = {}
                             for key, _ in pairs(handle:headers()) do
-                              if string.sub(string.lower(key), 1, 9) == "x-aurora-" and string.lower(key) ~= "x-aurora-transfer-ticket" then
+                              local lowered = string.lower(key)
+                              local runtime_assertion = lowered == "x-aurora-runtime-assertion" or lowered == "x-aurora-runtime-signature" or lowered == "x-aurora-runtime-key-id"
+                              if string.sub(lowered, 1, 9) == "x-aurora-" and lowered ~= "x-aurora-transfer-ticket" and not (runtime_request and runtime_assertion) then
                                 table.insert(remove, key)
                               end
                             end
@@ -89,8 +118,10 @@ static_resources:
                             handle:headers():remove("cookie")
                             handle:headers():remove("x-csrf-token")
                             handle:headers():remove("x-client-device-id")
-                            if transfer_request then
+                            if transfer_request or runtime_request then
                               handle:headers():remove("authorization")
+                            end
+                            if transfer_request then
                               handle:headers():remove("x-amz-security-token")
                               handle:headers():remove("x-amz-date")
                               handle:headers():remove("x-amz-content-sha256")
@@ -105,15 +136,19 @@ static_resources:
                       transport_api_version: V3
                       grpc_service:
                         envoy_grpc: { cluster_name: zone_public_authorizer }
-                        timeout: 0.5s
-                  - name: envoy.filters.http.cors
-                    typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+                        # Runtime admission performs a registry read followed
+                        # by a distributed replay CAS (350 ms budget each).
+                        timeout: 1s
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                 access_log:
                   - name: envoy.access_loggers.stdout
+                    filter:
+                      header_filter:
+                        header:
+                          name: x-aurora-metering-module
+                          string_match: { exact: storage }
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
                       log_format:
@@ -213,6 +248,23 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: zone-public-edge-authorizer, port_value: 50053 }
+    - name: zone_runtime_stream
+      connect_timeout: 0.5s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 2048
+            max_pending_requests: 512
+            max_requests: 4096
+      load_assignment:
+        cluster_name: zone_runtime_stream
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: zone-runtime-stream, port_value: 8080 }
 
 admin:
   access_log_path: /dev/null

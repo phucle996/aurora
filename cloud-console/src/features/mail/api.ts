@@ -1,28 +1,8 @@
 import { fetchJSON } from "@/shared/api/http";
+import { criticalFetchJSON } from "@/shared/api/critical";
 
-export type MailDesiredState = "paused" | "enabled";
+export type MailDesiredState = "paused" | "enabled" | "draining" | "drained" | "deleting";
 export type MailSourceType = "kafka" | "redis_stream" | "nats_jetstream" | "rabbitmq";
-export type MailRuntimeState = "stopped" | "starting" | "running" | "paused" | "draining" | "error" | "degraded";
-
-export type MailConsumerRuntime = {
-  runtime_epoch: string;
-  runtime_revision: number;
-  state: MailRuntimeState;
-  active_instances: number;
-  consumer_lag: number;
-  error_code: string;
-  error_message: string;
-  observed_at: string;
-  expires_at: string;
-};
-
-export type MailConsumerRuntimeWatch = {
-  consumer_id: string;
-  config_version: number;
-  watch_lease_id: string;
-  watch_ttl_seconds: number;
-  runtime: MailConsumerRuntime | null;
-};
 
 export type MailConsumer = {
   id: string;
@@ -46,6 +26,17 @@ export type MailConsumer = {
   updated_at: string;
   // [COMMENT]: Mutation responses carry the outbox event ID; read responses may omit it.
   operation_id?: string;
+};
+
+export type RuntimeReadTicket = {
+  assertion: string;
+  signature: string;
+  key_id: string;
+  zone_id: string;
+  zone_code: string;
+  method: "GET";
+  path: string;
+  expires_at: string;
 };
 
 export type MailTemplate = {
@@ -119,44 +110,63 @@ export async function getMailConsumer(id: string, signal?: AbortSignal): Promise
   return requireData(response, "Mail consumer detail is missing");
 }
 
-export async function watchMailConsumerRuntime(id: string, signal?: AbortSignal): Promise<MailConsumerRuntimeWatch> {
-  const response = await fetchJSON<DataEnvelope<MailConsumerRuntimeWatch>>(
-    `/api/v1/mail/consumers/${encodeURIComponent(id)}/runtime/watch`,
-    { method: "POST", signal },
-  );
-  return requireData(response, "Mail consumer runtime watch response is missing");
+export async function mintMailConsumerRuntimeRead(
+  id: string,
+  panel: "health" | "metrics" | "logs" | "events",
+  fromSeconds: number,
+  signal?: AbortSignal,
+): Promise<RuntimeReadTicket> {
+  return fetchJSON<RuntimeReadTicket>("/api/v1/runtime/assertions", {
+    method: "POST",
+    body: {
+      resource_type: "mail_consumer",
+      resource_id: id,
+      panel,
+      from_seconds: fromSeconds,
+    },
+    signal,
+    cache: "no-store",
+  });
 }
 
 export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer & { operation_id: string }> {
-  const response = await fetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
-    "/api/v1/mail/consumers",
+  const response = await criticalFetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
+    "/api/v1/critical/mail/consumers",
     { method: "POST", body: input },
   );
   return requireData(response, "Created mail consumer is missing");
 }
 
 export async function updateMailConsumer(id: string, input: ConsumerWrite & { desired_state: MailDesiredState; expected_config_version: number }): Promise<MailConsumer & { operation_id: string }> {
-  const response = await fetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
-    `/api/v1/mail/consumers/${encodeURIComponent(id)}`,
+  const response = await criticalFetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
+    `/api/v1/critical/mail/consumers/${encodeURIComponent(id)}`,
     { method: "PATCH", body: input },
   );
   return requireData(response, "Updated mail consumer is missing");
 }
 
 export async function changeMailConsumerState(id: string, action: "pause" | "resume", expectedConfigVersion: number): Promise<MailConsumer & { operation_id: string }> {
-  const response = await fetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
-    `/api/v1/mail/consumers/${encodeURIComponent(id)}/${action}`,
+  const response = await criticalFetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
+    `/api/v1/critical/mail/consumers/${encodeURIComponent(id)}/${action}`,
     { method: "POST", body: { expected_config_version: expectedConfigVersion } },
   );
   return requireData(response, "Updated mail consumer state is missing");
 }
 
 export async function deleteMailConsumer(id: string, expectedConfigVersion: number): Promise<MailDeleteOperation> {
-  const response = await fetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/mail/consumers/${encodeURIComponent(id)}`, {
+  const response = await criticalFetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/critical/mail/consumers/${encodeURIComponent(id)}`, {
     method: "DELETE",
-    body: { expected_config_version: expectedConfigVersion, drain_timeout_seconds: 30, reason: "console delete" },
+    body: { expected_config_version: String(expectedConfigVersion), reason: "console delete" },
   });
   return requireData(response, "Mail consumer delete operation is missing");
+}
+
+export async function drainMailConsumer(id: string, expectedConfigVersion: number): Promise<MailDeleteOperation> {
+  const response = await criticalFetchJSON<DataEnvelope<MailDeleteOperation>>(
+    `/api/v1/critical/mail/consumers/${encodeURIComponent(id)}/drain`,
+    { method: "POST", body: { expected_config_version: String(expectedConfigVersion), timeout_seconds: 30 } },
+  );
+  return requireData(response, "Mail drain operation is missing");
 }
 
 export async function listMailTemplates(signal?: AbortSignal): Promise<MailTemplate[]> {
@@ -178,20 +188,20 @@ export async function listMailTemplateVersions(id: string, signal?: AbortSignal)
 }
 
 export async function createMailTemplate(input: TemplateContentWrite & { code: string; name: string }): Promise<MailTemplateDetail & { operation_id: string }> {
-  const response = await fetchJSON<DataEnvelope<MailTemplateDetail & { operation_id: string }>>("/api/v1/mail/templates", { method: "POST", body: input });
+  const response = await criticalFetchJSON<DataEnvelope<MailTemplateDetail & { operation_id: string }>>("/api/v1/critical/mail/templates", { method: "POST", body: input });
   return requireData(response, "Created mail template is missing");
 }
 
 export async function publishMailTemplate(id: string, expectedRevision: number, input: TemplateContentWrite): Promise<MailTemplateDetail & { operation_id: string }> {
-  const response = await fetchJSON<DataEnvelope<MailTemplateDetail & { operation_id: string }>>(
-    `/api/v1/mail/templates/${encodeURIComponent(id)}/versions`,
+  const response = await criticalFetchJSON<DataEnvelope<MailTemplateDetail & { operation_id: string }>>(
+    `/api/v1/critical/mail/templates/${encodeURIComponent(id)}/versions`,
     { method: "POST", body: { ...input, expected_revision: expectedRevision } },
   );
   return requireData(response, "Published mail template is missing");
 }
 
 export async function deleteMailTemplate(id: string, expectedRevision: number): Promise<MailDeleteOperation> {
-  const response = await fetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/mail/templates/${encodeURIComponent(id)}`, {
+  const response = await criticalFetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/critical/mail/templates/${encodeURIComponent(id)}`, {
     method: "DELETE",
     body: { expected_revision: expectedRevision },
   });

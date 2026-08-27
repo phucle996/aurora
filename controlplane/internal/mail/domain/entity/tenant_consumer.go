@@ -158,31 +158,22 @@ type DeleteTenantConsumer struct {
 	ID                    uuid.UUID
 	WorkspaceID           uuid.UUID
 	ExpectedConfigVersion uint64
-	DrainTimeoutSeconds   uint32
 	Reason                string
 	OperationID           uuid.UUID
 	UpdatedAt             time.Time
 }
 
-// [COMMENT]: Actor của Tenant watch là realtime recipient đã được repository authorize;
-// lease hết hạn nhanh nên membership cũ không trở thành quyền subscribe dài hạn.
-type WatchTenantConsumerRuntime struct {
-	ActorUserID            uuid.UUID
-	TenantID               uuid.UUID
-	ZoneID                 uuid.UUID
-	ID                     uuid.UUID
-	WorkspaceID            uuid.UUID
-	ConfigVersion          uint64
-	WatchLeaseID           string
-	WatchTTLSeconds        uint32
-	RuntimeObserved        bool
-	RuntimeEpoch           string
-	RuntimeRevision        uint64
-	RuntimeState           ConsumerRuntimeState
-	RuntimeActiveInstances uint32
-	RuntimeConsumerLag     uint64
-	RuntimeErrorCode       string
-	RuntimeErrorMessage    string
-	RuntimeObservedAt      time.Time
-	RuntimeExpiresAt       time.Time
+type TenantConsumerDrainCommand struct {
+	ActorUserID           uuid.UUID
+	WorkspaceID           uuid.UUID
+	ZoneID                uuid.UUID
+	TenantID              uuid.UUID
+	ConsumerID            uuid.UUID
+	ExpectedConfigVersion uint64
+	TimeoutSeconds        uint32
+}
+type TenantConsumerDrainTarget struct {
+	ConfigVersion uint64
+	Parallelism   uint32
+	State         ConsumerDesiredState
 }

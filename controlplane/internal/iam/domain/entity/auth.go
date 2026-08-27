@@ -37,10 +37,10 @@ type User struct {
 // AccountActivation is the IAM-owned durable activation command. It deliberately
 // excludes workspace placement, which has its own workflow command below.
 type AccountActivation struct {
-	UserID              uuid.UUID
-	RoleCode            string
-	BillingEventID      uuid.UUID
-	BillingEventPayload []byte
+	UserID                uuid.UUID
+	RoleCode              string
+	LifecycleEventID      uuid.UUID
+	LifecycleEventPayload []byte
 }
 
 // BootstrapPersonalWorkspaces is the activation-owned template used to seed one

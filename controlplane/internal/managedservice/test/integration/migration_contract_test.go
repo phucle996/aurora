@@ -54,10 +54,9 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 	// [COMMENT]: Map tên file migration phân lớp mới tới các đoạn SQL fragment quan trọng cần kiểm tra.
 	expected := map[string][]string{
 		"000001_managed_service_enums.up.sql": {
-			"'provisioning', 'active', 'deleting'",
+			"'provisioning', 'active', 'updating', 'deleting'",
 			"'accepted',",
 			"'terminal_failed'",
-			"managed_service_observed_state",
 		},
 		"000002_managed_service_tables.up.sql": {
 			"safe_observed_output_schema",
@@ -95,12 +94,15 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 		"000004_managed_service_funcs.up.sql": {
 			"reject_blueprint_revision_rewrite()",
 			"reject_managed_service_outbox_payload_rewrite()",
+			"require_managed_service_instance_deleting_before_delete()",
 			"OLD.state = 'published'",
 			"NEW.state = 'retired'",
 		},
 		"000005_managed_service_triggers.up.sql": {
 			"trg_blueprint_revisions_immutable",
 			"trg_managed_service_outbox_immutable",
+			"trg_personal_managed_service_delete_requires_deleting",
+			"trg_tenant_managed_service_delete_requires_deleting",
 		},
 		"000006_managed_service_seeds.up.sql": {
 			"Managed Service Catalog",
@@ -117,6 +119,21 @@ func TestManagedServiceBaselineMatchesFrozenLifecycleShape(t *testing.T) {
 			"DROP TABLE IF EXISTS personal_managed_service_result_inbox",
 			"DROP TABLE IF EXISTS tenant_managed_service_result_inbox",
 		},
+	}
+	obsoleteByFile := map[string][]string{
+		"000001_managed_service_enums.up.sql":  {"managed_service_observed_state"},
+		"000002_managed_service_tables.up.sql": {"observed_state managed_service_observed_state", "observed_output JSONB", "observed_at TIMESTAMPTZ"},
+	}
+	for fileName, obsoleteFragments := range obsoleteByFile {
+		body, err := fs.ReadFile(managedservicemigrations.Files, fileName)
+		if err != nil {
+			t.Fatalf("read %s: %v", fileName, err)
+		}
+		for _, obsolete := range obsoleteFragments {
+			if strings.Contains(string(body), obsolete) {
+				t.Fatalf("%s retains obsolete Controlplane runtime projection %q", fileName, obsolete)
+			}
+		}
 	}
 
 	for name, wanted := range expected {

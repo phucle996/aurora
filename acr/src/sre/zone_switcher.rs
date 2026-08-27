@@ -3,7 +3,7 @@
 // ======================================================================================================
 
 use crate::config::Config;
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
@@ -64,7 +64,7 @@ pub struct SreZoneSwitchWorkflowContext<'a> {
     pub session_mgr: &'a Arc<SessionManager>,
     pub token_mgr: &'a Arc<SreTokenManager>,
     pub shared_redis: &'a Arc<SharedRedisBus>,
-    pub redis_client: &'a redis::Client,
+    pub redis_client: &'a RedisRuntimeClient,
     pub config: &'a Config,
 }
 

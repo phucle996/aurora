@@ -43,6 +43,7 @@ WHERE (module, object, behavior) IN (
         ('hierarchy', 'workspace', 'read'),
         ('hierarchy', 'workspace', 'update'),
         ('hierarchy', 'workspace', 'delete'),
+        ('hierarchy', 'tenant', 'create'),
         ('hierarchy', 'tenant-invitation', 'create'),
         ('hierarchy', 'tenant-invitation', 'read'),
         ('hierarchy', 'tenant-invitation', 'delete'),

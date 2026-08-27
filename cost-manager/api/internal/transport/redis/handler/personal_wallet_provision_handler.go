@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"cost-manager/api/internal/config"
 	billingSvcInterface "cost-manager/api/internal/domain/service"
-	walletv1 "cost-manager/api/internal/genproto/billing/wallet/v1"
+	iamlifecyclev1 "cost-manager/api/internal/genproto/iam/lifecycle/v1"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/google/uuid"
@@ -21,15 +21,15 @@ import (
 )
 
 const (
-	personalWalletProvisionEventType = "billing.wallet.personal.provision.requested.v1"
-	personalWalletProvisionStream    = "billing:wallet:personal:provision-requests"
+	personalWalletProvisionEventType = "billing.personal_wallet.provision.requested.v1"
+	personalWalletProvisionStream    = "billing:personal-wallet:provision:requested:v1"
 	personalWalletProvisionGroup     = "cost-personal-wallet-provision-v1"
 	personalWalletProvisionDLQ       = "billing:wallet:personal:provision-dlq"
 	personalWalletReclaimIdle        = 30 * time.Second
 	personalWalletMaxDeliveries      = 25
 )
 
-// PersonalWalletProvisionConsumer consumes durable Central-internal wallet commands.
+// PersonalWalletProvisionConsumer applies IAM's billing command to Cost's wallet projection.
 // PostgreSQL inbox + wallet mutation remains the idempotency and apply boundary.
 type PersonalWalletProvisionConsumer struct {
 	sharedRedis *goredis.Client
@@ -44,28 +44,18 @@ type PersonalWalletProvisionConsumer struct {
 func NewPersonalWalletProvisionConsumer(
 	sharedRedis *goredis.Client,
 	service billingSvcInterface.PersonalAccountService,
-) (*PersonalWalletProvisionConsumer, error) {
-	if sharedRedis == nil || service == nil {
-		return nil, errors.New("personal wallet provision consumer requires Shared Redis and PersonalAccountService")
-	}
-	hostname, err := os.Hostname()
-	if err != nil || strings.TrimSpace(hostname) == "" {
-		hostname = "cost-manager"
-	}
+) *PersonalWalletProvisionConsumer {
 	return &PersonalWalletProvisionConsumer{
 		sharedRedis: sharedRedis,
 		service:     service,
 		// [COMMENT]: Consumer identity riêng theo process cho phép XAUTOCLAIM tiếp quản pending
 		// của pod đã chết mà không để nhiều pod cùng xử lý một delivery đang còn lease.
-		consumer: hostname + "-" + uuid.NewString(),
+		consumer: config.GetNodeHostname() + "-" + uuid.NewString(),
 		done:     make(chan struct{}),
-	}, nil
+	}
 }
 
 func (s *PersonalWalletProvisionConsumer) Start() error {
-	if s == nil {
-		return errors.New("personal wallet provision consumer is nil")
-	}
 	if s.cancel != nil {
 		return errors.New("personal wallet provision consumer already started")
 	}
@@ -180,7 +170,7 @@ func (s *PersonalWalletProvisionConsumer) process(ctx context.Context, message g
 		s.deadLetter(ctx, message, "invalid_contract")
 		return
 	}
-	wire := &walletv1.PersonalWalletProvisionRequestedV1{}
+	wire := &iamlifecyclev1.PersonalWalletProvisionRequestedV1{}
 	eventID, eventErr := uuid.Parse(eventIDText)
 	protoErr := proto.Unmarshal(payload, wire)
 	wireEventID, wireEventErr := uuid.FromBytes(wire.GetEventId())
@@ -188,9 +178,8 @@ func (s *PersonalWalletProvisionConsumer) process(ctx context.Context, message g
 	_, occurredErr := time.Parse(time.RFC3339Nano, wire.GetOccurredAt())
 	if eventErr != nil || protoErr != nil || wireEventErr != nil || ownerErr != nil ||
 		eventID == uuid.Nil || wireEventID != eventID || ownerID == uuid.Nil ||
-		eventType != personalWalletProvisionEventType ||
-		wire.GetOwnerType() != "PERSONAL" || wire.GetCurrency() != "USD" ||
-		wire.GetSchemaVersion() != 1 || occurredErr != nil {
+		eventType != personalWalletProvisionEventType || wire.GetOwnerType() != "PERSONAL" ||
+		wire.GetCurrency() != "USD" || wire.GetSchemaVersion() != 1 || occurredErr != nil {
 		// [COMMENT]: Poison contract không thể tự hồi phục. DLQ + ACK + XDEL nằm cùng
 		// Redis transaction; nếu transaction lỗi, original vẫn pending để không mất bằng chứng.
 		s.deadLetter(ctx, message, "invalid_contract")
@@ -238,18 +227,6 @@ func (s *PersonalWalletProvisionConsumer) deadLetter(
 	message goredis.XMessage,
 	reason string,
 ) {
-	eventID := message.Values["event_id"]
-	if eventID == nil {
-		eventID = ""
-	}
-	eventType := message.Values["event_type"]
-	if eventType == nil {
-		eventType = ""
-	}
-	payload := message.Values["payload"]
-	if payload == nil {
-		payload = []byte{}
-	}
 	// [COMMENT]: DLQ không chứa error string tự do để tránh leak dữ liệu và cardinality vô hạn.
 	// Original payload được giữ nguyên để operator có thể audit/replay cùng event_id.
 	if _, err := s.sharedRedis.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
@@ -258,9 +235,9 @@ func (s *PersonalWalletProvisionConsumer) deadLetter(
 			Values: map[string]any{
 				"source_stream_id": message.ID,
 				"reason":           reason,
-				"event_id":         eventID,
-				"event_type":       eventType,
-				"payload":          payload,
+				"event_id":         message.Values["event_id"],
+				"event_type":       message.Values["event_type"],
+				"payload":          message.Values["payload"],
 			},
 		})
 		pipe.XAck(ctx, personalWalletProvisionStream, personalWalletProvisionGroup, message.ID)
@@ -275,14 +252,10 @@ func (s *PersonalWalletProvisionConsumer) deadLetter(
 }
 
 func (s *PersonalWalletProvisionConsumer) Stop() {
-	if s == nil {
-		return
-	}
 	s.once.Do(func() {
-		if s.cancel == nil {
-			return
+		if s.cancel != nil {
+			s.cancel()
 		}
-		s.cancel()
 		select {
 		case <-s.done:
 		case <-time.After(6 * time.Second):

@@ -37,15 +37,14 @@ function InstanceRow({ item, consoleRoot }: { item: ManagedServiceInstanceSummar
       </td>
       <td className="px-4 py-3">
         <span className="inline-flex items-center gap-2 text-xs font-semibold">
-          <span className={`h-2 w-2 rounded-full ${stateTone(item.desired.state)}`} />
-          {stateLabel(item.desired.state)}
+          <span className={`h-2 w-2 rounded-full ${stateTone(item.state)}`} />
+          {stateLabel(item.state)}
         </span>
       </td>
-      <td className="px-4 py-3 text-xs text-muted-foreground">{stateLabel(item.observed.state)}</td>
       <td className="px-4 py-3 text-xs">
         {operation ? <span className="inline-flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${stateTone(operation.state)}`} />{stateLabel(operation.kind)} · {stateLabel(operation.state)}</span> : "—"}
       </td>
-      <td className="px-4 py-3 text-right font-mono text-[10px] text-muted-foreground">g{item.desired.generation}</td>
+      <td className="px-4 py-3 text-right font-mono text-[10px] text-muted-foreground">g{item.generation}</td>
     </tr>
   );
 }
@@ -90,10 +89,10 @@ export function ManagedServiceInstancesScreen() {
       ) : (
         <div className="mt-6 overflow-x-auto rounded-[6px] border border-border">
           <table className="w-full min-w-[760px] text-left text-sm">
-            <thead className="border-b border-border bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-4 py-3">Instance</th><th className="px-4 py-3">Desired</th><th className="px-4 py-3">Observed</th><th className="px-4 py-3">Latest operation</th><th className="px-4 py-3 text-right">Generation</th></tr></thead>
+            <thead className="border-b border-border bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-4 py-3">Instance</th><th className="px-4 py-3">State</th><th className="px-4 py-3">Latest operation</th><th className="px-4 py-3 text-right">Generation</th></tr></thead>
             <tbody>
-              {instances.isLoading ? <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">Loading instances…</td></tr> : null}
-              {!instances.isLoading && items.length === 0 ? <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No managed instance exists in this workspace.</td></tr> : null}
+              {instances.isLoading ? <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">Loading instances…</td></tr> : null}
+              {!instances.isLoading && items.length === 0 ? <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No managed instance exists in this workspace.</td></tr> : null}
               {items.map((item) => <InstanceRow key={item.id} item={item} consoleRoot={consoleRoot} />)}
             </tbody>
           </table>

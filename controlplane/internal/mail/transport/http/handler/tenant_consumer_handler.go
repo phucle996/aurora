@@ -253,80 +253,6 @@ func (h *TenantConsumerHandler) Get(c *gin.Context) {
 	}, "mail consumer loaded")
 }
 
-func (h *TenantConsumerHandler) WatchRuntime(c *gin.Context) {
-	const op = "mail.tenant.consumer.runtime.watch"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	actorID, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
-		return
-	}
-	tenantID, ok := pkgcontext.GetTenantID(c, op)
-	if !ok {
-		return
-	}
-	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
-	if !ok {
-		return
-	}
-	zoneID, ok := pkgcontext.GetZoneID(c, op)
-	if !ok {
-		return
-	}
-	consumerID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid consumer id")
-		return
-	}
-
-	// [COMMENT]: Tenant membership được kiểm lại ở repository mỗi lần renew; watcher ZSET chỉ
-	// chứa actor đã được authorize và tự hết hạn cùng lease ngắn.
-	runtime, err := h.svc.WatchConsumerRuntime(ctx, &mailEntity.WatchTenantConsumerRuntime{
-		ActorUserID: actorID,
-		TenantID:    tenantID,
-		WorkspaceID: workspaceID,
-		ZoneID:      zoneID,
-		ID:          consumerID,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound), errors.Is(err, mailTaxonomy.ErrWorkspaceNotFound):
-			apires.RespondNotFound(c, "mail consumer not found")
-		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
-			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, mailTaxonomy.ErrRuntimeUnavailable):
-			apires.RespondServiceUnavailable(c, "mail runtime watch temporarily unavailable")
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-		}
-		return
-	}
-
-	var snapshot any
-	if runtime.RuntimeObserved {
-		snapshot = gin.H{
-			"runtime_epoch":    runtime.RuntimeEpoch,
-			"runtime_revision": runtime.RuntimeRevision,
-			"state":            runtime.RuntimeState,
-			"active_instances": runtime.RuntimeActiveInstances,
-			"consumer_lag":     runtime.RuntimeConsumerLag,
-			"error_code":       runtime.RuntimeErrorCode,
-			"error_message":    runtime.RuntimeErrorMessage,
-			"observed_at":      runtime.RuntimeObservedAt,
-			"expires_at":       runtime.RuntimeExpiresAt,
-		}
-	}
-	apires.RespondSuccess(c, gin.H{
-		"consumer_id":       runtime.ID.String(),
-		"config_version":    runtime.ConfigVersion,
-		"watch_lease_id":    runtime.WatchLeaseID,
-		"watch_ttl_seconds": runtime.WatchTTLSeconds,
-		"runtime":           snapshot,
-	}, "mail consumer runtime watch renewed")
-}
-
 func (h *TenantConsumerHandler) List(c *gin.Context) {
 	const op = "mail.tenant.consumer.list"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
@@ -650,6 +576,10 @@ func (h *TenantConsumerHandler) changeState(c *gin.Context, desiredState mailEnt
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
+		case errors.Is(err, mailTaxonomy.ErrCommercialAdmissionUnavailable):
+			apires.RespondServiceUnavailable(c, "MAIL_WALLET_ADMISSION_UNAVAILABLE")
+		case errors.Is(err, mailTaxonomy.ErrPricingUnavailable):
+			apires.RespondServiceUnavailable(c, "MAIL_PRICING_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -725,12 +655,13 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 	}
 
 	req.Reason = strings.TrimSpace(req.Reason)
-	if req.ExpectedConfigVersion == 0 || req.DrainTimeoutSeconds == 0 || req.DrainTimeoutSeconds > 3600 || len(req.Reason) > 512 {
+	expectedVersion, err := strconv.ParseUint(req.ExpectedConfigVersion, 10, 63)
+	if err != nil || expectedVersion == 0 || len(req.Reason) > 512 {
 		apires.RespondBadRequest(c, "invalid delete parameters")
 		return
 	}
 
-	command := &mailEntity.DeleteTenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DrainTimeoutSeconds: req.DrainTimeoutSeconds, Reason: req.Reason}
+	command := &mailEntity.DeleteTenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: expectedVersion, Reason: req.Reason}
 	err = h.svc.DeleteConsumer(ctx, command)
 	if err != nil {
 		switch {
@@ -750,4 +681,65 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 		return
 	}
 	apires.RespondAccepted(c, gin.H{"consumer_id": consumerID.String(), "operation_id": command.OperationID.String()}, "mail consumer deletion scheduled")
+}
+
+func (h *TenantConsumerHandler) Drain(c *gin.Context) {
+	const op = "mail.tenant.consumer.drain"
+	actor, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	workspace, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+	zone, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+	tenant, ok := pkgcontext.GetTenantID(c, op)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		apires.RespondBadRequest(c, "invalid consumer id")
+		return
+	}
+	var body struct {
+		ExpectedConfigVersion string `json:"expected_config_version"`
+		TimeoutSeconds        uint32 `json:"timeout_seconds"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&body); err != nil {
+		apires.RespondBadRequest(c, "invalid drain request")
+		return
+	}
+	if err = decoder.Decode(&struct{}{}); err != io.EOF {
+		apires.RespondBadRequest(c, "expected one JSON object")
+		return
+	}
+	version, err := strconv.ParseUint(body.ExpectedConfigVersion, 10, 63)
+	if err != nil || version == 0 || body.TimeoutSeconds == 0 || body.TimeoutSeconds > 3600 {
+		apires.RespondBadRequest(c, "invalid version or timeout")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	operation, err := h.svc.Drain(ctx, mailEntity.TenantConsumerDrainCommand{ActorUserID: actor, WorkspaceID: workspace, ZoneID: zone, TenantID: tenant, ConsumerID: id, ExpectedConfigVersion: version, TimeoutSeconds: body.TimeoutSeconds})
+	if errors.Is(err, mailTaxonomy.ErrConsumerNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"message": "consumer not found"})
+		return
+	}
+	if errors.Is(err, mailTaxonomy.ErrVersionConflict) || errors.Is(err, mailTaxonomy.ErrOperationInProgress) {
+		c.JSON(http.StatusConflict, gin.H{"message": "consumer state changed or operation in progress"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "consumer drain failed"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"consumer_id": id, "operation_id": operation, "desired_state": "draining"}})
 }

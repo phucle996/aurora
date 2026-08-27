@@ -10,7 +10,7 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

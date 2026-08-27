@@ -385,6 +385,7 @@ networks so that an upstream capability cannot be granted accidentally.
 | `AURORA_ZONE_CONFIG` | Zone metadata and immutable runtime projection |
 | `AURORA_ZONE_HEALTH` | Rebuildable current health |
 | `AURORA_ZONE_COORDINATION` | Assignment epochs and fenced scale directives |
+| `AURORA_ZONE_RUNTIME_REPLAY` | 30-second distributed CAS fence for one-use runtime assertions |
 | Pod memory | Worker registry, admission counters, mail L1, and dynamic lag |
 | MinIO/Stalwart/Kubernetes/Hypervisor | External workload side effects |
 | Zone Victoria | Read-only diagnostic telemetry |

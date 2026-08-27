@@ -11,6 +11,11 @@ func (m *StorageModule) Bootstrap(ctx context.Context) error {
 	const op = "storage.bootstrap"
 	logger.SysInfo(op, "storage module bootstrap initiated")
 
+	if m.CommercialAdmissionProjection != nil {
+		if err := m.CommercialAdmissionProjection.Start(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -19,5 +24,7 @@ func (m *StorageModule) Stop() {
 	if m == nil {
 		return
 	}
-
+	if m.CommercialAdmissionProjection != nil {
+		m.CommercialAdmissionProjection.Stop()
+	}
 }

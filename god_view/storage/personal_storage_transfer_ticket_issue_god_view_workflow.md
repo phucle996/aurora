@@ -1,8 +1,8 @@
 # Personal Storage Transfer Ticket Issue and Revoke — God View
 
 This workflow turns an already prepared personal storage access session into a
-short-lived, one-time browser transfer capability. ACR signs only a generic
-verified session and operation envelope. Zone Control reads the storage
+short-lived, one-time browser transfer capability. ACR signs only the verified
+actor/workspace/Zone/session and exact operation envelope. Zone Control reads the storage
 projection and is the only component that converts it into a public object
 path. No access key, secret key, STS credential, or presigned URL is returned.
 
@@ -32,7 +32,7 @@ storage remains a separate no-op branch.
 | Field | Issue | Revoke |
 |---|---|---|
 | `capability` | Exactly `storage.object` | Exactly `storage.object` |
-| `operation` | `upload` or `download` | `revoke` |
+| `operation` | `upload`, `download`, `multipart_initiate`, `multipart_upload_part`, `multipart_complete`, `multipart_abort` | `revoke` |
 | `access_session_id` | Prepared session UUID | UUID that issued the ticket |
 | `resource.bucket_name` | Physical bucket | Same bucket |
 | `resource.object_key` | Non-empty safe object key | Same key for audit binding |
@@ -62,8 +62,9 @@ headers. It does not read Zone KV or storage policy.
 
 | Key | Owner | Rule |
 |---|---|---|
-| `storage_access:{access_session_id}` | Auth-State Redis | Central binding of actor, bucket, Zone, actions, prefix and expiry. |
-| `AURORA_ZONE_ACCESS/{access_session_id}` | Zone Control | Durable Zone projection; missing means not ready. |
+| Schema-2 ACR assertion | Vault-signed request facts | Authenticated actor/workspace/Zone/session, operation and exact method/path/body; no Storage policy. |
+| `AURORA_ZONE_ACCESS/{access_session_id}` | Zone Control | Sole capability SoT; missing means not ready. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | Zone Control | Issue requires current `ALLOW` using the resource id derived from the Zone access record. |
 | `AURORA_ZONE_TRANSFER/{ticket_id}` | Issuer and Public Authorizer | File KV, history 1, bounded TTL, CAS state. |
 | `operation_id` | ACR and audit | Correlates issue or revoke attempts. |
 | `jti` | Zone authorizer replay cache | One assertion use per process. |
@@ -86,8 +87,8 @@ sequenceDiagram
     B->>CE: POST transfer ticket route with Cookie and JSON
     CE->>A: CheckRequest method path headers body
     A->>A: CORS rate limit body size and CSRF
-    A->>AR: Verify Trinity session and resolve Zone
-    A->>A: Validate capability operation and session UUID
+    A->>AR: Verify Trinity session and resolve workspace and Zone
+    A->>A: Validate capability operation session workspace and Zone UUIDs
     A->>A: Hash exact path and body
     A->>V: Sign assertion with Zone Control key
     alt invalid session or envelope
@@ -109,14 +110,16 @@ path hash binds the assertion to that exact ticket and prevents path replay.
 Zone Envoy Lua preserves only ACR assertion headers and the opaque access
 session marker. The Rust authorizer verifies signature, issuer, audience, Zone,
 method/path/body hashes, time window and replay `jti`. It then reads the Zone
-access projection and checks actor, actions, bucket, prefix, expiry and policy
-revision.
+access record, binds actor/workspace/Zone/session, checks record integrity,
+expiry, actions, bucket, prefix and policy revision, and uses that record's
+resource id for wallet admission.
 
 ```mermaid
 sequenceDiagram
     participant ZE as Zone Control Envoy
     participant ZA as Zone Control Authorizer
     participant KV as AURORA_ZONE_ACCESS
+    participant AD as AURORA_ZONE_ADMISSION
     participant ZC as Zone Control
     participant TV as AURORA_ZONE_TRANSFER
 
@@ -124,7 +127,8 @@ sequenceDiagram
     ZA->>ZA: Verify Ed25519 replay and request binding
     ZA->>KV: GET access session projection
     KV-->>ZA: Actor Zone bucket actions prefix expiry
-    ZA->>ZA: Validate upload or download object scope
+    ZA->>AD: Require ALLOW for record resource id on issue
+    ZA->>ZA: Validate object scope and operation-specific constraints
     ZA->>ZA: Encode TransferGrantV1 protobuf bytes and base64url header
     ZA-->>ZE: OkResponse transfer grant header
     ZE->>ZC: Forward body and trusted grant
@@ -150,6 +154,13 @@ Storage-specific invariants are enforced here:
 - Upload requires `PutObject`, a positive size no greater than 5 GiB and an
   allowed printable content type.
 - Download requires `GetObject` and has no upload size constraint.
+- Multipart operations require `PutObject`; upload parts require a positive size
+  up to 5 GiB and part number `1..10000`. Upload IDs and optional download version
+  IDs are validated then percent-encoded as query values, not inserted raw.
+- The grant binds the final public method and path including query. Initiate and
+  complete use `POST`, part upload uses `PUT`, abort uses `DELETE`, and versioned
+  download uses `GET`. Zone Control preserves this binding in the ticket and
+  rejects non-printable or oversized public paths before KV creation.
 - Object keys cannot contain NUL, traversal segments, empty segments or leave
   the access record prefix.
 - Revoke requires the same actor, Zone and access-session identity and a UUID
@@ -177,7 +188,8 @@ assertion.
 - A second request with the same ticket is denied even inside TTL.
 - Ticket KV retention is five minutes and ticket TTL is shorter.
 - ACR and Zone dependency failures fail closed.
-- No browser header can select tenant, workspace, bucket owner or Zone.
+- Browser workspace selection is signed by ACR and must equal the Zone record;
+  it cannot select a different capability owner, resource, bucket or Zone.
 - Ticket issue and revoke are generic at ACR but storage-specific at Zone
   Control, preserving dependency direction.
 
@@ -191,3 +203,33 @@ assertion.
 - `zone-control/src/transfer_ticket/store.rs`
 - `proto/zone/transfer_ticket.proto`
 - `zone-public-edge-gateway/authorizer/src/main.rs`
+
+## Wallet admission rule
+
+Ticket issue is a billable transfer capability and is denied by Zone Control
+when `AURORA_ZONE_ADMISSION/{resource_id}` is missing, expired or not `ALLOW`.
+The version fence prevents an older `ALLOW` from resurrecting after a newer
+`SUSPEND_BILLABLE`. Revoke skips this gate so cleanup remains possible while a
+wallet is restricted; Zone Control never queries Billing synchronously.
+
+```mermaid
+sequenceDiagram
+    participant E as Zone Control Envoy
+    participant A as Zone Control Authorizer
+    participant KV as AURORA_ZONE_ADMISSION
+    participant T as AURORA_ZONE_TRANSFER
+
+    E->>A: Forward issue or revoke assertion
+    alt issue
+        A->>KV: Read resource admission
+        alt missing/expired/suspended
+            A-->>E: 403 before ticket write
+        else ALLOW
+            A->>T: CAS create one-time ticket
+            A-->>E: ticket response
+        end
+    else revoke
+        A->>T: CAS revoke ticket
+        A-->>E: 204 or 404
+    end
+```

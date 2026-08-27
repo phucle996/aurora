@@ -32,12 +32,12 @@ PostgreSQL.
 |---|---|---|
 | `StorageBucketSizesSnapshotV1.event_id` | Kafka protobuf | Exactly 16 bytes; identifies one shard fragment. |
 | `zone_id` | Kafka protobuf | Exactly 16 bytes and producer key; JO validates it before projection. |
-| `observed_at_unix_ms` | Kafka protobuf | Observation timestamp; currently not a PostgreSQL ordering fence. |
+| `observed_at_unix_ms` | Kafka protobuf | Observation timestamp persisted as the PostgreSQL ordering fence. |
 | Bucket entries | Kafka protobuf | At most 50,000; non-negative size; non-empty name ≤128 beginning `ws-` or `tn-`. |
 | `storage.bucket_capacity_journal` | Zone ClickHouse | One observed byte count per bucket/shard/generation for billing. |
 | `storage.bucket_capacity_scan_completions` | Zone ClickHouse | Barrier marker; billing waits for all configured shard IDs for one hour. |
-| `storage.personal_buckets.used_bytes` | PostgreSQL | `UPDATE ... IS DISTINCT FROM` returns owner only when value changed. |
-| `storage.tenant_buckets.used_bytes` | PostgreSQL | Same distinct update, then query active tenant member IDs. |
+| `storage.personal_buckets.used_bytes` | PostgreSQL | CTE locks the target and applies only a strictly newer observation; owner is returned only when value changed. |
+| `storage.tenant_buckets.used_bytes` | PostgreSQL | Same timestamp fence, then query active tenant member IDs only when value changed. |
 | `aurora:realtime:notifications` | Shared Redis Pub/Sub | JSON `{kind:"storage",user_id,payload:{unit:"MB",sizes:{bucket:"decimal"}}}`, best effort only. |
 | Dead-letter topic | Kafka | Invalid fragments are DLQ-published before source offset commit. |
 
@@ -162,7 +162,7 @@ sequenceDiagram
 | Invalid source fragment | DLQ publish must succeed before source offset is committed. |
 | PostgreSQL update fails | Worker stops before committing current offset, causing replay; `IS DISTINCT FROM` makes replay safe. |
 | Redis notification fails | Offset commits after durable PostgreSQL update; UI learns by refetch. |
-| Fragment ordering | `observed_at_unix_ms` is not yet a PostgreSQL ordering fence; a late fragment can overwrite newer `used_bytes`. |
+| Fragment ordering | A late or replayed fragment cannot overwrite a newer `used_bytes_observed_at`; an equal observation is idempotent. |
 | Tenant runtime path | `tn-` projection is supported although tenant HTTP storage handlers remain no-op; projection support is not API enablement. |
 
 ## Code map
@@ -171,4 +171,4 @@ sequenceDiagram
 - `zone-control/src/zone_storage.rs`
 - `job-orchestrator/src/storage_usage/worker.rs`
 - `job-orchestrator/src/storage_usage/store.rs`
-- `proto/platform_transport.proto`
+- `proto/storage/storage_sizes.proto`

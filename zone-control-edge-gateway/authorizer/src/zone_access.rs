@@ -28,9 +28,18 @@ pub struct AccessRecord {
     pub policy_revision: u64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct AdmissionRecord {
+    pub wallet_version: i64,
+    pub admission_mode: String,
+    pub effective_at_unix_seconds: i64,
+    pub valid_until_unix_seconds: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct AccessStore {
     store: jetstream::kv::Store,
+    admission: jetstream::kv::Store,
     cache: Cache<String, Arc<AccessRecord>>,
     read_timeout: Duration,
     telemetry: Arc<Telemetry>,
@@ -54,9 +63,10 @@ impl AccessStore {
         .await
         .map_err(|_| AuthzError::Dependency("connect Zone NATS timed out".into()))?
         .map_err(|error| AuthzError::Dependency(format!("connect Zone NATS failed: {error}")))?;
+        let js = jetstream::new(client);
         let store = tokio::time::timeout(
             config.nats_request_timeout,
-            jetstream::new(client).get_key_value("AURORA_ZONE_ACCESS"),
+            js.get_key_value("AURORA_ZONE_ACCESS"),
         )
         .await
         .map_err(|_| AuthzError::Dependency("open Zone access KV timed out".into()))?
@@ -75,8 +85,18 @@ impl AccessStore {
                 "Zone access KV durability contract mismatch".into(),
             ));
         }
+        let admission = tokio::time::timeout(
+            config.nats_request_timeout,
+            js.get_key_value("AURORA_ZONE_ADMISSION"),
+        )
+        .await
+        .map_err(|_| AuthzError::Dependency("open Zone admission KV timed out".into()))?
+        .map_err(|error| {
+            AuthzError::Dependency(format!("open Zone admission KV failed: {error}"))
+        })?;
         let result = Self {
             store,
+            admission,
             cache: Cache::builder()
                 .max_capacity(config.access_cache_capacity)
                 .time_to_live(config.access_cache_ttl)
@@ -85,6 +105,35 @@ impl AccessStore {
             telemetry,
         };
         Ok(result)
+    }
+
+    pub async fn require_billable_admission(&self, resource_id: &str) -> Result<(), AuthzError> {
+        let entry = tokio::time::timeout(
+            self.read_timeout,
+            self.admission.entry(resource_id.to_string()),
+        )
+        .await
+        .map_err(|_| AuthzError::Dependency("Zone admission KV read timed out".into()))?
+        .map_err(|_| AuthzError::Dependency("Zone admission KV read failed".into()))?;
+        let Some(entry) = entry else {
+            return Err(AuthzError::Denied("STORAGE_WALLET_ADMISSION_MISSING"));
+        };
+        let record: AdmissionRecord = serde_json::from_slice(&entry.value)
+            .map_err(|_| AuthzError::Dependency("Zone admission record is corrupt".into()))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| AuthzError::Dependency("system clock invalid".into()))?
+            .as_secs() as i64;
+        if record.wallet_version <= 0
+            || record.admission_mode != "ALLOW"
+            || record.effective_at_unix_seconds > now
+            || record
+                .valid_until_unix_seconds
+                .is_some_and(|until| until <= now)
+        {
+            return Err(AuthzError::Denied("STORAGE_WALLET_ADMISSION_SUSPENDED"));
+        }
+        Ok(())
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<Arc<AccessRecord>>, AuthzError> {

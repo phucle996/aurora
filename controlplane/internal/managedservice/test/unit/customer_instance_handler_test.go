@@ -2,7 +2,6 @@ package unit
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,9 +23,8 @@ var customerInstanceID = uuid.MustParse("10000000-0000-7000-8000-000000000041")
 func TestPersonalInstanceDetailUsesTrustedScopeAndExcludesProtectedInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &mocks.PersonalInstanceService{GetResult: &entity.PersonalInstanceDetail{
-		ID: customerInstanceID, Code: "orders-db", Name: "Orders database", DesiredState: "active",
-		Generation: 3, RevisionSequence: 2, ObservedState: "ready", ObservedStateVersion: 7,
-		ObservedOutput: json.RawMessage(`{"endpoint":"db.internal"}`), MetadataVersion: 4,
+		ID: customerInstanceID, Code: "orders-db", Name: "Orders database", State: "active",
+		Generation: 3, RevisionSequence: 2, MetadataVersion: 4,
 		CreatedAt: time.Unix(10, 0).UTC(), UpdatedAt: time.Unix(20, 0).UTC(),
 		NetworkContract: entity.PersonalNetworkContract{Namespace: "aur-ms-p-scope", Components: []entity.PersonalNetworkComponent{{ComponentCode: "primary", ServiceName: "orders-db", PodSelector: map[string]string{"aurora.io/instance": "orders-db", "aurora.io/component": "primary"}, Ports: []entity.PersonalNetworkPort{{Name: "postgres", Port: 5432, Protocol: "TCP"}}}}},
 	}}
@@ -65,7 +63,7 @@ func TestPersonalInstanceDetailUsesTrustedScopeAndExcludesProtectedInput(t *test
 func TestPersonalCreateCanonicalizesAtHandlerAndBuildsDistinctDesiredHash(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &mocks.PersonalInstanceService{CreateResult: &entity.CreatePersonalInstanceResult{
-		ID: customerInstanceID, Code: "orders-db", Name: "Orders database", DesiredState: "provisioning", Generation: 1,
+		ID: customerInstanceID, Code: "orders-db", Name: "Orders database", State: "provisioning", Generation: 1,
 		OperationID: uuid.MustParse("10000000-0000-7000-8000-000000000042"), OperationKind: "create", OperationState: "accepted",
 	}}
 	router := gin.New()
@@ -173,8 +171,8 @@ func TestPersonalRenameValidatesAndNormalizesOnlyAtHandler(t *testing.T) {
 func TestTenantInstanceDetailForwardsPhysicalTenantScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	service := &mocks.TenantInstanceService{GetResult: &entity.TenantInstanceDetail{
-		ID: customerInstanceID, Code: "shared-kafka", Name: "Shared Kafka", DesiredState: "provisioning",
-		ObservedState: "unknown", ObservedOutput: json.RawMessage(`{}`), CreatedAt: time.Unix(10, 0).UTC(), UpdatedAt: time.Unix(20, 0).UTC(),
+		ID: customerInstanceID, Code: "shared-kafka", Name: "Shared Kafka", State: "provisioning",
+		CreatedAt: time.Unix(10, 0).UTC(), UpdatedAt: time.Unix(20, 0).UTC(),
 	}}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

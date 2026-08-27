@@ -1,14 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::Engine;
-use prost::Message;
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
-use crate::infra::redis::SessionManager;
 use crate::token::TokenManager;
 use crate::user::claims::Claims;
 
@@ -31,10 +28,7 @@ struct Assertion<'a> {
     jti: String,
     operation_id: String,
     access_session_id: &'a str,
-    binding_hash: &'a str,
     actor_id: &'a str,
-    resource_id: &'a str,
-    resource_name: &'a str,
     workspace_id: &'a str,
     zone_id: &'a str,
     capability: &'static str,
@@ -42,8 +36,6 @@ struct Assertion<'a> {
     method: &'a str,
     path_hash: String,
     body_hash: String,
-    scope: &'a str,
-    policy_revision: u64,
     issued_at: i64,
     expires_at: i64,
     audience: &'static str,
@@ -59,13 +51,13 @@ pub struct SignedControlHeaders {
 }
 
 pub struct StorageControlWorkflowContext<'a> {
-    pub session_mgr: &'a Arc<SessionManager>,
     pub token_mgr: &'a Arc<TokenManager>,
     pub config: &'a Config,
 }
 
 pub struct StorageControlRequest<'a> {
     pub claims: &'a Claims,
+    pub workspace_id: &'a str,
     pub headers: &'a HashMap<String, String>,
     pub method: &'a str,
     pub path: &'a str,
@@ -74,6 +66,7 @@ pub struct StorageControlRequest<'a> {
 
 pub struct GenericTransferTicketRequestContext<'a> {
     pub claims: &'a Claims,
+    pub workspace_id: &'a str,
     pub token_mgr: &'a Arc<TokenManager>,
     pub config: &'a Config,
     pub method: &'a str,
@@ -110,32 +103,39 @@ pub async fn attest_transfer_ticket_request(
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
         || !matches!(
             envelope.operation.as_str(),
-            "upload" | "download" | "revoke"
+            "upload"
+                | "download"
+                | "revoke"
+                | "multipart_initiate"
+                | "multipart_upload_part"
+                | "multipart_complete"
+                | "multipart_abort"
         )
         || uuid::Uuid::parse_str(&envelope.access_session_id).is_err()
-        || request.claims.zone_id.as_deref().is_none_or(str::is_empty)
+        || uuid::Uuid::parse_str(&request.claims.uid).is_err()
+        || uuid::Uuid::parse_str(request.workspace_id).is_err()
+        || request
+            .claims
+            .zone_id
+            .as_deref()
+            .is_none_or(|zone_id| uuid::Uuid::parse_str(zone_id).is_err())
     {
         return Err("Zone transfer ticket envelope is invalid");
     }
     let now = chrono::Utc::now().timestamp();
     let assertion = Assertion {
-        schema_version: 1,
+        schema_version: 2,
         operation_id: uuid::Uuid::new_v4().to_string(),
         jti: uuid::Uuid::new_v4().to_string(),
         access_session_id: &envelope.access_session_id,
-        binding_hash: "",
         actor_id: &request.claims.uid,
-        resource_id: &envelope.access_session_id,
-        resource_name: "zone-transfer-ticket",
-        workspace_id: "",
+        workspace_id: request.workspace_id,
         zone_id: request.claims.zone_id.as_deref().unwrap_or_default(),
         capability: "zone.transfer.ticket",
-        action: "issue",
+        action: &envelope.operation,
         method: request.method,
         path_hash: hex_sha256(request.path.as_bytes()),
         body_hash: hex_sha256(request.body),
-        scope: "",
-        policy_revision: 1,
         issued_at: now,
         expires_at: now.saturating_add(ASSERTION_TTL_SECONDS),
         audience: ASSERTION_AUDIENCE,
@@ -168,13 +168,10 @@ pub async fn authorize_storage_and_sign(
     workflow: StorageControlWorkflowContext<'_>,
     request: StorageControlRequest<'_>,
 ) -> Result<SignedControlHeaders, &'static str> {
-    let StorageControlWorkflowContext {
-        session_mgr,
-        token_mgr,
-        config,
-    } = workflow;
+    let StorageControlWorkflowContext { token_mgr, config } = workflow;
     let StorageControlRequest {
         claims,
+        workspace_id,
         headers,
         method,
         path,
@@ -193,60 +190,35 @@ pub async fn authorize_storage_and_sign(
         .or_else(|| headers.get("X-Aurora-Access-Session-Id"))
         .filter(|value| uuid::Uuid::parse_str(value).is_ok())
         .ok_or("storage access session is missing")?;
-    let mut connection = session_mgr
-        .get_connection()
-        .await
-        .map_err(|_| "auth-state redis unavailable")?;
-    let encoded: Option<Vec<u8>> = connection
-        .get(format!("storage_access:{{{access_session_id}}}"))
-        .await
-        .map_err(|_| "auth-state redis read failed")?;
-    let record = crate::storage::access_record_proto::StorageAccessRecord::decode(
-        encoded
+    if uuid::Uuid::parse_str(&claims.uid).is_err()
+        || uuid::Uuid::parse_str(workspace_id).is_err()
+        || claims
+            .zone_id
             .as_deref()
-            .ok_or("storage access session not found")?,
-    )
-    .map_err(|_| "storage access session is corrupt")?;
-    let now = chrono::Utc::now().timestamp();
-    if record.schema_version != 1
-        || record.access_session_id != *access_session_id
-        || record.actor_id != claims.uid
-        || record.zone_id != claims.zone_id.as_deref().unwrap_or_default()
-        || record.expires_at_unix_seconds <= now as u64
-        || record.policy_revision == 0
+            .is_none_or(|zone_id| uuid::Uuid::parse_str(zone_id).is_err())
     {
-        return Err("storage access session binding mismatch");
+        return Err("storage request context is incomplete");
     }
     let action = action_for_request(method, path).ok_or("storage route is not allowed")?;
     if !storage_body_is_allowed(action, body) {
         return Err("storage request body semantics are forbidden");
     }
-    let allowed: HashSet<&str> = record.actions.iter().map(String::as_str).collect();
-    if !allowed.contains(action)
-        || !path_targets_bucket(path, &record.bucket_name, &record.key_prefix)
-    {
-        return Err("storage request exceeds access scope");
-    }
 
+    let now = chrono::Utc::now().timestamp();
     let jti = uuid::Uuid::new_v4().to_string();
     let assertion = Assertion {
-        schema_version: 1,
+        schema_version: 2,
         operation_id: uuid::Uuid::new_v4().to_string(),
         jti,
         access_session_id,
-        binding_hash: &record.binding_hash,
-        actor_id: &record.actor_id,
-        resource_id: &record.resource_id,
-        resource_name: &record.bucket_name,
-        workspace_id: &record.workspace_id,
-        zone_id: &record.zone_id,
+        actor_id: &claims.uid,
+        workspace_id,
+        zone_id: claims.zone_id.as_deref().unwrap_or_default(),
         capability: ASSERTION_CAPABILITY,
         action,
         method,
         path_hash: hex_sha256(path.as_bytes()),
         body_hash: hex_sha256(body),
-        scope: &record.key_prefix,
-        policy_revision: record.policy_revision,
         issued_at: now,
         expires_at: now.saturating_add(ASSERTION_TTL_SECONDS),
         audience: ASSERTION_AUDIENCE,
@@ -319,46 +291,6 @@ fn action_for_request(method: &str, path: &str) -> Option<&'static str> {
     None
 }
 
-fn path_targets_bucket(path: &str, bucket_name: &str, key_prefix: &str) -> bool {
-    let path_only = path.split('?').next().unwrap_or(path);
-    let has_query = path.contains('?');
-    let lowered = path_only.to_ascii_lowercase();
-    // Envoy and S3 must see the same canonical path. Reject encoded slash/dot
-    // segments and traversal-looking separators instead of guessing which
-    // decoder will run first.
-    if lowered.contains("%2f")
-        || lowered.contains("%5c")
-        || lowered.contains("%2e")
-        || lowered.contains("%25")
-        || path_only.contains('\\')
-        || path_only.contains("//")
-        || path_only
-            .split('/')
-            .any(|segment| segment == "." || segment == "..")
-    {
-        return false;
-    }
-    let expected = format!("/zone-control/v1/storage/buckets/{bucket_name}");
-    if !path_only.starts_with(&expected) {
-        return false;
-    }
-    if path_only.len() > expected.len() && path_only.as_bytes()[expected.len()] != b'/' {
-        return false;
-    }
-    // Only ListObjectsV2 has an explicit query contract. Object versions and
-    // every other S3 subresource require a distinct capability.
-    if has_query && !path_only.ends_with("/objects") {
-        return false;
-    }
-    if key_prefix.is_empty() {
-        return !path_only.ends_with("/objects") || list_query_is_allowed(path, key_prefix);
-    }
-    if let Some((_, key)) = path_only.split_once("/objects/") {
-        return key.starts_with(key_prefix);
-    }
-    path_only.ends_with("/objects") && list_query_is_allowed(path, key_prefix)
-}
-
 fn contains_xml_element(body: &[u8], forbidden_local_name: &str) -> bool {
     let Ok(xml) = std::str::from_utf8(body) else {
         return true;
@@ -399,82 +331,6 @@ fn storage_body_is_allowed(action: &str, body: &[u8]) -> bool {
         "PutObject" => true,
         _ => false,
     }
-}
-
-fn list_query_is_allowed(path: &str, key_prefix: &str) -> bool {
-    let Some((_, query)) = path.split_once('?') else {
-        return false;
-    };
-    if !has_valid_percent_encoding(query) {
-        return false;
-    }
-    let mut list_type = false;
-    let mut prefix = false;
-    let mut delimiter = false;
-    let mut max_keys = false;
-    let mut continuation = false;
-    let mut start_after = false;
-    let mut encoding = false;
-    let mut fetch_owner = false;
-    for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        // A lossy decode cannot be used at an authorization boundary because
-        // MinIO may canonicalize the original bytes differently.
-        if name.contains('\u{fffd}') || value.contains('\u{fffd}') {
-            return false;
-        }
-        match name.as_ref() {
-            "list-type" if !list_type && value == "2" => list_type = true,
-            "prefix"
-                if !prefix
-                    && value.len() <= 1_024
-                    && (key_prefix.is_empty() || value.starts_with(key_prefix)) =>
-            {
-                prefix = true
-            }
-            "delimiter" if !delimiter && value.len() <= 1_024 => delimiter = true,
-            "max-keys"
-                if !max_keys
-                    && value
-                        .parse::<u16>()
-                        .is_ok_and(|count| (1..=1_000).contains(&count)) =>
-            {
-                max_keys = true
-            }
-            "continuation-token" if !continuation && !value.is_empty() && value.len() <= 4_096 => {
-                continuation = true
-            }
-            "start-after"
-                if !start_after
-                    && value.len() <= 1_024
-                    && (key_prefix.is_empty() || value.starts_with(key_prefix)) =>
-            {
-                start_after = true
-            }
-            "encoding-type" if !encoding && value == "url" => encoding = true,
-            "fetch-owner" if !fetch_owner && value == "false" => fetch_owner = true,
-            _ => return false,
-        }
-    }
-    list_type && (key_prefix.is_empty() || prefix) && !(continuation && start_after)
-}
-
-fn has_valid_percent_encoding(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            if index + 2 >= bytes.len()
-                || !bytes[index + 1].is_ascii_hexdigit()
-                || !bytes[index + 2].is_ascii_hexdigit()
-            {
-                return false;
-            }
-            index += 3;
-        } else {
-            index += 1;
-        }
-    }
-    true
 }
 
 fn hex_sha256(value: &[u8]) -> String {

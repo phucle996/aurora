@@ -1,5 +1,7 @@
 # Personal Storage Credential Create — God View
 
+> **Critical-route revision (2026-08-26):** credential issuance uses the public `/api/v1/critical/storage/...` route. ACR consumes the exact session proof before the sole `/api/v1/personal/critical/storage/...` rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
+
 This workflow creates an additional legacy MinIO access key. It is distinct from
 metadata-only access sessions: it returns a plaintext `secret_key` to browser
 and sends it inside an encrypted asynchronous provisioning command. The
@@ -47,7 +49,7 @@ permission authority, but policy validation has limitations below.
 
 | Status | `data` fields |
 |---|---|
-| `201` | `id`, `access_key`, `secret_key`, `policy`, `created_at`, `updated_at` |
+| `201` | `id`, `access_key`, `secret_key`, `policy`, `state=CREATING`, `created_at`, `updated_at` |
 | `400` | Invalid body or policy violates bucket boundary |
 | `403` | ACR, context or `storage:credential:write` denial |
 | `404` | No bucket with path name in selected owned workspace |
@@ -58,7 +60,7 @@ permission authority, but policy validation has limitations below.
 | Key / transport | Store | Operation | Invariant |
 |---|---|---|---|
 | Trinity session and workspace cookie | Auth-State Redis / ACR | Verify and inject context | Browser cannot choose owner route or trusted workspace header. |
-| `storage.personal_credentials` | PostgreSQL | Insert access key and policy | Secret key is not stored in this table. |
+| `storage.personal_credentials` | PostgreSQL | Insert access key, policy and `state=CREATING` | Secret key is not stored in this table; the row remains the Central resource promise until JO settlement. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert `storage.credential.create` | Protected `CredentialSync` contains plaintext secret only inside ciphertext. |
 | Zone command/results topics | Kafka | At-least-once provisioning and terminal result | Result decides whether Central credential survives. |
 
@@ -135,9 +137,10 @@ sequenceDiagram
 
 Dataplane decodes `CredentialSync` and requires non-empty access key, secret key
 and policy. It creates MinIO user, writes `policy-{access_key}`, then attaches
-that policy. It emits terminal result. JO deletes command outbox on success and
-retains Central credential. On failure it marks outbox failed and deletes the
-new personal credential row. It may then enqueue a customer notification.
+that policy. It emits terminal result. JO transitions the resource first:
+`CREATING -> READY` on success or `CREATING -> ERROR` on terminal failure; only
+after that CTE returns a resource row may it settle the generic outbox. It may
+then enqueue a customer notification.
 
 ```mermaid
 sequenceDiagram
@@ -157,12 +160,12 @@ sequenceDiagram
     alt success
         DP->>KR: SUCCEEDED
         KR-->>JO: result
-        JO->>PG: Delete command outbox and retain credential
+        JO->>PG: Credential CREATING->READY, then outbox SUCCEEDED
         JO->>N: Best effort user completion notification
     else failure
         DP->>KR: FAILED
         KR-->>JO: result
-        JO->>PG: Mark failed and delete credential row
+        JO->>PG: Credential CREATING->ERROR, then outbox FAILED
         JO->>N: Best effort failure notification
     end
 ```
@@ -173,7 +176,7 @@ sequenceDiagram
 |---|---|
 | HTTP `201` before MinIO completes | Caller has a secret that can become unusable if Zone provisioning later fails. Completion state is asynchronous. |
 | Policy contains only `Deny` or no `Statement` | Current validator can accept it because it only constrains `Allow` resources. This may create a useless credential, not broader access. |
-| MinIO user created, later policy operation fails | Executor returns error without compensating user/policy cleanup. Central row is removed by JO, leaving possible Zone residue. |
+| MinIO user created, later policy operation fails | Executor returns error without compensating user/policy cleanup. Central row remains `ERROR`, preserving evidence for reconciliation of possible Zone residue. |
 | Duplicate command | Executor create-user path has no explicit already-exists success mapping. |
 | Path parameter confusion | Calling create with bucket UUID will almost always be `404`; calling list/delete with physical name is `400`. This is an API contract inconsistency. |
 | Workspace Zone differs from current ACR Zone | Repository CTE checks bucket name, workspace and user but not bucket/workspace Zone against outbox Zone. The credential command may reach a Zone different from the physical bucket. |
@@ -186,3 +189,28 @@ sequenceDiagram
 - `controlplane/internal/storage/repository/personal_credential_repo.go`
 - `dataplane/src/executor/storage/credential.rs`
 - `job-orchestrator/src/results/storage/credential.rs`
+
+## Wallet admission gate
+
+Creating a credential adds a billable access path. The personal owner projection
+must be effective and `ALLOW` before the repository locks the owned bucket and
+writes the credential/protected-outbox transaction. Missing, stale or suspended
+admission returns `503 STORAGE_WALLET_ADMISSION_UNAVAILABLE`; revoke remains
+available for cleanup.
+
+```mermaid
+sequenceDiagram
+    participant S as PersonalCredentialService
+    participant W as CommercialAdmissionRepository
+    participant R as PersonalCredentialRepository
+    participant DB as Controlplane PostgreSQL
+
+    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
+    W->>DB: Read owner admission projection
+    alt denied or stale
+        W-->>S: ErrCommercialAdmissionDenied
+    else ALLOW
+        S->>R: Create credential and protected Zone command
+        R->>DB: Lock bucket and commit credential/outbox
+    end
+```

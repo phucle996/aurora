@@ -370,4 +370,47 @@ impl MinioAdminClient {
             stderr.trim()
         ))
     }
+
+    /// [COMMENT]: Bật hoặc tạm dừng Object Versioning cho bucket trên MinIO.
+    /// Dùng: mc version enable <alias>/<bucket_name> hoặc mc version suspend <alias>/<bucket_name>
+    pub async fn set_bucket_versioning(
+        &self,
+        bucket_name: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let op = "storage.admin.set_versioning";
+
+        self.setup_alias().await?;
+
+        let action = if enabled { "enable" } else { "suspend" };
+        let target = format!("{}/{}", self.alias, bucket_name);
+        let output = Command::new("mc")
+            .arg("version")
+            .arg(action)
+            .arg(&target)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run 'mc version {}': {}", action, e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if output.status.success() {
+            Logger::sys_info(
+                op,
+                &format!(
+                    "Bucket '{}' versioning set to '{}' via mc.",
+                    bucket_name, action
+                ),
+            );
+            return Ok(());
+        }
+
+        Err(format!(
+            "mc version {} failed: stdout={} stderr={}",
+            action,
+            stdout.trim(),
+            stderr.trim()
+        ))
+    }
 }

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package costmanager.api.billing.pricing.hypervisor.v1;
+
+option go_package = "cost-manager/api/internal/genproto/billing/pricing/hypervisor/v1;hypervisorpricingv1";
+
+message HypervisorPricingSnapshotCacheEntryV1 {
+  bytes pricing_schedule_id = 1;
+  bytes version_id = 2;
+  string code = 3;
+  string charge_kind_code = 4;
+  string currency = 5;
+  int32 version_number = 6;
+  int64 effective_from_unix_micro = 7;
+  optional int64 effective_to_unix_micro = 8;
+  bytes checksum_sha256 = 9;
+  repeated HypervisorPricingScalarBracketV1 brackets = 10;
+  string raw_input_unit = 11;
+}
+
+message HypervisorPricingScalarBracketV1 {
+  int64 range_start_quantity = 1;
+  optional int64 range_end_quantity = 2;
+  int64 price_numerator_micro_units = 3;
+  int64 price_denominator_quantity = 4;
+}

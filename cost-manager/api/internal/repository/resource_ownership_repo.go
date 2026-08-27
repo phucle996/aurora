@@ -18,6 +18,7 @@ import (
 
 	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
+	billingTaxonomy "cost-manager/api/internal/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -29,12 +30,12 @@ type resourceOwnershipRepository struct {
 	db *pgxpool.Pool
 }
 
-// [COMMENT]: NewResourceOwnershipRepository khởi tạo instance repository thực thi SQL cho sự kiện vòng đời.
+// NewResourceOwnershipRepository khởi tạo instance repository thực thi SQL cho sự kiện vòng đời.
 func NewResourceOwnershipRepository(db *pgxpool.Pool) billingRepoInterface.ResourceOwnershipRepository {
 	return &resourceOwnershipRepository{db: db}
 }
 
-// [COMMENT]: ApplyLifecycleEvent thực thi transaction nguyên tử gồm: Inbox Idempotency, Advisory Lock, Out-of-order Head Check và Projection Upsert.
+// ApplyResourceOwnershipEvent thực thi transaction nguyên tử gồm: Inbox Idempotency, Advisory Lock, Out-of-order Head Check và Projection Upsert.
 func (r *resourceOwnershipRepository) ApplyResourceOwnershipEvent(ctx context.Context, event *entity.ResourceOwnershipEvent) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -54,7 +55,7 @@ func (r *resourceOwnershipRepository) ApplyResourceOwnershipEvent(ctx context.Co
 	).Scan(&dummy)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		// [COMMENT]: Cùng event_id nhưng payload khác là collision/corruption, không phải retry hợp lệ.
+		// Cùng event_id nhưng payload khác là collision/corruption, không phải retry hợp lệ.
 		var storedHash string
 		if hashErr := tx.QueryRow(ctx,
 			`SELECT payload_hash FROM billing.ownership_event_inbox WHERE event_id = $1`,
@@ -65,7 +66,7 @@ func (r *resourceOwnershipRepository) ApplyResourceOwnershipEvent(ctx context.Co
 		if storedHash != event.PayloadHashHex {
 			return fmt.Errorf(
 				"%w: event_id %s reused with a different payload",
-				entity.ErrResourceOwnershipIntegrity,
+				billingTaxonomy.ErrResourceOwnershipIntegrity,
 				event.EventID,
 			)
 		}
@@ -79,7 +80,7 @@ func (r *resourceOwnershipRepository) ApplyResourceOwnershipEvent(ctx context.Co
 			pgErr.ConstraintName == "uq_ownership_inbox_resource_version" {
 			return fmt.Errorf(
 				"%w: resource %s source version %d is already bound to another event",
-				entity.ErrResourceOwnershipIntegrity,
+				billingTaxonomy.ErrResourceOwnershipIntegrity,
 				event.ResourceID,
 				event.SourceVersion,
 			)

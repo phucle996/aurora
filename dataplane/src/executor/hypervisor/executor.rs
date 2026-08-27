@@ -11,6 +11,7 @@ pub async fn dispatch_hypervisor_job(
 ) -> Result<ExecutionResult, ExecutorError> {
     match action {
         "vm.create" => processor::execute_vm_create(payload, runtime).await,
+        "vm.delete" => processor::execute_vm_delete(payload, runtime).await,
         "image.import" => processor::execute_image_import(payload, runtime).await,
         "image.delete" => processor::execute_image_delete(payload, runtime).await,
         _ => Err(ExecutorError::ExecutionFailed(format!(

@@ -57,12 +57,10 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 	if m.Hypervisor != nil && m.Hypervisor.IsEnabled() {
 		hypervisor.RegisterRoutes(router, m.Hypervisor)
 	} else {
-		fallbackGroup := router.Group("/api/v1/hypervisor")
-		fallbackGroup.Any("/*any", func(c *gin.Context) {
+		router.Any("/api/v1/hypervisor/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "HYPERVISOR_MODULE_DEGRADED: Phân hệ Hypervisor hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
-		personalFallbackGroup := router.Group("/api/v1/personal/hypervisor")
-		personalFallbackGroup.Any("/*any", func(c *gin.Context) {
+		router.Any("/api/v1/personal/hypervisor/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "HYPERVISOR_MODULE_DEGRADED: Phân hệ Hypervisor hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
 	}
@@ -71,12 +69,10 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 	if m.Mail != nil && m.Mail.IsEnabled() {
 		mail.RegisterRoutes(router, m.Mail)
 	} else {
-		personalFallback := router.Group("/api/v1/personal/mail")
-		personalFallback.Any("/*any", func(c *gin.Context) {
+		router.Any("/api/v1/personal/mail/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "MAIL_MODULE_DEGRADED: Phân hệ gửi Mail hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
-		tenantFallback := router.Group("/api/v1/tenant/mail")
-		tenantFallback.Any("/*any", func(c *gin.Context) {
+		router.Any("/api/v1/tenant/mail/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "MAIL_MODULE_DEGRADED: Phân hệ gửi Mail hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
 	}
@@ -85,8 +81,7 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 	if m.Storage != nil && m.Storage.IsEnabled() {
 		storage.RegisterRoutes(router, m.Storage)
 	} else {
-		fallbackGroup := router.Group("/api/v1/storage")
-		fallbackGroup.Any("/*any", func(c *gin.Context) {
+		router.Any("/api/v1/storage/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "STORAGE_MODULE_DEGRADED: Phân hệ Object Storage hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
 	}

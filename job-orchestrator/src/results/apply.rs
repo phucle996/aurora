@@ -92,6 +92,9 @@ pub async fn apply_result(
     let db_result: Result<Option<Row>, Box<dyn std::error::Error>> = async {
         match wire.source_domain.as_str() {
             "MAIL" => {
+                if wire.job_topic == "mail.consumer.drain" {
+                    return mail::consumer::apply_drain_result(pg_client, result).await;
+                }
                 mail::apply::apply_mail_result(
                     pg_client,
                     result.job_id,
@@ -105,11 +108,15 @@ pub async fn apply_result(
             }
             "STORAGE" => storage::apply::apply_storage_result(
                 pg_client,
-                result.job_id,
-                &wire.job_topic,
-                &wire.result_status,
-                error_code,
-                error_message,
+                storage::apply::StorageResultRequest {
+                    job_id: result.job_id,
+                    job_topic: &wire.job_topic,
+                    status: &wire.result_status,
+                    error_code,
+                    error_message,
+                    result_payload: &wire.result_payload,
+                    result_payload_schema_version: wire.result_payload_schema_version,
+                },
             )
             .await
             .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string())),
@@ -117,29 +124,50 @@ pub async fn apply_result(
                 if wire.job_topic.starts_with("hypervisor.image.") {
                     hypervisor::apply_image_result(
                         pg_client,
-                        result.job_id,
-                        &wire.job_topic,
-                        &wire.result_status,
-                        error_code,
-                        error_message,
-                        &wire.result_payload,
-                        wire.result_payload_schema_version,
+                        hypervisor::ImageResultRequest {
+                            job_id: result.job_id,
+                            job_topic: &wire.job_topic,
+                            status: &wire.result_status,
+                            error_code,
+                            error_message,
+                            result_payload: &wire.result_payload,
+                            result_payload_schema_version: wire.result_payload_schema_version,
+                        },
+                    )
+                    .await
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+                } else if wire.job_topic == "hypervisor.vm.create" {
+                    hypervisor::apply_vm_create_result(
+                        pg_client,
+                        hypervisor::VmResultRequest {
+                            job_id: result.job_id,
+                            job_topic: &wire.job_topic,
+                            status: &wire.result_status,
+                            error_code,
+                            error_message,
+                            result_payload: &wire.result_payload,
+                            result_payload_schema_version: wire.result_payload_schema_version,
+                        },
+                    )
+                    .await
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+                } else if wire.job_topic == "hypervisor.vm.delete" {
+                    hypervisor::apply_vm_delete_result(
+                        pg_client,
+                        hypervisor::VmResultRequest {
+                            job_id: result.job_id,
+                            job_topic: &wire.job_topic,
+                            status: &wire.result_status,
+                            error_code,
+                            error_message,
+                            result_payload: &wire.result_payload,
+                            result_payload_schema_version: wire.result_payload_schema_version,
+                        },
                     )
                     .await
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
                 } else {
-                    hypervisor::apply_vm_result(
-                        pg_client,
-                        result.job_id,
-                        &wire.job_topic,
-                        &wire.result_status,
-                        error_code,
-                        error_message,
-                        &wire.result_payload,
-                        wire.result_payload_schema_version,
-                    )
-                    .await
-                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+                    Err(format!("unsupported Hypervisor result topic '{}'", wire.job_topic).into())
                 }
             }
             "MANAGED_SERVICE" => {
@@ -247,9 +275,6 @@ pub async fn apply_result(
             .actor_user_id
             .as_deref()
             .filter(|value| !value.is_empty())
-            // Access preparation is an internal authorization projection. It
-            // must not create a user notification or expose payload details.
-            .filter(|_| wire.job_topic != "storage.access.prepare")
         {
             let current_context = opentelemetry::Context::current();
             let propagation =
@@ -307,11 +332,19 @@ pub async fn apply_result(
             );
             if let Err(error) = notification_result {
                 crate::observability::metrics::MetricsManager::record_notification_failed();
-                if wire.source_domain == "MANAGED_SERVICE" {
+                if wire.source_domain == "MANAGED_SERVICE"
+                    || (wire.source_domain == "MAIL"
+                        && matches!(
+                            wire.job_topic.as_str(),
+                            "mail.consumer.drain" | "mail.consumer.delete"
+                        ))
+                    || (wire.source_domain == "HYPERVISOR"
+                        && wire.job_topic == "hypervisor.vm.delete")
+                {
                     Logger::sys_error_with_fields(
                         "results.notify",
-                        "MANAGED_SERVICE_NOTIFICATION_RETRY_PENDING",
-                        "Business result is durable; Kafka offset remains unsettled until the stable timeline projection is enqueued",
+                        "DURABLE_NOTIFICATION_RETRY_PENDING",
+                        "Business result is durable; Kafka offset remains unsettled until the stable user timeline event is enqueued",
                         &error.to_string(),
                         LogFields {
                             operation_id: Some(&result.job_id.to_string()),

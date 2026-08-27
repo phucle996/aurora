@@ -17,7 +17,7 @@ The browser calls a neutral route, but this is a `/tenant` financial mutation. A
 
 ## Discrepancy requiring security-contract decision
 
-The old document claimed this workflow requires a one-time Billing session proof. The current code does **not** implement that claim: `acr/src/gateway/ext_authz.rs` verifies a Billing proof only for paths beginning `/api/v1/billing/critical/`, while this neutral route is `/api/v1/billing/wallet/top-ups`; `route.go` applies `AuthorizeTenant(..., critical=true)` but not `RequireSessionProof()`. Therefore the AS-IS contract below is fresh authorization plus CSRF, **not** proof-of-possession. This must be decided before this document can state that a proof protects top-up creation:
+The old document claimed this workflow requires a one-time Billing session proof. The current code does **not** implement that claim: `acr/src/gateway/ext_authz.rs` verifies a Billing proof only for paths beginning `/api/v1/billing/critical/`, while this neutral route is `/api/v1/billing/wallet/top-ups`; `route.go` applies `Authorize(..., critical=true)` but not `RequireSessionProof()`. Therefore the AS-IS contract below is fresh authorization plus CSRF, **not** proof-of-possession. This must be decided before this document can state that a proof protects top-up creation:
 
 1. make the route a critical ACR route and add `RequireSessionProof`, or
 2. formally keep this mutation CSRF + fresh-IAM-authorized only.
@@ -93,23 +93,26 @@ sequenceDiagram
 
 ## Phase 2 — Fresh scoped tenant authorization
 
-`ContextInjector` supplies ACR-authenticated user and tenant. `AuthorizeTenant(\"billing:wallet:top_up\", true)` calls `ResolveTenant` with `critical=true`, which bypasses both the 2-second tenant L1 and 5-second Auth Redis L2. It subscribes before publishing a 48-byte user/tenant request to IAM, waits at most 900 ms, validates the exact tenant/workspace-zero five-part permission, and does not cache the critical result.
+ContextInjector supplies trusted user and tenant. Critical tenant authorization skips Cost L1 and Auth Redis before asking IAM to refill the shared projection. IAM replies with one-byte ok only after the write; Cost then re-reads the projection and requires the exact five-part permission.
 
 ```mermaid
 sequenceDiagram
-    participant M as AuthorizeTenant
-    participant AR as AuthorizationResolver
+    participant M as Authorize
+    participant AR as TenantAuthorizationMiddleware
+    participant L2 as Auth Redis
     participant SR as Shared Redis PubSub
     participant IAM as IAM authorization responder
-    M->>AR: ResolveTenant user tenant critical true
+    M->>AR: tenant authorization user tenant critical true
     Note over AR: skip tenant L1 and Auth Redis L2
     AR->>SR: subscribe unique reply channel
     AR->>SR: publish request ID user ID tenant ID
     SR->>IAM: billing authorization request
-    IAM-->>SR: five-part tenant permissions
+    IAM->>L2: write tenant projection
+    IAM-->>SR: one-byte ok
     SR-->>AR: response before 900ms deadline
+    AR->>L2: re-read tenant projection
     AR->>AR: validate tenant and workspace-zero prefix
-    AR-->>M: allowed set without cache write
+    AR-->>M: allowed set
     M->>M: require billing wallet top_up
 ```
 
@@ -176,4 +179,4 @@ The checkout signature covers `aurora.checkout.v1`, intent ID, owner type `TENAN
 
 ## Code map
 
-[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/app/route.go`](../../cost-manager/api/internal/app/route.go), [`cost-manager/api/internal/transport/middleware/identity.go`](../../cost-manager/api/internal/transport/middleware/identity.go), [`cost-manager/api/internal/service/authorization_resolver.go`](../../cost-manager/api/internal/service/authorization_resolver.go), [`cost-manager/api/internal/service/tenant_payment_service.go`](../../cost-manager/api/internal/service/tenant_payment_service.go), and [`cost-manager/api/internal/repository/tenant_payment_repo.go`](../../cost-manager/api/internal/repository/tenant_payment_repo.go).
+[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/app/route.go`](../../cost-manager/api/internal/app/route.go), [`cost-manager/api/internal/transport/middleware/tenant_authorization.go`](../../cost-manager/api/internal/transport/middleware/tenant_authorization.go), [`cost-manager/api/internal/service/tenant_payment_service.go`](../../cost-manager/api/internal/service/tenant_payment_service.go), and [`cost-manager/api/internal/repository/tenant_payment_repo.go`](../../cost-manager/api/internal/repository/tenant_payment_repo.go).

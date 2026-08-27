@@ -41,10 +41,10 @@ func TestTenantInvitationRoutesKeepMeBeforeCriticalAndMutationsProtected(t *test
 	}
 	source := string(routeSource)
 	for _, required := range []string{
-		`POST("/critical/hierarchy/tenant-invitations"`,
-		`DELETE("/critical/hierarchy/tenant-invitations/:invitation_id"`,
-		`GET("/hierarchy/tenant-invitations/preview"`,
-		`POST("/critical/hierarchy/tenant-invitations/join"`,
+		`POST("/api/v1/tenant/critical/hierarchy/tenant-invitations"`,
+		`DELETE("/api/v1/tenant/critical/hierarchy/tenant-invitations/:invitation_id"`,
+		`GET("/api/v1/me/hierarchy/tenant-invitations/preview"`,
+		`POST("/api/v1/me/critical/hierarchy/tenant-invitations/join"`,
 		"middleware.RequireSessionProof()",
 	} {
 		if !strings.Contains(source, required) {

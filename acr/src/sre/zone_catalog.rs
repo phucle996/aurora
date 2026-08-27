@@ -2,7 +2,7 @@
 // 📂 sre/zone_catalog.rs — SRE Admin Zone Catalog Handler (GET /admin/hierarchy/zones/catalog)
 // ======================================================================================================
 
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::get_all_zones;
 use crate::observability::logger::Logger;
@@ -26,7 +26,7 @@ pub async fn handle_admin_zone_catalog(
     _session_mgr: &Arc<SessionManager>,
     _token_mgr: &Arc<SreTokenManager>,
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     _client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,

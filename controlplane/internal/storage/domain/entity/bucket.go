@@ -6,12 +6,20 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	BucketStatusProvisioning = "PROVISIONING"
+	BucketStatusReady        = "READY"
+	BucketStatusUpdating     = "UPDATING"
+	BucketStatusDeleting     = "DELETING"
+	BucketStatusFailed       = "FAILED"
+)
+
 // [COMMENT]: PersonalBucket đại diện cho thực thể nhóm lưu trữ dữ liệu cá nhân.
-// Status đã bị loại bỏ — bucket hoặc tồn tại (ready) hoặc không (đã xóa khi tạo thất bại).
 type PersonalBucket struct {
 	ID                   uuid.UUID // ID định danh duy nhất của bucket
 	Name                 string    // Tên bucket vật lý (phải unique toàn hệ thống)
-	ZoneID               uuid.UUID // ID of Infrastructure Zone containing this bucket
+	ZoneID               uuid.UUID // ID of Infrastructure Zone chứa bucket này
+	Status               string    // PROVISIONING | READY | UPDATING | DELETING | FAILED
 	CapacityQuotaBytes   int64     // Hạn mức dung lượng lưu trữ tối đa (Bytes)
 	UsedBytes            int64     // Hạn mức dung lượng lưu trữ hiện tại đang sử dụng (Bytes)
 	CreatedAt            time.Time // Thời gian tạo bản ghi
@@ -23,16 +31,17 @@ type PersonalBucket struct {
 	RetentionDays        int64
 	LegalHoldEnabled     bool
 	Tags                 map[string]string
+	LifecycleRules       []BucketLifecycleRule
 }
 
 // [COMMENT]: TenantBucket đại diện cho thực thể nhóm lưu trữ dữ liệu doanh nghiệp.
-// Status đã bị loại bỏ — bucket hoặc tồn tại (ready) hoặc không (đã xóa khi tạo thất bại).
 type TenantBucket struct {
 	ID                   uuid.UUID // ID định danh duy nhất của bucket
 	Name                 string    // Tên bucket vật lý (phải unique toàn hệ thống)
 	WorkspaceID          uuid.UUID // ID của Workspace chứa bucket này
 	ZoneID               uuid.UUID // ID của Infrastructure Zone chứa bucket này
 	TenantID             uuid.UUID // ID của tổ chức doanh nghiệp sở hữu bucket (NOT NULL)
+	Status               string    // PROVISIONING | READY | UPDATING | DELETING | FAILED
 	CapacityQuotaBytes   int64     // Hạn mức dung lượng lưu trữ tối đa (Bytes)
 	UsedBytes            int64     // Hạn mức dung lượng lưu trữ hiện tại đang sử dụng (Bytes)
 	CreatedAt            time.Time // Thời gian tạo bản ghi
@@ -44,6 +53,7 @@ type TenantBucket struct {
 	RetentionDays        int64
 	LegalHoldEnabled     bool
 	Tags                 map[string]string
+	LifecycleRules       []BucketLifecycleRule
 }
 
 // [COMMENT]: CreatePersonalBucket chứa các tham số dùng để khởi tạo Bucket cá nhân.
@@ -94,7 +104,6 @@ type CreatedBucketResult struct {
 // [COMMENT]: DeletePersonalBucket chứa thông tin tham số để thực hiện xóa bucket cá nhân và credentials liên quan.
 type DeletePersonalBucket struct {
 	BucketID    uuid.UUID
-	BucketName  string
 	WorkspaceID uuid.UUID
 	ZoneID      uuid.UUID
 	UserID      uuid.UUID
@@ -105,12 +114,13 @@ type DeleteTenantBucket struct {
 	BucketID    uuid.UUID
 	BucketName  string
 	WorkspaceID uuid.UUID
+	TenantID    uuid.UUID
 	ZoneID      uuid.UUID
 	UserID      uuid.UUID
 }
 
-// StorageAccessSession is the short-lived Central authorization projection
-// consumed by ACR and mirrored to the target Zone. It is never an S3 secret.
+// StorageAccessSession is the short-lived command that creates a capability
+// record in the target Zone. The command never creates a Central credential.
 type StorageAccessSession struct {
 	AccessSessionID      uuid.UUID
 	BindingHash          string
@@ -123,4 +133,58 @@ type StorageAccessSession struct {
 	KeyPrefix            string
 	ExpiresAtUnixSeconds uint64
 	PolicyRevision       uint64
+}
+
+type StorageAccessSessionStatus struct {
+	State       string
+	CompletedAt *time.Time
+	ErrorCode   *string
+}
+
+type BucketLifecycleRule struct {
+	ID                                 string `json:"id"`
+	Enabled                            bool   `json:"enabled"`
+	Prefix                             string `json:"prefix"`
+	ExpirationDays                     int    `json:"expiration_days"`
+	NoncurrentVersionExpirationDays    int    `json:"noncurrent_version_expiration_days"`
+	AbortIncompleteMultipartUploadDays int    `json:"abort_incomplete_multipart_upload_days"`
+}
+
+type UpdatePersonalBucketVersioning struct {
+	BucketID          uuid.UUID
+	WorkspaceID       uuid.UUID
+	VersioningEnabled bool
+}
+
+type UpdatePersonalBucketLifecycle struct {
+	BucketID    uuid.UUID
+	WorkspaceID uuid.UUID
+	Rules       []BucketLifecycleRule
+}
+
+type UpdateTenantBucketQuota struct {
+	BucketID    uuid.UUID
+	WorkspaceID uuid.UUID
+	TenantID    uuid.UUID
+	UserID      uuid.UUID
+	ZoneID      uuid.UUID
+	QuotaBytes  int64
+}
+
+type UpdateTenantBucketVersioning struct {
+	BucketID          uuid.UUID
+	WorkspaceID       uuid.UUID
+	TenantID          uuid.UUID
+	UserID            uuid.UUID
+	ZoneID            uuid.UUID
+	VersioningEnabled bool
+}
+
+type UpdateTenantBucketLifecycle struct {
+	BucketID    uuid.UUID
+	WorkspaceID uuid.UUID
+	TenantID    uuid.UUID
+	UserID      uuid.UUID
+	ZoneID      uuid.UUID
+	Rules       []BucketLifecycleRule
 }

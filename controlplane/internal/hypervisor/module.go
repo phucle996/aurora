@@ -3,6 +3,7 @@ package hypervisor
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
@@ -11,10 +12,12 @@ import (
 	hypervisorRepoImpl "controlplane/internal/hypervisor/repository"
 	hypervisorSvcImpl "controlplane/internal/hypervisor/service"
 	hypervisorHandler "controlplane/internal/hypervisor/transport/http/handler"
+	hypervisorStream "controlplane/internal/hypervisor/transport/stream"
 	"controlplane/internal/observability"
 	jobpayload "controlplane/internal/security"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // HypervisorModule owns Proxmox-backed desired VM and image state. Physical
@@ -33,6 +36,10 @@ type HypervisorModule struct {
 	ImageRepository hypervisorRepoInterface.ImageRepository
 	ImageService    hypervisorSvcInterface.ImageService
 	ImageHandler    *hypervisorHandler.ImageHandler
+
+	// Background workflow transports
+	CommercialAdmissionProjection *hypervisorStream.CommercialAdmissionProjectionConsumer
+	ResourcePlanProjection        *hypervisorStream.ResourcePlanProjectionConsumer
 }
 
 // IsEnabled trả về true nếu module được khởi tạo thành công và sẵn sàng phục vụ.
@@ -52,6 +59,7 @@ func (m *HypervisorModule) GetError() error {
 func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
+	rds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
 	otel *observability.OTel,
 	protector jobpayload.Protector,
@@ -62,6 +70,9 @@ func NewModule(
 	if db == nil {
 		return nil, errors.New("hypervisor module: database connection pool is required")
 	}
+	if rds == nil {
+		return nil, errors.New("hypervisor module: Redis client is required")
+	}
 	if cacheEngine == nil {
 		return nil, errors.New("hypervisor module: cache engine registry is required")
 	}
@@ -71,28 +82,74 @@ func NewModule(
 	if protector == nil {
 		return nil, errors.New("hypervisor module: job payload protector is required")
 	}
+	if strings.TrimSpace(cfg.SchemaSQL.Hypervisor) == "" {
+		return nil, errors.New("hypervisor module: SQL schema is empty")
+	}
 
-	// Constructors below only wire dependencies; request validation remains at
-	// the HTTP handler and is not repeated in service or repository layers.
+	// Constructors below only wire dependencies with fail-fast nil checks.
 	workflowMetrics := otel.WorkflowRecorder("hypervisor")
 	vmRepo := hypervisorRepoImpl.NewPersonalVMRepo(db, cfg, protector)
-	vmSvc := hypervisorSvcImpl.NewPersonalVMService(vmRepo, workflowMetrics)
+	if vmRepo == nil {
+		return nil, errors.New("hypervisor module: failed to construct personal VM repository")
+	}
+	commercialAdmissionProjectionRepo := hypervisorRepoImpl.NewHypervisorCommercialAdmissionProjectionRepo(db, cfg.SchemaSQL.Hypervisor)
+	if commercialAdmissionProjectionRepo == nil {
+		return nil, errors.New("hypervisor module: failed to construct commercial admission projection repository")
+	}
+	commercialAdmissionProjectionSvc := hypervisorSvcImpl.NewHypervisorCommercialAdmissionProjectionService(commercialAdmissionProjectionRepo)
+	if commercialAdmissionProjectionSvc == nil {
+		return nil, errors.New("hypervisor module: failed to construct commercial admission projection service")
+	}
+	commercialAdmissionProjection := hypervisorStream.NewCommercialAdmissionProjectionConsumer(rds, commercialAdmissionProjectionSvc)
+	if commercialAdmissionProjection == nil {
+		return nil, errors.New("hypervisor module: failed to construct commercial admission projection consumer")
+	}
+	resourcePlanProjectionRepo := hypervisorRepoImpl.NewHypervisorResourcePlanProjectionRepository(db, cfg)
+	if resourcePlanProjectionRepo == nil {
+		return nil, errors.New("hypervisor module: failed to construct resource plan projection repository")
+	}
+	resourcePlanProjectionSvc := hypervisorSvcImpl.NewHypervisorResourcePlanProjectionService(resourcePlanProjectionRepo, rds)
+	if resourcePlanProjectionSvc == nil {
+		return nil, errors.New("hypervisor module: failed to construct resource plan projection service")
+	}
+	resourcePlanProjection := hypervisorStream.NewResourcePlanProjectionConsumer(rds, resourcePlanProjectionSvc)
+	if resourcePlanProjection == nil {
+		return nil, errors.New("hypervisor module: failed to construct resource plan projection consumer")
+	}
+	vmSvc := hypervisorSvcImpl.NewPersonalVMService(vmRepo, rds, workflowMetrics)
+	if vmSvc == nil {
+		return nil, errors.New("hypervisor module: failed to construct personal VM service")
+	}
 	vmHandler := hypervisorHandler.NewPersonalVMHandler(vmSvc)
+	if vmHandler == nil {
+		return nil, errors.New("hypervisor module: failed to construct personal VM handler")
+	}
 	imageRepo := hypervisorRepoImpl.NewImageRepo(db, cfg, protector)
+	if imageRepo == nil {
+		return nil, errors.New("hypervisor module: failed to construct image repository")
+	}
 	imageSvc := hypervisorSvcImpl.NewImageService(imageRepo, workflowMetrics)
+	if imageSvc == nil {
+		return nil, errors.New("hypervisor module: failed to construct image service")
+	}
 	imageHandler := hypervisorHandler.NewImageHandler(imageSvc)
+	if imageHandler == nil {
+		return nil, errors.New("hypervisor module: failed to construct image handler")
+	}
 
 	return &HypervisorModule{
-		enabled:         true,
-		db:              db,
-		cfg:             cfg,
-		L1Registry:      cacheEngine,
-		VMRepository:    vmRepo,
-		VMService:       vmSvc,
-		VMHandler:       vmHandler,
-		ImageRepository: imageRepo,
-		ImageService:    imageSvc,
-		ImageHandler:    imageHandler,
+		enabled:                       true,
+		db:                            db,
+		cfg:                           cfg,
+		L1Registry:                    cacheEngine,
+		VMRepository:                  vmRepo,
+		VMService:                     vmSvc,
+		VMHandler:                     vmHandler,
+		CommercialAdmissionProjection: commercialAdmissionProjection,
+		ResourcePlanProjection:        resourcePlanProjection,
+		ImageRepository:               imageRepo,
+		ImageService:                  imageSvc,
+		ImageHandler:                  imageHandler,
 	}, nil
 }
 
@@ -111,7 +168,19 @@ func (m *HypervisorModule) Bootstrap(ctx context.Context) error {
 		// Bỏ qua không khởi chạy các scheduler ngầm nếu module bị degraded
 		return nil
 	}
-	// VM execution and node observation run outside Controlplane.
+	if m.CommercialAdmissionProjection != nil {
+		if err := m.CommercialAdmissionProjection.Start(); err != nil {
+			return err
+		}
+	}
+	if m.ResourcePlanProjection != nil {
+		if err := m.ResourcePlanProjection.Start(); err != nil {
+			if m.CommercialAdmissionProjection != nil {
+				m.CommercialAdmissionProjection.Stop()
+			}
+			return err
+		}
+	}
 	return nil
 }
 
@@ -119,5 +188,10 @@ func (m *HypervisorModule) Stop() {
 	if !m.IsEnabled() {
 		return
 	}
-	// Dừng an toàn các workers
+	if m.CommercialAdmissionProjection != nil {
+		m.CommercialAdmissionProjection.Stop()
+	}
+	if m.ResourcePlanProjection != nil {
+		m.ResourcePlanProjection.Stop()
+	}
 }

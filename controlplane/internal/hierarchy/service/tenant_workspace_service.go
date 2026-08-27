@@ -12,7 +12,7 @@ import (
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchySvcInterface "controlplane/internal/hierarchy/domain/service"
 	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"

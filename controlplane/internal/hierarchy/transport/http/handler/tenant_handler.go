@@ -87,9 +87,10 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Ràng buộc: không được phép tạo Tenant bên trong một Tenant context cũ
+	// ACR sets the personal sentinel to platform. Any other concrete tenant is a
+	// tenant-scoped request and cannot create a sibling tenant.
 	tenantIDStr := strings.TrimSpace(c.GetHeader("x-tenant-id"))
-	if tenantIDStr != "" {
+	if tenantIDStr != "platform" {
 		logger.HandlerWarn(c, op, nil, "blocked tenant creation: request already under tenant context")
 		apires.RespondBadRequest(c, "Invalid request: cannot create a tenant within another tenant")
 		return

@@ -292,10 +292,21 @@ pub async fn run(
     let mut consecutive_poll_errors = 0_u8;
     let mut lease_is_current = true;
 
+    let mut unsettled_observation = false;
+    generation_fence.mark_running();
     'runtime: loop {
+        if generation_fence.is_draining()
+            && tasks.is_empty()
+            && dirty.is_empty()
+            && !unsettled_observation
+        {
+            generation_fence.mark_drained();
+            break;
+        }
         let current_epoch = rebalance.epoch.load(Ordering::Acquire);
         if current_epoch != observed_epoch {
             // [COMMENT]: State của assignment cũ không được dùng sau rebalance; Kafka sẽ redeliver từ committed offset.
+            unsettled_observation = true;
             observed_epoch = current_epoch;
             settlement.clear();
             dirty.clear();
@@ -334,6 +345,7 @@ pub async fn run(
                     }
                 };
                 if !completion.terminal {
+                    unsettled_observation = true;
                     continue;
                 }
                 if completion.work.assignment_epoch != rebalance.epoch.load(Ordering::Acquire) {
@@ -360,7 +372,7 @@ pub async fn run(
                     );
                 }
             }
-            result = consumer.poll(Duration::from_millis(500)), if tasks.len().saturating_add(poll_batch_size) <= context.max_slot_inflight => {
+            result = consumer.poll(Duration::from_millis(500)), if !generation_fence.is_draining() && tasks.len().saturating_add(poll_batch_size) <= context.max_slot_inflight => {
                 let records = match result {
                     Ok(records) => {
                         consecutive_poll_errors = 0;
@@ -459,5 +471,7 @@ pub async fn run(
     {
         let _ = consumer.commit_with_metadata(dirty).await;
     }
-    let _ = consumer.close().await;
+    if consumer.close().await.is_err() {
+        generation_fence.mark_running();
+    }
 }

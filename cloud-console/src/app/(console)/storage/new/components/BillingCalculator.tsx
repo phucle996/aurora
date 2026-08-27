@@ -12,7 +12,7 @@ interface BillingCalculatorProps {
   quotaGB: number;
 }
 
-const BYTES_PER_GB = 1024 * 1024 * 1024;
+const BYTES_PER_GB = 1_000_000_000;
 
 function quotaBytes(quotaGB: number): string | null {
   if (!Number.isSafeInteger(quotaGB) || quotaGB <= 0) return null;
@@ -40,7 +40,7 @@ export function BillingCalculator({ quotaGB }: BillingCalculatorProps) {
   });
 
   const estimate = estimateQuery.data;
-  const amount = estimate ? formatMicroUnits(estimate.monthly_estimate_micro_units, estimate.currency) : null;
+  const amount = estimate ? formatMicroUnits(estimate.hourly_estimate_micro_units, estimate.currency) : null;
   const unavailable = estimateQuery.isError;
   const stale = estimateQuery.isError && Boolean(estimate);
 
@@ -64,11 +64,11 @@ export function BillingCalculator({ quotaGB }: BillingCalculatorProps) {
                 {amount ?? (unavailable ? "Unavailable" : "—")}
               </span>
             )}
-            <span className="text-xs font-bold text-muted-foreground ml-1">/ month</span>
+            <span className="text-xs font-bold text-muted-foreground ml-1">/ hour</span>
           </div>
           <span className="text-[9px] text-muted-foreground/80 mt-1 font-semibold text-center">
             {estimate
-              ? `Cost Manager snapshot · ${estimate.billing_hours_per_month} billing hours`
+              ? `Cost Manager schedule · ${estimate.pricing_schedule_code} · hourly PAYG`
               : `Based on ${quotaGB} GB allocated storage`}
           </span>
         </div>
@@ -79,9 +79,9 @@ export function BillingCalculator({ quotaGB }: BillingCalculatorProps) {
           </span>
           <div className="flex flex-col gap-2">
             <div className="flex justify-between items-center border-b border-border/30 pb-2 gap-3">
-              <span className="text-[11px] font-semibold text-muted-foreground">Pricing tier</span>
+              <span className="text-[11px] font-semibold text-muted-foreground">Pricing schedule</span>
               <span className="font-semibold text-foreground font-mono text-right">
-                {estimate ? `${estimate.tier_code} · v${estimate.pricing_version}` : "—"}
+                {estimate ? `${estimate.pricing_schedule_code} · v${estimate.pricing_version}` : "—"}
               </span>
             </div>
             <div className="flex justify-between items-center border-b border-border/30 pb-2 gap-3">

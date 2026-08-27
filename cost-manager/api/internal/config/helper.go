@@ -19,6 +19,15 @@ import (
 	"time"
 )
 
+// [COMMENT]: GetNodeHostname lấy hostname của máy chủ/pod từ OS, nếu rỗng hoặc lỗi thì fallback về "cost-manager".
+func GetNodeHostname() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "cost-manager"
+	}
+	return strings.TrimSpace(host)
+}
+
 // [COMMENT]: getEnv đọc biến môi trường dưới dạng chuỗi, loại bỏ khoảng trắng và ngoặc kép bọc ngoài nếu có.
 func getEnv(key, defaultVal string) string {
 	val := os.Getenv(key)

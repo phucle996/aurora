@@ -28,7 +28,10 @@ impl Executor for BucketResizeExecutor {
         };
 
         // [COMMENT]: Validate dữ liệu bắt buộc
-        if sync_data.name.is_empty() || sync_data.requested_quota_bytes <= 0 {
+        if sync_data.name.is_empty()
+            || sync_data.bucket_id != payload.resource_id
+            || sync_data.requested_quota_bytes <= 0
+        {
             return Err(ExecutorError::ExecutionFailed(
                 "BucketResizeSync payload missing required fields (name / requested_quota_bytes)"
                     .to_string(),
@@ -67,10 +70,15 @@ impl Executor for BucketResizeExecutor {
             ),
         );
 
+        let result = storage_proto::BucketQuotaAppliedV1 {
+            schema_version: 1,
+            bucket_id: sync_data.bucket_id,
+            actual_quota_bytes: sync_data.requested_quota_bytes,
+        };
         Ok(ExecutionResult {
             message: format!("Bucket '{}' resized successfully", sync_data.name),
-            result_payload: Vec::new(),
-            result_payload_schema_version: 0,
+            result_payload: result.encode_to_vec(),
+            result_payload_schema_version: 1,
         })
     }
 }

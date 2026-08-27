@@ -1,5 +1,5 @@
 use crate::app::state::AppState;
-use crate::application::auth::ConnectAuthError;
+use crate::application::auth::{ConnectAuthError, ConnectAuthorizer};
 use crate::observability::{logger::Logger, metrics::MetricsManager};
 use crate::timeline::event::PageRequest;
 use axum::{
@@ -17,18 +17,35 @@ pub struct MarkReadRequest {
     created_at: DateTime<Utc>,
 }
 
+// Keep HTTP response bodies out of the authorization result. Only the API
+// boundary renders an error, preserving the existing status/body distinction.
+#[derive(Debug)]
+enum TimelineAuthorizationError {
+    InvalidPrincipal,
+    Rejected(ConnectAuthError),
+}
+
+impl IntoResponse for TimelineAuthorizationError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::InvalidPrincipal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Self::Rejected(error) => (error.status_code(), "request rejected").into_response(),
+        }
+    }
+}
+
 pub async fn list_activities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(request): Query<PageRequest>,
 ) -> Response {
     let started = std::time::Instant::now();
-    let response = match authorize(&state, &headers).await {
+    let response = match authorize(&state.authorizer, &headers).await {
         Ok(user_id) => match state.activities.list(user_id, request).await {
             Ok(page) => Json(page).into_response(),
             Err(error) => timeline_error("activity.list", error),
         },
-        Err(response) => response,
+        Err(error) => error.into_response(),
     };
     finish("GET", "/api/v1/me/activities", started, response)
 }
@@ -39,12 +56,12 @@ pub async fn list_notifications(
     Query(request): Query<PageRequest>,
 ) -> Response {
     let started = std::time::Instant::now();
-    let response = match authorize(&state, &headers).await {
+    let response = match authorize(&state.authorizer, &headers).await {
         Ok(user_id) => match state.inbox.list(user_id, request).await {
             Ok(page) => Json(page).into_response(),
             Err(error) => timeline_error("notification.list", error),
         },
-        Err(response) => response,
+        Err(error) => error.into_response(),
     };
     finish("GET", "/api/v1/me/notifications", started, response)
 }
@@ -56,7 +73,7 @@ pub async fn mark_notification_read(
     Json(request): Json<MarkReadRequest>,
 ) -> Response {
     let started = std::time::Instant::now();
-    let response = match authorize(&state, &headers).await {
+    let response = match authorize(&state.authorizer, &headers).await {
         Ok(user_id) => match state
             .inbox
             .mark_read(user_id, request.created_at, notification_id)
@@ -65,7 +82,7 @@ pub async fn mark_notification_read(
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(error) => timeline_error("notification.mark_read", error),
         },
-        Err(response) => response,
+        Err(error) => error.into_response(),
     };
     finish(
         "PUT",
@@ -80,12 +97,12 @@ pub async fn mark_all_notifications_read(
     headers: HeaderMap,
 ) -> Response {
     let started = std::time::Instant::now();
-    let response = match authorize(&state, &headers).await {
+    let response = match authorize(&state.authorizer, &headers).await {
         Ok(user_id) => match state.inbox.mark_all_read(user_id).await {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(error) => timeline_error("notification.mark_all_read", error),
         },
-        Err(response) => response,
+        Err(error) => error.into_response(),
     };
     finish(
         "PUT",
@@ -95,26 +112,19 @@ pub async fn mark_all_notifications_read(
     )
 }
 
-async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<Uuid, Response> {
+async fn authorize(
+    authorizer: &ConnectAuthorizer,
+    headers: &HeaderMap,
+) -> Result<Uuid, TimelineAuthorizationError> {
     let cookie = headers
         .get("cookie")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    match state.authorizer.authorize(cookie).await {
-        Ok(user_id) => {
-            Uuid::parse_str(&user_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        Err(error) => {
-            let status = match error {
-                ConnectAuthError::MissingCredentials | ConnectAuthError::InvalidCredentials => {
-                    StatusCode::UNAUTHORIZED
-                }
-                ConnectAuthError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-                ConnectAuthError::InvalidResponse => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            Err((status, "request rejected").into_response())
-        }
-    }
+    let user_id = authorizer
+        .authorize(cookie)
+        .await
+        .map_err(TimelineAuthorizationError::Rejected)?;
+    Uuid::parse_str(&user_id).map_err(|_| TimelineAuthorizationError::InvalidPrincipal)
 }
 
 fn timeline_error(operation: &'static str, error: crate::application::ports::AppError) -> Response {
@@ -165,3 +175,7 @@ fn finish(
     );
     response
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/api/timeline.rs"]
+mod tests;

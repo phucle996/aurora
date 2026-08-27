@@ -8,9 +8,10 @@ does not call Controlplane or create a storage outbox.
 
 Browser calls
 `POST /zone-control/v1/storage/buckets/{physical_bucket}/bulk-delete` with
-non-empty Delete XML and `x-aurora-access-session-id`. ACR requires
-`DeleteObject` action in an actor/Zone-bound Central record. The external path
-must bind the stored bucket name. The key prefix contract has a deliberate
+non-empty Delete XML and `x-aurora-access-session-id`. ACR authenticates
+Trinity and signs exact request facts. Zone KV must grant `DeleteObject` to the
+same actor/workspace/Zone/session. The external path must bind the Zone record
+bucket name. The key prefix contract has a deliberate
 behavior: when `key_prefix` is non-empty, this bulk-delete path is rejected
 because it has no `/objects/{key}` segment to prove prefix. For empty scope,
 ACR and Zone do not inspect XML object keys beyond forbidding `VersionId`.
@@ -22,7 +23,7 @@ ACR and Zone do not inspect XML object keys beyond forbidding `VersionId`.
 | Header | Use |
 |---|---|
 | `Cookie` | ACR authenticates Trinity session; stripped before MinIO. |
-| `x-aurora-access-session-id` | ACR Central record lookup and Zone record correlation. |
+| `x-aurora-access-session-id` | Opaque Zone capability correlation UUID, not a bearer credential. |
 | `Origin` | CORS. |
 | `X-Requested-With` or `Sec-Fetch-Site` | Required ACR CSRF signal for `POST`. |
 | `Content-Type: application/xml` | Cloud Console sets it. Gateway binds exact bytes but does not require this header value. |
@@ -60,17 +61,17 @@ ACR and Zone do not inspect XML object keys beyond forbidding `VersionId`.
 
 | Key/component | Store | Operation | Invariant |
 |---|---|---|---|
-| `storage_access:{session_id}` | Central Auth-State Redis | ACR GET | Requires `DeleteObject`, actor/Zone/expiry/policy and bucket match. |
-| Vault assertion | Signed request headers | Binds exact external POST route and raw XML SHA-256 | 10-second lease and fresh operation id. |
+| Vault assertion | Signed request headers | Schema 2 binds authenticated actor/workspace/Zone/session, exact POST route and raw XML SHA-256; no policy fields | 10-second lease and fresh operation id. |
 | Zone replay cache | Authorizer Moka | Claims jti | Local replay guard. |
-| `AURORA_ZONE_ACCESS/{session_id}` | Zone JetStream KV | Record match | Non-empty prefix makes this route fail path scope before MinIO. |
+| `AURORA_ZONE_ACCESS/{session_id}` | Zone JetStream KV | Sole capability record | Action, resource, bucket, prefix and expiry are decided here. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | Zone JetStream KV | Admission read | Current `ALLOW` is mandatory before delete reaches MinIO. |
 
 ## Phase 1 — Client → Envoy → ACR
 
-ACR executes CORS, Zone Control rate limits, Trinity verification and CSRF. It
-loads Central record, classifies exact `POST /bulk-delete` as `DeleteObject`,
-requires allowed action, strict bucket path and body without `VersionId`. It
-does not parse requested object keys. ACR generates one assertion whose body
+ACR executes CORS, Zone Control rate limits, Trinity verification and CSRF. Its
+Auth-State read is only the Trinity session. It classifies the reviewed
+`POST /bulk-delete` route and requires a body without `VersionId`; it does not
+decide action, bucket or prefix and does not parse object keys. Its assertion body
 hash covers raw XML and signs via Vault Transit.
 
 ```mermaid
@@ -78,14 +79,14 @@ sequenceDiagram
     participant B as Browser
     participant E as Central Envoy
     participant A as ACR ExtAuthz
-    participant AR as Auth-State Redis
+    participant AR as Auth-State Trinity session
     participant V as Vault Transit
 
     B->>E: POST bulk delete XML and access session id
     E->>A: CheckRequest exact path headers and raw body
-    A->>AR: Verify Trinity session and Central record
-    A->>A: Check CSRF DeleteObject bucket scope and VersionId ban
-    alt prefix-scoped session, invalid XML bytes or denied action
+    A->>AR: Verify Trinity user/device session
+    A->>A: Check UUID context CSRF reviewed route and VersionId ban
+    alt invalid context route or XML bytes
         A-->>E: Local 400 or 403
         E-->>B: No Zone request
     else full bucket session is allowed
@@ -127,8 +128,9 @@ sequenceDiagram
 ## Phase 3 — Zone record recheck and physical delete
 
 Zone authorizer verifies signature, key id, its Zone, issuer/audience, exact
-path/body hashes, 10-second validity and jti. It reads KV and checks session
-fields, `DeleteObject`, bucket and prefix semantics. MinIO then processes
+path/body hashes, 10-second validity and jti. It reads KV and checks assertion
+identity, record integrity/expiry, `DeleteObject`, bucket and prefix semantics,
+then requires current resource admission. MinIO then processes
 individual delete elements. The gateway forwards result XML but current browser
 client does not inspect whether MinIO reported individual failures.
 
@@ -137,12 +139,14 @@ sequenceDiagram
     participant ZA as Zone Authorizer
     participant K as Keyring and replay cache
     participant KV as Zone access KV
+    participant AD as Zone admission KV
     participant ZE as Zone Envoy
     participant M as MinIO
     participant B as Browser
 
     ZA->>K: Verify assertion and consume jti
     ZA->>KV: Read access record
+    ZA->>AD: Require ALLOW for record resource id
     alt record and request match
         ZA-->>ZE: Allow
         ZE->>M: POST bucket delete XML
@@ -167,6 +171,7 @@ sequenceDiagram
 | Per-object MinIO error in `200` XML | UI currently reports success because it does not parse XML error entries. This is a product correctness gap. |
 | Retry after lost response | New request gets new assertion. Multi-delete is generally idempotent for missing keys but response semantics are MinIO-owned. |
 | Static Central Zone route mismatch | Wrong Zone denies assertion rather than permitting cross-zone delete. |
+| Wallet admission missing or suspended | Zone denies before MinIO. |
 
 ## Code map
 

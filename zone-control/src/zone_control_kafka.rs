@@ -228,4 +228,11 @@ impl ControlKafka {
     pub(crate) fn storage_sizes_topic(&self) -> String {
         format!("{}.storage.sizes.v1", self.topic_prefix)
     }
+
+    pub(crate) fn storage_commercial_admission_topic(&self, zone_id: &str) -> String {
+        format!(
+            "{}.storage.commercial.admission.{}.v1",
+            self.topic_prefix, zone_id
+        )
+    }
 }

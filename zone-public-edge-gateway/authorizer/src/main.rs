@@ -1,40 +1,24 @@
-use std::{
-    env,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{env, path::PathBuf, time::Duration};
 
 use async_nats::jetstream::{self, stream::StorageType};
-use bytes::Bytes;
-use envoy_types::ext_authz::v3::{CheckRequestExt, CheckResponseExt};
+use envoy_types::ext_authz::v3::CheckRequestExt;
 use envoy_types::pb::envoy::service::auth::v3::{
     authorization_server::{Authorization, AuthorizationServer},
     CheckRequest, CheckResponse,
 };
-use prost::Message;
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
-use tokio::sync::Semaphore;
 use tonic::{Request, Response, Status};
+
+mod runtime_read;
+mod storage_access;
 
 mod transfer_proto {
     include!(concat!(env!("OUT_DIR"), "/aurora.zone.transfer.v1.rs"));
 }
 
-const TRANSFER_TICKET_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Clone)]
-struct TicketStore {
-    store: jetstream::kv::Store,
-    timeout: Duration,
-}
-
 #[derive(Clone)]
 struct PublicAuthorizer {
-    store: TicketStore,
-    zone_id: String,
-    inflight: Arc<Semaphore>,
+    storage_access: storage_access::StorageAccessAuthorizer,
+    runtime_read: runtime_read::RuntimeReadAuthorizer,
 }
 
 #[tonic::async_trait]
@@ -43,11 +27,6 @@ impl Authorization for PublicAuthorizer {
         &self,
         request: Request<CheckRequest>,
     ) -> Result<Response<CheckResponse>, Status> {
-        let Ok(_permit) = self.inflight.clone().try_acquire_owned() else {
-            return Err(Status::resource_exhausted(
-                "Zone public authorizer overloaded",
-            ));
-        };
         let headers = request
             .get_ref()
             .get_client_headers()
@@ -59,104 +38,20 @@ impl Authorization for PublicAuthorizer {
             .and_then(|value| value.request.as_ref())
             .and_then(|value| value.http.as_ref())
             .ok_or_else(|| Status::permission_denied("HTTP context missing"))?;
-        let token = headers
-            .get("x-aurora-transfer-ticket")
-            .ok_or_else(|| Status::permission_denied("Transfer ticket missing"))?;
-        let (ticket_id, secret) = token
-            .split_once('.')
-            .ok_or_else(|| Status::permission_denied("Transfer ticket invalid"))?;
-        if ticket_id.is_empty() || secret.len() < 32 {
-            return Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Transfer ticket invalid"),
-            )));
-        }
-        let entry = tokio::time::timeout(
-            self.store.timeout,
-            self.store.store.entry(ticket_id.to_string()),
-        )
-        .await
-        .map_err(|_| Status::unavailable("Transfer ticket store unavailable"))?
-        .map_err(|_| Status::unavailable("Transfer ticket store unavailable"))?;
-        let Some(entry) = entry else {
-            return Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Transfer ticket invalid"),
-            )));
+        let response = if http
+            .path
+            .split('?')
+            .next()
+            .is_some_and(|path| path.starts_with("/zone-public/v1/runtime/"))
+        {
+            self.runtime_read
+                .authorize(headers, &http.method, &http.path)
+                .await?
+        } else {
+            self.storage_access
+                .authorize(headers, &http.method, &http.path)
+                .await?
         };
-        let mut ticket = transfer_proto::TransferTicketV1::decode(entry.value.as_ref())
-            .map_err(|_| Status::unavailable("Transfer ticket store corrupt"))?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| Status::unavailable("System clock unavailable"))?
-            .as_secs();
-        let actual_hash = format!("{:x}", Sha256::digest(secret.as_bytes()));
-        let length = headers
-            .get("content-length")
-            .and_then(|value| value.parse::<u64>().ok());
-        let content_type = headers.get("content-type");
-        if ticket.schema_version != TRANSFER_TICKET_SCHEMA_VERSION
-            || ticket.zone_id != self.zone_id
-            || ticket.state != transfer_proto::TransferTicketState::Issued as i32
-            || ticket.expires_at_unix_seconds <= now
-            || ticket
-                .secret_sha256
-                .as_bytes()
-                .ct_eq(actual_hash.as_bytes())
-                .unwrap_u8()
-                != 1
-            || ticket.method != http.method
-            || ticket.public_path != http.path
-            || !matches!(http.method.as_str(), "GET" | "PUT")
-            || ticket.content_length != length
-            || ticket.content_type.as_deref() != content_type.map(String::as_str)
-        {
-            return Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Transfer ticket denied"),
-            )));
-        }
-        ticket.state = transfer_proto::TransferTicketState::Consuming as i32;
-        let value = Bytes::from(ticket.encode_to_vec());
-        match tokio::time::timeout(
-            self.store.timeout,
-            self.store.store.update(ticket_id, value, entry.revision),
-        )
-        .await
-        {
-            Err(_) => return Err(Status::unavailable("Transfer ticket consume unavailable")),
-            Ok(Err(_)) => {
-                return Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Transfer ticket already consumed"),
-                )))
-            }
-            Ok(Ok(_)) => {}
-        }
-        let mut response = CheckResponse::with_status(Status::ok("authorized"));
-        response.set_http_response(
-            envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
-        );
-        if let Some(
-            envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse::OkResponse(ok),
-        ) = response.http_response.as_mut()
-        {
-            use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
-            for (key, value) in [
-                ("x-aurora-actor-id", ticket.actor_id),
-                ("x-aurora-resource-id", ticket.resource_id),
-                ("x-aurora-operation-id", ticket.operation_id),
-                ("x-aurora-transfer-capability", ticket.capability),
-            ] {
-                ok.headers.push(HeaderValueOption {
-                    header: Some(HeaderValue {
-                        key: key.to_string(),
-                        value,
-                        ..Default::default()
-                    }),
-                    append_action: 2,
-                    ..Default::default()
-                });
-            }
-            ok.headers_to_remove
-                .push("x-aurora-transfer-ticket".to_string());
-        }
         Ok(Response::new(response))
     }
 }
@@ -174,8 +69,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Err("ZONE_ID must be a UUID".into());
     }
     let listen = required("ZONE_PUBLIC_AUTHORIZER_LISTEN")?.parse()?;
-    let timeout = Duration::from_millis(parsed("NATS_ZONE_REQUEST_TIMEOUT_MS", 2_000_u64)?);
-    let replicas = parsed("ZONE_TRANSFER_KV_REQUIRED_REPLICAS", 3_usize)?;
+    let timeout_ms = parsed("NATS_ZONE_REQUEST_TIMEOUT_MS", 350_u64)?;
+    if !(1..=450).contains(&timeout_ms) {
+        return Err("NATS_ZONE_REQUEST_TIMEOUT_MS must be between 1 and 450".into());
+    }
+    let timeout = Duration::from_millis(timeout_ms);
+    let connect_timeout_ms = parsed("NATS_ZONE_CONNECT_TIMEOUT_MS", 5_000_u64)?;
+    if !(100..=30_000).contains(&connect_timeout_ms) {
+        return Err("NATS_ZONE_CONNECT_TIMEOUT_MS must be between 100 and 30000".into());
+    }
+    let replicas = parsed("ZONE_PUBLIC_KV_REQUIRED_REPLICAS", 3_usize)?;
+    let storage_max_inflight = parsed("ZONE_STORAGE_AUTHORIZER_MAX_INFLIGHT", 768_usize)?;
+    let runtime_max_inflight = parsed("ZONE_RUNTIME_AUTHORIZER_MAX_INFLIGHT", 256_usize)?;
+    if !(1..=100_000).contains(&storage_max_inflight)
+        || !(1..=100_000).contains(&runtime_max_inflight)
+    {
+        return Err("Zone authorizer workflow concurrency budget is invalid".into());
+    }
     let options = async_nats::ConnectOptions::new()
         .add_root_certificates(PathBuf::from(required("NATS_ZONE_TLS_CA")?))
         .require_tls(true)
@@ -185,25 +95,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .credentials_file(PathBuf::from(required("NATS_ZONE_CREDS")?))
         .await?;
-    let client =
-        tokio::time::timeout(timeout, options.connect(required("NATS_ZONE_URL")?)).await??;
-    let store = jetstream::new(client)
-        .get_key_value("AURORA_ZONE_TRANSFER")
-        .await?;
-    let status = store.status().await?;
-    if status.history() != 1
-        || status.info.config.storage != StorageType::File
-        || status.info.config.num_replicas < replicas
+    let connect_timeout = Duration::from_millis(connect_timeout_ms);
+    let client = tokio::time::timeout(connect_timeout, options.connect(required("NATS_ZONE_URL")?))
+        .await??;
+    let transfer_store = tokio::time::timeout(
+        connect_timeout,
+        jetstream::new(client.clone()).get_key_value("AURORA_ZONE_TRANSFER"),
+    )
+    .await??;
+    let runtime_store = tokio::time::timeout(
+        connect_timeout,
+        jetstream::new(client.clone()).get_key_value("AURORA_ZONE_CONFIG"),
+    )
+    .await??;
+    let runtime_replay_store = tokio::time::timeout(
+        connect_timeout,
+        jetstream::new(client.clone()).get_key_value("AURORA_ZONE_RUNTIME_REPLAY"),
+    )
+    .await??;
+    let admission_store = tokio::time::timeout(
+        connect_timeout,
+        jetstream::new(client).get_key_value("AURORA_ZONE_ADMISSION"),
+    )
+    .await??;
+    let transfer_status = tokio::time::timeout(connect_timeout, transfer_store.status()).await??;
+    if transfer_status.history() != 1
+        || transfer_status.info.config.storage != StorageType::File
+        || transfer_status.info.config.num_replicas < replicas
     {
         return Err("Zone transfer KV durability contract mismatch".into());
     }
+    let admission_status =
+        tokio::time::timeout(connect_timeout, admission_store.status()).await??;
+    if admission_status.history() != 1
+        || admission_status.info.config.storage != StorageType::File
+        || admission_status.info.config.num_replicas < replicas
+    {
+        return Err("Zone admission KV durability contract mismatch".into());
+    }
+    let runtime_status = tokio::time::timeout(connect_timeout, runtime_store.status()).await??;
+    if runtime_status.history() != 1
+        || runtime_status.info.config.storage != StorageType::File
+        || runtime_status.info.config.num_replicas < replicas
+    {
+        return Err("Zone runtime registry KV durability contract mismatch".into());
+    }
+    let runtime_replay_status =
+        tokio::time::timeout(connect_timeout, runtime_replay_store.status()).await??;
+    if runtime_replay_status.history() != 1
+        || runtime_replay_status.info.config.storage != StorageType::File
+        || runtime_replay_status.info.config.num_replicas < replicas
+        || runtime_replay_status.info.config.max_age != Duration::from_secs(30)
+    {
+        return Err("Zone runtime replay KV durability contract mismatch".into());
+    }
+    let runtime_read = runtime_read::RuntimeReadAuthorizer::new(
+        runtime_store,
+        runtime_replay_store,
+        zone_id.clone(),
+        &required("ZONE_RUNTIME_ASSERTION_PUBLIC_KEYS")?,
+        timeout,
+        runtime_max_inflight,
+    )?;
     let service = PublicAuthorizer {
-        store: TicketStore { store, timeout },
-        zone_id,
-        inflight: Arc::new(Semaphore::new(parsed(
-            "ZONE_PUBLIC_AUTHORIZER_MAX_INFLIGHT",
-            1024_usize,
-        )?)),
+        storage_access: storage_access::StorageAccessAuthorizer::new(
+            transfer_store,
+            admission_store,
+            timeout,
+            zone_id,
+            storage_max_inflight,
+        ),
+        runtime_read,
     };
     tracing::info!(event_code = "ZONE_PUBLIC_AUTHORIZER_STARTED", address = %listen);
     tonic::transport::Server::builder()
@@ -216,6 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn required(name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     Ok(env::var(name)?)
 }
+
 fn parsed<T: std::str::FromStr>(
     name: &str,
     default: T,

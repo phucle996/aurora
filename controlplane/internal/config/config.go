@@ -141,6 +141,7 @@ type KafkaCfg struct {
 	CertPath             string
 	KeyPath              string
 	IAMVerificationTopic string
+	TopicPrefix          string
 }
 
 // GRPCCfg lưu thông số kết nối của gRPC Server và cấu hình TLS/mTLS.
@@ -299,6 +300,7 @@ func LoadConfig() (*Config, error) {
 			CertPath:             getEnv("KAFKA_TLS_CERT", ""),
 			KeyPath:              getEnv("KAFKA_TLS_KEY", ""),
 			IAMVerificationTopic: kafkaIAMVerificationTopic,
+			TopicPrefix:          getEnv("KAFKA_TOPIC_PREFIX", "aurora"),
 		},
 		GRPC: GRPCCfg{
 			Port:             grpcPort,

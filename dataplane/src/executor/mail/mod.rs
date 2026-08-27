@@ -1,4 +1,5 @@
 pub mod executor;
+pub mod metering;
 pub mod processor;
 pub mod projection;
 pub mod runtime;
@@ -7,6 +8,10 @@ pub mod supervisor;
 // [COMMENT]: Contract desired-state được compile một lần và dùng trực tiếp bởi bốn projection flow tách biệt.
 pub mod runtime_proto {
     include!(concat!(env!("OUT_DIR"), "/mail.runtime.v1.rs"));
+}
+
+pub mod accepted_usage_proto {
+    include!(concat!(env!("OUT_DIR"), "/aurora.mail.metering.v1.rs"));
 }
 
 pub use executor::dispatch_mail_job;
@@ -32,7 +37,11 @@ pub struct MailRuntime {
 }
 
 impl MailRuntime {
-    pub fn new(config: &Config, zone_kv: Arc<ZoneKvStore>) -> Result<Arc<Self>, String> {
+    pub fn new(
+        config: &Config,
+        zone_kv: Arc<ZoneKvStore>,
+        kafka: Arc<crate::infra::kafka::KafkaTransport>,
+    ) -> Result<Arc<Self>, String> {
         let runtime_node_id = std::env::var("HOSTNAME")
             .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));
         let runtime_boot_id = uuid::Uuid::new_v4();
@@ -41,20 +50,21 @@ impl MailRuntime {
         let metrics = Arc::new(MailWorkloadMetrics::default());
         let batcher = MailBatcherHandle::start_mail_batcher(config, jmap.clone(), metrics.clone());
         let configuration = runtime::MailConfigurationRuntime::new(config, zone_kv.clone());
+        let accepted_usage = metering::AcceptedUsagePublisher::new(kafka);
         let processor = MailMessageProcessor::new(
             config,
             configuration.clone(),
             zone_kv.clone(),
             batcher.clone(),
             sender.clone(),
+            accepted_usage,
         );
         let consumer_supervisor = runtime::MailConsumerSupervisor::new(
             config,
             configuration.clone(),
             zone_kv,
             processor,
-            runtime_node_id.clone(),
-            runtime_boot_id,
+            format!("{runtime_node_id}:{runtime_boot_id}"),
         );
         Ok(Arc::new(Self {
             batcher,
@@ -77,3 +87,4 @@ impl MailRuntime {
         self.batcher.shutdown().await;
     }
 }
+pub mod consumer;

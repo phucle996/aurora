@@ -14,7 +14,7 @@ import (
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -47,11 +47,22 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 	// [COMMENT]: Dùng CTE để ghi nhận đồng thời thông tin Credentials và sự kiện Outbox nguyên tử
 	// và thực hiện xác minh chéo quyền sở hữu của bucket và workspace dựa trên BucketName vật lý
 	query := fmt.Sprintf(`
-		WITH verified_bucket AS (
+		WITH admitted AS (
+			SELECT EXISTS (
+				SELECT 1 FROM %s.commercial_admission_projection
+				WHERE owner_id = $3
+				  AND owner_type = 'PERSONAL'
+				  AND effective_at <= NOW()
+				  AND (valid_until IS NULL OR valid_until > NOW())
+				  AND decision = 'ALLOW'
+			) AS ok
+		),
+		verified_bucket AS (
 			SELECT pb.id
 			FROM %s.personal_buckets pb
 			JOIN %s.personal_workspaces w ON pb.workspace_id = w.id
-			WHERE pb.name = $2 AND w.owner_id = $3 AND pb.workspace_id = $4
+			WHERE pb.name = $2 AND w.owner_id = $3 AND pb.workspace_id = $4 AND pb.status = 'READY'
+			  AND (SELECT ok FROM admitted)
 		),
 		ins_cred AS (
 			INSERT INTO %s.personal_credentials (
@@ -60,19 +71,24 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 			SELECT $1, id, $5, $6, $7, $8
 			FROM verified_bucket
 			RETURNING id
+		),
+		ins_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
+				job_version, resource_id, payload_schema_version, trace_id, idle,
+				error_code, error_message, actor_user_id, payload_key_id
+			)
+			SELECT $9, $10, $11, $12, $13, $23, $14, $15, $16, $17, $18, $19, $20, $21, $22, $24, $25
+			FROM ins_cred
 		)
-		INSERT INTO %s.storage_outbox_records (
-			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
-			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id, payload_key_id
-		)
-		SELECT $9, $10, $11, $12, $13, $23, $14, $15, $16, $17, $18, $19, $20, $21, $22, $24, $25
-		FROM ins_cred
-		RETURNING (SELECT id FROM verified_bucket)
-	`, r.storage, r.hierarchy, r.storage, r.storage)
+		SELECT
+			(SELECT ok FROM admitted) AS admitted,
+			(SELECT id FROM verified_bucket) AS bucket_id;
+	`, r.storage, r.storage, r.hierarchy, r.storage, r.storage)
 
 	now := time.Now()
-	var bucketID uuid.UUID
+	var admitted bool
+	var bucketID *uuid.UUID
 	err = r.db.QueryRow(ctx, query,
 		param.ID,                // $1
 		param.BucketName,        // $2
@@ -99,48 +115,80 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		mo.OwnerType,            // $23
 		mo.ActorUserID,          // $24
 		mo.PayloadKeyID,         // $25
-	).Scan(&bucketID)
+	).Scan(&admitted, &bucketID)
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return uuid.Nil, storageTaxonomy.ErrNotFound
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return uuid.Nil, storageTaxonomy.ErrAlreadyExists
 		}
 		return uuid.Nil, err
 	}
+	if !admitted {
+		return uuid.Nil, storageTaxonomy.ErrCommercialAdmissionDenied
+	}
+	if bucketID == nil {
+		return uuid.Nil, storageTaxonomy.ErrNotFound
+	}
 
-	return bucketID, nil
+	return *bucketID, nil
 }
 
-func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error) {
-	// [COMMENT]: Chỉ SELECT các cột cần thiết (bỏ bucket_id, secret_key) để tối ưu IO và dữ liệu truyền tải
+func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error) {
 	query := fmt.Sprintf(`
-		SELECT id, access_key, policy, created_at, updated_at
-		FROM %s.personal_credentials
-		WHERE bucket_id = $1
-		ORDER BY created_at DESC
-	`, r.storage)
+		SELECT b.id, c.id, c.access_key, c.policy, c.state, c.created_at, c.updated_at
+		FROM %s.personal_buckets b
+		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
+		LEFT JOIN %s.personal_credentials c ON c.bucket_id = b.id
+		WHERE b.id = $1 AND w.owner_id = $2
+		ORDER BY c.created_at DESC
+	`, r.storage, r.hierarchy, r.storage)
 
-	rows, err := r.db.Query(ctx, query, bucketID)
+	rows, err := r.db.Query(ctx, query, bucketID, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("storage repo: query personal credentials failed: %w", err)
 	}
 	defer rows.Close()
 
-	var result []*storageEntity.PersonalCredentialListItem
+	found := false
+	result := make([]*storageEntity.PersonalCredentialListItem, 0)
 	for rows.Next() {
-		// [COMMENT]: Scan trực tiếp vào struct entity rút gọn PersonalCredentialListItem
-		var item storageEntity.PersonalCredentialListItem
+		found = true
+		var dummyBucketID uuid.UUID
+		var credID *uuid.UUID
+		var accessKey, policy, state *string
+		var createdAt, updatedAt *time.Time
+
 		err := rows.Scan(
-			&item.ID,
-			&item.AccessKey,
-			&item.Policy,
-			&item.CreatedAt,
-			&item.UpdatedAt,
+			&dummyBucketID,
+			&credID,
+			&accessKey,
+			&policy,
+			&state,
+			&createdAt,
+			&updatedAt,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("storage repo: scan personal credential row failed: %w", err)
 		}
-		result = append(result, &item)
+
+		if credID != nil {
+			result = append(result, &storageEntity.PersonalCredentialListItem{
+				ID:        *credID,
+				AccessKey: *accessKey,
+				Policy:    *policy,
+				State:     *state,
+				CreatedAt: *createdAt,
+				UpdatedAt: *updatedAt,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage repo: iterate personal credentials failed: %w", err)
+	}
+
+	if !found {
+		return nil, storageTaxonomy.ErrNotFound
 	}
 
 	return result, nil
@@ -163,12 +211,19 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			SELECT pb.id
 			FROM %s.personal_buckets pb
 			JOIN %s.personal_workspaces w ON pb.workspace_id = w.id
-			WHERE pb.id = $2 AND w.owner_id = $3 AND pb.workspace_id = $4
+			WHERE pb.id = $2 AND w.owner_id = $3 AND pb.workspace_id = $4 AND pb.status = 'READY'
 		),
 		verified_cred AS (
 			SELECT id
 			FROM %s.personal_credentials
-			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
+			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket) AND state = 'READY'
+			FOR UPDATE
+		),
+		updated_cred AS (
+			UPDATE %s.personal_credentials
+			SET state = 'DELETING', updated_at = NOW()
+			WHERE id IN (SELECT id FROM verified_cred)
+			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
@@ -176,8 +231,8 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			error_code, error_message, actor_user_id, payload_key_id
 		)
 		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20, $21
-		FROM verified_cred
-	`, r.storage, r.hierarchy, r.storage, r.storage)
+		FROM updated_cred
+	`, r.storage, r.hierarchy, r.storage, r.storage, r.storage)
 
 	// [COMMENT]: ZoneID truyền trực tiếp từ outbox đã được handler/service bind với workspace.
 	res, err := r.db.Exec(ctx, query,
@@ -214,4 +269,30 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 	}
 
 	return nil
+}
+
+func (r *PersonalCredentialRepoImpl) ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error) {
+	query := fmt.Sprintf(`
+		SELECT c.access_key
+		FROM %s.personal_credentials c
+		JOIN %s.personal_buckets b ON c.bucket_id = b.id
+		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
+		WHERE c.bucket_id = $1 AND w.owner_id = $2
+	`, r.storage, r.storage, r.hierarchy)
+
+	rows, err := r.db.Query(ctx, query, bucketID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: query personal access keys failed: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("storage repo: scan personal access key failed: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }

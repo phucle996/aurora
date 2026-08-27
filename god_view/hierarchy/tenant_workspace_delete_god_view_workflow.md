@@ -7,8 +7,8 @@ least one workspace. It is a direct hierarchy deletion, not resource teardown.
 
 | Item | Contract |
 |---|---|
-| Browser API | `DELETE /api/v1/hierarchy/workspaces` |
-| Internal target | `DELETE /api/v1/tenant/hierarchy/workspaces` |
+| Browser API | `DELETE /api/v1/critical/hierarchy/workspaces` |
+| Internal target | `DELETE /api/v1/tenant/critical/hierarchy/workspaces` |
 | Authority | tenant `hierarchy:workspace:delete` at level `*` |
 | Durable action | scoped hard delete from `hierarchy.tenant_workspaces` |
 | Guard | serialize full Tenant workspace scope and deny deletion of final workspace |
@@ -16,6 +16,9 @@ least one workspace. It is a direct hierarchy deletion, not resource teardown.
 The target is exclusively the verified active `x-workspace-id` injected by ACR
 from the current workspace context. The browser sends no workspace identifier,
 so it cannot authorize one workspace and delete another.
+
+ACR consumes a session proof bound to the exact empty-body delete before the
+tenant rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`.
 
 ## Key contracts
 

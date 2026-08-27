@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package aurora.hypervisor.metering.v1;
+
+// A bounded Zone-owned closed counter-delta report. It contains no provider
+// credential, wallet authority, browser session or runtime chart sample.
+message HypervisorNetworkUsageReportV1 {
+  uint32 schema_version = 1;
+  string report_id = 2;
+  string zone_id = 3;
+  string resource_id = 4;
+  int64 window_start_unix_ms = 5;
+  int64 window_end_unix_ms = 6;
+  uint64 sequence = 7;
+  uint64 network_in_bytes = 8;
+  uint64 network_out_bytes = 9;
+  bytes report_sha256 = 10;
+}

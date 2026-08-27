@@ -76,8 +76,8 @@ impl RuntimeStream {
             scope: scope.clone(),
         };
         let mut subscriptions = self.subscriptions.lock().await;
-        let subscription = if let Some(existing) = subscriptions.get(&key) {
-            existing.clone()
+        let (subscription, created) = if let Some(existing) = subscriptions.get(&key) {
+            (existing.clone(), false)
         } else {
             if subscriptions.len() >= self.config.max_fanout_groups {
                 self.telemetry.connection_rejected();
@@ -88,16 +88,23 @@ impl RuntimeStream {
                 return Err(SubscribeError::Capacity);
             }
             let subscription = Subscription::new(self.config.max_buffered_events);
-            self.spawn_reader(key.clone(), subscription.clone());
-            subscriptions.insert(key, subscription.clone());
+            subscriptions.insert(key.clone(), subscription.clone());
             self.telemetry.fanout_group_opened();
-            subscription
+            (subscription, true)
         };
         subscription
             .clients
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.telemetry.connection_opened();
-        Ok((subscription.sender.subscribe(), permit, subscription))
+        let receiver = subscription.sender.subscribe();
+        drop(subscriptions);
+        if created {
+            // Attach the first receiver before the reader's immediate interval
+            // tick so the required initial snapshot cannot be sent to zero
+            // subscribers and silently lost.
+            self.spawn_reader(key, subscription.clone());
+        }
+        Ok((receiver, permit, subscription))
     }
 
     fn spawn_reader(&self, key: SubscriptionKey, subscription: Arc<Subscription>) {
@@ -155,6 +162,10 @@ impl RuntimeStream {
         if subscriptions
             .get(&key)
             .is_some_and(|current| Arc::ptr_eq(current, subscription))
+            && subscription
+                .clients
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
         {
             subscriptions.remove(&key);
             subscription.stop.cancel();
@@ -224,22 +235,5 @@ pub fn next_event_id() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn victoria_failure_taxonomy_is_sanitized() {
-        assert_eq!(
-            source_error_code(&SourceError::ResponseTooLarge),
-            "VICTORIA_RESPONSE_TOO_LARGE"
-        );
-        assert_eq!(
-            source_error_code(&SourceError::Decode),
-            "VICTORIA_RESPONSE_INVALID"
-        );
-        assert_eq!(
-            source_error_code(&SourceError::Scope),
-            "RUNTIME_SCOPE_INVALID"
-        );
-    }
-}
+#[path = "../test/stream.rs"]
+mod tests;

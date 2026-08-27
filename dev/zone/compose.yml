@@ -234,7 +234,7 @@ services:
       zone-victorialogs:
         condition: service_started
     # No host port: the runtime read-plane is reachable only from a named Zone
-    # Public Edge route after the scoped-ticket contract is enabled.
+    # Public Edge route after the signed runtime assertion is verified.
     expose:
       - "8080"
     networks:
@@ -268,6 +268,9 @@ services:
       # merely because both are named Public Edge upstreams.
       zone-edge-storage:
       zone-edge-runtime:
+      aurora-transport:
+        aliases:
+          - zone-public-edge-gateway.zone-z1.svc.cluster.local
     restart: unless-stopped
 
   zone-control:
@@ -306,6 +309,11 @@ services:
     init: true
     env_file:
       - ../../zone-public-edge-gateway/authorizer/.env
+    environment:
+      ZONE_PUBLIC_KV_REQUIRED_REPLICAS: ${NATS_ZONE_KV_REPLICAS:-1}
+      ZONE_STORAGE_AUTHORIZER_MAX_INFLIGHT: 768
+      ZONE_RUNTIME_AUTHORIZER_MAX_INFLIGHT: 256
+      NATS_ZONE_REQUEST_TIMEOUT_MS: 350
     volumes:
       - ./nats:/etc/aurora/nats:ro
     depends_on:

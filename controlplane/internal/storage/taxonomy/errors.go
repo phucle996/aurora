@@ -24,4 +24,8 @@ var (
 
 	// [COMMENT]: Dung lượng resize mới quá nhỏ so với used_bytes hiện tại (cần trống ít nhất 1GB).
 	ErrResizeLimitTooLow = errors.New("storage: requested quota must leave at least 1GB of free space above current usage")
+
+	ErrCommercialAdmissionDenied            = errors.New("storage: commercial admission denied or projection is stale")
+	ErrInvalidCommercialAdmissionProjection = errors.New("storage: invalid commercial admission projection event")
+	ErrVersioningRequired                   = errors.New("storage: noncurrent version lifecycle expiration requires bucket versioning to be enabled")
 )

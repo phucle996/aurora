@@ -68,7 +68,7 @@ jobs:
               image_name=aurora-zone-control
               context=.
               dockerfile=zone-control/Dockerfile
-              source_paths=(zone-control proto/zone/transfer_ticket.proto proto/cost-manager/engine/storage_usage_report.proto)
+              source_paths=(zone-control proto/zone/transfer_ticket.proto proto/cost-manager/engine/storage_usage_report.proto proto/controlplane/storage/v1/storage_admission.proto)
               ;;
             zone-public-edge-authorizer-v*)
               prefix=zone-public-edge-authorizer

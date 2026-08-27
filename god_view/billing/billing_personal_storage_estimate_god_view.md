@@ -1,6 +1,10 @@
 # Personal Storage Estimate — God View (Master SoT)
 
-This self-user read returns a display quote for storage capacity from the currently effective immutable pricing snapshot. It does not reserve capacity, authorize a storage API, debit a wallet, or promise the price a later billing run will pin.
+This self-user read returns a display quote for one hour of storage capacity from
+the currently effective immutable pricing snapshot. It does not reserve
+capacity, authorize a storage API, debit a wallet, or promise the price a later
+billing run will pin. Storage is pay-as-you-go; this workflow never fabricates a
+monthly commitment.
 
 ## API-scope contract
 
@@ -12,7 +16,7 @@ The browser uses the neutral public route. This is `/personal`: ACR derives the 
 | Browser headers used | `Origin`; Cloud Trinity cookies on Cloud authority or Billing Alias ID/secret cookies on Cost authority |
 | Browser payload | no body; `capacity_bytes` is a base-10 query integer, `1..1<<60` |
 | ACR upstream path | `/api/v1/personal/billing/wallet/estimate/storage?capacity_bytes=...` |
-| Response | current hourly/monthly micro-unit estimate with snapshot code/version/checksum lineage |
+| Response | current hourly micro-unit estimate with Global base and Storage Zone adjustment lineage |
 | Durable effect | none |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -72,27 +76,31 @@ sequenceDiagram
 
 ## Phase 2 — Capacity validation and effective-price lookup
 
-`TierHandler.EstimateStorage` parses `capacity_bytes` as an `int64`, rejects zero, negative, malformed, and values above `1<<60`, then supplies a two-second operation context to `TierService`. The service obtains an effective STORAGE `PricingSnapshot` from `pricingCache`; cache layers accelerate a read but cannot become pricing Source of Truth.
+The storage estimate handler parses `capacity_bytes` as an `int64`, rejects zero,
+negative, malformed, and values above `1<<60`, then supplies a two-second
+operation context to the storage quote service. The service obtains an effective
+Storage pricing snapshot from the pricing cache; cache layers accelerate a read
+but cannot become pricing Source of Truth.
 
 | Input | Validation/use |
 |---|---|
 | `capacity_bytes` | integer in inclusive range `1..1<<60` |
-| service type | fixed internally to `STORAGE`; caller cannot request another type |
+| charge kind | fixed internally to `storage.capacity.gb_hour`; caller cannot request another metric |
 | L1 snapshot | in-process, one-minute TTL, immutable, current effective window required |
-| L2 snapshot | Shared Redis key `cost-manager:pricing:active:v1:STORAGE`, five-minute maximum TTL, fully revalidated before use |
-| DB fallback | `TierRepository.GetActivePricingSnapshot(STORAGE)` is durable authority |
+| L2 snapshot | Storage-owned Shared Redis key, one-hour maximum TTL, fully revalidated before use |
+| DB fallback | Global Pricing Schedule is the base authority; the Storage-owned Zone adjustment table is the module modifier authority |
 
 ```mermaid
 sequenceDiagram
-    participant H as TierHandler
-    participant S as TierService
+    participant H as StorageQuoteHandler
+    participant S as StorageQuoteWorkflow
     participant L1 as Pricing L1
     participant L2 as Shared Redis
-    participant R as TierRepository
+    participant R as StoragePricingRepository
     participant DB as Billing PostgreSQL
     H->>H: parse capacity_bytes and set 2s deadline
-    H->>S: EstimateStorage capacity
-    S->>L1: get effective STORAGE snapshot
+    H->>S: EstimateStorage capacity plus trusted Zone
+    S->>L1: get effective Global base snapshot
     alt valid L1 hit
         L1-->>S: immutable snapshot
     else L1 miss
@@ -100,47 +108,62 @@ sequenceDiagram
         alt valid L2 bytes
             L2-->>S: snapshot after schema range checksum validation
         else cache miss invalid or stale
-            S->>R: GetActivePricingSnapshot STORAGE
-            R->>DB: select effective tier version and ranges
+            S->>R: Get active Global Storage base snapshot
+            R->>DB: select effective Global version and brackets
             DB-->>S: immutable snapshot
             S->>L2: best-effort cache write
         end
     end
+    S->>R: resolve Storage-owned adjustment for trusted Zone/time
+    R->>DB: select immutable adjustment; absence means 1/1 inheritance
 ```
 
 ### Cache integrity and recovery
 
-Before a Redis payload can answer an estimate, the cache validates IDs, service type, version/effective window, currency/checksum shape, continuous non-negative ranges from zero to one infinity range, and recalculates a 64-character checksum when present. `singleflight` prevents local miss stampedes. An invalidation generation fence prevents an in-flight old read from repopulating L1 after a pricing publish. Redis failure/missed PubSub never makes stale cache authoritative: the request falls through to PostgreSQL, and TTL/cold start rebuilds state.
+The Storage L2 value is binary `StoragePricingSnapshotCacheEntryV1`, not JSON.
+Before a Redis payload can answer an estimate, the cache protobuf-decodes it and
+validates raw 16-byte IDs, enum ownership/unit/model, microsecond effective
+window, 32-byte SHA-256 checksum, currency, and continuous non-negative ranges
+from zero to one infinity range. `singleflight` prevents local miss stampedes.
+An invalidation generation fence prevents an in-flight old read from
+repopulating L1 after a pricing publish. Redis failure/missed PubSub never makes
+stale cache authoritative: the request falls through to PostgreSQL, and
+TTL/cold start rebuilds state.
 
 ## Phase 3 — Exact progressive quote calculation and response
 
-For each effective range, `TierService` calculates the covered bytes and its micro-unit price using `uint128` arithmetic (`bits.Mul64`/`bits.Add64`), divides by 1 MiB with upward rounding, rejects numeric overflow, and multiplies the hourly result by the fixed 730-hour month. It returns the snapshot lineage so the UI can explain which quote was observed; that lineage is not a future billing reservation.
+For each effective range, the storage quote service uses the requested capacity
+bytes as exact `BYTE_HOUR` quantity, calculates the rational base amount,
+multiplies the Storage-owned Zone rational, and performs one final ceiling to
+BIGINT micro-units. It returns both lineages so the UI can explain
+which quote was observed; that lineage is not a future billing reservation.
 
 | Response payload field | Meaning |
 |---|---|
 | `capacity_bytes` | requested capacity |
 | `hourly_estimate_micro_units` | rounded-up progressive hourly charge |
-| `monthly_estimate_micro_units` | hourly estimate × `730` |
 | `currency` | snapshot currency |
-| `tier_code`, `tier_id`, `tier_version_id` | immutable effective pricing identity |
+| `pricing_schedule_code`, `pricing_schedule_id`, `pricing_schedule_version_id` | immutable effective schedule identity |
 | `pricing_version`, `pricing_checksum`, `pricing_effective_from` | audit/display lineage |
+| `rate_adjustment_id`, `rate_adjustment_version`, `rate_adjustment_checksum` | nullable immutable Storage adjustment lineage; null means Global inheritance |
+| `rate_adjustment_numerator`, `rate_adjustment_denominator` | decimal-string rational applied to the Global base; `1/1` for inheritance |
 | `estimated_at` | UTC calculation time |
 
 | Result | HTTP response | Durable effect |
 |---|---|---|
 | valid snapshot and arithmetic | `200` estimate payload | none |
 | invalid capacity or invalid durable range | `400` | none |
-| no effective storage tier or cache/DB timeout/error | `503` | none |
+| no effective storage schedule or cache/DB timeout/error | `503` | none |
 
 ```mermaid
 sequenceDiagram
-    participant S as TierService
+    participant S as StorageQuoteWorkflow
     participant PS as PricingSnapshot
-    participant H as TierHandler
+    participant H as StorageQuoteHandler
     S->>PS: iterate continuous progressive ranges
-    S->>S: price bytes using uint128 then round per MiB
-    S->>S: multiply hourly by 730 with overflow guard
-    S-->>H: estimate plus immutable snapshot lineage
+    S->>S: price decimal-GB capacity as exact rational
+    S->>S: multiply Storage Zone rational then ceiling once
+    S-->>H: estimate plus base and adjustment lineage
     H-->>H: encode 200 payload
 ```
 
@@ -150,10 +173,13 @@ sequenceDiagram
 |---|---|
 | Cloud Trinity session or `iam:domain_alias:billing:{alias_id}` | ACR self-context binding; Cost Alias rechecks source IAM session |
 | process L1 pricing map | one-minute performance cache, generation-fenced |
-| `cost-manager:pricing:active:v1:STORAGE` | Shared Redis five-minute performance cache; must pass full integrity checks |
-| effective Tier/version/ranges in Billing PostgreSQL | durable pricing SoT |
+| `cost-manager:storage:pricing:snapshot:v1:storage.capacity.gb_hour` | Storage-owned Shared Redis one-hour cache for the exact `BYTE_HOUR` Global base; must pass full integrity checks |
+| `StoragePricingSnapshotCacheEntryV1` | Storage-owned binary L2 value; UUIDs are raw 16 bytes, checksum is raw 32 bytes, and all pricing BIGINTs are protobuf `int64` |
+| `billing.pricing.storage.version.published.v1` | Storage-only Protobuf invalidation hint; foreign module facts are ignored |
+| effective Global Pricing Schedule/version/brackets in Billing PostgreSQL | durable base pricing SoT |
+| `billing.storage_zone_price_adjustment_versions` | Storage-owned rational modifier SoT; absence at the boundary is explicit `1/1` inheritance |
 | `billing.wallets`, `payment_intents`, ledger | intentionally untouched by quote workflow |
 
 ## Code map
 
-[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/http/handler/tier_handler.go`](../../cost-manager/api/internal/transport/http/handler/tier_handler.go), [`cost-manager/api/internal/service/tier_service.go`](../../cost-manager/api/internal/service/tier_service.go), and [`cost-manager/api/internal/service/pricing_cache.go`](../../cost-manager/api/internal/service/pricing_cache.go).
+[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/http/handler/storage_pricing_handler.go`](../../cost-manager/api/internal/transport/http/handler/storage_pricing_handler.go), [`cost-manager/api/internal/service/storage_pricing_service.go`](../../cost-manager/api/internal/service/storage_pricing_service.go), and [`cost-manager/api/internal/repository/storage_pricing_repo.go`](../../cost-manager/api/internal/repository/storage_pricing_repo.go).

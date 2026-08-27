@@ -11,4 +11,6 @@ type TenantConsumerRepository interface {
 	List(context.Context, *mailEntity.ListTenantConsumer) ([]*mailEntity.ListTenantConsumer, error)
 	Update(context.Context, *mailEntity.UpdateTenantConsumer, *mailEntity.MailOutboxRecord) error
 	Delete(context.Context, *mailEntity.DeleteTenantConsumer, *mailEntity.MailOutboxRecord) error
+	LoadDrainTarget(context.Context, mailEntity.TenantConsumerDrainCommand) (mailEntity.TenantConsumerDrainTarget, error)
+	RequestDrain(context.Context, mailEntity.TenantConsumerDrainCommand, uint32, mailEntity.MailOutboxRecord) error
 }

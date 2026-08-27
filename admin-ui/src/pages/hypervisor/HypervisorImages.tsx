@@ -59,7 +59,7 @@ export default function HypervisorImagesPage() {
     }
     setLoading(true)
     try {
-      setImages(await listHypervisorImages(selectedZone.id))
+      setImages(await listHypervisorImages())
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Cannot load image registry')
     } finally {
@@ -79,7 +79,7 @@ export default function HypervisorImagesPage() {
     }
     setSubmitting(true)
     try {
-      await registerHypervisorImage(selectedZone.id, form)
+      await registerHypervisorImage(form)
       toast.success('Image metadata registered.')
       setForm(emptyForm)
       await loadImages()
@@ -93,7 +93,7 @@ export default function HypervisorImagesPage() {
   async function onImport(image: HypervisorImage) {
     if (!selectedZone) return
     try {
-      await importHypervisorImage(selectedZone.id, image.id)
+      await importHypervisorImage(image.id)
       toast.success(`Import queued for ${image.code} revision ${image.revision}.`)
       await loadImages()
     } catch (error) {
@@ -104,7 +104,7 @@ export default function HypervisorImagesPage() {
   async function onDelete(image: HypervisorImage) {
     if (!selectedZone || !window.confirm(`Delete ${image.code} revision ${image.revision}?`)) return
     try {
-      await deleteHypervisorImage(selectedZone.id, image.id)
+      await deleteHypervisorImage(image.id)
       toast.success('Image deletion queued.')
       await loadImages()
     } catch (error) {
@@ -150,6 +150,42 @@ export default function HypervisorImagesPage() {
           </div>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="image-file">Auto-fill from local image file (Optional)</Label>
+              <Input
+                id="image-file"
+                type="file"
+                accept=".qcow2,.raw,.iso,.img"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0]
+                  if (!file) return
+                  const size = file.size
+                  const format = file.name.endsWith('.raw') ? 'raw' : 'qcow2'
+                  const rawName = file.name.replace(/\.[^/.]+$/, '')
+                  setForm((prev) => ({
+                    ...prev,
+                    name: prev.name || rawName,
+                    code: prev.code || rawName.toLowerCase().replace(/[^a-z0-9._-]/g, '-'),
+                    size_bytes: size,
+                    format,
+                  }))
+                  if (size <= 500 * 1024 * 1024) {
+                    try {
+                      toast.info('Computing SHA-256 checksum...')
+                      const buffer = await file.arrayBuffer()
+                      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+                      const hashArray = Array.from(new Uint8Array(hashBuffer))
+                      const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
+                      setForm((prev) => ({ ...prev, sha256: hashHex }))
+                      toast.success('SHA-256 checksum computed.')
+                    } catch {
+                      toast.error('Could not compute SHA-256 in browser.')
+                    }
+                  }
+                }}
+              />
+              <p className="text-xs text-muted-foreground">Selecting a file will auto-fill size, format, code and calculate SHA-256 for files under 500MB.</p>
+            </div>
+            <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="image-name">Display name</Label>
               <Input id="image-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
             </div>
@@ -168,6 +204,10 @@ export default function HypervisorImagesPage() {
             <div className="space-y-2">
               <Label htmlFor="image-release">Release label</Label>
               <Input id="image-release" value={form.release} onChange={(event) => setForm({ ...form, release: event.target.value })} required />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="image-format">Format</Label>
+              <Input id="image-format" value={form.format} onChange={(event) => setForm({ ...form, format: event.target.value as 'qcow2' | 'raw' })} placeholder="qcow2 or raw" required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="image-size">Size (bytes)</Label>

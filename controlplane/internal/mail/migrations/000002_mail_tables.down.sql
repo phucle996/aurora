@@ -14,3 +14,5 @@ DROP TABLE IF EXISTS tenant_mail_template_versions CASCADE;
 DROP TABLE IF EXISTS tenant_mail_templates CASCADE;
 DROP TABLE IF EXISTS personal_mail_template_versions CASCADE;
 DROP TABLE IF EXISTS personal_mail_templates CASCADE;
+DROP TABLE IF EXISTS commercial_admission_projection CASCADE;
+DROP TABLE IF EXISTS mail_consumer_billing_outbox CASCADE;

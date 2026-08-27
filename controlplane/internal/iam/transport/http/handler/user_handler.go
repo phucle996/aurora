@@ -174,8 +174,15 @@ func (h *UserHandler) UpdateUserStatusPlatform(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Nhận và parse strict trạng thái status truyền lên từ query params để tránh lệch mọi tình huống
-	statusStr := strings.TrimSpace(c.Query("status"))
+	var req iamDto.UpdateUserStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+
+	// [COMMENT]: Request body is already covered by session proof. This is only
+	// the transport boundary's format validation before the business service.
+	statusStr := strings.TrimSpace(req.Status)
 	var status iamEntity.UserStatus
 	switch statusStr {
 	case string(iamEntity.UserStatusPendingActive):

@@ -2,7 +2,9 @@ package storageHandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -60,9 +62,12 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// 2. Bind Request Body
+	// 2. Bind Request Body có giới hạn 64KB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.CreateCredentialRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		apires.RespondBadRequest(c, "invalid request payload")
 		return
 	}
@@ -81,6 +86,8 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 			apires.RespondNotFound(c, "bucket not found")
 		} else if errors.Is(err, storageTaxonomy.ErrInvalidPolicy) {
 			apires.RespondBadRequest(c, err.Error())
+		} else if errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied) {
+			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
 		} else {
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -94,6 +101,7 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		"access_key": cred.AccessKey,
 		"secret_key": cred.SecretKey, // Chứa raw secret key
 		"policy":     cred.Policy,
+		"state":      cred.State,
 		"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -139,6 +147,7 @@ func (h *PersonalCredentialHandler) List(c *gin.Context) {
 			"id":         cred.ID.String(),
 			"access_key": cred.AccessKey,
 			"policy":     cred.Policy,
+			"state":      cred.State,
 			"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
 			"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 		})
@@ -195,8 +204,11 @@ func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
 	}
 
 	// [COMMENT]: Bind request body để lấy access_key — FE đã có access_key từ List response
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.DeleteCredentialRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || strings.TrimSpace(req.AccessKey) == "" {
 		apires.RespondBadRequest(c, "missing or invalid access_key in request body")
 		return
 	}

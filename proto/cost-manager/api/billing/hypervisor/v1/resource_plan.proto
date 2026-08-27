@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package costmanager.api.billing.hypervisor.v1;
+
+option go_package = "cost-manager/api/internal/genproto/billing/hypervisor/v1;hypervisorresourceplanv1";
+
+// EffectiveHypervisorResourcePlanV1 is the Cost-owned, immutable resource
+// bundle selected when a VM is created. It contains capacity limits only;
+// zone-specific rate resolution remains in Hypervisor pricing schedules.
+message EffectiveHypervisorResourcePlanV1 {
+  uint32 schema_version = 1;
+  string event_id = 2;
+  bytes plan_id = 3;
+  bytes revision_id = 4;
+  uint64 revision_number = 5;
+  string code = 6;
+  string display_name = 7;
+  string description = 8;
+  string billing_model = 9;
+  uint64 cpu_cores = 10;
+  uint64 memory_mib = 11;
+  uint64 boot_disk_gib = 12;
+  bytes content_sha256 = 13;
+  string effective_from = 14;
+  string effective_to = 15;
+  repeated string allowed_operations = 16;
+  string state = 17;
+  string occurred_at = 18;
+}

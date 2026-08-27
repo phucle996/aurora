@@ -1,7 +1,7 @@
 syntax = "proto3";
 package storage;
 
-option go_package = "controlplane/internal/storage/transport/rpc/proto;storageproto";
+option go_package = "controlplane/internal/storage/transport/proto;storageproto";
 
 // Cấu hình đồng bộ hóa Bucket vật lý từ Controlplane sang Dataplane
 message BucketCreateSync {
@@ -41,6 +41,48 @@ message BucketResizeSync {
 message BucketDeleteSync {
   string name = 1;                  // Tên vật lý của bucket cần xóa
   repeated string access_keys = 2; // Danh sách access keys cần thu hồi/xóa sạch
+}
+
+message BucketVersioningSync {
+  string bucket_id = 1;
+  string name = 2;
+  bool versioning_enabled = 3;
+}
+
+message LifecycleRuleSync {
+  string id = 1;
+  bool enabled = 2;
+  string prefix = 3;
+  int32 expiration_days = 4;
+  int32 noncurrent_version_expiration_days = 5;
+  int32 abort_incomplete_multipart_upload_days = 6;
+}
+
+message BucketLifecycleSync {
+  string bucket_id = 1;
+  string name = 2;
+  repeated LifecycleRuleSync rules = 3;
+}
+
+// Dataplane emits these typed settlement payloads only after the matching
+// MinIO mutation returns success. JO promotes these actual values into Central
+// SoT; the generic outbox never stores Storage-specific target columns.
+message BucketQuotaAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  int64 actual_quota_bytes = 3;
+}
+
+message BucketVersioningAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  bool actual_versioning_enabled = 3;
+}
+
+message BucketLifecycleAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  repeated LifecycleRuleSync actual_rules = 3;
 }
 
 // Ephemeral access projection written to the Zone-local KV. This contract

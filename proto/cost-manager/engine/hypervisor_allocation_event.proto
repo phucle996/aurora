@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package aurora.hypervisor.billing.v1;
+
+// A trusted Central lifecycle fact. It describes capacity allocated to one VM;
+// it never carries payer authority, price, wallet state or provider secrets.
+message HypervisorAllocationChangedV1 {
+  uint32 schema_version = 1;
+  bytes event_id = 2;
+  string event_type = 3; // ACTIVATE | REVISE | TERMINATE
+  bytes resource_id = 4;
+  bytes zone_id = 5;
+  uint64 source_version = 6;
+  int64 effective_at_unix_ms = 7;
+  uint64 cpu_cores = 8;
+  uint64 memory_mib = 9;
+  uint64 disk_gib = 10;
+  string gpu_sku = 11;
+  uint64 gpu_count = 12;
+  bytes source_job_id = 13;
+}

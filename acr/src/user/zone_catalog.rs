@@ -2,6 +2,7 @@
 // 📂 user/zone_catalog.rs — User Zone Catalog Handler (GET /api/v1/zones/catalog)
 // ======================================================================================================
 
+use crate::infra::redis::RedisRuntimeClient;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::get_all_zones;
 use crate::observability::logger::Logger;
@@ -26,7 +27,7 @@ fn is_user_visible_zone_status(status: &str) -> bool {
 /// [COMMENT]: Intercept GET /api/v1/zones/catalog dành cho User domain.
 pub async fn handle_user_zone_catalog(
     shared_redis: &Arc<SharedRedisBus>,
-    redis_client: &redis::Client,
+    redis_client: &RedisRuntimeClient,
     _client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,

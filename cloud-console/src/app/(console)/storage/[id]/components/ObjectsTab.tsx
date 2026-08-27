@@ -18,7 +18,9 @@ import {
   listGatewayObjects,
   putGatewayTags,
   uploadGatewayObject,
+  uploadLargeFile,
   type GatewayObject,
+  type MultipartProgress,
   type StorageGatewayError,
 } from "@/features/storage/objects/api";
 import { useStorageAccessSession } from "@/features/storage/objects/access-session";
@@ -137,9 +139,26 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
     setFileDetails((current) => current ? { ...current, tags } : current);
   }, [access, bucket.name, selectedFile]);
 
-  const uploadObject = useCallback(async (file: File, objectKey: string) => {
-    await access.execute((session, signal) => uploadGatewayObject(bucket.name, objectKey, file, session, signal));
-  }, [access, bucket.name]);
+  const uploadObject = useCallback(
+    async (
+      file: File,
+      objectKey: string,
+      onProgress?: (progress: MultipartProgress) => void,
+      signal?: AbortSignal,
+    ) => {
+      await access.execute(async (session, opSignal) => {
+        const combinedSignal = signal || opSignal;
+        if (file.size >= 10 * 1024 * 1024) {
+          return uploadLargeFile(bucket.name, objectKey, session, file, {
+            onProgress,
+            signal: combinedSignal,
+          });
+        }
+        return uploadGatewayObject(bucket.name, objectKey, file, session, combinedSignal);
+      });
+    },
+    [access, bucket.name],
+  );
 
   const downloadObject = useCallback(async (objectKey: string) => {
     try {
@@ -216,7 +235,28 @@ export function ObjectsTab({ bucket }: { bucket: BucketItem }) {
         )}
       </div>
 
-      {selectedFile && <ObjectDetailPanel selectedFile={selectedFile} fileDetails={fileDetails} metadataLoading={metadataLoading} onClose={() => { setSelectedFile(null); setFileDetails(null); }} onSaveTags={saveTags} onDelete={async () => { await deleteSelected(); setSelectedFile(null); }} onDownload={() => void downloadObject(selectedFile.fullName)} />}
+      {selectedFile && (
+        <ObjectDetailPanel
+          key={selectedFile.fullName}
+          selectedFile={selectedFile}
+          fileDetails={fileDetails}
+          metadataLoading={metadataLoading}
+          bucketName={bucket.name}
+          accessSessionId={access.accessSessionID ?? undefined}
+          versioningEnabled={bucket.versioning_enabled}
+          onClose={() => {
+            setSelectedFile(null);
+            setFileDetails(null);
+          }}
+          onSaveTags={saveTags}
+          onDelete={async () => {
+            await deleteSelected();
+            setSelectedFile(null);
+          }}
+          onDownload={() => void downloadObject(selectedFile.fullName)}
+          onRefresh={() => void queryClient.invalidateQueries({ queryKey: [...scope, "storage", "objects", bucket.id] })}
+        />
+      )}
       <UploadModal
         isOpen={uploadOpen}
         prefix={currentPath.length ? `${currentPath.join("/")}/` : ""}

@@ -145,6 +145,9 @@ fn notification_title(job_topic: &str, status: &str) -> &'static str {
         ("mail.consumer.upsert", "SUCCEEDED") => "Mail Consumer Applied",
         ("mail.consumer.upsert", "FAILED") => "Mail Consumer Apply Failed",
         ("mail.consumer.upsert", _) => "Applying Mail Consumer",
+        ("mail.consumer.drain", "SUCCEEDED") => "Mail Consumer Drained",
+        ("mail.consumer.drain", "FAILED") => "Mail Consumer Drain Failed",
+        ("mail.consumer.drain", _) => "Draining Mail Consumer",
         ("mail.consumer.delete", "SUCCEEDED") => "Mail Consumer Deleted",
         ("mail.consumer.delete", "FAILED") => "Mail Consumer Delete Failed",
         ("mail.consumer.delete", _) => "Deleting Mail Consumer",
@@ -163,15 +166,27 @@ fn notification_title(job_topic: &str, status: &str) -> &'static str {
         ("storage.bucket.resize", "SUCCEEDED") => "Bucket Resized",
         ("storage.bucket.resize", "FAILED") => "Bucket Resize Failed",
         ("storage.bucket.resize", _) => "Resizing Bucket",
+        ("storage.bucket.versioning", "SUCCEEDED") => "Bucket Versioning Updated",
+        ("storage.bucket.versioning", "FAILED") => "Bucket Versioning Update Failed",
+        ("storage.bucket.versioning", _) => "Updating Bucket Versioning",
+        ("storage.bucket.lifecycle", "SUCCEEDED") => "Bucket Lifecycle Updated",
+        ("storage.bucket.lifecycle", "FAILED") => "Bucket Lifecycle Update Failed",
+        ("storage.bucket.lifecycle", _) => "Updating Bucket Lifecycle",
         ("storage.credential.create", "SUCCEEDED") => "Storage Credential Created",
         ("storage.credential.create", "FAILED") => "Storage Credential Creation Failed",
         ("storage.credential.create", _) => "Creating Storage Credential",
         ("storage.credential.delete", "SUCCEEDED") => "Storage Credential Deleted",
         ("storage.credential.delete", "FAILED") => "Storage Credential Deletion Failed",
         ("storage.credential.delete", _) => "Deleting Storage Credential",
+        ("storage.access.prepare", "SUCCEEDED") => "Storage Access Ready",
+        ("storage.access.prepare", "FAILED") => "Storage Access Failed",
+        ("storage.access.prepare", _) => "Preparing Storage Access",
         ("hypervisor.vm.create", "SUCCEEDED") => "Virtual Machine Ready",
         ("hypervisor.vm.create", "FAILED") => "Virtual Machine Creation Failed",
         ("hypervisor.vm.create", _) => "Creating Virtual Machine",
+        ("hypervisor.vm.delete", "SUCCEEDED") => "Virtual Machine Deleted",
+        ("hypervisor.vm.delete", "FAILED") => "Virtual Machine Deletion Failed",
+        ("hypervisor.vm.delete", _) => "Deleting Virtual Machine",
         _ => "Job Notification",
     }
 }
@@ -216,6 +231,22 @@ mod tests {
         assert_eq!(
             notification_title("storage.credential.delete", "FAILED"),
             "Storage Credential Deletion Failed"
+        );
+        assert_eq!(
+            notification_title("storage.access.prepare", "SUCCEEDED"),
+            "Storage Access Ready"
+        );
+        assert_eq!(
+            notification_title("storage.bucket.versioning", "SUCCEEDED"),
+            "Bucket Versioning Updated"
+        );
+        assert_eq!(
+            notification_title("storage.bucket.lifecycle", "FAILED"),
+            "Bucket Lifecycle Update Failed"
+        );
+        assert_eq!(
+            notification_title("hypervisor.vm.delete", "SUCCEEDED"),
+            "Virtual Machine Deleted"
         );
     }
 }

@@ -1,49 +1,5 @@
-import { request } from './fetcher';
 import { criticalFetcher } from './criticalFetcher';
-
-export interface PlanMetric {
-  id: string;
-  plan_id: string;
-  metric_type: string;
-  quota: number;
-  unit: string;
-}
-
-export interface PlanItem {
-  id: string;
-  name: string;
-  code: string;
-  service_type: string;
-  zone_id: string;
-  monthly_price: number;
-  currency: string;
-  status: string;
-  description: string;
-  metrics?: PlanMetric[];
-  created_at?: string;
-}
-
-export interface ZoneItem {
-  id: string;
-  code: string;
-  name: string;
-  status: string;
-}
-
-export interface PriceItem {
-  id: string;
-  service_type: string;
-  metric_type: string;
-  zone_id: string;
-  unit: string;
-  unit_price: number;
-  currency: string;
-  tier: string;
-  free_quota: number;
-  effective_from: string;
-  effective_to?: string;
-  created_at: string;
-}
+import { request } from './fetcher';
 
 export interface WalletSummary {
   wallet_id: string;
@@ -106,6 +62,227 @@ export interface ReferralCampaign {
   updated_at: string;
 }
 
+export type PricingModel = 'PROGRESSIVE_UNIT' | 'FIXED_BUNDLE';
+
+export interface PricingSchedule {
+  id: string;
+  code: string;
+  display_name: string;
+  charge_kind_code: string;
+  pricing_model: PricingModel;
+  currency: string;
+  metadata_version: number;
+  status: 'ACTIVE' | 'DISABLED';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PricingBracket {
+  id?: string;
+  range_start_quantity: string;
+  range_end_quantity: string | null;
+  price_numerator_micro_units: string;
+  price_denominator_quantity: string;
+}
+
+export interface PricingScheduleVersion {
+  id: string;
+  pricing_schedule_id: string;
+  version_number: number;
+  pricing_model: PricingModel;
+  status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+  effective_from: string;
+  effective_to?: string | null;
+  checksum: string;
+  brackets: PricingBracket[];
+}
+
+export interface PublishedBasePriceVersion {
+	id: string;
+	pricing_schedule_id: string;
+	charge_kind_code: string;
+	version_number: number;
+	pricing_model: PricingModel;
+	status: 'SCHEDULED' | 'ACTIVE';
+	effective_from: string;
+	effective_to: null;
+	checksum: string;
+}
+
+export interface PricingScheduleDetail {
+  id: string;
+  code: string;
+  display_name: string;
+  charge_kind_code: string;
+  pricing_model: PricingModel;
+  currency: string;
+  metadata_version: number;
+  latest_version: PricingScheduleVersion | null;
+}
+
+export interface PricingSchedulesResponse {
+  pricing_schedules: PricingSchedule[];
+  pagination: { page: number; limit: number; total: number };
+}
+
+export interface MailZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+  effective_from: string;
+  effective_to: string | null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+  change_reason: string;
+  created_by: string;
+  created_at: string;
+  is_latest: boolean;
+  is_effective: boolean;
+}
+
+export interface MailZonePriceAdjustmentsResponse {
+  zone_id: string;
+  adjustments: MailZonePriceAdjustment[];
+  has_more: boolean;
+  observed_at: string;
+}
+
+export interface PublishedMailZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE';
+  effective_from: string;
+  effective_to: null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+}
+
+export interface StorageZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+  effective_from: string;
+  effective_to: string | null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+  change_reason: string;
+  created_by: string;
+  created_at: string;
+  is_latest: boolean;
+  is_effective: boolean;
+}
+
+export interface StorageZonePriceAdjustmentsResponse {
+  zone_id: string;
+  adjustments: StorageZonePriceAdjustment[];
+  has_more: boolean;
+  observed_at: string;
+}
+
+export interface PublishedStorageZonePriceAdjustment {
+  id: string;
+  zone_id: string;
+  version_number: number;
+  status: 'SCHEDULED' | 'ACTIVE';
+  effective_from: string;
+  effective_to: null;
+  multiplier_numerator: string;
+  multiplier_denominator: string;
+  checksum: string;
+}
+
+export interface HypervisorZonePriceAdjustment {
+	id: string;
+	zone_id: string;
+	version_number: number;
+	status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
+	effective_from: string;
+	effective_to: string | null;
+	multiplier_numerator: string;
+	multiplier_denominator: string;
+	checksum: string;
+	change_reason: string;
+	created_by: string;
+	created_at: string;
+	is_latest: boolean;
+	is_effective: boolean;
+}
+
+export interface HypervisorZonePriceAdjustmentsResponse {
+	zone_id: string;
+	adjustments: HypervisorZonePriceAdjustment[];
+	has_more: boolean;
+	observed_at: string;
+}
+
+export interface PublishedHypervisorZonePriceAdjustment {
+	id: string;
+	zone_id: string;
+	version_number: number;
+	status: 'SCHEDULED' | 'ACTIVE';
+	effective_from: string;
+	effective_to: null;
+	multiplier_numerator: string;
+	multiplier_denominator: string;
+	checksum: string;
+}
+
+export interface HypervisorResourcePlan {
+	plan_id: string;
+	revision_id: string;
+	revision_number: string;
+	code: string;
+	display_name: string;
+	description: string;
+	billing_model: 'LIMIT_HOURLY';
+	cpu_cores: string;
+	memory_mib: string;
+	boot_disk_gib: string;
+	content_sha256: string;
+	effective_from: string;
+	effective_to: string | null;
+}
+
+export interface HypervisorResourcePlanAdminItem {
+	plan_id: string;
+	code: string;
+	display_name: string;
+	description: string;
+	state: string;
+	latest_revision_number: string;
+	effective_revision_number: string;
+}
+export interface HypervisorResourcePlanHistoryItem {
+	plan_id: string;
+	revision_id: string;
+	revision_number: string;
+	cpu_cores: string;
+	memory_mib: string;
+	boot_disk_gib: string;
+	effective_from: string;
+	effective_to: string | null;
+	state: string;
+	change_reason: string;
+	is_latest: boolean;
+	is_effective: boolean;
+}
+export interface HypervisorResourcePlansResponse {
+	plans: HypervisorResourcePlanAdminItem[];
+	next_cursor: string;
+	observed_at: string;
+}
+export interface HypervisorResourcePlanHistoryResponse {
+	revisions: HypervisorResourcePlanHistoryItem[];
+	next_cursor: string;
+	observed_at: string;
+}
+
 export const billingApi = {
   async getWalletSummary(signal?: AbortSignal): Promise<WalletSummary> {
     return request<WalletSummary>('/billing/wallet/summary', { method: 'GET', signal });
@@ -162,163 +339,160 @@ export const billingApi = {
   ): Promise<ReferralCampaign> {
     return criticalFetcher<ReferralCampaign>(
       `/billing/critical/referrals/${encodeURIComponent(id)}/status`,
-      {
-        method: 'PATCH',
-        body: { status, expected_version: expectedVersion },
-      },
+      { method: 'PATCH', body: { status, expected_version: expectedVersion } },
     );
   },
 
-  // List all available active plans
-  async listPlans(): Promise<PlanItem[]> {
-    return await request<PlanItem[]>('/billing/plans');
+  async listPricingSchedules(page = 1, limit = 50, chargeKind?: string, search?: string): Promise<PricingSchedulesResponse> {
+    const query = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (chargeKind) query.set('charge_kind', chargeKind);
+    if (search) query.set('search', search);
+    return request<PricingSchedulesResponse>(`/billing/pricing-schedules?${query.toString()}`);
   },
 
-  // Create a new plan (Admin feature)
-  async createPlan(plan: Omit<PlanItem, 'id' | 'status'>): Promise<PlanItem> {
-    return await request<PlanItem>('/billing/plans', {
-      method: 'POST',
-      body: JSON.stringify(plan),
-    });
+  async getPricingScheduleDetail(code: string): Promise<PricingScheduleDetail> {
+    return request<PricingScheduleDetail>(`/billing/pricing-schedules/${encodeURIComponent(code)}`);
   },
 
-  // Update status of plan (Admin feature)
-  async updatePlanStatus(planId: string, status: 'ACTIVE' | 'DEPRECATED'): Promise<void> {
-    await request<void>(`/billing/plans/${planId}/status`, {
+  async updatePricingScheduleMetadata(code: string, payload: { metadata_version: number; display_name: string }): Promise<PricingSchedule> {
+    return criticalFetcher<PricingSchedule>(`/billing/critical/pricing-schedules/${encodeURIComponent(code)}/metadata`, {
       method: 'PATCH',
-      body: JSON.stringify({ status }),
+      body: payload,
     });
   },
 
-  // List real zones
-  async listZones(): Promise<ZoneItem[]> {
-    return await request<ZoneItem[]>('/billing/zones');
+  async publishStorageBasePriceVersion(code: string, payload: {
+    expected_latest_version: number;
+    effective_from: string;
+    change_reason: string;
+    brackets: PricingBracket[];
+	}): Promise<PublishedBasePriceVersion> {
+		return criticalFetcher<PublishedBasePriceVersion>(`/billing/critical/storage/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+			method: 'POST',
+			body: payload,
+		});
+	},
+
+	async publishHypervisorBasePriceVersion(code: string, payload: {
+		expected_latest_version: number;
+		effective_from: string;
+		change_reason: string;
+		brackets: PricingBracket[];
+	}): Promise<PublishedBasePriceVersion> {
+		return criticalFetcher<PublishedBasePriceVersion>(`/billing/critical/hypervisor/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+			method: 'POST',
+			body: payload,
+		});
+	},
+
+	async publishMailBasePriceVersion(code: string, payload: {
+		expected_latest_version: number;
+		effective_from: string;
+		change_reason: string;
+		brackets: PricingBracket[];
+	}): Promise<PublishedBasePriceVersion> {
+		return criticalFetcher<PublishedBasePriceVersion>(`/billing/critical/mail/pricing-schedules/${encodeURIComponent(code)}/versions`, {
+			method: 'POST',
+			body: payload,
+		});
+	},
+
+  async listMailZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<MailZonePriceAdjustmentsResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    return request<MailZonePriceAdjustmentsResponse>(`/billing/mail/zone-price-adjustments?${query.toString()}`, {
+      method: 'GET',
+      signal,
+    });
   },
 
-  // List all prices
-  async listPrices(): Promise<PriceItem[]> {
-    return await request<PriceItem[]>('/billing/prices');
+	async listStorageZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<StorageZonePriceAdjustmentsResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    return request<StorageZonePriceAdjustmentsResponse>(`/billing/storage/zone-price-adjustments?${query.toString()}`, {
+      method: 'GET',
+      signal,
+    });
+	},
+
+	async listHypervisorZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<HypervisorZonePriceAdjustmentsResponse> {
+		const query = new URLSearchParams({ limit: String(limit) });
+		return request<HypervisorZonePriceAdjustmentsResponse>(`/billing/hypervisor/zone-price-adjustments?${query.toString()}`, {
+			method: 'GET',
+			signal,
+		});
+	},
+
+  async publishStorageZonePriceAdjustment(payload: {
+    expected_latest_version: number;
+    effective_from: string;
+    change_reason: string;
+    multiplier_numerator: string;
+    multiplier_denominator: string;
+  }): Promise<PublishedStorageZonePriceAdjustment> {
+    return criticalFetcher<PublishedStorageZonePriceAdjustment>('/billing/critical/storage/zone-price-adjustments/versions', {
+      method: 'POST',
+      body: payload,
+    });
   },
 
-  // [COMMENT]: Gọi API lấy danh sách biểu giá cước lũy tiến (Tiers) có phân trang và bộ lọc
-  async listTiers(
-    page: number = 1,
-    limit: number = 10,
-    serviceType?: string,
-    search?: string
-  ): Promise<TiersResponse> {
-    let url = `/billing/tiers?page=${page}&limit=${limit}`;
-    if (serviceType && serviceType !== 'all') {
-      url += `&service_type=${serviceType}`;
-    }
-    if (search) {
-      url += `&search=${encodeURIComponent(search)}`;
-    }
-    return await request<TiersResponse>(url);
-  },
+	async publishMailZonePriceAdjustment(payload: {
+    expected_latest_version: number;
+    effective_from: string;
+    change_reason: string;
+    multiplier_numerator: string;
+    multiplier_denominator: string;
+  }): Promise<PublishedMailZonePriceAdjustment> {
+    return criticalFetcher<PublishedMailZonePriceAdjustment>('/billing/critical/mail/zone-price-adjustments/versions', {
+      method: 'POST',
+      body: payload,
+		});
+	},
 
-  // [COMMENT]: Luôn load full latest aggregate trước Edit, không dựng snapshot từ flat paginated rows.
-  async getTierDetail(code: string, serviceType: string): Promise<TierDetail> {
-    return await request<TierDetail>(
-      `/billing/tiers/${encodeURIComponent(serviceType)}/${encodeURIComponent(code)}`
-    );
-  },
+	async publishHypervisorZonePriceAdjustment(payload: {
+		expected_latest_version: number;
+		effective_from: string;
+		change_reason: string;
+		multiplier_numerator: string;
+		multiplier_denominator: string;
+	}): Promise<PublishedHypervisorZonePriceAdjustment> {
+		return criticalFetcher<PublishedHypervisorZonePriceAdjustment>('/billing/critical/hypervisor/zone-price-adjustments/versions', {
+			method: 'POST',
+			body: payload,
+		});
+	},
 
-  // [COMMENT]: Name dùng metadata OCC riêng và không phát pricing version/outbox.
-  async updateTierMetadata(payload: UpdateTierMetadataPayload): Promise<TierMetadataResult> {
-    const { code, service_type, ...body } = payload;
-    return await criticalFetcher<TierMetadataResult>(
-      `/billing/critical/tiers/${encodeURIComponent(service_type)}/${encodeURIComponent(code)}/metadata`,
-      {
-        method: 'PATCH',
-        body,
-      }
-    );
-  },
+	async listHypervisorResourcePlans(limit = 50, signal?: AbortSignal, after = ''): Promise<HypervisorResourcePlansResponse> {
+		const query = new URLSearchParams({ limit: String(limit) });
+		if (after) query.set('after', after);
+		return request<HypervisorResourcePlansResponse>(`/billing/hypervisor/resource-plans?${query}`, { method: 'GET', signal });
+	},
 
-  // [COMMENT]: Pricing edit append immutable full snapshot; không gửi range IDs cũ để mutate lịch sử.
-  async createTierVersion(payload: CreateTierVersionPayload): Promise<TierVersion> {
-    const { code, service_type, ...body } = payload;
-    return await criticalFetcher<TierVersion>(
-      `/billing/critical/tiers/${encodeURIComponent(service_type)}/${encodeURIComponent(code)}/versions`,
-      {
-        method: 'POST',
-        body,
-      }
-    );
-  }
+	async listHypervisorResourcePlanRevisions(planID: string, signal?: AbortSignal, before = ''): Promise<HypervisorResourcePlanHistoryResponse> {
+		const query = new URLSearchParams({ limit: '50' });
+		if (before) query.set('before', before);
+		return request<HypervisorResourcePlanHistoryResponse>(`/billing/hypervisor/resource-plans/${encodeURIComponent(planID)}/revisions?${query}`, { method: 'GET', signal });
+	},
+
+	async createHypervisorResourcePlan(payload: {
+		code: string;
+		display_name: string;
+		description: string;
+		cpu_cores: string;
+		memory_mib: string;
+		boot_disk_gib: string;
+		effective_from: string;
+		change_reason: string;
+	}): Promise<HypervisorResourcePlan> {
+		return criticalFetcher<HypervisorResourcePlan>('/billing/critical/hypervisor/resource-plans', { method: 'POST', body: payload });
+	},
+
+	async publishHypervisorResourcePlanRevision(planID: string, payload: {
+		expected_latest_revision: string;
+		cpu_cores: string;
+		memory_mib: string;
+		boot_disk_gib: string;
+		effective_from: string;
+		change_reason: string;
+	}): Promise<HypervisorResourcePlan> {
+		return criticalFetcher<HypervisorResourcePlan>(`/billing/critical/hypervisor/resource-plans/${encodeURIComponent(planID)}/revisions`, { method: 'POST', body: payload });
+	},
 };
-
-// [COMMENT]: Interface đại diện cho dòng biểu giá cước lũy tiến chi tiết dạng phẳng (Flat Tier)
-export interface TierItem {
-  id: string;              // ID của nấc cước chi tiết (Range ID)
-  tier_id: string;         // ID của biểu giá gốc (Tier ID)
-  name: string;            // Tên biểu giá gốc (VD: Standard Storage Base Tier)
-  code: string;            // Mã biểu giá gốc (VD: STORAGE_STD_BASE)
-  service_type: string;    // Loại dịch vụ (STORAGE | NETWORK_IN | NETWORK_OUT)
-  metadata_version: number;
-  pricing_version: number;
-  range_start: number;     // Mốc bắt đầu (Megabytes - MB)
-  range_end: number;       // Mốc kết thúc (MB), 0 biểu thị không giới hạn (vô cực)
-  base_unit_price: number; // Giá gốc (USD Micro-units/MB/Hour)
-  created_at: string;
-  updated_at: string;
-}
-
-export interface TierRangeInput {
-  id?: string;
-  range_start: number;
-  range_end: number;
-  base_unit_price: number;
-}
-
-export interface TierVersion {
-  id: string;
-  tier_id: string;
-  version_number: number;
-  status: 'SCHEDULED' | 'ACTIVE' | 'SUPERSEDED' | 'CANCELLED';
-  effective_from: string;
-  effective_to?: string | null;
-  checksum: string;
-  ranges: TierRangeInput[];
-}
-
-export interface TierDetail {
-  id: string;
-  code: string;
-  service_type: string;
-  name: string;
-  metadata_version: number;
-  latest_version: TierVersion;
-}
-
-export interface UpdateTierMetadataPayload {
-  code: string;
-  service_type: string;
-  metadata_version: number;
-  name: string;
-}
-
-export interface TierMetadataResult extends UpdateTierMetadataPayload {
-  id: string;
-  updated_at: string;
-}
-
-export interface CreateTierVersionPayload {
-  code: string;
-  service_type: string;
-  expected_latest_version: number;
-  effective_from: string;
-  change_reason: string;
-  ranges: Array<Omit<TierRangeInput, 'id'>>;
-}
-
-// [COMMENT]: Cấu trúc Response phân trang từ API GET /tiers
-export interface TiersResponse {
-  tiers: TierItem[];
-  pagination: {
-    page: number;
-    limit: number;
-    total: number;
-  };
-}

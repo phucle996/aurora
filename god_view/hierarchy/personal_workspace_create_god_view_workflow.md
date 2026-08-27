@@ -7,15 +7,16 @@ membership and never creates a Tenant-owned workspace.
 
 | Item | Contract |
 |---|---|
-| Browser API | `POST /api/v1/hierarchy/workspaces` |
-| Internal target | `POST /api/v1/personal/hierarchy/workspaces` |
+| Browser API | `POST /api/v1/critical/hierarchy/workspaces` |
+| Internal target | `POST /api/v1/personal/critical/hierarchy/workspaces` |
 | Authority | personal `hierarchy:workspace:create` at level `*` |
 | Zone | selected verified Zone injected by ACR |
 | Durable SoT | `hierarchy.personal_workspaces` |
 
 Payload is `{name, code, description?}`. `owner_id`, `tenant_id`, and
 `zone_id` in headers or payload never select authority; trusted values come
-only from ACR.
+only from ACR. ACR consumes a session proof bound to the exact request before
+the rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`.
 
 ## Key contracts
 

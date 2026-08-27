@@ -304,6 +304,7 @@ async fn cleanup_staging(
         .proxmox
         .wait_task(node, &task)
         .await
+        .map(|_| ())
         .map_err(ExecutorError::Retryable)
 }
 
@@ -446,15 +447,15 @@ pub async fn execute_image_import(
         .map_err(ExecutorError::Retryable)?;
     let import_task = runtime
         .proxmox
-        .create_vm_from_import(
-            &node.node,
-            provider_vmid,
-            &provider_name,
-            &config.proxmox_image_source_storage,
-            &filename,
-            &config.proxmox_storage,
-            &checksum_hex,
-        )
+        .create_vm_from_import(super::proxmox::CreateVmFromImportRequest {
+            node: &node.node,
+            vmid: provider_vmid,
+            provider_name: &provider_name,
+            source_storage: &config.proxmox_image_source_storage,
+            filename: &filename,
+            target_storage: &config.proxmox_storage,
+            checksum_hex: &checksum_hex,
+        })
         .await
         .map_err(ExecutorError::Retryable)?;
     runtime

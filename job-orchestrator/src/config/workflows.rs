@@ -21,8 +21,6 @@ pub struct MailWorkflowConfig {
     pub reconcile_page_size: i64,
     pub reconcile_max_pages_per_run: usize,
     pub reconcile_work_budget_secs: u64,
-    pub runtime_report_ttl_secs: u64,
-    pub runtime_report_claim_idle_ms: u64,
 }
 
 #[derive(Clone)]
@@ -144,18 +142,6 @@ impl WorkflowConfig {
                     32,
                 )?,
                 reconcile_work_budget_secs,
-                runtime_report_ttl_secs: environment.bounded(
-                    "MAIL_RUNTIME_REPORT_TTL_SECS",
-                    45_u64,
-                    30,
-                    300,
-                )?,
-                runtime_report_claim_idle_ms: environment.bounded(
-                    "MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS",
-                    30_000_u64,
-                    5_000,
-                    300_000,
-                )?,
             },
             ownership: OwnershipWorkflowConfig {
                 reconcile_interval_secs: environment.bounded(

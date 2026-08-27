@@ -29,7 +29,6 @@ use crate::workerpool::runtime::WorkerJobRuntime;
 ///
 pub struct AppContainer {
     pub config: Arc<Config>,
-    pub nats_core: Arc<crate::infra::nats_core::NatsCoreTransport>,
     pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     pub payload_keyring: Arc<crate::security::jobpayload::PayloadKeyring>,
@@ -45,7 +44,6 @@ impl AppContainer {
     pub fn new(boot: BootstrapResult) -> Self {
         Self {
             config: boot.config,
-            nats_core: boot.nats_core,
             kafka: boot.kafka,
             zone_kv: boot.zone_kv,
             payload_keyring: boot.payload_keyring,
@@ -114,6 +112,23 @@ impl AppContainer {
         crate::observability::metrics::JobExecutionMetrics::init_registry();
         crate::observability::metrics::WorkerControlMetrics::init_registry();
 
+        let metering_config = self.config.clone();
+        let metering_runtime = self.worker_pool.hypervisor_runtime.clone();
+        let metering_kafka = self.kafka.clone();
+        let metering_zone_kv = self.zone_kv.clone();
+        let metering_shutdown = self.worker_pool.cancel_token();
+        let metering_guard = self.worker_pool.track_task();
+        self.spawn_critical_task("hypervisor_network_metering", metering_guard, async move {
+            crate::executor::hypervisor::run_network_metering(
+                metering_config,
+                metering_runtime,
+                metering_kafka,
+                metering_zone_kv,
+                metering_shutdown,
+            )
+            .await;
+        });
+
         // [COMMENT]: Phase 5 hydrate/watch NATS KV trước; Phase 6 supervisor chỉ đọc immutable COW snapshots.
         self.worker_pool
             .mail_runtime
@@ -124,11 +139,10 @@ impl AppContainer {
             .consumer_supervisor
             .start_mail_consumer_runtime_supervisor();
 
-        // [COMMENT]: Health aggregate ở Zone KV; consumer runtime realtime đi NATS Core và không chạm Redis.
-        crate::executor::mail::supervisor::MailWorkloadSupervisor::start_mail_runtime_reporting(
+        // [COMMENT]: Health aggregate ở Zone KV; consumer runtime đi thẳng OTel/Victoria của Zone.
+        crate::executor::mail::supervisor::MailWorkloadSupervisor::start_mail_runtime_observation(
             self.config.clone(),
             self.zone_kv.clone(),
-            self.nats_core.clone(),
             self.worker_pool.mail_runtime.clone(),
             self.worker_pool.cancel_token(),
         );
@@ -163,19 +177,9 @@ impl AppContainer {
         let zone_kv_watchdog = self.zone_kv.clone();
         let watchdog_shutdown = self.worker_pool.cancel_token();
         let watchdog_task_guard = self.worker_pool.track_task();
-        let completion_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
-        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(completion_capacity);
-        let completion_kafka = self.kafka.clone();
-        let completion_shutdown = self.worker_pool.cancel_token();
-        let completion_guard = self.worker_pool.track_task();
-        self.spawn_critical_task("job_completion_reporter", completion_guard, async move {
-            crate::job_runtime::completion::run_completion_reporter(
-                completion_rx,
-                completion_kafka,
-                completion_shutdown,
-            )
-            .await;
-        });
+        let retry_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
+        let (retry_tx, retry_rx) = tokio::sync::mpsc::channel(retry_capacity);
+        let watchdog_retry_tx = retry_tx.clone();
         self.spawn_critical_task("job_execution_watchdog", watchdog_task_guard, async move {
             crate::job_runtime::coordination::watchdog::run_execution_watchdog(
                 registry,
@@ -183,16 +187,14 @@ impl AppContainer {
                 crate::job_runtime::coordination::lease::JOB_EXECUTION_LEASE_TTL_SECS,
                 Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
                 watchdog_shutdown,
-                completion_tx,
+                watchdog_retry_tx,
                 // Covers the 4x-ready settlement window plus one final poll
-                // batch while the Kafka result reporter is backpressured.
-                completion_capacity.saturating_add(32),
+                // batch while the Kafka retry scheduler is backpressured.
+                retry_capacity.saturating_add(32),
             )
             .await;
         });
 
-        let retry_capacity = self.config.max_workers.saturating_mul(2).clamp(16, 1_024);
-        let (retry_tx, retry_rx) = tokio::sync::mpsc::channel(retry_capacity);
         let retry_kafka = self.kafka.clone();
         let retry_shutdown = self.worker_pool.cancel_token();
         let retry_task_guard = self.worker_pool.track_task();

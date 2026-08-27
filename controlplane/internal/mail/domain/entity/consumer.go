@@ -25,6 +25,9 @@ const (
 type ConsumerDesiredState string
 
 const (
-	ConsumerPaused  ConsumerDesiredState = "paused"
-	ConsumerEnabled ConsumerDesiredState = "enabled"
+	ConsumerPaused   ConsumerDesiredState = "paused"
+	ConsumerEnabled  ConsumerDesiredState = "enabled"
+	ConsumerDraining ConsumerDesiredState = "draining"
+	ConsumerDrained  ConsumerDesiredState = "drained"
+	ConsumerDeleting ConsumerDesiredState = "deleting"
 )

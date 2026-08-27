@@ -1,10 +1,13 @@
 pub mod access;
 pub mod bucket;
+pub mod commercial_admission;
 pub mod core;
 pub mod credential; // [COMMENT]: Khai báo module credential quản trị User key của MinIO
 pub mod delete;
 pub mod delivery;
+pub mod lifecycle;
 pub mod resize;
+pub mod versioning;
 
 // Dataplane compiles the shared storage schema for command compatibility, but
 // must never read the Central Auth-State Redis projection. The access-record
@@ -15,7 +18,10 @@ pub mod storage_proto {
 }
 
 pub use access::StorageAccessPrepareExecutor;
+pub use commercial_admission::BucketCommercialAdmissionExecutor;
 pub use credential::{CredentialCreateExecutor, CredentialDeleteExecutor}; // [COMMENT]: Export các bộ thực thi tương ứng
 pub use delete::BucketDeleteExecutor;
 pub use delivery::dispatch_storage_job;
+pub use lifecycle::BucketLifecycleExecutor;
 pub use resize::BucketResizeExecutor;
+pub use versioning::BucketVersioningExecutor;

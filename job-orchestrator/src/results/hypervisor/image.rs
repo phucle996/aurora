@@ -1,19 +1,20 @@
+use super::ImageResultRequest;
 use crate::contracts::hypervisor as hypervisor_proto;
 use prost::Message;
 
-// The result boundary keeps every transport fence explicit; collapsing these
-// arguments into a shared DTO would couple independent Hypervisor workflows.
-#[allow(clippy::too_many_arguments)]
 pub async fn apply_image_result(
     pg_client: &mut tokio_postgres::Client,
-    job_id: uuid::Uuid,
-    job_topic: &str,
-    status: &str,
-    error_code: Option<&str>,
-    error_message: Option<&str>,
-    result_payload: &[u8],
-    result_payload_schema_version: u32,
+    result: ImageResultRequest<'_>,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
+    let ImageResultRequest {
+        job_id,
+        job_topic,
+        status,
+        error_code,
+        error_message,
+        result_payload,
+        result_payload_schema_version,
+    } = result;
     let tx = pg_client.transaction().await?;
     // Custom PostgreSQL enums cross this driver boundary as text so every JO
     // connection does not need mutable per-schema type registration.
@@ -46,24 +47,12 @@ pub async fn apply_image_result(
             if !result_payload.is_empty() || result_payload_schema_version != 0 {
                 return Err("PROCESSING image result must not carry a payload".into());
             }
-            let image_state = if job_topic == "hypervisor.image.delete" {
-                "DELETING"
-            } else {
-                "IMPORTING"
-            };
             tx.query_opt(
-                "WITH updated_image AS ( \
-                     UPDATE hypervisor.image_artifacts \
-                     SET state = $1::text::hypervisor.hypervisor_image_state, \
-                         error_code = NULL, error_message = NULL, updated_at = NOW() \
-                     WHERE id = $2 \
-                     RETURNING id \
-                 ) \
-                 UPDATE hypervisor.hypervisor_outbox_records \
+                "UPDATE hypervisor.hypervisor_outbox_records \
                  SET status = 'PROCESSING', error_code = NULL, error_message = NULL, updated_at = NOW() \
-                 WHERE event_id = $3 AND job_topic = $4 AND status IN ('PENDING', 'PROCESSING') \
+                 WHERE event_id = $1 AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
-                &[&image_state, &image_id, &job_id, &job_topic],
+                &[&job_id, &job_topic],
             )
             .await?
         }
@@ -90,13 +79,14 @@ pub async fn apply_image_result(
                      SET state = 'AVAILABLE', provider_template_vmid = $1, \
                          error_code = NULL, error_message = NULL, available_at = COALESCE(available_at, NOW()), \
                          updated_at = NOW() \
-                     WHERE id = $2 \
+                     WHERE id = $2 AND state = 'IMPORTING' \
                      RETURNING id \
                  ) \
                  UPDATE hypervisor.hypervisor_outbox_records \
                  SET status = 'SUCCEEDED', completed_at = NOW(), error_code = NULL, \
                      error_message = NULL, updated_at = NOW() \
                  WHERE event_id = $3 AND job_topic = $4 AND status IN ('PENDING', 'PROCESSING') \
+                   AND EXISTS (SELECT 1 FROM updated_image) \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[
                     &provider_template_vmid,
@@ -126,18 +116,20 @@ pub async fn apply_image_result(
             // the audit/fence while the artifact row disappears after Zone ACK.
             tx.query_opt(
                 "WITH deleted_image AS ( \
-                     DELETE FROM hypervisor.image_artifacts WHERE id = $1 RETURNING id \
+                     DELETE FROM hypervisor.image_artifacts \
+                     WHERE id = $1 AND state = 'DELETING' RETURNING id \
                  ) \
                  UPDATE hypervisor.hypervisor_outbox_records \
                  SET status = 'SUCCEEDED', completed_at = NOW(), error_code = NULL, \
                      error_message = NULL, updated_at = NOW() \
                  WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
+                   AND EXISTS (SELECT 1 FROM deleted_image) \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&image_id, &job_id, &job_topic],
             )
             .await?
         }
-        (_, "FAILED") => {
+        ("hypervisor.image.import", "FAILED") => {
             if !result_payload.is_empty() || result_payload_schema_version != 0 {
                 return Err("FAILED image result must not carry a payload".into());
             }
@@ -145,13 +137,35 @@ pub async fn apply_image_result(
                 "WITH updated_image AS ( \
                      UPDATE hypervisor.image_artifacts \
                      SET state = 'FAILED', error_code = $1, error_message = $2, updated_at = NOW() \
-                     WHERE id = $3 \
+                     WHERE id = $3 AND state = 'IMPORTING' \
                      RETURNING id \
                  ) \
                  UPDATE hypervisor.hypervisor_outbox_records \
                  SET status = 'FAILED', completed_at = NOW(), error_code = $1, \
                      error_message = $2, updated_at = NOW() \
                  WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
+                   AND EXISTS (SELECT 1 FROM updated_image) \
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
+                &[&error_code, &error_message, &image_id, &job_id, &job_topic],
+            )
+            .await?
+        }
+        ("hypervisor.image.delete", "FAILED") => {
+            if !result_payload.is_empty() || result_payload_schema_version != 0 {
+                return Err("FAILED image result must not carry a payload".into());
+            }
+            tx.query_opt(
+                "WITH restored_image AS ( \
+                     UPDATE hypervisor.image_artifacts \
+                     SET state = 'AVAILABLE', error_code = $1, error_message = $2, updated_at = NOW() \
+                     WHERE id = $3 AND state = 'DELETING' \
+                     RETURNING id \
+                 ) \
+                 UPDATE hypervisor.hypervisor_outbox_records \
+                 SET status = 'FAILED', completed_at = NOW(), error_code = $1, \
+                     error_message = $2, updated_at = NOW() \
+                 WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
+                   AND EXISTS (SELECT 1 FROM restored_image) \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&error_code, &error_message, &image_id, &job_id, &job_topic],
             )

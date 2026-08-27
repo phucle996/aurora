@@ -71,27 +71,27 @@ sequenceDiagram
 
 ## Phase 2 — Tenant authorization with revocation-aware projection
 
-`ContextInjector` makes the ACR-injected user and tenant available. `AuthorizeTenant` calls `AuthorizationResolver.ResolveTenant(user, tenant, critical=false)` and requires the exact five-part Billing permission. A normal cache hit is an optimization bounded by 2 seconds in process or 5 seconds in Auth Redis; any cache miss asks IAM over Shared Redis and validates that every returned permission has the requested tenant and workspace-zero prefix. User invalidation messages evict all matching tenant L1 entries.
+ContextInjector exposes the ACR-injected user and tenant. The tenant authorization middleware requires the exact five-part Billing permission. A miss asks IAM to refill shared Auth Redis through Shared Redis PubSub; IAM ACKs only after writing, and Cost re-reads and validates the projection.
 
 | Layer | Exact behavior |
 |---|---|
 | tenant L1 | key `{tenant_id}:{user_id}`, 2-second TTL; process-local only |
 | tenant L2 | `authz:billing:tenant:{{tenant_id}}:{user_id}:data`, 5-second TTL; bytes parsed as five-part tenant permissions |
-| IAM request | subscribe to unique `iam.authorization.billing.reply.{request_id}` before publishing 48-byte request ID/user ID/tenant ID to `iam.authorization.billing.get` |
-| reply | 900 ms deadline; must start success marker and contain only `tenant:workspace-zero:billing:resource:action` permissions for active tenant |
+| IAM request | subscribe to unique `iam.authorization.billing.reply.{request_id}` before publishing 49-byte mode/request ID/user ID/tenant ID to `iam.authorization.billing.get` |
+| reply | 900 ms deadline; one-byte ok only after IAM writes the Auth Redis projection; Cost then re-reads and validates it |
 | invalidation | Shared Redis `authz.invalidate.billing` removes user L1 and every tenant L1 suffix for that user; IAM/Auth Redis are correctness authority |
 
 ```mermaid
 sequenceDiagram
     participant CI as ContextInjector
-    participant M as AuthorizeTenant
-    participant AR as AuthorizationResolver
+    participant M as Authorize
+    participant AR as TenantAuthorizationMiddleware
     participant L1 as Tenant L1
     participant L2 as Auth Redis
     participant SR as Shared Redis PubSub
     participant IAM as IAM authorization responder
     CI->>M: verified user and concrete tenant
-    M->>AR: ResolveTenant wallet read noncritical
+    M->>AR: tenant authorization wallet read noncritical
     AR->>L1: lookup tenant user key
     alt L1 miss
         AR->>L2: GET scoped tenant permission bytes
@@ -99,9 +99,10 @@ sequenceDiagram
             AR->>SR: subscribe unique reply channel
             AR->>SR: publish request user tenant
             SR->>IAM: authorization request
-            IAM-->>SR: scoped permission bytes
+            IAM->>L2: write scoped projection
+            IAM-->>SR: one-byte ok
             SR-->>AR: reply within 900ms
-            AR->>L2: cache only validated permissions
+            AR->>L2: re-read and validate projection
         end
         AR->>L1: cache 2 seconds
     end
@@ -152,4 +153,4 @@ sequenceDiagram
 
 ## Code map
 
-[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/middleware/identity.go`](../../cost-manager/api/internal/transport/middleware/identity.go), [`cost-manager/api/internal/service/authorization_resolver.go`](../../cost-manager/api/internal/service/authorization_resolver.go), and [`cost-manager/api/internal/repository/tenant_payment_repo.go`](../../cost-manager/api/internal/repository/tenant_payment_repo.go).
+[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/middleware/tenant_authorization.go`](../../cost-manager/api/internal/transport/middleware/tenant_authorization.go), and [`cost-manager/api/internal/repository/tenant_payment_repo.go`](../../cost-manager/api/internal/repository/tenant_payment_repo.go).

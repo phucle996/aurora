@@ -32,6 +32,12 @@ role, device, refresh token và snapshot provider.
 Vault tại ACR startup:
 `secret/data/acr/oauth/google` hoặc `secret/data/acr/oauth/github`.
 
+**Internal error boundary:** OAuth start carries a small workflow error to the
+edge handler, which maps state serialization to gRPC `Internal` and state-store
+failure to `Unavailable`. Callback and social-link completion return a response
+directly: their failures are already rendered as local redirects, not propagated
+gRPC errors. HTTP statuses, redirects, cookies and retry behavior are unchanged.
+
 ## Phase 1 — ACR issues OAuth authorization URL
 
 Phase này kiểm tra context mà client muốn đăng nhập trước khi redirect sang

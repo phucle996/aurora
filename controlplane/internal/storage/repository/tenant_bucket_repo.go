@@ -2,9 +2,9 @@ package storageRepoImpl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"controlplane/internal/config"
 	jobpayload "controlplane/internal/security"
@@ -19,14 +19,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// [COMMENT]: TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
+// TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
 type TenantBucketRepoImpl struct {
 	db        *pgxpool.Pool
 	storage   string // schema storage
+	hierarchy string // schema hierarchy
 	protector jobpayload.Protector
 }
 
-// [COMMENT]: NewTenantBucketRepo khởi tạo repository quản lý bucket doanh nghiệp.
+// NewTenantBucketRepo khởi tạo repository quản lý bucket doanh nghiệp.
 func NewTenantBucketRepo(
 	db *pgxpool.Pool,
 	cfg *config.Config,
@@ -35,165 +36,297 @@ func NewTenantBucketRepo(
 	return &TenantBucketRepoImpl{
 		db:        db,
 		storage:   cfg.SchemaSQL.Storage,
+		hierarchy: cfg.SchemaSQL.Hierarchy,
 		protector: protector,
 	}
 }
 
-func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket, credential *storageEntity.TenantCredential, outbox *storageEntity.StorageOutboxRecord) error {
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+func (r *TenantBucketRepoImpl) Create(
+	ctx context.Context,
+	bucket *storageEntity.TenantBucket,
+	credential *storageEntity.TenantCredential,
+	actorUserID uuid.UUID,
+	outbox *storageEntity.StorageOutboxRecord,
+) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               outbox.ZoneID,
+		SourceDomain:         "STORAGE",
+		JobTopic:             outbox.JobTopic,
+		ResourceID:           outbox.ResourceID,
+		JobVersion:           outbox.JobVersion,
+		PayloadSchemaVersion: outbox.PayloadSchemaVersion,
+	}, outbox.Payload)
 	if err != nil {
 		return err
 	}
 	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
-	// [COMMENT]: Convert Entity sang Model chứa các tag db
-	mc := storageModel.TenantCredentialEntityToModel(credential)
+
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: CTE 3-way: insert nguyên tử (atomic) bucket + credential + outbox record.
-	// Status column đã bị drop — không cần truyền status vào INSERT nữa.
+	// Atomic CTE: admission check + workspace auth + bucket insert + credential + outbox.
+	// admitted CTE verifies owner has ALLOW decision in commercial_admission_projection.
+	// Returns sentinel (workspace_found, admitted) so repo can map distinct errors without
+	// a separate round-trip.
 	query := fmt.Sprintf(`
-		WITH ins_bucket AS (
+		WITH admitted AS (
+			SELECT EXISTS (
+				SELECT 1 FROM %s.commercial_admission_projection
+				WHERE owner_id = $5
+				  AND owner_type = 'TENANT'
+				  AND effective_at <= NOW()
+				  AND (valid_until IS NULL OR valid_until > NOW())
+				  AND decision = 'ALLOW'
+			) AS ok
+		),
+		authorized_workspace AS (
+			SELECT w.id, w.tenant_id, w.zone_id
+			FROM %s.tenant_workspaces w
+			JOIN %s.tenant_memberships m 
+			  ON m.tenant_id = w.tenant_id 
+			 AND m.user_id = $7 
+			 AND m.status = 'active'
+			WHERE w.id = $3 
+			  AND w.tenant_id = $5 
+			  AND w.zone_id = $4
+			  AND (SELECT ok FROM admitted)
+			FOR KEY SHARE OF w
+		),
+		ins_bucket AS (
 			INSERT INTO %s.tenant_buckets (
-				id, name, workspace_id, zone_id, tenant_id, capacity_quota_bytes, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			RETURNING id
+				id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at,
+				encrypt_enabled, versioning_enabled, object_locking_enabled, replication_enabled,
+				retention_days, legal_hold_enabled, tags
+			)
+			SELECT $1, $2, aw.id, aw.zone_id, aw.tenant_id, 'PROVISIONING', $6, NOW(), NOW(),
+			       $25, $26, $27, $28, $29, $30, $31
+			FROM authorized_workspace aw
+			RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
 		),
 		ins_credential AS (
 			INSERT INTO %s.tenant_credentials (
 				id, bucket_id, access_key, policy, created_at, updated_at
 			)
-			SELECT $9, id, $10, $11, $12, $13
-			FROM ins_bucket
+			SELECT $8, ib.id, $9, $10, NOW(), NOW()
+			FROM ins_bucket ib
+		),
+		inserted_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
+				job_version, resource_id, payload_schema_version, trace_id, idle,
+				error_code, error_message, actor_user_id, payload_key_id,
+				resource_name, rollback_quota_bytes
+			)
+			SELECT $11, ib.zone_id, $12, $13, ib.tenant_id, $14, $15, $16,
+			       $17, ib.id::text, $18, $19, $20,
+			       $21, $22, $7, $23,
+			       ib.name, $24
+			FROM ins_bucket ib
 		)
-		INSERT INTO %s.storage_outbox_records (
-			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
-			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id, payload_key_id,
-			resource_name, rollback_quota_bytes
-		) VALUES ($14, $15, $16, $17, $18, $28, $19, $20, $21, $22, $23, $24, $25, $26, $27, $29, $30, $31, $32)
-	`, r.storage, r.storage, r.storage)
+		SELECT
+			(SELECT ok FROM admitted)          AS admitted,
+			(SELECT id FROM ins_bucket)        AS created_id;
+	`, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage, r.storage)
 
-	_, err = r.db.Exec(ctx, query,
-		// [COMMENT]: $1-$8 — tenant_buckets fields (no status)
+	tagsBytes, _ := json.Marshal(bucket.Tags)
+
+	var admitted bool
+	var createdID *uuid.UUID
+	err = r.db.QueryRow(ctx, query,
+		// $1-$6: Bucket params
 		bucket.ID,
 		bucket.Name,
 		bucket.WorkspaceID,
 		bucket.ZoneID,
 		bucket.TenantID,
 		bucket.CapacityQuotaBytes,
-		bucket.CreatedAt,
-		bucket.UpdatedAt,
-		// [COMMENT]: $9-$13 — tenant_credentials fields
-		mc.ID,
-		mc.AccessKey,
-		mc.Policy,
-		mc.CreatedAt,
-		mc.UpdatedAt,
-		// [COMMENT]: $14-$27 — storage_outbox_records fields
+		// $7: Actor user ID
+		actorUserID,
+		// $8-$10: Credential params
+		credential.ID,
+		credential.AccessKey,
+		credential.Policy,
+		// $11-$24: Outbox params
 		mo.EventID,
-		mo.ZoneID,
 		mo.JobTopic,
 		mo.Payload,
-		mo.OwnerID,
+		mo.OwnerType,
 		mo.Status,
 		mo.CompletedAt,
 		mo.JobVersion,
-		mo.ResourceID,
 		mo.PayloadSchemaVersion,
 		mo.TraceID,
 		mo.Idle,
 		mo.ErrorCode,
 		mo.ErrorMessage,
-		// [COMMENT]: $28 — owner_type
-		mo.OwnerType,
-		mo.ActorUserID,
 		mo.PayloadKeyID,
-		mo.ResourceName,
 		mo.RollbackQuotaBytes,
-	)
+		bucket.EncryptEnabled,
+		bucket.VersioningEnabled,
+		bucket.ObjectLockingEnabled,
+		bucket.ReplicationEnabled,
+		bucket.RetentionDays,
+		bucket.LegalHoldEnabled,
+		tagsBytes,
+	).Scan(&admitted, &createdID)
 
 	if err != nil {
-		// [COMMENT]: Bắt lỗi trùng lặp mã Key (Unique Constraint 23505) và ánh xạ sang lỗi domain ErrAlreadyExists
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return storageTaxonomy.ErrAlreadyExists
 		}
 		return fmt.Errorf("storage repo: create tenant bucket failed: %w", err)
 	}
+	if !admitted {
+		return storageTaxonomy.ErrCommercialAdmissionDenied
+	}
+	if createdID == nil {
+		return storageTaxonomy.ErrNotFound
+	}
+
+	bucket.Status = storageEntity.BucketStatusProvisioning
 	return nil
 }
 
-func (r *TenantBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.TenantBucket, error) {
+func (r *TenantBucketRepoImpl) GetByID(
+	ctx context.Context,
+	id uuid.UUID,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+) (*storageEntity.TenantBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, tenant_id, capacity_quota_bytes, used_bytes, created_at, updated_at
-		FROM %s.tenant_buckets
-		WHERE id = $1
-	`, r.storage)
+		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.tenant_id, b.status,
+		       b.capacity_quota_bytes, b.used_bytes,
+		       b.encrypt_enabled, b.versioning_enabled, b.object_locking_enabled,
+		       b.replication_enabled, b.retention_days, b.legal_hold_enabled,
+		       b.tags, b.lifecycle_rules, b.created_at, b.updated_at
+		FROM %s.tenant_buckets b
+		JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+		JOIN %s.tenant_memberships m 
+		  ON m.tenant_id = w.tenant_id 
+		 AND m.user_id = $4 
+		 AND m.status = 'active'
+		WHERE b.id = $1 
+		  AND b.workspace_id = $2 
+		  AND b.tenant_id = $3 
+		  AND w.zone_id = $5
+	`, r.storage, r.hierarchy, r.hierarchy)
 
-	var m storageModel.TenantBucket
+	b := &storageEntity.TenantBucket{}
+	var tagsBytes, lifecycleBytes []byte
 
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&m.ID,
-		&m.Name,
-		&m.WorkspaceID,
-		&m.ZoneID,
-		&m.TenantID,
-		&m.CapacityQuotaBytes,
-		&m.UsedBytes,
-		&m.CreatedAt,
-		&m.UpdatedAt,
+	err := r.db.QueryRow(ctx, query, id, workspaceID, tenantID, userID, zoneID).Scan(
+		&b.ID,
+		&b.Name,
+		&b.WorkspaceID,
+		&b.ZoneID,
+		&b.TenantID,
+		&b.Status,
+		&b.CapacityQuotaBytes,
+		&b.UsedBytes,
+		&b.EncryptEnabled,
+		&b.VersioningEnabled,
+		&b.ObjectLockingEnabled,
+		&b.ReplicationEnabled,
+		&b.RetentionDays,
+		&b.LegalHoldEnabled,
+		&tagsBytes,
+		&lifecycleBytes,
+		&b.CreatedAt,
+		&b.UpdatedAt,
 	)
 	if err != nil {
-		// [COMMENT]: Ánh xạ lỗi ErrNoRows thành domain error ErrNotFound
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, storageTaxonomy.ErrNotFound
 		}
 		return nil, fmt.Errorf("storage repo: get tenant bucket by id failed: %w", err)
 	}
 
-	return storageModel.TenantBucketModelToEntity(&m), nil
+	if len(tagsBytes) > 0 {
+		_ = json.Unmarshal(tagsBytes, &b.Tags)
+	}
+	if len(lifecycleBytes) > 0 {
+		_ = json.Unmarshal(lifecycleBytes, &b.LifecycleRules)
+	}
+	return b, nil
 }
 
 func (r *TenantBucketRepoImpl) GetByName(ctx context.Context, name string) (*storageEntity.TenantBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, tenant_id, capacity_quota_bytes, used_bytes, created_at, updated_at
+		SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes,
+		       encrypt_enabled, versioning_enabled, object_locking_enabled,
+		       replication_enabled, retention_days, legal_hold_enabled,
+		       tags, lifecycle_rules, created_at, updated_at
 		FROM %s.tenant_buckets
 		WHERE name = $1
 	`, r.storage)
 
-	var m storageModel.TenantBucket
+	b := &storageEntity.TenantBucket{}
+	var tagsBytes, lifecycleBytes []byte
 
 	err := r.db.QueryRow(ctx, query, name).Scan(
-		&m.ID,
-		&m.Name,
-		&m.WorkspaceID,
-		&m.ZoneID,
-		&m.TenantID,
-		&m.CapacityQuotaBytes,
-		&m.UsedBytes,
-		&m.CreatedAt,
-		&m.UpdatedAt,
+		&b.ID,
+		&b.Name,
+		&b.WorkspaceID,
+		&b.ZoneID,
+		&b.TenantID,
+		&b.Status,
+		&b.CapacityQuotaBytes,
+		&b.UsedBytes,
+		&b.EncryptEnabled,
+		&b.VersioningEnabled,
+		&b.ObjectLockingEnabled,
+		&b.ReplicationEnabled,
+		&b.RetentionDays,
+		&b.LegalHoldEnabled,
+		&tagsBytes,
+		&lifecycleBytes,
+		&b.CreatedAt,
+		&b.UpdatedAt,
 	)
 	if err != nil {
-		// [COMMENT]: Ánh xạ lỗi ErrNoRows thành domain error ErrNotFound
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, storageTaxonomy.ErrNotFound
 		}
 		return nil, fmt.Errorf("storage repo: get tenant bucket by name failed: %w", err)
 	}
 
-	return storageModel.TenantBucketModelToEntity(&m), nil
+	if len(tagsBytes) > 0 {
+		_ = json.Unmarshal(tagsBytes, &b.Tags)
+	}
+	if len(lifecycleBytes) > 0 {
+		_ = json.Unmarshal(lifecycleBytes, &b.LifecycleRules)
+	}
+	return b, nil
 }
 
-func (r *TenantBucketRepoImpl) ListByTenantAndZone(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error) {
+func (r *TenantBucketRepoImpl) ListByWorkspace(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+) ([]*storageEntity.TenantBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, tenant_id, capacity_quota_bytes, used_bytes, created_at, updated_at
-		FROM %s.tenant_buckets
-		WHERE tenant_id = $1 AND zone_id = $2
-		ORDER BY created_at DESC
-	`, r.storage)
+		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.tenant_id, b.status,
+		       b.capacity_quota_bytes, b.used_bytes,
+		       b.encrypt_enabled, b.versioning_enabled, b.object_locking_enabled,
+		       b.replication_enabled, b.retention_days, b.legal_hold_enabled,
+		       b.tags, b.lifecycle_rules, b.created_at, b.updated_at
+		FROM %s.tenant_buckets b
+		JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+		JOIN %s.tenant_memberships m 
+		  ON m.tenant_id = w.tenant_id 
+		 AND m.user_id = $3 
+		 AND m.status = 'active'
+		WHERE b.workspace_id = $1 
+		  AND b.tenant_id = $2 
+		  AND w.zone_id = $4
+		ORDER BY b.created_at DESC
+	`, r.storage, r.hierarchy, r.hierarchy)
 
-	rows, err := r.db.Query(ctx, query, tenantID, zoneID)
+	rows, err := r.db.Query(ctx, query, workspaceID, tenantID, userID, zoneID)
 	if err != nil {
 		return nil, fmt.Errorf("storage repo: list tenant buckets failed: %w", err)
 	}
@@ -201,206 +334,609 @@ func (r *TenantBucketRepoImpl) ListByTenantAndZone(ctx context.Context, tenantID
 
 	var buckets []*storageEntity.TenantBucket
 	for rows.Next() {
-		var m storageModel.TenantBucket
+		b := &storageEntity.TenantBucket{}
+		var tagsBytes, lifecycleBytes []byte
 
 		err := rows.Scan(
-			&m.ID,
-			&m.Name,
-			&m.WorkspaceID,
-			&m.ZoneID,
-			&m.TenantID,
-			&m.CapacityQuotaBytes,
-			&m.UsedBytes,
-			&m.CreatedAt,
-			&m.UpdatedAt,
+			&b.ID,
+			&b.Name,
+			&b.WorkspaceID,
+			&b.ZoneID,
+			&b.TenantID,
+			&b.Status,
+			&b.CapacityQuotaBytes,
+			&b.UsedBytes,
+			&b.EncryptEnabled,
+			&b.VersioningEnabled,
+			&b.ObjectLockingEnabled,
+			&b.ReplicationEnabled,
+			&b.RetentionDays,
+			&b.LegalHoldEnabled,
+			&tagsBytes,
+			&lifecycleBytes,
+			&b.CreatedAt,
+			&b.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("storage repo: scan tenant bucket row failed: %w", err)
 		}
-		buckets = append(buckets, storageModel.TenantBucketModelToEntity(&m))
+		if len(tagsBytes) > 0 {
+			_ = json.Unmarshal(tagsBytes, &b.Tags)
+		}
+		if len(lifecycleBytes) > 0 {
+			_ = json.Unmarshal(lifecycleBytes, &b.LifecycleRules)
+		}
+		buckets = append(buckets, b)
 	}
 
 	return buckets, nil
 }
 
-func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64, outbox *storageEntity.StorageOutboxRecord) error {
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
+func (r *TenantBucketRepoImpl) ListNamesByWorkspace(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+) ([]string, error) {
+	query := fmt.Sprintf(`
+		SELECT b.name
+		FROM %s.tenant_buckets b
+		JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+		JOIN %s.tenant_memberships m 
+		  ON m.tenant_id = w.tenant_id 
+		 AND m.user_id = $3 
+		 AND m.status = 'active'
+		WHERE b.workspace_id = $1 
+		  AND b.tenant_id = $2 
+		  AND w.zone_id = $4
+		ORDER BY b.created_at DESC
+	`, r.storage, r.hierarchy, r.hierarchy)
+
+	rows, err := r.db.Query(ctx, query, workspaceID, tenantID, userID, zoneID)
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: list tenant bucket names failed: %w", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("storage repo: scan tenant bucket name failed: %w", err)
+		}
+		names = append(names, name)
+	}
+
+	return names, nil
+}
+
+func (r *TenantBucketRepoImpl) UpdateQuota(
+	ctx context.Context,
+	param *storageEntity.UpdateTenantBucketQuota,
+	outbox *storageEntity.StorageOutboxRecord,
+) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               outbox.ZoneID,
+		SourceDomain:         "STORAGE",
+		JobTopic:             outbox.JobTopic,
+		ResourceID:           outbox.ResourceID,
+		JobVersion:           outbox.JobVersion,
+		PayloadSchemaVersion: outbox.PayloadSchemaVersion,
+	}, outbox.Payload)
 	if err != nil {
 		return err
 	}
 	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
-	// [COMMENT]: Khởi tạo transaction để đảm bảo atomic cho cả kiểm tra quota, update quota và ghi outbox
-	tx, err := r.db.Begin(ctx)
+	mo := storageModel.OutboxEntityToModel(outbox)
+
+	// admitted CTE is conditional: no check when reducing quota, required when increasing.
+	// $6 = new_quota_bytes, compared against current capacity_quota_bytes (not used_bytes).
+	query := fmt.Sprintf(`
+		WITH admitted AS (
+			SELECT (
+				$6::bigint <= (
+					SELECT b.capacity_quota_bytes
+					FROM %s.tenant_buckets b
+					WHERE b.id = $1 AND b.tenant_id = $3
+				)
+				OR EXISTS (
+					SELECT 1 FROM %s.commercial_admission_projection
+					WHERE owner_id = $3
+					  AND owner_type = 'TENANT'
+					  AND effective_at <= NOW()
+					  AND (valid_until IS NULL OR valid_until > NOW())
+					  AND decision = 'ALLOW'
+				)
+			) AS ok
+		),
+		authorized_target AS (
+			SELECT b.id, b.name, b.zone_id, b.tenant_id, b.used_bytes, b.capacity_quota_bytes
+			FROM %s.tenant_buckets b
+			JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+			JOIN %s.tenant_memberships m 
+			  ON m.tenant_id = w.tenant_id 
+			 AND m.user_id = $4 
+			 AND m.status = 'active'
+			WHERE b.id = $1 
+			  AND b.workspace_id = $2 
+			  AND b.tenant_id = $3 
+			  AND w.zone_id = $5
+			  AND b.status = 'READY'
+			  AND (SELECT ok FROM admitted)
+			FOR UPDATE OF b
+		),
+		updated_bucket AS (
+			UPDATE %s.tenant_buckets
+			SET status = 'UPDATING',
+			    updated_at = NOW()
+			WHERE id IN (SELECT id FROM authorized_target WHERE $6 >= used_bytes + 1073741824)
+			RETURNING id, name, zone_id, tenant_id
+		),
+		inserted_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
+				job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
+				actor_user_id, payload_key_id, rollback_quota_bytes
+			)
+			SELECT $7, ub.zone_id, $8, $9, ub.tenant_id, $10, $11,
+			       $12, ub.id::text, ub.name, $13, $14, $15,
+			       $4, $16, at.capacity_quota_bytes
+			FROM updated_bucket ub
+			JOIN authorized_target at ON ub.id = at.id
+		)
+		SELECT
+			(SELECT ok FROM admitted)         AS admitted,
+			(SELECT id FROM updated_bucket)   AS updated_id;
+	`, r.storage, r.storage, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage)
+
+	var admitted bool
+	var updatedID *uuid.UUID
+	err = r.db.QueryRow(ctx, query,
+		param.BucketID,
+		param.WorkspaceID,
+		param.TenantID,
+		param.UserID,
+		param.ZoneID,
+		param.QuotaBytes,
+		mo.EventID,
+		mo.JobTopic,
+		mo.Payload,
+		mo.OwnerType,
+		mo.Status,
+		mo.JobVersion,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.PayloadKeyID,
+	).Scan(&admitted, &updatedID)
+
 	if err != nil {
-		return fmt.Errorf("storage repo: begin tx failed: %w", err)
+		return fmt.Errorf("storage repo: update tenant bucket quota failed: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	if !admitted {
+		return storageTaxonomy.ErrCommercialAdmissionDenied
+	}
+	if updatedID == nil {
+		// authorized_target found nothing (not found) or quota check failed (resize too low)
+		// Disambiguate: check if bucket exists
+		var exists bool
+		_ = r.db.QueryRow(ctx, fmt.Sprintf(
+			`SELECT EXISTS(SELECT 1 FROM %s.tenant_buckets WHERE id=$1 AND tenant_id=$2 AND status NOT IN ('DELETING'))`,
+			r.storage,
+		), param.BucketID, param.TenantID).Scan(&exists)
+		if !exists {
+			return storageTaxonomy.ErrNotFound
+		}
+		return storageTaxonomy.ErrResizeLimitTooLow
+	}
 
-	// [COMMENT]: 1. SELECT FOR UPDATE để validate sự tồn tại và lock row tránh race condition
-	selectQuery := fmt.Sprintf(`
-		SELECT name, capacity_quota_bytes, used_bytes
-		FROM %s.tenant_buckets
-		WHERE id = $1
-		FOR UPDATE
-	`, r.storage)
+	return nil
+}
 
-	var bucketName string
-	var currentQuota, usedBytes int64
-	err = tx.QueryRow(ctx, selectQuery, id).Scan(&bucketName, &currentQuota, &usedBytes)
+func (r *TenantBucketRepoImpl) UpdateVersioning(
+	ctx context.Context,
+	param *storageEntity.UpdateTenantBucketVersioning,
+	outbox *storageEntity.StorageOutboxRecord,
+) (*storageEntity.TenantBucket, error) {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               outbox.ZoneID,
+		SourceDomain:         "STORAGE",
+		JobTopic:             outbox.JobTopic,
+		ResourceID:           outbox.ResourceID,
+		JobVersion:           outbox.JobVersion,
+		PayloadSchemaVersion: outbox.PayloadSchemaVersion,
+	}, outbox.Payload)
+	if err != nil {
+		return nil, err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
+	mo := storageModel.OutboxEntityToModel(outbox)
+
+	query := fmt.Sprintf(`
+		WITH admitted AS (
+			SELECT EXISTS (
+				SELECT 1 FROM %s.commercial_admission_projection
+				WHERE owner_id = $3
+				  AND owner_type = 'TENANT'
+				  AND effective_at <= NOW()
+				  AND (valid_until IS NULL OR valid_until > NOW())
+				  AND decision = 'ALLOW'
+			) AS ok
+		),
+		authorized_target AS (
+			SELECT b.id, b.name, b.zone_id, b.tenant_id
+			FROM %s.tenant_buckets b
+			JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+			JOIN %s.tenant_memberships m 
+			  ON m.tenant_id = w.tenant_id 
+			 AND m.user_id = $4 
+			 AND m.status = 'active'
+			WHERE b.id = $1 
+			  AND b.workspace_id = $2 
+			  AND b.tenant_id = $3 
+			  AND w.zone_id = $5
+			  AND b.status = 'READY'
+			  AND (SELECT ok FROM admitted)
+			FOR UPDATE OF b
+		),
+		updated_bucket AS (
+			UPDATE %s.tenant_buckets
+			SET status = 'UPDATING',
+			    updated_at = NOW()
+			WHERE id IN (SELECT id FROM authorized_target)
+			RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes,
+			          encrypt_enabled, versioning_enabled, object_locking_enabled,
+			          replication_enabled, retention_days, legal_hold_enabled,
+			          tags, lifecycle_rules, created_at, updated_at
+		),
+		inserted_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
+				job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
+				actor_user_id, payload_key_id
+			)
+			SELECT $6, at.zone_id, $7, $8, at.tenant_id, $9, $10,
+			       $11, at.id::text, at.name, $12, $13, $14,
+			       $4, $15
+			FROM authorized_target at
+		)
+		SELECT
+			(SELECT ok FROM admitted)                       AS admitted,
+			(SELECT id FROM updated_bucket)                 AS updated_id,
+			(SELECT name FROM updated_bucket)               AS name,
+			(SELECT workspace_id FROM updated_bucket)       AS workspace_id,
+			(SELECT zone_id FROM updated_bucket)            AS zone_id,
+			(SELECT tenant_id FROM updated_bucket)          AS tenant_id,
+			(SELECT status FROM updated_bucket)             AS status,
+			(SELECT capacity_quota_bytes FROM updated_bucket) AS capacity_quota_bytes,
+			(SELECT used_bytes FROM updated_bucket)         AS used_bytes,
+			(SELECT encrypt_enabled FROM updated_bucket)    AS encrypt_enabled,
+			(SELECT versioning_enabled FROM updated_bucket) AS versioning_enabled,
+			(SELECT object_locking_enabled FROM updated_bucket) AS object_locking_enabled,
+			(SELECT replication_enabled FROM updated_bucket) AS replication_enabled,
+			(SELECT retention_days FROM updated_bucket)     AS retention_days,
+			(SELECT legal_hold_enabled FROM updated_bucket) AS legal_hold_enabled,
+			(SELECT tags FROM updated_bucket)               AS tags,
+			(SELECT lifecycle_rules FROM updated_bucket)    AS lifecycle_rules,
+			(SELECT created_at FROM updated_bucket)         AS created_at,
+			(SELECT updated_at FROM updated_bucket)         AS updated_at;
+	`, r.storage, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage)
+
+	var admitted bool
+	b := &storageEntity.TenantBucket{}
+	var bucketID *uuid.UUID
+	var tagsBytes, lifecycleBytes []byte
+
+	err = r.db.QueryRow(ctx, query,
+		param.BucketID,
+		param.WorkspaceID,
+		param.TenantID,
+		param.UserID,
+		param.ZoneID,
+		mo.EventID,
+		mo.JobTopic,
+		mo.Payload,
+		mo.OwnerType,
+		mo.Status,
+		mo.JobVersion,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.PayloadKeyID,
+	).Scan(
+		&admitted,
+		&bucketID,
+		&b.Name,
+		&b.WorkspaceID,
+		&b.ZoneID,
+		&b.TenantID,
+		&b.Status,
+		&b.CapacityQuotaBytes,
+		&b.UsedBytes,
+		&b.EncryptEnabled,
+		&b.VersioningEnabled,
+		&b.ObjectLockingEnabled,
+		&b.ReplicationEnabled,
+		&b.RetentionDays,
+		&b.LegalHoldEnabled,
+		&tagsBytes,
+		&lifecycleBytes,
+		&b.CreatedAt,
+		&b.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: update tenant bucket versioning failed: %w", err)
+	}
+	if !admitted {
+		return nil, storageTaxonomy.ErrCommercialAdmissionDenied
+	}
+	if bucketID == nil {
+		return nil, storageTaxonomy.ErrNotFound
+	}
+	b.ID = *bucketID
+
+	if len(tagsBytes) > 0 {
+		_ = json.Unmarshal(tagsBytes, &b.Tags)
+	}
+	if len(lifecycleBytes) > 0 {
+		_ = json.Unmarshal(lifecycleBytes, &b.LifecycleRules)
+	}
+	return b, nil
+}
+
+func (r *TenantBucketRepoImpl) UpdateLifecycle(
+	ctx context.Context,
+	param *storageEntity.UpdateTenantBucketLifecycle,
+	outbox *storageEntity.StorageOutboxRecord,
+) (*storageEntity.TenantBucket, error) {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               outbox.ZoneID,
+		SourceDomain:         "STORAGE",
+		JobTopic:             outbox.JobTopic,
+		ResourceID:           outbox.ResourceID,
+		JobVersion:           outbox.JobVersion,
+		PayloadSchemaVersion: outbox.PayloadSchemaVersion,
+	}, outbox.Payload)
+	if err != nil {
+		return nil, err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
+	mo := storageModel.OutboxEntityToModel(outbox)
+
+	query := fmt.Sprintf(`
+		WITH admitted AS (
+			SELECT EXISTS (
+				SELECT 1 FROM %s.commercial_admission_projection
+				WHERE owner_id = $3
+				  AND owner_type = 'TENANT'
+				  AND effective_at <= NOW()
+				  AND (valid_until IS NULL OR valid_until > NOW())
+				  AND decision = 'ALLOW'
+			) AS ok
+		),
+		authorized_target AS (
+			SELECT b.id, b.name, b.zone_id, b.tenant_id, b.versioning_enabled
+			FROM %s.tenant_buckets b
+			JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+			JOIN %s.tenant_memberships m 
+			  ON m.tenant_id = w.tenant_id 
+			 AND m.user_id = $4 
+			 AND m.status = 'active'
+			WHERE b.id = $1 
+			  AND b.workspace_id = $2 
+			  AND b.tenant_id = $3 
+			  AND w.zone_id = $5
+			  AND b.status = 'READY'
+			  AND (SELECT ok FROM admitted)
+			FOR UPDATE OF b
+		),
+		updated_bucket AS (
+			UPDATE %s.tenant_buckets
+			SET status = 'UPDATING',
+			    updated_at = NOW()
+			WHERE id IN (SELECT id FROM authorized_target)
+			RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes,
+			          encrypt_enabled, versioning_enabled, object_locking_enabled,
+			          replication_enabled, retention_days, legal_hold_enabled,
+			          tags, lifecycle_rules, created_at, updated_at
+		),
+		inserted_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
+				job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
+				actor_user_id, payload_key_id
+			)
+			SELECT $6, at.zone_id, $7, $8, at.tenant_id, $9, $10,
+			       $11, at.id::text, at.name, $12, $13, $14,
+			       $4, $15
+			FROM authorized_target at
+		)
+		SELECT
+			(SELECT ok FROM admitted)                           AS admitted,
+			(SELECT id FROM updated_bucket)                     AS updated_id,
+			(SELECT name FROM updated_bucket)                   AS name,
+			(SELECT workspace_id FROM updated_bucket)           AS workspace_id,
+			(SELECT zone_id FROM updated_bucket)                AS zone_id,
+			(SELECT tenant_id FROM updated_bucket)              AS tenant_id,
+			(SELECT status FROM updated_bucket)                 AS status,
+			(SELECT capacity_quota_bytes FROM updated_bucket)   AS capacity_quota_bytes,
+			(SELECT used_bytes FROM updated_bucket)             AS used_bytes,
+			(SELECT encrypt_enabled FROM updated_bucket)        AS encrypt_enabled,
+			(SELECT versioning_enabled FROM updated_bucket)     AS versioning_enabled,
+			(SELECT object_locking_enabled FROM updated_bucket) AS object_locking_enabled,
+			(SELECT replication_enabled FROM updated_bucket)    AS replication_enabled,
+			(SELECT retention_days FROM updated_bucket)         AS retention_days,
+			(SELECT legal_hold_enabled FROM updated_bucket)     AS legal_hold_enabled,
+			(SELECT tags FROM updated_bucket)                   AS tags,
+			(SELECT lifecycle_rules FROM updated_bucket)        AS lifecycle_rules,
+			(SELECT created_at FROM updated_bucket)             AS created_at,
+			(SELECT updated_at FROM updated_bucket)             AS updated_at;
+	`, r.storage, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage)
+
+	var admitted bool
+	b := &storageEntity.TenantBucket{}
+	var bucketID *uuid.UUID
+	var tagsBytes, lifecycleBytes []byte
+
+	err = r.db.QueryRow(ctx, query,
+		param.BucketID,
+		param.WorkspaceID,
+		param.TenantID,
+		param.UserID,
+		param.ZoneID,
+		mo.EventID,
+		mo.JobTopic,
+		mo.Payload,
+		mo.OwnerType,
+		mo.Status,
+		mo.JobVersion,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.PayloadKeyID,
+	).Scan(
+		&admitted,
+		&bucketID,
+		&b.Name,
+		&b.WorkspaceID,
+		&b.ZoneID,
+		&b.TenantID,
+		&b.Status,
+		&b.CapacityQuotaBytes,
+		&b.UsedBytes,
+		&b.EncryptEnabled,
+		&b.VersioningEnabled,
+		&b.ObjectLockingEnabled,
+		&b.ReplicationEnabled,
+		&b.RetentionDays,
+		&b.LegalHoldEnabled,
+		&tagsBytes,
+		&lifecycleBytes,
+		&b.CreatedAt,
+		&b.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: update tenant bucket lifecycle failed: %w", err)
+	}
+	if !admitted {
+		return nil, storageTaxonomy.ErrCommercialAdmissionDenied
+	}
+	if bucketID == nil {
+		return nil, storageTaxonomy.ErrNotFound
+	}
+	b.ID = *bucketID
+
+	if len(tagsBytes) > 0 {
+		_ = json.Unmarshal(tagsBytes, &b.Tags)
+	}
+	if len(lifecycleBytes) > 0 {
+		_ = json.Unmarshal(lifecycleBytes, &b.LifecycleRules)
+	}
+	return b, nil
+}
+
+func (r *TenantBucketRepoImpl) Delete(
+	ctx context.Context,
+	id uuid.UUID,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+	outbox *storageEntity.StorageOutboxRecord,
+) error {
+	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
+		ZoneID:               outbox.ZoneID,
+		SourceDomain:         "STORAGE",
+		JobTopic:             outbox.JobTopic,
+		ResourceID:           outbox.ResourceID,
+		JobVersion:           outbox.JobVersion,
+		PayloadSchemaVersion: outbox.PayloadSchemaVersion,
+	}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
+	mo := storageModel.OutboxEntityToModel(outbox)
+
+	// In CP Delete, mark status = 'DELETING' and record pending outbox event.
+	// Actual physical removal from DB occurs in JO settlement when DP returns SUCCEEDED.
+	query := fmt.Sprintf(`
+		WITH authorized_target AS (
+			SELECT b.id, b.name, b.zone_id, b.tenant_id
+			FROM %s.tenant_buckets b
+			JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
+			JOIN %s.tenant_memberships m 
+			  ON m.tenant_id = w.tenant_id 
+			 AND m.user_id = $4 
+			 AND m.status = 'active'
+			WHERE b.id = $1 
+			  AND b.workspace_id = $2 
+			  AND b.tenant_id = $3 
+			  AND w.zone_id = $5
+			  AND b.status = 'READY'
+			  AND NOT EXISTS (
+				SELECT 1 FROM %s.tenant_credentials credential
+				WHERE credential.bucket_id = b.id AND credential.state <> 'READY'
+			  )
+			FOR UPDATE OF b
+		),
+		updated_bucket AS (
+			UPDATE %s.tenant_buckets
+			SET status = 'DELETING',
+			    updated_at = NOW()
+			WHERE id IN (SELECT id FROM authorized_target)
+			RETURNING id, name, zone_id, tenant_id
+		),
+		updated_credentials AS (
+			UPDATE %s.tenant_credentials credential
+			SET state = 'DELETING', updated_at = NOW()
+			WHERE credential.bucket_id IN (SELECT id FROM updated_bucket)
+			  AND credential.state = 'READY'
+			RETURNING credential.id
+		),
+		inserted_outbox AS (
+			INSERT INTO %s.storage_outbox_records (
+				event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
+				job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
+				actor_user_id, payload_key_id
+			)
+			SELECT $6, ub.zone_id, $7, $8, ub.tenant_id, $9, $10,
+			       $11, ub.id::text, ub.name, $12, $13, $14,
+			       $4, $15
+			FROM updated_bucket ub
+			CROSS JOIN (SELECT count(*) FROM updated_credentials) transitioned_credentials
+		)
+		SELECT id FROM updated_bucket;
+	`, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage, r.storage, r.storage)
+
+	var updatedID uuid.UUID
+	err = r.db.QueryRow(ctx, query,
+		id,
+		workspaceID,
+		tenantID,
+		userID,
+		zoneID,
+		mo.EventID,
+		mo.JobTopic,
+		mo.Payload,
+		mo.OwnerType,
+		mo.Status,
+		mo.JobVersion,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.PayloadKeyID,
+	).Scan(&updatedID)
+
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return storageTaxonomy.ErrNotFound
 		}
-		return fmt.Errorf("storage repo: select tenant bucket for update failed: %w", err)
-	}
-
-	// [COMMENT]: 2. Kiểm tra nghiệp vụ: Hạn mức quota mới phải trống ít nhất 1GB (1_073_741_824 bytes) so với used_bytes hiện tại
-	if quotaBytes-usedBytes < 1073741824 {
-		return storageTaxonomy.ErrResizeLimitTooLow
-	}
-
-	// [COMMENT]: 3. Thực hiện cập nhật DB hạn mức quota mới
-	updateQuery := fmt.Sprintf(`
-		UPDATE %s.tenant_buckets
-		SET capacity_quota_bytes = $1, updated_at = $2
-		WHERE id = $3
-	`, r.storage)
-
-	_, err = tx.Exec(ctx, updateQuery, quotaBytes, time.Now(), id)
-	if err != nil {
-		return fmt.Errorf("storage repo: update tenant bucket capacity failed: %w", err)
-	}
-
-	// [COMMENT]: 4. Chèn outbox record để đồng bộ lệnh resize xuống dataplane
-	// Use the locked aggregate as rollback authority; the service snapshot may
-	// be stale under concurrent resize attempts.
-	outbox.ResourceName = bucketName
-	outbox.RollbackQuotaBytes = &currentQuota
-	mo := storageModel.OutboxEntityToModel(outbox)
-	insertOutboxQuery := fmt.Sprintf(`
-		INSERT INTO %s.storage_outbox_records (
-			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
-			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id, payload_key_id,
-			resource_name, rollback_quota_bytes
-		) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18, $19)
-	`, r.storage)
-
-	_, err = tx.Exec(ctx, insertOutboxQuery,
-		mo.EventID,
-		mo.ZoneID,
-		mo.JobTopic,
-		mo.Payload,
-		mo.OwnerID,
-		mo.Status,
-		mo.CompletedAt,
-		mo.JobVersion,
-		mo.ResourceID,
-		mo.PayloadSchemaVersion,
-		mo.TraceID,
-		mo.Idle,
-		mo.ErrorCode,
-		mo.ErrorMessage,
-		mo.OwnerType,
-		mo.ActorUserID,
-		mo.PayloadKeyID,
-		mo.ResourceName,
-		mo.RollbackQuotaBytes,
-	)
-
-	if err != nil {
-		return fmt.Errorf("storage repo: insert resize outbox failed: %w", err)
-	}
-
-	// [COMMENT]: Commit transaction sau khi tất cả các bước thành công
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("storage repo: commit resize tx failed: %w", err)
+		return fmt.Errorf("storage repo: delete tenant bucket failed: %w", err)
 	}
 
 	return nil
-}
-
-func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
-	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
-	if err != nil {
-		return err
-	}
-	outbox.Payload, outbox.PayloadKeyID = protected.Payload, protected.KeyID
-	// [COMMENT]: Map outbox record sang model DB
-	mo := storageModel.OutboxEntityToModel(outbox)
-
-	// [COMMENT]: Sử dụng single atomic CTE để kiểm tra tồn tại (SELECT FOR UPDATE) và chèn outbox record đồng thời
-	query := fmt.Sprintf(`
-		WITH locked_bucket AS (
-			SELECT id, name
-			FROM %s.tenant_buckets
-			WHERE id = $1
-			FOR UPDATE
-		)
-		INSERT INTO %s.storage_outbox_records (
-			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
-			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message, actor_user_id, payload_key_id,
-			resource_name, rollback_quota_bytes
-		)
-		SELECT $2, $3, $4, $5, $6, $16, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17, $18, locked_bucket.name, NULL
-		FROM locked_bucket
-	`, r.storage, r.storage)
-
-	res, err := r.db.Exec(ctx, query,
-		id,
-		mo.EventID,
-		mo.ZoneID,
-		mo.JobTopic,
-		mo.Payload,
-		mo.OwnerID,
-		mo.Status,
-		mo.CompletedAt,
-		mo.JobVersion,
-		mo.ResourceID,
-		mo.PayloadSchemaVersion,
-		mo.TraceID,
-		mo.Idle,
-		mo.ErrorCode,
-		mo.ErrorMessage,
-		mo.OwnerType,
-		mo.ActorUserID,
-		mo.PayloadKeyID,
-	)
-
-	if err != nil {
-		return fmt.Errorf("storage repo: atomic delete tenant bucket outbox failed: %w", err)
-	}
-
-	// [COMMENT]: Nếu không có dòng nào bị ảnh hưởng (tức locked_bucket rỗng), trả về ErrNotFound
-	if res.RowsAffected() == 0 {
-		return storageTaxonomy.ErrNotFound
-	}
-
-	return nil
-}
-
-func (r *TenantBucketRepoImpl) ListAccessKeys(ctx context.Context, bucketID uuid.UUID) ([]string, error) {
-	// [COMMENT]: Truy vấn danh sách access_key của toàn bộ credentials thuộc bucket chỉ định của tenant
-	query := fmt.Sprintf(`
-		SELECT access_key
-		FROM %s.tenant_credentials
-		WHERE bucket_id = $1
-	`, r.storage)
-
-	rows, err := r.db.Query(ctx, query, bucketID)
-	if err != nil {
-		return nil, fmt.Errorf("storage repo: query tenant access keys failed: %w", err)
-	}
-	defer rows.Close()
-
-	var keys []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("storage repo: scan tenant access key failed: %w", err)
-		}
-		keys = append(keys, key)
-	}
-	return keys, nil
 }

@@ -1,18 +1,12 @@
-use bigdecimal::{BigDecimal, RoundingMode, ToPrimitive};
-use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
-use uuid::Uuid;
 
-// [COMMENT]: ServiceType là enum kiểu định dạng tài nguyên được Rust Engine hiểu và kiểm soát kiểu dữ liệu an toàn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ServiceType {
-    Storage,
-    NetworkIn,
-    NetworkOut,
-    Vm,
-}
+use chrono::{DateTime, Utc};
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::{ToPrimitive, Zero};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct PricingError(pub String);
@@ -31,112 +25,106 @@ impl From<sqlx::Error> for PricingError {
     }
 }
 
-impl ServiceType {
-    // Parser exact match case, nếu không khớp bất kỳ kiểu cước nào sẽ fail-closed.
-    pub fn parse(raw: &str) -> Result<Self, PricingError> {
-        match raw.trim() {
-            "STORAGE" => Ok(Self::Storage),
-            "NETWORK_IN" => Ok(Self::NetworkIn),
-            "NETWORK_OUT" => Ok(Self::NetworkOut),
-            "VM" => Ok(Self::Vm),
-            _ => Err(PricingError(format!("unknown service type: {raw}"))),
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct ScalarBracket {
+    pub range_start_quantity: i64,
+    pub range_end_quantity: Option<i64>,
+    pub price_numerator_micro_units: i64,
+    pub price_denominator_quantity: i64,
+}
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Storage => "STORAGE",
-            Self::NetworkIn => "NETWORK_IN",
-            Self::NetworkOut => "NETWORK_OUT",
-            Self::Vm => "VM",
-        }
-    }
+/// Opaque, immutable modifier selected by the owning module. The PAYG kernel
+/// applies it exactly but does not know which module policy produced it.
+#[derive(Debug, Clone)]
+pub struct RateAdjustmentSnapshot {
+    pub id: Uuid,
+    pub version_number: i32,
+    pub checksum: String,
+    pub numerator: i64,
+    pub denominator: i64,
 }
 
 #[derive(Debug, Clone)]
-pub struct TierRange {
-    pub range_start: i64,
-    pub range_end: i64,
-    pub base_unit_price: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct TierPricingSnapshot {
-    pub tier_version_id: Uuid,
+pub struct PricingScheduleSnapshot {
+    pub pricing_schedule_id: Uuid,
+    pub version_id: Uuid,
+    pub module_code: String,
+    pub charge_kind_code: String,
+    pub pricing_model: String,
+    pub raw_input_unit: String,
     pub version_number: i32,
     pub effective_from: DateTime<Utc>,
     pub effective_to: Option<DateTime<Utc>>,
     pub checksum: String,
-    pub ranges: Vec<TierRange>,
+    pub brackets: Vec<ScalarBracket>,
 }
 
-impl TierPricingSnapshot {
-    // [COMMENT]: Progressive charge: mỗi đoạn quantity nằm trong [start,end) nhân giá của range đó.
-    pub fn charge_micro_units_for_bytes(&self, quantity_bytes: u64) -> Result<i64, PricingError> {
-        let quantity_mb = BigDecimal::from(quantity_bytes) / BigDecimal::from(1_048_576_u64);
-        self.charge_micro_units_for_catalog_quantity(quantity_mb)
-    }
-
-    /// Storage is reported as fixed-point GB_HOUR (one million units per
-    /// GB_HOUR).  Storage tier ranges are expressed in decimal GB_HOUR, while
-    /// network ranges continue to use MB through `charge_micro_units_for_bytes`.
-    pub fn charge_micro_units_for_storage_gb_hours_micros(
+impl PricingScheduleSnapshot {
+    pub fn charge_micro_units(
         &self,
-        quantity_micros: u64,
+        quantity: u64,
+        adjustment: Option<&RateAdjustmentSnapshot>,
     ) -> Result<i64, PricingError> {
-        let quantity_gb_hours = BigDecimal::from(quantity_micros) / BigDecimal::from(1_000_000_u64);
-        self.charge_micro_units_for_catalog_quantity(quantity_gb_hours)
-    }
+        if self.pricing_model != "PROGRESSIVE_UNIT" {
+            return Err(PricingError(format!(
+                "unsupported pricing model {}",
+                self.pricing_model
+            )));
+        }
 
-    fn charge_micro_units_for_catalog_quantity(
-        &self,
-        quantity: BigDecimal,
-    ) -> Result<i64, PricingError> {
-        let mut total_micro_units = BigDecimal::from(0);
-        for tier_range in &self.ranges {
-            let start = BigDecimal::from(tier_range.range_start);
+        let mut total = BigRational::zero();
+        for bracket in &self.brackets {
+            let start = u64::try_from(bracket.range_start_quantity)
+                .map_err(|_| PricingError("negative range start".into()))?;
             if quantity <= start {
                 break;
             }
-            let upper = if tier_range.range_end == 0 {
-                quantity.clone()
-            } else {
-                let finite_end = BigDecimal::from(tier_range.range_end);
-                if quantity < finite_end {
-                    quantity.clone()
-                } else {
-                    finite_end
-                }
-            };
-            let units = upper - start;
-            if units > 0 {
-                total_micro_units += units * BigDecimal::from(tier_range.base_unit_price);
+            let upper = bracket
+                .range_end_quantity
+                .map(|end| {
+                    u64::try_from(end).map_err(|_| PricingError("negative range end".into()))
+                })
+                .transpose()?
+                .unwrap_or(quantity)
+                .min(quantity);
+            if upper <= start {
+                continue;
             }
+            let numerator =
+                BigInt::from(upper - start) * BigInt::from(bracket.price_numerator_micro_units);
+            total += BigRational::new(numerator, BigInt::from(bracket.price_denominator_quantity));
         }
-        // [COMMENT]: Wallet/ledger dùng integer micro-unit; ceil một lần ở cuối để usage dương không biến thành free do truncation.
-        total_micro_units
-            .with_scale_round(0, RoundingMode::Ceiling)
-            .to_i64()
-            .ok_or_else(|| {
-                PricingError("calculated charge exceeds BIGINT micro-unit capacity".into())
-            })
+
+        if let Some(adjustment) = adjustment {
+            if adjustment.numerator < 0 || adjustment.denominator <= 0 {
+                return Err(PricingError("invalid rate adjustment".into()));
+            }
+            total *= BigRational::new(
+                BigInt::from(adjustment.numerator),
+                BigInt::from(adjustment.denominator),
+            );
+        }
+
+        let rounded = total.ceil().to_integer();
+        rounded.to_i64().ok_or_else(|| {
+            PricingError("calculated charge exceeds BIGINT micro-unit capacity".into())
+        })
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct CatalogSnapshot {
-    pub(crate) versions_by_service: HashMap<ServiceType, Vec<Arc<TierPricingSnapshot>>>,
+    pub(crate) versions_by_kind: HashMap<String, Vec<Arc<PricingScheduleSnapshot>>>,
 }
 
 impl CatalogSnapshot {
-    // [COMMENT]: Chọn version đã effective tại billing-run boundary; run đã tạo luôn resume bằng pinned ID.
     pub(crate) fn resolve(
         &self,
-        service_type: ServiceType,
+        charge_kind_code: &str,
         at: DateTime<Utc>,
-    ) -> Option<Arc<TierPricingSnapshot>> {
-        self.versions_by_service
-            .get(&service_type)?
+    ) -> Option<Arc<PricingScheduleSnapshot>> {
+        self.versions_by_kind
+            .get(charge_kind_code)?
             .iter()
             .rev()
             .find(|version| {
@@ -146,22 +134,33 @@ impl CatalogSnapshot {
     }
 
     pub(crate) fn contains_version(&self, version_id: Uuid, checksum: &str) -> bool {
-        self.versions_by_service
+        self.versions_by_kind
             .values()
             .flatten()
-            .any(|version| version.tier_version_id == version_id && version.checksum == checksum)
+            .any(|version| version.version_id == version_id && version.checksum == checksum)
     }
 
-    pub(crate) fn find_version(&self, version_id: Uuid) -> Option<Arc<TierPricingSnapshot>> {
-        self.versions_by_service
+    pub(crate) fn find_version(&self, version_id: Uuid) -> Option<Arc<PricingScheduleSnapshot>> {
+        self.versions_by_kind
             .values()
             .flatten()
-            .find(|version| version.tier_version_id == version_id)
+            .find(|version| version.version_id == version_id)
             .cloned()
     }
 }
 
 pub struct BillingPricingLease {
     pub billing_run_id: Uuid,
-    pub snapshot: Arc<TierPricingSnapshot>,
+    pub snapshot: Arc<PricingScheduleSnapshot>,
+    pub adjustment: Option<RateAdjustmentSnapshot>,
+}
+
+pub struct BillingRunCommand<'a> {
+    pub source_module: &'a str,
+    pub charge_kind_code: &'a str,
+    pub source_report_id: Uuid,
+    pub requested_start: DateTime<Utc>,
+    pub requested_end: DateTime<Utc>,
+    pub adjustment: Option<RateAdjustmentSnapshot>,
+    pub fencing_token: i64,
 }

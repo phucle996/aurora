@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
+import { Trash2, Edit2, Check, Copy, Loader2, DollarSign, History, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { updateBucketQuota, deleteBucket, type BucketItem } from "@/features/storage/api";
+import { updateBucketQuota, updateBucketVersioning, deleteBucket, type BucketItem } from "@/features/storage/api";
+
+const BYTES_PER_DECIMAL_GB = 1_000_000_000;
 
 interface OverviewTabProps {
   bucket: BucketItem;
@@ -12,7 +15,7 @@ interface OverviewTabProps {
 
 // [COMMENT]: Chuyển đổi dung lượng bytes sang GB
 function bytesToGB(bytes: number): number {
-  return Math.round(bytes / (1024 * 1024 * 1024));
+  return Math.round(bytes / BYTES_PER_DECIMAL_GB);
 }
 
 // [COMMENT]: Usage arrives as a fixed-point MB string so large byte counts
@@ -42,32 +45,8 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   // because it is also used as the mutation input boundary.
   const usedMegabytes = Number(bucket.used_mb ?? "0");
   const usedGB = usedMegabytes / 1024;
-  const totalGB = bucket.capacity_quota_bytes / (1024 * 1024 * 1024);
+  const totalGB = bucket.capacity_quota_bytes / BYTES_PER_DECIMAL_GB;
   const usagePercentage = totalGB > 0 ? Math.min((usedGB / totalGB) * 100, 100) : 0;
-
-  // [COMMENT]: Khởi tạo state cho chi phí tích lũy theo thời gian thực (Live ticking cost)
-  const [liveCost, setLiveCost] = useState("0.000000");
-
-  useEffect(() => {
-    if (!bucket.created_at) return;
-
-    // Quy đổi đơn giá $0.015 / GB / tháng sang giờ và giây
-    const createdTime = new Date(bucket.created_at).getTime();
-    const hourlyRatePerGB = 0.015 / 720;
-    const ratePerSecond = (totalGB * hourlyRatePerGB) / 3600;
-
-    const updateCost = () => {
-      const nowTime = new Date().getTime();
-      const ageInSeconds = Math.max(0, (nowTime - createdTime) / 1000);
-      const cost = ageInSeconds * ratePerSecond;
-      // [COMMENT]: Hiển thị với 6 số thập phân để thấy chi phí tăng dần trực quan theo từng giây
-      setLiveCost(cost.toFixed(6));
-    };
-
-    updateCost();
-    const interval = setInterval(updateCost, 1000);
-    return () => clearInterval(interval);
-  }, [bucket.created_at, totalGB]);
 
   const copyId = () => {
     // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
@@ -85,7 +64,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
     setUpdatingQuota(true);
     try {
-      const quotaBytes = newQuotaGB * 1024 * 1024 * 1024;
+      const quotaBytes = newQuotaGB * BYTES_PER_DECIMAL_GB;
       await updateBucketQuota(bucket.id, quotaBytes);
       toast.success("Storage quota limit updated successfully");
       setShowEditQuota(false);
@@ -97,6 +76,20 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
   };
 
+  const handleToggleVersioning = async (enabled: boolean) => {
+    setUpdatingVersioning(true);
+    try {
+      await updateBucketVersioning(bucket.id, enabled);
+      toast.success(`Bucket versioning ${enabled ? "enabled" : "suspended"}`);
+      onRefresh();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to update versioning");
+    } finally {
+      setUpdatingVersioning(false);
+    }
+  };
+
+  const [updatingVersioning, setUpdatingVersioning] = useState(false);
 
   const handleDelete = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,7 +100,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
     setDeleting(true);
     try {
-      await deleteBucket(bucket.id, bucket.name);
+      await deleteBucket(bucket.id);
       toast.success("Bucket deletion sequence initiated");
       router.push("/storage");
     } catch (err: unknown) {
@@ -148,7 +141,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
           </div>
         </div>
 
-        {/* SECTION 2: General Information */}
+        {/* SECTION 2: Metadata Details */}
         <div className="border-b border-border/60 pb-5">
           <span className="text-[11px] font-bold text-foreground uppercase tracking-wider block mb-3">
             Metadata Details
@@ -176,6 +169,32 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
                 {/* [COMMENT]: Đổi sang bucket.created_at theo snake_case của backend */}
                 {new Date(bucket.created_at).toLocaleString()}
               </span>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <span className="font-bold text-muted-foreground">Object Versioning</span>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                    bucket.versioning_enabled
+                      ? "bg-emerald-500/10 text-emerald-500"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  <History className="h-3 w-3" />
+                  {bucket.versioning_enabled ? "Enabled" : "Disabled"}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <span className="font-bold text-muted-foreground">Lifecycle Rules</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] font-medium text-foreground">
+                  <Clock className="h-3 w-3 text-primary" />
+                  {bucket.lifecycle_rules?.length ? `${bucket.lifecycle_rules.length} active rule(s)` : "No rules configured"}
+                </span>
+              </div>
             </div>
 
           </div>
@@ -240,6 +259,27 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             </div>
           </div>
 
+          {/* Action B: Object Versioning Toggle */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-2 border-t border-border/40">
+            <div className="space-y-0.5 max-w-md">
+              <h4 className="font-bold text-foreground text-sm flex items-center gap-2">
+                <History className="h-4 w-4 text-indigo-400" />
+                Object Versioning
+              </h4>
+              <p className="text-muted-foreground text-[11px] leading-normal font-medium">
+                Keep multiple revisions of objects for disaster recovery and lifecycle management. Suspending retains existing versions.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              {updatingVersioning && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+              <Switch
+                checked={!!bucket.versioning_enabled}
+                disabled={updatingVersioning}
+                onCheckedChange={handleToggleVersioning}
+                aria-label="Toggle bucket versioning"
+              />
+            </div>
+          </div>
 
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-2 border-t border-border/40">
             <div className="space-y-0.5 max-w-md">
@@ -320,25 +360,25 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             </span>
             <div className="flex items-baseline mt-1.5 text-foreground select-all font-mono">
               <span className="text-xs font-bold text-muted-foreground mr-1">$</span>
-              <span className="text-2xl font-black tracking-tight">{liveCost}</span>
+              <span className="text-2xl font-black tracking-tight">PAYG</span>
             </div>
             <span className="text-[9px] text-muted-foreground mt-1 font-medium">
-              Real-time billing since creation
+              Final charge comes from hourly metered usage
             </span>
           </div>
 
           <div className="space-y-2.5 pt-2 text-[11px]">
             <div className="flex justify-between items-center border-b border-border/30 pb-2">
-              <span className="text-muted-foreground font-medium">Monthly Rate</span>
-              <span className="font-semibold text-foreground font-mono">${(totalGB * 0.015).toFixed(3)} / mo</span>
+              <span className="text-muted-foreground font-medium">Capacity</span>
+              <span className="font-semibold text-foreground font-mono">{totalGB.toFixed(0)} GB</span>
             </div>
             <div className="flex justify-between items-center border-b border-border/30 pb-2">
-              <span className="text-muted-foreground font-medium">Allocated Space</span>
-              <span className="font-semibold text-foreground font-mono">{totalGB} GB</span>
+              <span className="text-muted-foreground font-medium">Pricing model</span>
+              <span className="font-semibold text-foreground font-mono">Hourly PAYG</span>
             </div>
             <div className="flex justify-between items-center pb-1">
-              <span className="text-muted-foreground font-medium">Standard Rate</span>
-              <span className="font-semibold text-foreground font-mono">$0.015 / GB / mo</span>
+              <span className="text-muted-foreground font-medium">Usage dimensions</span>
+              <span className="font-semibold text-foreground font-mono">Capacity + transfer</span>
             </div>
           </div>
         </div>

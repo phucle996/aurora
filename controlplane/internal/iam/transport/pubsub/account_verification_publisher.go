@@ -8,7 +8,7 @@ import (
 
 	kafkainfra "controlplane/infra/kafka"
 	iamEntity "controlplane/internal/iam/domain/entity"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	mailproto "controlplane/internal/mail/transport/proto"
 
 	"google.golang.org/protobuf/proto"
 )

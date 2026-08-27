@@ -71,16 +71,16 @@ func TestManagedServiceRoutesExposeSettledCustomerLifecycle(t *testing.T) {
 		}
 	}
 	for _, mutation := range []string{
-		"POST /api/v1/personal/managed-services/instances",
+		"POST /api/v1/personal/critical/managed-services/instances",
 		"PATCH /api/v1/personal/managed-services/instances/:code/name",
-		"POST /api/v1/personal/managed-services/instances/:code/resize",
-		"DELETE /api/v1/personal/managed-services/instances/:code",
-		"POST /api/v1/personal/managed-services/instances/:code/operations/:operation_id/retry",
-		"POST /api/v1/tenant/managed-services/instances",
+		"POST /api/v1/personal/critical/managed-services/instances/:code/resize",
+		"DELETE /api/v1/personal/critical/managed-services/instances/:code",
+		"POST /api/v1/personal/critical/managed-services/instances/:code/operations/:operation_id/retry",
+		"POST /api/v1/tenant/critical/managed-services/instances",
 		"PATCH /api/v1/tenant/managed-services/instances/:code/name",
-		"POST /api/v1/tenant/managed-services/instances/:code/resize",
-		"DELETE /api/v1/tenant/managed-services/instances/:code",
-		"POST /api/v1/tenant/managed-services/instances/:code/operations/:operation_id/retry",
+		"POST /api/v1/tenant/critical/managed-services/instances/:code/resize",
+		"DELETE /api/v1/tenant/critical/managed-services/instances/:code",
+		"POST /api/v1/tenant/critical/managed-services/instances/:code/operations/:operation_id/retry",
 	} {
 		if _, exists := routes[mutation]; !exists {
 			t.Fatalf("missing P07 customer mutation route: %s", mutation)

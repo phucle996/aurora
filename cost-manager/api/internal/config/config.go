@@ -17,13 +17,20 @@ import "time"
 
 // [COMMENT]: Config là cấu trúc cấu hình gốc gom nhóm tất cả phân hệ hạ tầng của Cost Manager.
 type Config struct {
-	App       AppCfg
-	Vault     VaultCfg
-	Psql      PsqlCfg
-	Redis     RedisCfg
-	AuthRedis RedisCfg
-	GRPC      GRPCCfg
-	Payment   PaymentCfg
+	App               AppCfg
+	Vault             VaultCfg
+	Psql              PsqlCfg
+	Redis             RedisCfg
+	AuthRedis         RedisCfg
+	GRPC              GRPCCfg
+	Payment           PaymentCfg
+	ResourcePlanRelay ResourcePlanRelayCfg
+}
+
+type ResourcePlanRelayCfg struct {
+	Cluster     bool
+	ReplicaAcks int
+	DurableWait time.Duration
 }
 
 type VaultCfg struct {
@@ -40,6 +47,7 @@ type VaultCfg struct {
 // [COMMENT]: AppCfg lưu trữ thông tin cấu hình dịch vụ web và HTTP REST Server.
 type AppCfg struct {
 	AppName        string
+	Host           string
 	Env            string
 	TimeZone       string
 	HTTPPort       int
@@ -89,8 +97,14 @@ type PaymentCfg struct {
 // [COMMENT]: LoadConfig đọc và parse toàn bộ biến môi trường hệ thống.
 func LoadConfig() *Config {
 	return &Config{
+		ResourcePlanRelay: ResourcePlanRelayCfg{
+			Cluster:     getEnvAsBool("HYPERVISOR_RESOURCE_PLAN_REDIS_CLUSTER", false),
+			ReplicaAcks: getEnvAsInt("HYPERVISOR_RESOURCE_PLAN_REPLICA_ACKS", 1),
+			DurableWait: getEnvAsDuration("HYPERVISOR_RESOURCE_PLAN_DURABLE_WAIT", 2*time.Second),
+		},
 		App: AppCfg{
 			AppName:        getEnv("APP_NAME", "cost-manager-api"),
+			Host:           GetNodeHostname(),
 			Env:            getEnv("APP_ENV", "development"),
 			TimeZone:       getEnv("APP_TIMEZONE", "UTC"),
 			HTTPPort:       getEnvAsInt("PORT", 8084),

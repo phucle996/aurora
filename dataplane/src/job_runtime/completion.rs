@@ -72,17 +72,6 @@ impl JobExecutionResult {
         )
     }
 
-    pub fn timeout(job: &ValidatedJob) -> Self {
-        Self::new(
-            job,
-            CompletionStatus::Failed,
-            Some("EXECUTION_TIMEOUT".to_string()),
-            "Job execution cancelled by the lease watchdog after its deadline".to_string(),
-            Vec::new(),
-            0,
-        )
-    }
-
     pub fn from_executor(
         job: &ValidatedJob,
         outcome: Result<ExecutionResult, ExecutorError>,
@@ -112,6 +101,14 @@ impl JobExecutionResult {
                 Vec::new(),
                 0,
             ),
+            Err(ExecutorError::OutcomeUnknown(message)) => Self::new(
+                job,
+                CompletionStatus::Retryable,
+                Some("JOB_OUTCOME_UNKNOWN".into()),
+                message,
+                Vec::new(),
+                0,
+            ),
             Err(ExecutorError::DomainTerminal {
                 error_code,
                 message,
@@ -129,6 +126,11 @@ impl JobExecutionResult {
     }
 
     pub fn mark_retry_exhausted(&mut self) {
+        // An unknown provider outcome is not evidence of failure. Recovery uses
+        // the same command/attempt until the executor can observe its outcome.
+        if self.error_code.as_deref() == Some("JOB_OUTCOME_UNKNOWN") {
+            return;
+        }
         self.status = CompletionStatus::Failed;
         self.error_code = Some("RETRY_EXHAUSTED".to_string());
     }
@@ -165,12 +167,6 @@ impl JobExecutionResult {
 pub struct CompletionOutcome {
     pub result_durable: bool,
     pub source_settled: bool,
-}
-
-pub struct CompletionRequest {
-    pub job: Arc<ValidatedJob>,
-    pub delivery: KafkaDelivery,
-    pub result: JobExecutionResult,
 }
 
 pub struct RetryRequest {
@@ -230,7 +226,7 @@ pub async fn run_retry_scheduler(
     kafka: Arc<KafkaTransport>,
     shutdown: CancellationToken,
 ) {
-    let mut tasks = JoinSet::new();
+    let mut tasks: JoinSet<Result<(), String>> = JoinSet::new();
     let mut receiver_open = true;
     let zone_id = crate::config::Config::get_global().zone_id.clone();
 
@@ -253,16 +249,27 @@ pub async fn run_retry_scheduler(
             biased;
             _ = shutdown.cancelled() => {}
             result = tasks.join_next(), if !tasks.is_empty() => {
-                if let Some(Err(error)) = result {
-                    Logger::sys_error(
-                        "job.completion.retry",
-                        &format!("Retry publisher task failed: {error}"),
-                        "JOB_RETRY_TASK_FAILED",
-                    );
-                    // The JoinError no longer carries the owned source
-                    // delivery. Exit the critical scheduler so the process
-                    // restarts and Kafka replays the unsettled command.
-                    return;
+                match result {
+                    Some(Ok(Ok(()))) | None => {}
+                    Some(Ok(Err(error))) => {
+                        Logger::sys_error(
+                            "job.completion.retry",
+                            &error,
+                            "JOB_RETRY_NOT_DURABLE",
+                        );
+                        // Kafka does not automatically redeliver an uncommitted
+                        // offset inside the current assignment. Exit this critical
+                        // scheduler to restart/replay instead of stranding it.
+                        return;
+                    }
+                    Some(Err(error)) => {
+                        Logger::sys_error(
+                            "job.completion.retry",
+                            &format!("Retry publisher task failed: {error}"),
+                            "JOB_RETRY_TASK_FAILED",
+                        );
+                        return;
+                    }
                 }
             }
             request = retries.recv(), if receiver_open && tasks.len() < MAX_CONCURRENT_RETRY_PUBLISHES => {
@@ -271,7 +278,7 @@ pub async fn run_retry_scheduler(
                         let kafka = kafka.clone();
                         let task_shutdown = shutdown.clone();
                         tasks.spawn(async move {
-                            publish_retry_after_delay(request, kafka, task_shutdown).await;
+                            publish_retry_after_delay(request, kafka, task_shutdown).await
                         });
                     }
                     None => receiver_open = false,
@@ -285,10 +292,10 @@ async fn publish_retry_after_delay(
     retry: RetryRequest,
     kafka: Arc<KafkaTransport>,
     shutdown: CancellationToken,
-) {
+) -> Result<(), String> {
     tokio::select! {
         biased;
-        _ = shutdown.cancelled() => return,
+        _ = shutdown.cancelled() => return Ok(()),
         _ = tokio::time::sleep(retry.delay) => {}
     }
 
@@ -324,7 +331,7 @@ async fn publish_retry_after_delay(
     let key = retry.job.resource_id.as_bytes().to_vec();
     let publish_result = tokio::select! {
         biased;
-        _ = shutdown.cancelled() => return,
+        _ = shutdown.cancelled() => return Ok(()),
         result = kafka
             .publish_message(&retry.topic, &key, &command)
             .with_context(publish_context.clone()) => result,
@@ -344,16 +351,19 @@ async fn publish_retry_after_delay(
                 "retry_published",
             );
             match settle_delivery(&retry.delivery).await {
-                Ok(_) => {}
+                Ok(_) => Ok(()),
                 Err(error) => {
+                    // The retry is already durable. A stale assignment must not
+                    // commit a new owner's source or trigger a restart loop.
                     Logger::sys_error(
                         "job.completion.retry",
                         &format!(
                             "Retry for job {} is durable but source settlement failed: {error}",
-                            retry.job.job_id
+                            retry.job.job_id,
                         ),
                         "JOB_RETRY_SETTLEMENT_FAILED",
                     );
+                    Ok(())
                 }
             }
         }
@@ -362,14 +372,10 @@ async fn publish_retry_after_delay(
                 &crate::config::Config::get_global().zone_id,
                 "retry_publish_failed",
             );
-            Logger::sys_error(
-                "job.completion.retry",
-                &format!(
-                    "Could not durably publish retry for job {}; source remains unsettled: {error}",
-                    retry.job.job_id
-                ),
-                "JOB_RETRY_PUBLISH_FAILED",
-            );
+            Err(format!(
+                "Could not durably publish retry for job {}; source remains unsettled: {error}",
+                retry.job.job_id,
+            ))
         }
     }
 }
@@ -461,6 +467,17 @@ pub async fn complete_terminal(
         .await;
     }
 
+    // Retry publication of the same terminal result; never re-run a completed
+    // external mutation just because the result broker is briefly unavailable.
+    for retry in 0..3_u32 {
+        if publish_result(kafka, result).await.is_ok() {
+            return settle_after_durable(delivery).await;
+        }
+        tokio::time::sleep(Duration::from_millis(
+            200 * (1_u64 << retry) + rand::random::<u64>() % 200,
+        ))
+        .await;
+    }
     match publish_result(kafka, result).await {
         Ok(()) => settle_after_durable(delivery).await,
         Err(error) => {
@@ -675,34 +692,6 @@ async fn settle_delivery(delivery: &KafkaDelivery) -> Result<bool, String> {
     .await
 }
 
-pub async fn run_completion_reporter(
-    mut reports: mpsc::Receiver<CompletionRequest>,
-    kafka: Arc<KafkaTransport>,
-    shutdown: CancellationToken,
-) {
-    let mut shutdown_requested = false;
-    loop {
-        if shutdown_requested {
-            match reports.recv().await {
-                Some(report) => {
-                    complete_terminal(&kafka, &report.job, &report.delivery, &report.result).await;
-                }
-                None => return,
-            }
-            continue;
-        }
-        tokio::select! {
-            report = reports.recv() => {
-                let Some(report) = report else {
-                    return;
-                };
-                complete_terminal(&kafka, &report.job, &report.delivery, &report.result).await;
-            }
-            _ = shutdown.cancelled() => shutdown_requested = true,
-        }
-    }
-}
-
 fn stable_dlq_event_id(
     source_topic: &str,
     source_partition: i32,
@@ -735,42 +724,5 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stable_dlq_identity_is_replay_safe() {
-        assert_eq!(
-            stable_dlq_event_id("topic", 1, 2, "INVALID"),
-            stable_dlq_event_id("topic", 1, 2, "INVALID")
-        );
-        assert_ne!(
-            stable_dlq_event_id("topic", 1, 2, "INVALID"),
-            stable_dlq_event_id("topic", 1, 3, "INVALID")
-        );
-    }
-
-    #[test]
-    fn trace_decoder_fails_closed() {
-        assert_eq!(decode_hex("0011ff").unwrap(), vec![0x00, 0x11, 0xff]);
-        assert!(decode_hex("00zz").is_err());
-        assert!(decode_hex("0").is_err());
-    }
-
-    #[test]
-    fn dlq_omits_untrusted_raw_payload_and_redacts_diagnostic() {
-        let record = build_dead_letter_record(
-            uuid::Uuid::nil().as_bytes().to_vec(),
-            "commands".to_string(),
-            1,
-            2,
-            "INVALID",
-            "upstream password=do-not-publish",
-            b"plaintext-customer-secret",
-        );
-        assert!(record.original_payload.is_empty());
-        assert!(!record.error_message.contains("do-not-publish"));
-        assert!(!record.error_message.contains("plaintext-customer-secret"));
-        assert!(record.error_message.contains("original_payload_sha256="));
-    }
-}
+#[path = "test/completion.rs"]
+mod tests;

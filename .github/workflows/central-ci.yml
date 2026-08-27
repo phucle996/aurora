@@ -230,6 +230,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.cost_manager == 'true'
     runs-on: ubuntu-24.04
+    services:
+      billing-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: billing_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: aurora_ci_billing
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d billing_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
@@ -267,6 +281,11 @@ jobs:
         working-directory: cost-manager/engine
       - run: cargo test
         working-directory: cost-manager/engine
+      - name: Verify PAYG settlement and recovery invariants on PostgreSQL
+        run: cargo test -- --ignored --test-threads=1
+        working-directory: cost-manager/engine
+        env:
+          DATABASE_URL: postgresql://postgres:aurora_ci_billing@127.0.0.1:5432/billing_test
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs

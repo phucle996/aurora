@@ -7,21 +7,29 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: TenantBucketService quản lý các nghiệp vụ Bucket dành riêng cho đối tượng Doanh nghiệp (Enterprise).
-// Suspend/Resume đã bị loại bỏ — bucket không có lifecycle state, chỉ tồn tại hoặc bị xóa.
+// TenantBucketService quản lý các nghiệp vụ Bucket dành riêng cho đối tượng Doanh nghiệp (Enterprise).
 type TenantBucketService interface {
-	// [COMMENT]: Khởi tạo Bucket mới cho Tenant, tự gen và trả về credential 1 lần duy nhất.
+	// CreateBucketForTenant khởi tạo Bucket mới cho Tenant, tự gen và trả về credential 1 lần duy nhất.
 	CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) (*storageEntity.CreatedBucketResult, error)
 
-	// [COMMENT]: Xem chi tiết thông tin Bucket.
-	GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.TenantBucket, error)
+	// GetBucket xem chi tiết thông tin Bucket.
+	GetBucket(ctx context.Context, bucketID uuid.UUID, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID) (*storageEntity.TenantBucket, error)
 
-	// [COMMENT]: Danh sách Bucket thuộc về một Tenant tại một Zone.
-	ListBuckets(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error)
+	// ListBuckets lấy danh sách Bucket thuộc về một Workspace trong Tenant và Zone.
+	ListBuckets(ctx context.Context, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error)
 
-	// [COMMENT]: Thay đổi hạn mức lưu trữ quota của Bucket.
-	UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, quotaBytes int64) error
+	// UpdateBucketQuota thay đổi hạn mức lưu trữ quota của Bucket.
+	UpdateBucketQuota(ctx context.Context, param *storageEntity.UpdateTenantBucketQuota) error
 
-	// [COMMENT]: Yêu cầu xóa Bucket.
+	// UpdateBucketVersioning cập nhật trạng thái Versioning của Bucket.
+	UpdateBucketVersioning(ctx context.Context, param *storageEntity.UpdateTenantBucketVersioning) (*storageEntity.TenantBucket, error)
+
+	// GetBucketLifecycle truy vấn cấu hình Lifecycle Rules của Bucket.
+	GetBucketLifecycle(ctx context.Context, bucketID uuid.UUID, workspaceID uuid.UUID, tenantID uuid.UUID, userID uuid.UUID, zoneID uuid.UUID) ([]storageEntity.BucketLifecycleRule, error)
+
+	// UpdateBucketLifecycle cập nhật cấu hình Lifecycle Rules của Bucket.
+	UpdateBucketLifecycle(ctx context.Context, param *storageEntity.UpdateTenantBucketLifecycle) (*storageEntity.TenantBucket, error)
+
+	// DeleteBucket xóa Bucket.
 	DeleteBucket(ctx context.Context, param *storageEntity.DeleteTenantBucket) error
 }

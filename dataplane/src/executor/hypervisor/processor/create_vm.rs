@@ -14,12 +14,19 @@ use super::proxmox::CloneTemplateRequest;
 pub(super) fn canonical_vm_config_hash(command: &VmCreateV1) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(command.image_id.as_slice());
-    digest.update([0]);
     digest.update(command.image_revision.to_be_bytes());
     digest.update(command.image_sha256.as_slice());
     digest.update(u64::from(command.cpu_cores).to_be_bytes());
     digest.update(command.memory_mb.to_be_bytes());
     digest.update(command.disk_gb.to_be_bytes());
+    digest.update(command.resource_plan_id.as_slice());
+    digest.update(command.resource_plan_revision_id.as_slice());
+    digest.update(command.resource_plan_revision_number.to_be_bytes());
+    digest.update(command.resource_plan_content_sha256.as_slice());
+    for disk in &command.additional_disks {
+        digest.update(u64::from(disk.disk_index).to_be_bytes());
+        digest.update(disk.size_gb.to_be_bytes());
+    }
     digest.update(command.ssh_public_key.as_bytes());
     digest.finalize().into()
 }
@@ -39,16 +46,27 @@ pub(crate) async fn execute_vm_create(
     let resource_id = uuid::Uuid::parse_str(&job.resource_id).map_err(|_| {
         ExecutorError::ExecutionFailed("HYPERVISOR_VM_RESOURCE_ID_INVALID".to_string())
     })?;
+    let mut total_disk_gb = command.disk_gb;
+    let disks_valid = command.additional_disks.len() <= 15
+        && command
+            .additional_disks
+            .iter()
+            .enumerate()
+            .all(|(index, disk)| {
+                total_disk_gb = total_disk_gb.saturating_add(disk.size_gb);
+                disk.disk_index == u32::try_from(index + 1).unwrap_or(u32::MAX)
+                    && (8..=4_096).contains(&disk.size_gb)
+                    && total_disk_gb <= 65_536
+            });
     if command.schema_version != 1
         || command.vm_id.as_slice() != resource_id.as_bytes()
         || command.provider_name != format!("aurora-{resource_id}")
         || command.provider_name.len() > 80
-        || command.cpu_cores == 0
-        || command.cpu_cores > 64
-        || command.memory_mb < 512
-        || command.memory_mb > 262_144
-        || command.disk_gb < 8
-        || command.disk_gb > 4_096
+        || command.resource_plan_id.len() != 16
+        || command.resource_plan_revision_id.len() != 16
+        || command.resource_plan_revision_number == 0
+        || command.resource_plan_content_sha256.len() != 32
+        || !disks_valid
         || command.config_hash.len() != 32
         || command.image_id.len() != 16
         || command.image_revision == 0
@@ -280,6 +298,59 @@ pub(crate) async fn execute_vm_create(
             .await
             .map_err(ExecutorError::Retryable)?;
     }
+    if !command.additional_disks.is_empty() && config.proxmox_storage.is_empty() {
+        return Err(ExecutorError::ExecutionFailed(
+            "HYPERVISOR_ADDITIONAL_DISK_STORAGE_REQUIRED".to_string(),
+        ));
+    }
+    for disk in &command.additional_disks {
+        let disk_key = format!("scsi{}", disk.disk_index);
+        if let Some(existing) = current_config
+            .additional
+            .get(&disk_key)
+            .and_then(|value| value.as_str())
+        {
+            let expected_size = format!("size={}G", disk.size_gb);
+            if !existing.split(',').any(|part| part == expected_size) {
+                return Err(ExecutorError::ExecutionFailed(
+                    "HYPERVISOR_ADDITIONAL_DISK_COLLISION".to_string(),
+                ));
+            }
+            continue;
+        }
+        runtime
+            .proxmox
+            .attach_data_disk(
+                &provider_node,
+                provider_vmid,
+                &disk_key,
+                &config.proxmox_storage,
+                disk.size_gb,
+            )
+            .await
+            .map_err(ExecutorError::Retryable)?;
+    }
+
+    let pre_start_inventory = runtime
+        .proxmox
+        .list_vms()
+        .await
+        .map_err(ExecutorError::Retryable)?;
+    let pre_start_vm = pre_start_inventory
+        .iter()
+        .find(|vm| vm.vmid == provider_vmid && vm.name == command.provider_name && !vm.is_template)
+        .ok_or_else(|| {
+            ExecutorError::Retryable("HYPERVISOR_INITIAL_NETWORK_COUNTER_UNAVAILABLE".to_string())
+        })?;
+    crate::executor::hypervisor::network_metering::record_network_observation(
+        &runtime.zone_kv,
+        resource_id,
+        chrono::Utc::now().timestamp_millis(),
+        pre_start_vm.network_in_bytes,
+        pre_start_vm.network_out_bytes,
+    )
+    .await
+    .map_err(ExecutorError::Retryable)?;
 
     let current_status = runtime
         .proxmox
@@ -299,6 +370,31 @@ pub(crate) async fn execute_vm_create(
             .map_err(ExecutorError::Retryable)?;
     }
 
+    // Capture the first confirmed resource completion before guest-agent or JO
+    // latency. CAS evidence survives result publication failure and replay.
+    let completion_key = format!("hypervisor.vm.activation.{resource_id}");
+    let completion_entry = runtime
+        .zone_kv
+        .config_get(&completion_key)
+        .await
+        .map_err(ExecutorError::Retryable)?;
+    let provider_completed_at_unix_ms =
+        if let Some(bytes) = completion_entry {
+            i64::from_be_bytes(bytes.as_ref().try_into().map_err(|_| {
+                ExecutorError::ExecutionFailed("VM_ACTIVATION_EVIDENCE_CORRUPT".into())
+            })?)
+        } else {
+            let observed = chrono::Utc::now().timestamp_millis();
+            runtime
+                .zone_kv
+                .config_create(
+                    &completion_key,
+                    bytes::Bytes::copy_from_slice(&observed.to_be_bytes()),
+                )
+                .await
+                .map_err(ExecutorError::Retryable)?;
+            observed
+        };
     // Guest-agent warm-up is read-only and can be slow. Release the scarce
     // mutation slot before polling so another VM can clone/configure.
     drop(mutation_permit);
@@ -323,6 +419,7 @@ pub(crate) async fn execute_vm_create(
         provider_vmid,
         ipv4_address,
         config_hash: command.config_hash,
+        provider_completed_at_unix_ms,
     };
     let result_payload = result.encode_to_vec();
     if result_payload.len() > 64 * 1024 {

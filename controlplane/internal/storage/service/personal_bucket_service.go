@@ -2,7 +2,6 @@ package storageSvcImpl
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,16 +9,15 @@ import (
 	"time"
 
 	"controlplane/internal/observability"
+	"controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	storageproto "controlplane/internal/storage/transport/rpc/proto"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/crypto"
 
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -27,19 +25,17 @@ import (
 // [COMMENT]: PersonalBucketServiceImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Cá nhân.
 type PersonalBucketSvcImpl struct {
 	repo    storageRepoInterface.PersonalBucketRepo
-	authRds *goredis.Client
+	credSvc storageSvcInterface.PersonalCredentialService
 	metrics observability.WorkflowRecorder
 }
 
-// NewPersonalBucketService wires the repository and the dedicated
-// Security-State Redis in one constructor. Shared L2 Redis is intentionally
-// not accepted here: an access session is an authz projection, not a cache.
+// NewPersonalBucketService wires the repository, credential service, and metrics in one constructor.
 func NewPersonalBucketService(
 	repo storageRepoInterface.PersonalBucketRepo,
-	authRds *goredis.Client,
+	credSvc storageSvcInterface.PersonalCredentialService,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalBucketService {
-	return &PersonalBucketSvcImpl{repo: repo, authRds: authRds, metrics: metrics}
+	return &PersonalBucketSvcImpl{repo: repo, credSvc: credSvc, metrics: metrics}
 }
 
 // [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
@@ -58,7 +54,6 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
 	if err != nil {
@@ -85,11 +80,11 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	}
 
 	// [COMMENT]: CP tự sinh Access Key và Secret Key ngẫu nhiên (chuẩn MinIO Service Account)
-	accessKey, err := crypto.GenerateAccessKey()
+	accessKey, err := security.GenerateAccessKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "gen_access_key_failed")
 	}
-	secretKey, err := crypto.GenerateSecretKey()
+	secretKey, err := security.GenerateSecretKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "gen_secret_key_failed")
 	}
@@ -252,7 +247,6 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 		}
 		return apperr.Wrap(err, err, "get_failed")
 	}
-
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
@@ -312,13 +306,177 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 	return nil
 }
 
+func (s *PersonalBucketSvcImpl) UpdateBucketVersioning(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, versioningEnabled bool) (*storageEntity.PersonalBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	syncEvent := &storageproto.BucketVersioningSync{
+		BucketId:          bucket.ID.String(),
+		Name:              bucket.Name,
+		VersioningEnabled: versioningEnabled,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.versioning",
+		Payload:              payloadBytes,
+		OwnerID:              userID,
+		OwnerType:            storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:          &userID,
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	updatedBucket, err := s.repo.UpdateVersioning(ctx, bucketID, userID, versioningEnabled, outbox)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "update_versioning_failed")
+	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
+	return updatedBucket, nil
+}
+
+func (s *PersonalBucketSvcImpl) GetBucketLifecycle(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]storageEntity.BucketLifecycleRule, error) {
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+	return bucket.LifecycleRules, nil
+}
+
+func (s *PersonalBucketSvcImpl) UpdateBucketLifecycle(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, rules []storageEntity.BucketLifecycleRule) (*storageEntity.PersonalBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
+	// Invariant check: if any rule has noncurrent_version_expiration_days > 0, bucket must have versioning enabled
+	for _, rule := range rules {
+		if rule.NoncurrentVersionExpirationDays > 0 && !bucket.VersioningEnabled {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+			return nil, apperr.Wrap(storageTaxonomy.ErrVersioningRequired, storageTaxonomy.ErrVersioningRequired, "versioning_required_for_noncurrent_expiration")
+		}
+	}
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	protoRules := make([]*storageproto.LifecycleRuleSync, len(rules))
+	for i, r := range rules {
+		protoRules[i] = &storageproto.LifecycleRuleSync{
+			Id:                                 r.ID,
+			Enabled:                            r.Enabled,
+			Prefix:                             r.Prefix,
+			ExpirationDays:                     int32(r.ExpirationDays),
+			NoncurrentVersionExpirationDays:    int32(r.NoncurrentVersionExpirationDays),
+			AbortIncompleteMultipartUploadDays: int32(r.AbortIncompleteMultipartUploadDays),
+		}
+	}
+
+	syncEvent := &storageproto.BucketLifecycleSync{
+		BucketId: bucket.ID.String(),
+		Name:     bucket.Name,
+		Rules:    protoRules,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.lifecycle",
+		Payload:              payloadBytes,
+		OwnerID:              userID,
+		OwnerType:            storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:          &userID,
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	updatedBucket, err := s.repo.UpdateLifecycle(ctx, bucketID, userID, rules, outbox)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		} else if errors.Is(err, storageTaxonomy.ErrVersioningRequired) {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+		}
+		return nil, apperr.Wrap(err, err, "update_lifecycle_failed")
+	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
+	return updatedBucket, nil
+}
+
 func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
+	// The bucket name is server-owned durable data, never caller input. It is
+	// resolved under the personal owner fence before it enters the Zone command.
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.UserID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
 	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết để xóa sạch trên MinIO
-	accessKeys, err := s.repo.ListAccessKeys(ctx, param.BucketID, param.UserID)
+	accessKeys, err := s.credSvc.ListAccessKeys(ctx, param.BucketID, param.UserID)
 	if err != nil {
 		return apperr.Wrap(err, err, "list_credentials_failed")
 	}
@@ -330,9 +488,9 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync sử dụng tên từ param input
+	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync từ durable bucket name
 	syncEvent := &storageproto.BucketDeleteSync{
-		Name:       param.BucketName,
+		Name:       bucket.Name,
 		AccessKeys: accessKeys,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
@@ -345,10 +503,10 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
-	// [COMMENT]: 3. Cấu hình outbox record với zone_id từ param input
+	// [COMMENT]: 3. Cấu hình outbox record với zone_id từ durable bucket
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:     eventID,
-		ZoneID:      param.ZoneID,
+		ZoneID:      bucket.ZoneID,
 		JobTopic:    "storage.bucket.delete",
 		Payload:     payloadBytes,
 		OwnerID:     param.UserID,
@@ -358,7 +516,7 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),
-		ResourceName:         param.BucketName,
+		ResourceName:         bucket.Name,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,
@@ -371,102 +529,6 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
 		}
 		return apperr.Wrap(err, err, "delete_failed")
-	}
-	result, reason = observability.ResultSuccess, observability.ReasonNone
-	return nil
-}
-
-func (s *PersonalBucketSvcImpl) CreateStorageAccessSession(ctx context.Context, param *storageEntity.StorageAccessSession) error {
-	startedAt := time.Now()
-	result, reason := observability.ResultFailure, observability.ReasonInternal
-	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-
-	if param == nil || param.AccessSessionID == uuid.Nil || param.ResourceID == uuid.Nil || param.ActorID == uuid.Nil {
-		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
-		return apperr.Wrap(fmt.Errorf("access session identity is incomplete"), nil, "invalid_access_session")
-	}
-	if param.ExpiresAtUnixSeconds <= uint64(time.Now().Unix()) {
-		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
-		return apperr.Wrap(fmt.Errorf("access session expiry is in the past"), nil, "invalid_access_session_expiry")
-	}
-
-	// The random binding is retained only as a digest. The client receives the
-	// opaque session id, while ACR binds it to the authenticated Trinity actor.
-	param.BindingHash = fmt.Sprintf("%x", sha256.Sum256([]byte(param.AccessSessionID.String()+":"+param.ActorID.String()+":"+uuid.New().String())))
-	// Auth-State Redis stores a versioned protobuf projection. The domain entity
-	// remains tag-free; this binary contract is the only Go/Rust wire boundary.
-	encoded, err := proto.Marshal(&storageproto.StorageAccessRecord{
-		SchemaVersion:        1,
-		AccessSessionId:      param.AccessSessionID.String(),
-		BindingHash:          param.BindingHash,
-		ActorId:              param.ActorID.String(),
-		ResourceId:           param.ResourceID.String(),
-		BucketName:           param.BucketName,
-		WorkspaceId:          param.WorkspaceID.String(),
-		ZoneId:               param.ZoneID.String(),
-		Actions:              append([]string(nil), param.Actions...),
-		KeyPrefix:            param.KeyPrefix,
-		ExpiresAtUnixSeconds: param.ExpiresAtUnixSeconds,
-		PolicyRevision:       param.PolicyRevision,
-	})
-	if err != nil {
-		return apperr.Wrap(err, err, "marshal_access_record_failed")
-	}
-	ttl := time.Until(time.Unix(int64(param.ExpiresAtUnixSeconds), 0))
-	if ttl <= 0 {
-		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
-		return apperr.Wrap(fmt.Errorf("access session ttl is not positive"), nil, "invalid_access_session_expiry")
-	}
-	// The opaque UUID is the lookup handle; the random digest stays inside the
-	// value and is copied to the Zone for assertion/record equality checks.
-	key := "storage_access:{" + param.AccessSessionID.String() + "}"
-
-	reqProto := &storageproto.StorageAccessPrepareRequest{
-		AccessSessionId:      param.AccessSessionID.String(),
-		BindingHash:          param.BindingHash,
-		ActorId:              param.ActorID.String(),
-		ResourceId:           param.ResourceID.String(),
-		BucketName:           param.BucketName,
-		WorkspaceId:          param.WorkspaceID.String(),
-		ZoneId:               param.ZoneID.String(),
-		Actions:              append([]string(nil), param.Actions...),
-		KeyPrefix:            param.KeyPrefix,
-		ExpiresAtUnixSeconds: param.ExpiresAtUnixSeconds,
-		PolicyRevision:       param.PolicyRevision,
-	}
-	payloadBytes, err := proto.Marshal(reqProto)
-	if err != nil {
-		return apperr.Wrap(err, err, "marshal_access_session_command_failed")
-	}
-	traceID := []byte(nil)
-	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-		tid := spanCtx.TraceID()
-		traceID = tid[:]
-	}
-	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              param.AccessSessionID,
-		ZoneID:               param.ZoneID,
-		JobTopic:             "storage.access.prepare",
-		Payload:              payloadBytes,
-		OwnerID:              param.ActorID,
-		OwnerType:            storageEntity.StorageOwnerTypePersonal,
-		ActorUserID:          &param.ActorID,
-		Status:               storageEntity.StorageOutboxStatusPending,
-		JobVersion:           1,
-		ResourceID:           param.ResourceID.String(),
-		PayloadSchemaVersion: 1,
-		TraceID:              traceID,
-		Idle:                 30,
-	}
-	// The PostgreSQL outbox is the first durability boundary. A crash before
-	// the following Redis write may prepare an unusable Zone record, but can
-	// never authorize a request because ACR has no Central Access Record.
-	if err := s.repo.CreateAccessPrepare(ctx, param, outbox); err != nil {
-		return apperr.Wrap(err, err, "create_access_session_command_failed")
-	}
-	if err := s.authRds.Set(ctx, key, encoded, ttl).Err(); err != nil {
-		result, reason = observability.ResultFailure, observability.ReasonUnavailable
-		return apperr.Wrap(err, err, "persist_access_session_failed")
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil

@@ -142,3 +142,7 @@ impl JobNotificationService {
 fn boxed_error(message: &str) -> AppError {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.to_owned()).into()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/job_notifications.rs"]
+mod tests;

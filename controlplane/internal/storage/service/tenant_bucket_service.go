@@ -11,30 +11,36 @@ import (
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	storageproto "controlplane/internal/storage/transport/rpc/proto"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/crypto"
+	"controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
 
-// [COMMENT]: TenantBucketSvcImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Doanh nghiệp.
+// TenantBucketSvcImpl thực thi nghiệp vụ quản trị Storage Bucket cho đối tượng Doanh nghiệp.
 type TenantBucketSvcImpl struct {
 	repo    storageRepoInterface.TenantBucketRepo
+	credSvc storageSvcInterface.TenantCredentialService
 	metrics observability.WorkflowRecorder
 }
 
-// [COMMENT]: NewTenantBucketService khởi tạo instance thực thi TenantBucketService.
-func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo, metrics observability.WorkflowRecorder) storageSvcInterface.TenantBucketService {
+// NewTenantBucketService khởi tạo instance thực thi TenantBucketService.
+func NewTenantBucketService(
+	repo storageRepoInterface.TenantBucketRepo,
+	credSvc storageSvcInterface.TenantCredentialService,
+	metrics observability.WorkflowRecorder,
+) storageSvcInterface.TenantBucketService {
 	return &TenantBucketSvcImpl{
 		repo:    repo,
+		credSvc: credSvc,
 		metrics: metrics,
 	}
 }
 
-// [COMMENT]: buildTenantBucketPolicy sinh chuỗi JSON policy giới hạn quyền truy cập MinIO
+// buildTenantBucketPolicy sinh chuỗi JSON policy giới hạn quyền truy cập MinIO
 // chỉ vào đúng bucket chỉ định. Dùng chuẩn AWS S3 Policy format tương thích với MinIO.
 func buildTenantBucketPolicy(bucketName string) string {
 	return fmt.Sprintf(`{
@@ -47,21 +53,22 @@ func buildTenantBucketPolicy(bucketName string) string {
 	}`, bucketName, bucketName)
 }
 
-func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) (*storageEntity.CreatedBucketResult, error) {
+func (s *TenantBucketSvcImpl) CreateBucketForTenant(
+	ctx context.Context,
+	param *storageEntity.CreateTenantBucket,
+) (*storageEntity.CreatedBucketResult, error) {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào với UUID v7
+
 	bucketID, err := uuid.NewV7()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
-	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của TenantID
 	physicalName := fmt.Sprintf("tn-%s-%s", param.TenantID.String()[:8], param.Name)
 
-	// [COMMENT]: Bucket không còn status field — tồn tại trong DB là đủ để xác định là active
 	bucket := &storageEntity.TenantBucket{
 		ID:                 bucketID,
 		Name:               physicalName,
@@ -74,19 +81,17 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	}
 
 	// [COMMENT]: CP tự sinh Access Key và Secret Key ngẫu nhiên (chuẩn MinIO Service Account)
-	accessKey, err := crypto.GenerateAccessKey()
+	accessKey, err := security.GenerateAccessKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "gen_access_key_failed")
 	}
-	secretKey, err := crypto.GenerateSecretKey()
+	secretKey, err := security.GenerateSecretKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "gen_secret_key_failed")
 	}
 
-	// [COMMENT]: Sinh bucket policy giới hạn quyền chỉ vào đúng bucket này
 	policy := buildTenantBucketPolicy(bucket.Name)
 
-	// [COMMENT]: Tạo credential entity — gắn kèm vào bucket doanh nghiệp với UUID v7
 	credID, err := uuid.NewV7()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
@@ -96,20 +101,17 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		ID:        credID,
 		BucketID:  bucket.ID,
 		AccessKey: accessKey,
-		// [COMMENT]: Lược bỏ SecretKey khỏi thực thể lưu CSDL lâu dài để tăng tính bảo mật
 		Policy:    policy,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 
-	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
 		tid := spanCtx.TraceID()
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Serialize BucketCreateSync payload kèm thông tin credential để DP provisioning MinIO Service Account
 	syncEvent := &storageproto.BucketCreateSync{
 		Name:       bucket.Name,
 		AccessKey:  accessKey,
@@ -122,22 +124,20 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
-	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction với UUID v7
 	eventID, err := uuid.NewV7()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:     eventID,
-		ZoneID:      bucket.ZoneID,
-		JobTopic:    "storage.bucket.create",
-		Payload:     payloadBytes,
-		OwnerID:     bucket.TenantID,
-		OwnerType:   storageEntity.StorageOwnerTypeTenant,
-		ActorUserID: &param.UserID,
-		Status:      storageEntity.StorageOutboxStatusPending,
-
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.create",
+		Payload:              payloadBytes,
+		OwnerID:              bucket.TenantID,
+		OwnerType:            storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:          &param.UserID,
+		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
 		ResourceName:         bucket.Name,
@@ -146,8 +146,7 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) 3-way CTE: bucket + credential + outbox record
-	if err := s.repo.Create(ctx, bucket, credential, outbox); err != nil {
+	if err := s.repo.Create(ctx, bucket, credential, param.UserID, outbox); err != nil {
 		if errors.Is(err, storageTaxonomy.ErrAlreadyExists) {
 			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
 		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
@@ -156,7 +155,6 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
-	// [COMMENT]: Trả về credentials ngay để HTTP handler phản hồi user — secret_key chỉ hiển thị 1 lần này
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return &storageEntity.CreatedBucketResult{
 		BucketID:     bucket.ID,
@@ -168,12 +166,19 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	}, nil
 }
 
-func (s *TenantBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.TenantBucket, error) {
+func (s *TenantBucketSvcImpl) GetBucket(
+	ctx context.Context,
+	bucketID uuid.UUID,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+) (*storageEntity.TenantBucket, error) {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	bucket, err := s.repo.GetByID(ctx, bucketID)
+	bucket, err := s.repo.GetByID(ctx, bucketID, workspaceID, tenantID, userID, zoneID)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
@@ -184,12 +189,18 @@ func (s *TenantBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID)
 	return bucket, nil
 }
 
-func (s *TenantBucketSvcImpl) ListBuckets(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error) {
+func (s *TenantBucketSvcImpl) ListBuckets(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+) ([]*storageEntity.TenantBucket, error) {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	buckets, err := s.repo.ListByTenantAndZone(ctx, tenantID, zoneID)
+	buckets, err := s.repo.ListByWorkspace(ctx, workspaceID, tenantID, userID, zoneID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
@@ -197,13 +208,15 @@ func (s *TenantBucketSvcImpl) ListBuckets(ctx context.Context, tenantID uuid.UUI
 	return buckets, nil
 }
 
-func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, quotaBytes int64) error {
+func (s *TenantBucketSvcImpl) UpdateBucketQuota(
+	ctx context.Context,
+	param *storageEntity.UpdateTenantBucketQuota,
+) error {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	// [COMMENT]: 1. Lấy thông tin hiện tại của tenant bucket
-	bucket, err := s.repo.GetByID(ctx, bucketID)
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.WorkspaceID, param.TenantID, param.UserID, param.ZoneID)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
@@ -211,26 +224,23 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 		return apperr.Wrap(err, err, "get_failed")
 	}
 
-	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
 		tid := spanCtx.TraceID()
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: 2. Chuẩn bị proto event đồng bộ resize gửi xuống dataplane
 	syncEvent := &storageproto.BucketResizeSync{
 		BucketId:            bucket.ID.String(),
 		Name:                bucket.Name,
 		CurrentQuotaBytes:   bucket.CapacityQuotaBytes,
-		RequestedQuotaBytes: quotaBytes,
+		RequestedQuotaBytes: param.QuotaBytes,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
 		return apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
-	// [COMMENT]: 3. Khởi tạo Outbox Record để cập nhật đồng thời trong transaction
 	eventID, err := uuid.NewV7()
 	if err != nil {
 		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
@@ -238,14 +248,14 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 
 	rollbackQuotaBytes := bucket.CapacityQuotaBytes
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:   eventID,
-		ZoneID:    bucket.ZoneID,
-		JobTopic:  "storage.bucket.resize",
-		Payload:   payloadBytes,
-		OwnerID:   bucket.TenantID,
-		OwnerType: storageEntity.StorageOwnerTypeTenant,
-		Status:    storageEntity.StorageOutboxStatusPending,
-
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.resize",
+		Payload:              payloadBytes,
+		OwnerID:              bucket.TenantID,
+		OwnerType:            storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:          &param.UserID,
+		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
 		ResourceName:         bucket.Name,
@@ -255,10 +265,9 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 		Idle:                 30,
 	}
 
-	// [COMMENT]: 4. Thực thi cập nhật DB và ghi outbox nguyên tử
-	err = s.repo.UpdateQuota(ctx, bucketID, quotaBytes, outbox)
+	err = s.repo.UpdateQuota(ctx, param, outbox)
 	if err != nil {
-		if errors.Is(err, storageTaxonomy.ErrQuotaExceeded) || errors.Is(err, storageTaxonomy.ErrResizeLimitTooLow) {
+		if errors.Is(err, storageTaxonomy.ErrResizeLimitTooLow) {
 			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		} else if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
@@ -269,13 +278,180 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	return nil
 }
 
-func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeleteTenantBucket) error {
+func (s *TenantBucketSvcImpl) UpdateBucketVersioning(
+	ctx context.Context,
+	param *storageEntity.UpdateTenantBucketVersioning,
+) (*storageEntity.TenantBucket, error) {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	// [COMMENT]: Lấy thông tin bucket để trích xuất TenantID làm OwnerID cho Billing Outbox
-	bucket, err := s.repo.GetByID(ctx, param.BucketID)
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.WorkspaceID, param.TenantID, param.UserID, param.ZoneID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	syncEvent := &storageproto.BucketVersioningSync{
+		BucketId:          bucket.ID.String(),
+		Name:              bucket.Name,
+		VersioningEnabled: param.VersioningEnabled,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.versioning",
+		Payload:              payloadBytes,
+		OwnerID:              bucket.TenantID,
+		OwnerType:            storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:          &param.UserID,
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	updatedBucket, err := s.repo.UpdateVersioning(ctx, param, outbox)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "update_versioning_failed")
+	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
+	return updatedBucket, nil
+}
+
+func (s *TenantBucketSvcImpl) GetBucketLifecycle(
+	ctx context.Context,
+	bucketID uuid.UUID,
+	workspaceID uuid.UUID,
+	tenantID uuid.UUID,
+	userID uuid.UUID,
+	zoneID uuid.UUID,
+) ([]storageEntity.BucketLifecycleRule, error) {
+	bucket, err := s.repo.GetByID(ctx, bucketID, workspaceID, tenantID, userID, zoneID)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+	return bucket.LifecycleRules, nil
+}
+
+func (s *TenantBucketSvcImpl) UpdateBucketLifecycle(
+	ctx context.Context,
+	param *storageEntity.UpdateTenantBucketLifecycle,
+) (*storageEntity.TenantBucket, error) {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.WorkspaceID, param.TenantID, param.UserID, param.ZoneID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
+	// Invariant: Noncurrent version expiration requires versioning to be enabled
+	for _, rule := range param.Rules {
+		if rule.NoncurrentVersionExpirationDays > 0 && !bucket.VersioningEnabled {
+			result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
+			return nil, apperr.Wrap(storageTaxonomy.ErrVersioningRequired, storageTaxonomy.ErrVersioningRequired, "versioning_required_for_noncurrent_expiration")
+		}
+	}
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	protoRules := make([]*storageproto.LifecycleRuleSync, len(param.Rules))
+	for i, r := range param.Rules {
+		protoRules[i] = &storageproto.LifecycleRuleSync{
+			Id:                                 r.ID,
+			Enabled:                            r.Enabled,
+			Prefix:                             r.Prefix,
+			ExpirationDays:                     int32(r.ExpirationDays),
+			NoncurrentVersionExpirationDays:    int32(r.NoncurrentVersionExpirationDays),
+			AbortIncompleteMultipartUploadDays: int32(r.AbortIncompleteMultipartUploadDays),
+		}
+	}
+
+	syncEvent := &storageproto.BucketLifecycleSync{
+		BucketId: bucket.ID.String(),
+		Name:     bucket.Name,
+		Rules:    protoRules,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.lifecycle",
+		Payload:              payloadBytes,
+		OwnerID:              bucket.TenantID,
+		OwnerType:            storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:          &param.UserID,
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	updatedBucket, err := s.repo.UpdateLifecycle(ctx, param, outbox)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
+		return nil, apperr.Wrap(err, err, "update_lifecycle_failed")
+	}
+	result, reason = observability.ResultSuccess, observability.ReasonNone
+	return updatedBucket, nil
+}
+
+func (s *TenantBucketSvcImpl) DeleteBucket(
+	ctx context.Context,
+	param *storageEntity.DeleteTenantBucket,
+) error {
+	startedAt := time.Now()
+	result, reason := observability.ResultFailure, observability.ReasonInternal
+	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.WorkspaceID, param.TenantID, param.UserID, param.ZoneID)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
@@ -283,22 +459,19 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 		return apperr.Wrap(err, err, "get_bucket_failed")
 	}
 
-	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết với tenant bucket này
-	accessKeys, err := s.repo.ListAccessKeys(ctx, param.BucketID)
+	accessKeys, err := s.credSvc.ListAccessKeys(ctx, param.BucketID, param.WorkspaceID, param.TenantID, param.UserID, param.ZoneID)
 	if err != nil {
 		return apperr.Wrap(err, err, "list_credentials_failed")
 	}
 
-	// [COMMENT]: Trích xuất Trace ID phục vụ tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
 		tid := spanCtx.TraceID()
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync sử dụng tên từ param input
 	syncEvent := &storageproto.BucketDeleteSync{
-		Name:       param.BucketName,
+		Name:       bucket.Name,
 		AccessKeys: accessKeys,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
@@ -311,27 +484,24 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
 	}
 
-	// [COMMENT]: 3. Cấu hình outbox record cho tenant với zone_id từ param input
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:     eventID,
-		ZoneID:      param.ZoneID,
-		JobTopic:    "storage.bucket.delete",
-		Payload:     payloadBytes,
-		OwnerID:     bucket.TenantID,
-		OwnerType:   storageEntity.StorageOwnerTypeTenant,
-		ActorUserID: &param.UserID,
-		Status:      storageEntity.StorageOutboxStatusPending,
-
+		EventID:              eventID,
+		ZoneID:               bucket.ZoneID,
+		JobTopic:             "storage.bucket.delete",
+		Payload:              payloadBytes,
+		OwnerID:              bucket.TenantID,
+		OwnerType:            storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:          &param.UserID,
+		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
-		ResourceID:           param.BucketID.String(),
-		ResourceName:         param.BucketName,
+		ResourceID:           bucket.ID.String(),
+		ResourceName:         bucket.Name,
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,
 	}
 
-	// [COMMENT]: 4. Thực thi xóa DB và ghi outbox nguyên tử
-	err = s.repo.Delete(ctx, param.BucketID, outbox)
+	err = s.repo.Delete(ctx, param.BucketID, param.WorkspaceID, param.TenantID, param.UserID, param.ZoneID, outbox)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound

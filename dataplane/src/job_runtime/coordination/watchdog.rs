@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use futures_util::{stream, StreamExt};
@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::infra::kafka::KafkaDelivery;
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
-use crate::job_runtime::completion::{CompletionRequest, JobExecutionResult};
-use crate::job_runtime::model::ValidatedJob;
+use crate::job_runtime::completion::{build_retry_request, RetryRequest};
+use crate::job_runtime::model::{QueuedJob, ValidatedJob};
 use crate::observability::logger::Logger;
 
 const PHASE_PREPARING: u8 = 0;
@@ -18,7 +18,7 @@ const PHASE_EXECUTING: u8 = 1;
 const PHASE_COMPLETING: u8 = 2;
 const MAX_CONCURRENT_LEASE_RENEWALS: usize = 128;
 const MAX_LEASE_RENEW_DURATION: Duration = Duration::from_secs(3);
-const COMPLETION_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const RECOVERY_QUEUE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 struct ExecutionDeadline {
     started_at: Mutex<Option<Instant>>,
@@ -101,6 +101,7 @@ impl TrackedJobExecution {
 }
 
 pub struct JobExecutionLeaseRegistry {
+    restart_requested: AtomicBool,
     locks: RwLock<HashMap<Arc<str>, RegisteredLock>>,
     next_registration_id: AtomicU64,
 }
@@ -114,9 +115,14 @@ struct RegisteredLock {
 impl JobExecutionLeaseRegistry {
     pub fn new() -> Self {
         Self {
+            restart_requested: AtomicBool::new(false),
             locks: RwLock::new(HashMap::new()),
             next_registration_id: AtomicU64::new(1),
         }
+    }
+
+    pub fn request_process_restart(&self) {
+        self.restart_requested.store(true, Ordering::Release);
     }
 
     pub fn register_job_execution(
@@ -298,12 +304,14 @@ impl JobExecutionLeaseRegistry {
     }
 }
 
-fn flush_timeout_completions(
-    completion_tx: &tokio::sync::mpsc::Sender<CompletionRequest>,
-    pending: &mut VecDeque<CompletionRequest>,
+// Non-blocking flushing is required for correctness: recovery backpressure must
+// never stop the same watchdog from renewing other executions' leases.
+fn flush_timeout_retries(
+    retry_tx: &tokio::sync::mpsc::Sender<RetryRequest>,
+    pending: &mut VecDeque<RetryRequest>,
 ) -> bool {
     while let Some(request) = pending.pop_front() {
-        match completion_tx.try_send(request) {
+        match retry_tx.try_send(request) {
             Ok(()) => {}
             Err(TrySendError::Full(request)) => {
                 pending.push_front(request);
@@ -324,13 +332,13 @@ pub async fn run_execution_watchdog(
     ttl_secs: u64,
     interval_duration: Duration,
     shutdown: CancellationToken,
-    completion_tx: tokio::sync::mpsc::Sender<CompletionRequest>,
-    max_pending_completions: usize,
+    retry_tx: tokio::sync::mpsc::Sender<RetryRequest>,
+    max_pending_retries: usize,
 ) {
     let zone_id = crate::config::Config::get_global().zone_id.clone();
     let mut shutdown_requested = false;
-    let mut pending_completions = VecDeque::new();
-    let mut completion_reporter_closed_logged = false;
+    let mut pending_retries = VecDeque::new();
+    let mut retry_scheduler_closed_logged = false;
     let scan_interval = interval_duration.max(Duration::from_millis(100));
     let mut next_scan = Instant::now();
     Logger::sys_info(
@@ -339,34 +347,38 @@ pub async fn run_execution_watchdog(
     );
 
     loop {
-        let completion_channel_open =
-            flush_timeout_completions(&completion_tx, &mut pending_completions);
-        crate::observability::metrics::WorkerControlMetrics::record_watchdog_completion_queue_depth(
+        if registry.restart_requested.load(Ordering::Acquire) {
+            // This is a supervised critical task. Returning makes the process
+            // restart instead of leaving an uncommitted offset stranded.
+            return;
+        }
+        let retry_channel_open = flush_timeout_retries(&retry_tx, &mut pending_retries);
+        crate::observability::metrics::WorkerControlMetrics::record_watchdog_recovery_queue_depth(
             &zone_id,
-            pending_completions.len(),
+            pending_retries.len(),
         );
-        if !completion_channel_open && !completion_reporter_closed_logged {
-            completion_reporter_closed_logged = true;
+        if !retry_channel_open && !retry_scheduler_closed_logged {
+            retry_scheduler_closed_logged = true;
             Logger::sys_error(
                 "job.coordination.watchdog",
-                "Completion reporter is unavailable; watchdog is retaining timeout reports and sources remain unsettled",
-                "WATCHDOG_COMPLETION_REPORTER_CLOSED",
+                "Retry scheduler is unavailable; watchdog is retaining timeout recovery and sources remain unsettled",
+                "WATCHDOG_RETRY_SCHEDULER_CLOSED",
             );
         }
-        if shutdown_requested && !completion_channel_open {
+        if shutdown_requested && !retry_channel_open {
             // The critical-task supervisor is already terminating the process.
-            // Dropping in-memory reports is safe because their Kafka sources
+            // Dropping in-memory retries is safe because their Kafka sources
             // remain uncommitted and will replay after restart.
-            pending_completions.clear();
+            pending_retries.clear();
         }
 
         let now = Instant::now();
         if now < next_scan {
             let until_scan = next_scan.saturating_duration_since(now);
-            let wait_duration = if pending_completions.is_empty() {
+            let wait_duration = if pending_retries.is_empty() {
                 until_scan
             } else {
-                until_scan.min(COMPLETION_RETRY_INTERVAL)
+                until_scan.min(RECOVERY_QUEUE_RETRY_INTERVAL)
             };
             if shutdown_requested {
                 tokio::time::sleep(wait_duration).await;
@@ -386,7 +398,7 @@ pub async fn run_execution_watchdog(
         next_scan = now + scan_interval;
 
         let tracked = registry.snapshot();
-        if shutdown_requested && tracked.is_empty() && pending_completions.is_empty() {
+        if shutdown_requested && tracked.is_empty() && pending_retries.is_empty() {
             Logger::sys_info(
                 "job.coordination.watchdog",
                 "Execution watchdog drained all registered jobs and stopped",
@@ -415,46 +427,70 @@ pub async fn run_execution_watchdog(
                     &zone_id,
                     "execution_timeout",
                 );
-                let request = CompletionRequest {
+                // A deadline cancels only the local future, not an already
+                // accepted provider task. It is never evidence of failure.
+                // Recover the exact command/attempt (including protected bytes
+                // and delivery epoch), just like lease-contention redelivery.
+                // Timeout recovery does not consume the business retry budget.
+                let queued = QueuedJob {
                     job: info.job.clone(),
                     delivery: info.delivery.clone(),
-                    result: JobExecutionResult::timeout(&info.job),
                 };
-                match completion_tx.try_send(request) {
+                let delay = Duration::from_millis(
+                    ttl_secs
+                        .saturating_mul(1_000)
+                        .saturating_add(rand::random::<u64>() % 2_000),
+                );
+                let request = build_retry_request(
+                    &queued,
+                    info.job.attempt,
+                    delay,
+                    "JOB_EXECUTION_OUTCOME_UNKNOWN",
+                );
+                Logger::sys_warn(
+                    "job.coordination.watchdog",
+                    &format!("Deadline reached for job {}; replaying the same operation without a terminal result", info.job.job_id),
+                    "JOB_EXECUTION_OUTCOME_UNKNOWN",
+                );
+                match retry_tx.try_send(request) {
                     Ok(()) => {}
                     Err(TrySendError::Full(request))
-                        if pending_completions.len() < max_pending_completions =>
+                        if pending_retries.len() < max_pending_retries =>
                     {
-                        // Renewal must not wait behind Kafka result latency, but
-                        // a full reporter queue is not permission to lose the
-                        // terminal record. Keep bounded ownership and retry.
-                        pending_completions.push_back(request);
+                        // Renewal must not wait behind Kafka retry latency.
+                        // Source stays unacknowledged until retry is durable.
+                        pending_retries.push_back(request);
                     }
                     Err(TrySendError::Full(_)) => {
                         crate::observability::metrics::WorkerControlMetrics::record_watchdog_event(
                             &zone_id,
-                            "completion_overflow",
+                            "recovery_overflow",
                         );
                         Logger::sys_error(
                             "job.coordination.watchdog",
                             &format!(
-                                "Timeout completion overflow for job {}; source remains unsettled for replay",
+                                "Timeout recovery overflow for job {}; source remains unsettled for replay",
                                 info.job.job_id
                             ),
-                            "WATCHDOG_COMPLETION_QUEUE_OVERFLOW",
+                            "WATCHDOG_RECOVERY_QUEUE_OVERFLOW",
                         );
+                        // Exit this critical task so its supervisor restarts
+                        // the process and Kafka replays the uncommitted source.
+                        // Merely logging here could strand it in this assignment.
+                        return;
                     }
                     Err(TrySendError::Closed(request))
-                        if pending_completions.len() < max_pending_completions =>
+                        if pending_retries.len() < max_pending_retries =>
                     {
-                        pending_completions.push_back(request);
+                        pending_retries.push_back(request);
                     }
                     Err(TrySendError::Closed(_)) => {
                         Logger::sys_error(
                             "job.coordination.watchdog",
-                            "Timeout completion reporter is closed and retention is full; source remains unsettled for replay",
-                            "WATCHDOG_COMPLETION_REPORTER_CLOSED",
+                            "Timeout retry scheduler is closed and retention is full; source remains unsettled for replay",
+                            "WATCHDOG_RETRY_SCHEDULER_CLOSED",
                         );
+                        return;
                     }
                 }
             } else {
@@ -469,98 +505,64 @@ pub async fn run_execution_watchdog(
                 .checked_div(3)
                 .unwrap_or(MAX_LEASE_RENEW_DURATION),
         );
-        stream::iter(renewals)
-            .for_each_concurrent(
-                MAX_CONCURRENT_LEASE_RENEWALS,
-                |(lock_key, registration_id, info)| {
+        let lost = stream::iter(renewals)
+            .map(|(lock_key, registration_id, info)| {
                 let zone_kv = zone_kv.clone();
                 let registry = registry.clone();
-                let zone_id = zone_id.clone();
                 async move {
-                    match tokio::time::timeout(
+                    let renewal = tokio::time::timeout(
                         renew_timeout,
                         zone_kv.renew_lease(&info.lease, Duration::from_secs(ttl_secs)),
                     )
-                    .await
-                    {
-                        Ok(Ok(true)) => {}
-                        Ok(Ok(false)) => {
-                            if registry.remove_if_current(&lock_key, registration_id) {
-                                info.cancellation.cancel();
-                                crate::observability::metrics::WorkerControlMetrics::record_watchdog_event(
-                                    &zone_id,
-                                    "lease_lost",
-                                );
-                                Logger::sys_error(
-                                    "job.coordination.watchdog",
-                                    &format!(
-                                        "Lost fenced Zone KV lease for job {}; execution cancelled and source left unsettled",
-                                        info.job.job_id
-                                    ),
-                                    "ZONE_KV_LEASE_LOST",
-                                );
-                            }
-                        }
-                        Ok(Err(error)) => {
-                            if registry.remove_if_current(&lock_key, registration_id) {
-                                // Continuing after an unknown renewal result could
-                                // cross the fencing boundary and duplicate effects.
-                                info.cancellation.cancel();
-                                crate::observability::metrics::WorkerControlMetrics::record_watchdog_event(
-                                    &zone_id,
-                                    "lease_renew_error",
-                                );
-                                Logger::sys_error(
-                                    "job.coordination.watchdog",
-                                    &format!(
-                                        "Could not renew fenced lease for job {}: {error}; execution cancelled",
-                                        info.job.job_id
-                                    ),
-                                    "ZONE_KV_LEASE_RENEW_FAILED",
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            if registry.remove_if_current(&lock_key, registration_id) {
-                                // An unknown CAS outcome cannot safely extend
-                                // execution beyond the current fencing window.
-                                info.cancellation.cancel();
-                                crate::observability::metrics::WorkerControlMetrics::record_watchdog_event(
-                                    &zone_id,
-                                    "lease_renew_timeout",
-                                );
-                                Logger::sys_error(
-                                    "job.coordination.watchdog",
-                                    &format!(
-                                        "Fenced lease renewal timed out for job {}; execution cancelled",
-                                        info.job.job_id
-                                    ),
-                                    "ZONE_KV_LEASE_RENEW_TIMEOUT",
-                                );
-                            }
-                        }
+                    .await;
+                    if matches!(renewal, Ok(Ok(true))) {
+                        return None;
                     }
+                    if !registry.remove_if_current(&lock_key, registration_id) {
+                        return None;
+                    }
+                    info.cancellation.cancel();
+                    Some(info)
                 }
-            },
-            )
+            })
+            .buffer_unordered(MAX_CONCURRENT_LEASE_RENEWALS)
+            .collect::<Vec<_>>()
             .await;
+        for info in lost.into_iter().flatten() {
+            Logger::sys_warn(
+                "job.coordination.watchdog",
+                &format!(
+                    "Lease renewal lost for {}; replaying the fenced operation",
+                    info.job.job_id
+                ),
+                "ZONE_KV_LEASE_RENEW_UNKNOWN",
+            );
+            let request = build_retry_request(
+                &QueuedJob {
+                    job: info.job.clone(),
+                    delivery: info.delivery.clone(),
+                },
+                info.job.attempt,
+                Duration::from_millis(
+                    ttl_secs
+                        .saturating_mul(1_000)
+                        .saturating_add(rand::random::<u64>() % 2_000),
+                ),
+                "JOB_LEASE_OUTCOME_UNKNOWN",
+            );
+            match retry_tx.try_send(request) {
+                Ok(()) => {}
+                Err(TrySendError::Full(request)) if pending_retries.len() < max_pending_retries => {
+                    pending_retries.push_back(request);
+                }
+                // No durable recovery path remains. The critical task supervisor
+                // restarts the process; original Kafka offsets are not committed.
+                Err(_) => return,
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::ExecutionDeadline;
-    use tokio::time::{Duration, Instant};
-
-    #[test]
-    fn preparation_and_completion_are_not_execution_timeouts() {
-        let deadline = ExecutionDeadline::preparing(Duration::from_secs(1));
-        assert!(!deadline.timed_out(Instant::now() + Duration::from_secs(10)));
-
-        assert!(deadline.begin_execution());
-        assert!(deadline.timed_out(Instant::now() + Duration::from_secs(2)));
-
-        deadline.begin_completion();
-        assert!(!deadline.timed_out(Instant::now() + Duration::from_secs(10)));
-    }
-}
+#[path = "../test/watchdog.rs"]
+mod tests;

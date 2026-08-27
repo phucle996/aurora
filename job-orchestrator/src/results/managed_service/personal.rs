@@ -16,7 +16,7 @@ pub async fn apply_result(
                     operation.target_revision_id, operation.blueprint_revision_id, operation.zone_id, \
                     operation.template_bundle_sha256, operation.component_contract_sha256, \
                     operation.input_sha256, operation.desired_spec_sha256, \
-                    instance.generation, instance.zone_id, instance.pending_revision_id \
+                    instance.generation, instance.zone_id, instance.pending_revision_id, instance.state::text \
              FROM managed_service.managed_service_outbox_records outbox \
              JOIN managed_service.personal_managed_service_operations operation \
                ON operation.current_command_event_id = outbox.event_id \
@@ -53,6 +53,7 @@ pub async fn apply_result(
     let instance_generation: i64 = authority.get(18);
     let instance_zone_id: uuid::Uuid = authority.get(19);
     let pending_revision_id: Option<uuid::Uuid> = authority.get(20);
+    let instance_state: String = authority.get(21);
     if owner_type != "PERSONAL"
         || !matches!(outbox_status.as_str(), "PENDING" | "PROCESSING")
         || !matches!(
@@ -65,6 +66,8 @@ pub async fn apply_result(
         || operation_generation != result.generation
         || operation_epoch != outbox_epoch
         || operation_epoch != result.delivery_epoch
+        // DP owns automatic retries within this delivery epoch. The database
+        // records the last accepted result, not every intermediate execution.
         || operation_attempt > result.attempt
         || outbox_zone_id != result.zone_id
         || operation_zone_id != result.zone_id
@@ -77,6 +80,12 @@ pub async fn apply_result(
         || desired_spec_hash != result.desired_spec_hash
         || (matches!(operation_kind.as_str(), "create" | "resize")
             && pending_revision_id != Some(result.instance_revision_id))
+        || match operation_kind.as_str() {
+            "create" => instance_state != "provisioning",
+            "resize" => instance_state != "updating",
+            "delete" => instance_state != "deleting",
+            _ => true,
+        }
     {
         tx.rollback().await?;
         return Ok(None);
@@ -92,11 +101,10 @@ pub async fn apply_result(
                 tx.query_opt(
                     "WITH promoted AS ( \
                          UPDATE managed_service.personal_managed_service_instances \
-                         SET state = 'active', observed_state = 'ready', \
-                             observed_state_version = observed_state_version + 1, observed_output = '{}'::jsonb, \
-                             observed_at = NOW(), active_revision_id = pending_revision_id, \
+                         SET state = 'active', active_revision_id = pending_revision_id, \
                              pending_revision_id = NULL, updated_at = NOW() \
                          WHERE id = $1 AND generation = $2 AND pending_revision_id IS NOT NULL \
+                           AND (($7 = 'create' AND state = 'provisioning') OR ($7 = 'resize' AND state = 'updating')) \
                          RETURNING id \
                      ), updated_operation AS ( \
                          UPDATE managed_service.personal_managed_service_operations \
@@ -115,7 +123,7 @@ pub async fn apply_result(
                        AND outbox.status IN ('PENDING','PROCESSING') \
                        AND EXISTS (SELECT 1 FROM updated_operation) \
                      RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.resource_id, $5::uuid",
-                    &[&instance_id, &instance_generation, &attempt, &operation_id, &job_id, &job_topic],
+                    &[&instance_id, &instance_generation, &attempt, &operation_id, &job_id, &job_topic, &operation_kind],
                 )
                 .await?
             }
@@ -133,7 +141,7 @@ pub async fn apply_result(
                          WHERE instance_id = $1 AND EXISTS (SELECT 1 FROM fenced) RETURNING id \
                      ), deleted_instance AS ( \
                          DELETE FROM managed_service.personal_managed_service_instances \
-                         WHERE id = $1 AND EXISTS (SELECT 1 FROM fenced) \
+                         WHERE id = $1 AND state = 'deleting' AND EXISTS (SELECT 1 FROM fenced) \
                          RETURNING id \
                      ), updated_operation AS ( \
                          UPDATE managed_service.personal_managed_service_operations \
@@ -162,16 +170,20 @@ pub async fn apply_result(
         tx.query_opt(
             "WITH updated_instance AS ( \
                  UPDATE managed_service.personal_managed_service_instances \
-                 SET observed_state = $4::managed_service.managed_service_observed_state, observed_state_version = observed_state_version + 1, \
-                     observed_output = '{}'::jsonb, observed_at = NOW(), \
+                 SET state = CASE WHEN $3 = 'resize' THEN 'active'::managed_service.managed_service_instance_state ELSE state END, \
                      pending_revision_id = CASE WHEN $3 = 'resize' THEN NULL ELSE pending_revision_id END, \
-                     updated_at = NOW() WHERE id = $1 RETURNING id \
+                     updated_at = NOW() \
+                 WHERE id = $1 AND generation = $2 \
+                   AND (($3 = 'create' AND state = 'provisioning') \
+                     OR ($3 = 'resize' AND state = 'updating') \
+                     OR ($3 = 'delete' AND state = 'deleting')) \
+                 RETURNING id \
              ), updated_operation AS ( \
                  UPDATE managed_service.personal_managed_service_operations \
                  SET state = 'terminal_failed', attempt = $5, completed_at = NOW(), \
                      last_error_code = $6, last_sanitized_error = LEFT($7, 1024), \
                      status_version = status_version + 1, updated_at = NOW() \
-                 WHERE id = $2 AND current_command_event_id = $8 \
+                 WHERE id = $4 AND current_command_event_id = $8 \
                    AND state IN ('accepted','dispatching','running','retrying') \
                    AND EXISTS (SELECT 1 FROM updated_instance) RETURNING id \
              ) \
@@ -184,9 +196,9 @@ pub async fn apply_result(
              RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.resource_id, $8::uuid",
             &[
                 &instance_id,
-                &operation_id,
+                &instance_generation,
                 &operation_kind,
-                &result.observed_state,
+                &operation_id,
                 &attempt,
                 &result.error_code,
                 &result.sanitized_message,

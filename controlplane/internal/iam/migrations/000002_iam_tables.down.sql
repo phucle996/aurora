@@ -1,4 +1,5 @@
-DROP TABLE IF EXISTS billing_outbox_records;
+DROP TABLE IF EXISTS lifecycle_fact_outbox_records;
+DROP TABLE IF EXISTS device_runtime_revoke_outbox_records;
 DROP TABLE IF EXISTS external_identities;
 DROP TABLE IF EXISTS admin_devices;
 DROP TABLE IF EXISTS tenant_invitations;

@@ -15,3 +15,10 @@ type UpdateMyProfileRequest struct {
 type ResetUserPasswordRequest struct {
 	Password string `json:"password"`
 }
+
+// UpdateUserStatusRequest keeps the critical mutation body-bound. Session proof
+// signs the exact request body, so status must not be carried in an unsigned
+// query string.
+type UpdateUserStatusRequest struct {
+	Status string `json:"status"`
+}

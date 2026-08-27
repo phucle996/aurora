@@ -30,7 +30,7 @@ pub async fn resolve_and_verify_tenant(
     client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,
-) -> Result<(), Result<Response<CheckResponse>, Status>> {
+) -> Result<(), &'static str> {
     use crate::gateway::ext_authz::extract_cookie_value;
 
     // [COMMENT]: 1. Lấy cookie/header tenant_id từ Client
@@ -55,9 +55,7 @@ pub async fn resolve_and_verify_tenant(
                     req_tenant_id, claims_tenant_id
                 ),
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Tenant unavailable"),
-            ))));
+            return Err("Tenant unavailable");
         }
 
         // [COMMENT]: 3. Nếu có tenant_id không phải "platform", validate UUID format
@@ -75,9 +73,7 @@ pub async fn resolve_and_verify_tenant(
                     req_tenant_id
                 ),
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Tenant unavailable"),
-            ))));
+            return Err("Tenant unavailable");
         }
     }
 
@@ -394,15 +390,18 @@ pub async fn handle_tenant_switch(
     };
 
     if let Err(error) = session_mgr
-        .register_session(RegisterSessionCommand {
-            zone_id: claims.zone_id.as_deref().unwrap_or("global"),
-            tenant_id: &tenant_id,
-            user_id: &claims.uid,
-            access_key: &access_key,
-            access_secret_hash: &source_session.ash,
-            device_id: &source_session.tdid,
-            client_proof_public_key: &source_session.client_proof_public_key,
-        })
+        .register_session(
+            RegisterSessionCommand {
+                zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+                tenant_id: &tenant_id,
+                user_id: &claims.uid,
+                access_key: &access_key,
+                access_secret_hash: &source_session.ash,
+                device_id: &source_session.tdid,
+                client_proof_public_key: &source_session.client_proof_public_key,
+            },
+            shared_redis.as_ref(),
+        )
         .await
     {
         Logger::sys_error(
@@ -495,7 +494,7 @@ pub async fn handle_personal_switch(
             .ok_or("Missing access_token cookie")?;
         let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
-        let mut claims = token_mgr
+        let claims = token_mgr
             .verify_token(&jwt_token)
             .await
             .map_err(|_| "Invalid access_token")?;
@@ -597,15 +596,18 @@ pub async fn handle_personal_switch(
         }
     };
     if let Err(error) = session_mgr
-        .register_session(RegisterSessionCommand {
-            zone_id: claims.zone_id.as_deref().unwrap_or("global"),
-            tenant_id: "platform",
-            user_id: &claims.uid,
-            access_key: &access_key,
-            access_secret_hash: &source_session.ash,
-            device_id: &source_session.tdid,
-            client_proof_public_key: &source_session.client_proof_public_key,
-        })
+        .register_session(
+            RegisterSessionCommand {
+                zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+                tenant_id: "platform",
+                user_id: &claims.uid,
+                access_key: &access_key,
+                access_secret_hash: &source_session.ash,
+                device_id: &source_session.tdid,
+                client_proof_public_key: &source_session.client_proof_public_key,
+            },
+            shared_redis.as_ref(),
+        )
         .await
     {
         Logger::sys_error(
@@ -633,7 +635,7 @@ pub async fn handle_personal_switch(
     builder.set_body(")]}',\n".to_string() + &body);
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
             COOKIE_ACCESS_TOKEN, new_jwt, config.session_ttl_secs, domain
         ),
@@ -642,7 +644,7 @@ pub async fn handle_personal_switch(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
             COOKIE_TENANT_ID, domain
         ),
@@ -651,7 +653,7 @@ pub async fn handle_personal_switch(
     );
     builder.add_header(
         "set-cookie",
-        &format!(
+        format!(
             "{}=; Path=/; Secure; SameSite=Lax; Max-Age=0{}",
             COOKIE_TENANT_DOMAIN, domain
         ),

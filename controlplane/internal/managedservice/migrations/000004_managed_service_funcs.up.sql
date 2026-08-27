@@ -139,3 +139,16 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+CREATE OR REPLACE FUNCTION require_managed_service_instance_deleting_before_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF OLD.state <> 'deleting' THEN
+        RAISE EXCEPTION 'managed service instance % cannot be deleted from state %', OLD.id, OLD.state
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN OLD;
+END;
+$$;

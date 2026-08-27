@@ -9,3 +9,7 @@ pub mod storage;
 pub mod worker;
 
 pub use worker::ResultWorker;
+
+#[cfg(test)]
+#[path = "test/settlement.rs"]
+mod settlement_tests;

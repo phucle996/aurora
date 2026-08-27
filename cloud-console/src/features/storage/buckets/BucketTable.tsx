@@ -28,10 +28,12 @@ interface BucketTableProps {
   onSort: (key: string) => void;
 }
 
+const BYTES_PER_DECIMAL_GB = 1_000_000_000;
+
 // [COMMENT]: Chuyển đổi dung lượng bytes sang đơn vị GB dễ đọc
 function formatQuota(bytes: number): string {
   if (bytes === 0) return "Unlimited";
-  const gb = bytes / (1024 * 1024 * 1024);
+  const gb = bytes / BYTES_PER_DECIMAL_GB;
   return `${gb.toFixed(0)} GB`;
 }
 

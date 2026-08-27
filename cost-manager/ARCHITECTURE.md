@@ -1,7 +1,7 @@
 # Cost Manager Architecture
 
 Cost Manager owns Billing PostgreSQL, payment-intent settlement, wallet and
-ledger mutations, Tier pricing, and the storage-usage billing engine. IAM owns
+ledger mutations, controlled PAYG Pricing Schedules, and the storage-usage billing engine. IAM owns
 identity, permissions and the Cloud session; ACR is the only HTTP security
 boundary for Cost Manager.
 
@@ -13,7 +13,7 @@ Cloud / Cost Console
                     |                                      +--> Billing PostgreSQL
                     |                                      |     wallets, intents,
                     |                                      |     immutable ledger,
-                    |                                      |     tier catalog/outbox
+                    |                                      |     schedule catalog/outbox
                     v                                      |
              Auth-State Redis                              v
              Trinity / Billing Alias                 Shared Redis
@@ -31,10 +31,11 @@ Cloud / Cost Console
   verified personal/tenant owner branch, strips client identity headers and
   validates one-time critical proof. It never reads Billing tables.
 - **Cost API** owns HTTP validation, exact Billing authorization, payment
-  intent/referral/wallet/Tier transactions and provider-webhook verification.
-- **Billing PostgreSQL** is durable SoT for money, Tier versions, inboxes and
+  intent/referral/wallet/schedule transactions and provider-webhook verification.
+- **Billing PostgreSQL** is durable SoT for money, Pricing Schedule versions,
+  Charge Kind Registry, inboxes and
   resource ownership projections. Redis never replaces a money transaction.
-- **Cost Engine** pins immutable Tier versions for each run, resolves ownership
+- **Cost Engine** pins immutable Pricing Schedule versions for each run, resolves ownership
   at the metering timestamp, and debits wallet plus immutable ledger atomically.
 - **Shared Redis** carries at-least-once wallet-provision and ownership events;
   PubSub pricing messages are latency hints only. Durable inbox/outbox and
@@ -49,7 +50,15 @@ IAM activation/tenant creation -> owner-specific outbox -> Shared Redis Stream
 Zone hourly usage report -> Job Orchestrator Kafka relay -> Shared Redis
   -> Cost Engine fenced settlement -> wallet + ledger transaction
 
-Tier version transaction + pricing outbox -> relay -> Redis PubSub
+Pending wallet top-up -> Storage pending-activation reconciliation
+  -> historical pinned-line settlement -> wallet admission outbox
+
+Wallet transition + admission outbox -> Cost target fan-out
+  -> Shared Redis durable stream -> Controlplane owner/resource projection
+  -> per-Zone Kafka topic -> Zone Control admission KV
+  -> Control/Public authorizers fail-closed before billable transfer
+
+Pricing Schedule version transaction + pricing outbox -> relay -> Redis PubSub
   -> Engine checksum-validated preload -> safe-boundary COW activation
 ```
 
@@ -72,11 +81,15 @@ The canonical input is
 Zone ClickHouse is local journal/aggregation state and does not choose a payer.
 JO validates size, window, identity, correction lineage and SHA-256 before a
 report reaches Redis. The Engine validates again, opens one pricing run for
-each of `NETWORK_IN`, `NETWORK_OUT` and `STORAGE`, resolves ownership in
+each nonzero `storage.network_in.byte`, `storage.network_out.byte` and
+`storage.capacity.gb_hour` `BYTE_HOUR` line, resolves ownership in
 Billing PostgreSQL, and atomically mutates wallet plus immutable ledger.
 Replays are idempotent and ACK/XDEL occurs only after commit and an intact
 billing fence. Corrections are quarantined as `DEAD` until the signed
-adjustment policy is approved.
+adjustment policy is approved. A pending wallet is never treated as free:
+historical lines remain `UNRATED` until the Storage-owned reconciliation worker
+settles them at their pinned schedule version, then emits a versioned admission
+transition.
 
 Each public or ACR-local HTTP workflow is documented independently in
 [`god_view/billing/`](../god_view/billing/). Runtime contracts

@@ -290,6 +290,23 @@ impl JobExecutionRuntime {
                 ),
             );
 
+            if job.reconcile_generation.is_none() {
+                match crate::job_runtime::completion_receipt::load(&self.zone_kv, &job).await {
+                    Ok(Some(result)) => {
+                        let completion = complete_terminal(&self.kafka, &job, &delivery, &result).await;
+                        if !completion.source_settled {
+                            self.registry.request_process_restart();
+                        }
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.schedule_retry(&leased.queued, job.attempt, Duration::from_secs(5),
+                            "JOB_RECEIPT_READ_FAILED", &error).await;
+                        return;
+                    }
+                }
+            }
             if job.reconcile_generation.is_none() && job.source_domain != "MANAGED_SERVICE" {
                 let processing = JobExecutionResult::processing(&job);
                 if let Err(error) = publish_result(&self.kafka, &processing).await {
@@ -392,6 +409,7 @@ impl JobExecutionRuntime {
                         "JOB_EXECUTOR_PANICKED",
                     );
                     finish_current_span("JOB_EXECUTOR_PANICKED", false, false);
+                    self.registry.request_process_restart();
                     return;
                 }
             };
@@ -399,6 +417,12 @@ impl JobExecutionRuntime {
             let mut result = JobExecutionResult::from_executor(&job, executor_result);
 
             if result.status == CompletionStatus::Retryable {
+                if result.error_code.as_deref() == Some("JOB_OUTCOME_UNKNOWN") {
+                    self.schedule_retry(&leased.queued, job.attempt,
+                        Duration::from_millis(30_000 + rand::random::<u64>() % 5_000),
+                        "JOB_OUTCOME_UNKNOWN", &result.message).await;
+                    return;
+                }
                 let next_attempt = job.attempt.saturating_add(1);
                 if next_attempt >= crate::config::Config::get_global().kafka_max_job_attempts {
                     result.mark_retry_exhausted();
@@ -441,8 +465,20 @@ impl JobExecutionRuntime {
                 }
             }
 
+            if result.status.is_terminal() && job.reconcile_generation.is_none() {
+                if let Err(error) = crate::job_runtime::completion_receipt::save(&self.zone_kv, &job, &result).await {
+                    self.schedule_retry(&leased.queued, job.attempt, Duration::from_secs(5),
+                        "JOB_RECEIPT_WRITE_FAILED", &error).await;
+                    return;
+                }
+            }
             let completion =
                 complete_terminal(&self.kafka, &job, &delivery, &result).await;
+            if !completion.source_settled {
+                // A durable terminal receipt makes replay publish-only. If even
+                // settlement fails, never leave this assignment silently stuck.
+                self.registry.request_process_restart();
+            }
             crate::observability::metrics::JobExecutionMetrics::record_attempt(
                 &self.zone_id,
                 &job.job_topic,
@@ -515,6 +551,7 @@ impl JobExecutionRuntime {
                 true
             }
             Err(queue_error) => {
+                self.registry.request_process_restart();
                 crate::observability::metrics::WorkerControlMetrics::record_job_runtime_event(
                     &self.zone_id,
                     "retry_queue_unavailable",

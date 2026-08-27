@@ -7,7 +7,7 @@ FROM unnest(ARRAY[
     'users', 'user_profiles', 'devices', 'refresh_tokens',
     'external_identities', 'mfa_settings', 'mfa_recovery_codes',
     'permissions', 'platform_roles', 'tenant_roles', 'user_role',
-    'membership_role', 'tenant_invitations', 'billing_outbox_records'
+    'membership_role', 'tenant_invitations', 'lifecycle_fact_outbox_records'
 ]) AS object_name
 ORDER BY object_name;
 

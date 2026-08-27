@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package billing.pricing.v1;
+
+option go_package = "cost-manager/api/internal/genproto/billing/pricing/v1;pricingv1";
+
+// PricingScheduleVersionPublished carries only immutable identity/version;
+// Engine loads the complete schedule snapshot from PostgreSQL.
+message PricingScheduleVersionPublished {
+  string event_id = 1;
+  string pricing_schedule_id = 2;
+  string pricing_schedule_version_id = 3;
+  int32 version_number = 4;
+  string charge_kind_code = 5;
+  int64 effective_from_unix_ms = 6;
+  string checksum = 7;
+  int64 occurred_at_unix_ms = 8;
+  reserved 9, 10;
+  reserved "scope_type", "zone_id";
+}

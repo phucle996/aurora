@@ -322,7 +322,12 @@ pub async fn run(
     renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut tasks = JoinSet::<Result<(), &'static str>>::new();
 
+    generation_fence.mark_running();
     loop {
+        if generation_fence.is_draining() && tasks.is_empty() {
+            generation_fence.mark_drained();
+            break;
+        }
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = renew.tick() => {
@@ -343,7 +348,7 @@ pub async fn run(
                     }
                 }
             }
-            next = messages.next(), if tasks.len() < context.max_slot_inflight => {
+            next = messages.next(), if !generation_fence.is_draining() && tasks.len() < context.max_slot_inflight => {
                 let Some(next) = next else {
                     context.write_health("ERROR", &configuration, slot, generation, &lease, "MAIL_NATS_JETSTREAM_PULL_CLOSED").await;
                     break;

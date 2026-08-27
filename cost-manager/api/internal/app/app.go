@@ -2,18 +2,19 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"cost-manager/api/infra"
 	"cost-manager/api/internal/config"
+	"cost-manager/api/internal/transport/http/handler"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -23,19 +24,22 @@ import (
 )
 
 type App struct {
-	Cfg             *config.Config
-	dbPool          *pgxpool.Pool
-	redisClient     *redis.Client
-	authRedisClient *redis.Client
-	module          *Module
+	Cfg               *config.Config
+	dbPool            *pgxpool.Pool
+	redisClient       *redis.Client
+	authRedisClient   *redis.Client
+	resourcePlanRedis redis.UniversalClient
+	module            *Module
 
-	httpServer         *http.Server
-	grpcServer         *googlegrpc.Server
-	rustCmd            *exec.Cmd
-	outboxCancel       context.CancelFunc
-	outboxDone         chan struct{}
-	pricingCacheCancel context.CancelFunc
-	pricingCacheDone   chan struct{}
+	httpServer            *http.Server
+	grpcServer            *googlegrpc.Server
+	costEngine            *costEngineProcess
+	outboxCancel          context.CancelFunc
+	outboxDone            chan struct{}
+	walletAdmissionCancel context.CancelFunc
+	walletAdmissionDone   chan struct{}
+	pricingCacheCancel    context.CancelFunc
+	pricingCacheDone      chan struct{}
 }
 
 func NewApp() *App {
@@ -50,9 +54,11 @@ func (a *App) Init() error {
 	// The embedded Engine is a separate Vault consumer. Validate its
 	// app-scoped identity before opening any database/Redis connection so a
 	// missing child credential cannot leave a partially initialized API alive.
-	if strings.TrimSpace(os.Getenv("VAULT_ENGINE_TOKEN")) == "" {
-		return fmt.Errorf("VAULT_ENGINE_TOKEN is required for the embedded Cost Engine")
+	costEngine, err := newCostEngineProcess(os.Environ())
+	if err != nil {
+		return err
 	}
+	a.costEngine = costEngine
 	vaultClient, err := infra.NewVaultClient(context.Background(), a.Cfg.Vault)
 	if err != nil {
 		return fmt.Errorf("initialize Vault client: %w", err)
@@ -80,6 +86,13 @@ func (a *App) Init() error {
 		return err
 	}
 	a.redisClient = redisClient
+	// Dedicated resource-plan connection; other workflows keep their own clients.
+	planOptions := redisClient.Options()
+	if a.Cfg.ResourcePlanRelay.Cluster {
+		a.resourcePlanRedis = redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{planOptions.Addr}, Username: planOptions.Username, Password: planOptions.Password, TLSConfig: planOptions.TLSConfig, ContextTimeoutEnabled: true})
+	} else {
+		a.resourcePlanRedis = redisClient
+	}
 
 	// [COMMENT]: Auth Redis dùng ACL riêng; Cost không có quyền truy cập session namespace.
 	authRedisClient, err := infra.ConnectRedis(context.Background(), vaultClient, infra.AuthStateConnectionPath)
@@ -90,7 +103,7 @@ func (a *App) Init() error {
 
 	// 5. Initialize Modules. Ownership is Central-internal and uses Shared Redis;
 	// Cost Manager no longer receives a cross-boundary NATS credential.
-	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment)
+	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment, a.resourcePlanRedis, a.Cfg.ResourcePlanRelay)
 	if err != nil {
 		return err
 	}
@@ -130,43 +143,101 @@ func (a *App) Start() error {
 		}
 	}
 
-	// 1. Outbox relay cho Pricing updates
+	// Each Cost workflow owns its own durable relay.
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	a.outboxCancel = outboxCancel
 	a.outboxDone = make(chan struct{})
-	if a.module != nil && a.module.PricingOutboxRelay != nil {
+	go func() {
+		defer close(a.outboxDone)
+		var workers sync.WaitGroup
+		if a.module != nil && a.module.StoragePricingService != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); a.module.StoragePricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		if a.module != nil && a.module.HypervisorPricingService != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); a.module.HypervisorPricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		if a.module != nil && a.module.HypervisorResourcePlanService != nil {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				a.module.HypervisorResourcePlanService.RunHypervisorResourcePlanOutboxRelay(outboxCtx)
+			}()
+		}
+		if a.module != nil && a.module.MailPricingService != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); a.module.MailPricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		workers.Wait()
+	}()
+
+	// Wallet admission relay publishes only committed, versioned wallet
+	// transitions. Billing PostgreSQL remains the replay authority.
+	walletAdmissionCtx, walletAdmissionCancel := context.WithCancel(context.Background())
+	a.walletAdmissionCancel = walletAdmissionCancel
+	a.walletAdmissionDone = make(chan struct{})
+	if a.module != nil && a.module.WalletAdmissionOutboxRelay != nil {
 		go func() {
-			defer close(a.outboxDone)
-			a.module.PricingOutboxRelay.Run(outboxCtx)
+			defer close(a.walletAdmissionDone)
+			a.module.WalletAdmissionOutboxRelay.Run(walletAdmissionCtx)
 		}()
 	} else {
-		close(a.outboxDone)
+		close(a.walletAdmissionDone)
 	}
 
 	// Pricing cache invalidation is a best-effort Pub/Sub hint; TTL/cold-start remains the recovery path.
 	pricingCacheCtx, pricingCacheCancel := context.WithCancel(context.Background())
 	a.pricingCacheCancel = pricingCacheCancel
 	a.pricingCacheDone = make(chan struct{})
-	if a.module != nil && a.module.TierService != nil {
-		go func() {
-			defer close(a.pricingCacheDone)
-			a.module.TierService.RunPricingCacheInvalidation(pricingCacheCtx)
-		}()
-	} else {
-		close(a.pricingCacheDone)
-	}
+	go func() {
+		defer close(a.pricingCacheDone)
+		var workers sync.WaitGroup
 
-	// 3. Start gRPC Reconciler Worker
-	if a.module != nil && a.module.ReconcilerWorker != nil {
-		a.module.ReconcilerWorker.Start(context.Background())
-	}
+		if a.module != nil && a.module.StoragePricingService != nil {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				a.module.StoragePricingService.RunPricingCacheInvalidation(pricingCacheCtx)
+			}()
+		}
 
-	// 2. Start REST HTTP Server
+		if a.module != nil && a.module.HypervisorPricingService != nil {
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				a.module.HypervisorPricingService.RunPricingCacheInvalidation(pricingCacheCtx)
+			}()
+			go func() {
+				defer workers.Done()
+				a.module.HypervisorPricingService.RunPricingSnapshotRefresh(pricingCacheCtx)
+			}()
+		}
+		if a.module != nil && a.module.MailPricingService != nil {
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				a.module.MailPricingService.RunPricingCacheInvalidation(pricingCacheCtx)
+			}()
+			go func() {
+				defer workers.Done()
+				a.module.MailPricingService.RunPricingSnapshotRefresh(pricingCacheCtx)
+			}()
+		}
+		workers.Wait()
+	}()
+
+	if err := a.costEngine.Start(); err != nil {
+		return err
+	}
+	logger.SysInfo(op, "Rust Engine child process successfully started")
+
+	// 2. Start REST HTTP Server only after the critical child process exists.
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
-
-	RegisterRoutes(router, a.module)
+	healthHandler := handler.NewHealthHandler(a.dbPool, a.redisClient, a.costEngine)
+	RegisterRoutes(router, a.module, healthHandler)
 
 	portStr := strconv.Itoa(a.Cfg.App.HTTPPort)
 	a.httpServer = &http.Server{
@@ -181,44 +252,22 @@ func (a *App) Start() error {
 		}
 	}()
 
-	// 3. Start Rust Engine child process
-	rustPath := "cost-manager-engine"
-	if _, err := exec.LookPath(rustPath); err != nil {
-		rustPath = "../engine/target/release/cost-manager-engine"
-		if _, err := os.Stat(rustPath); err != nil {
-			rustPath = "../engine/target/debug/cost-manager-engine"
-		}
-	}
-
-	a.rustCmd = exec.Command(rustPath)
-	a.rustCmd.Stdout = os.Stdout
-	a.rustCmd.Stderr = os.Stderr
-	// The embedded engine is a separate Vault consumer and must not inherit the
-	// API token. Init has already validated the child identity, so this process
-	// boundary only remaps the token and strips the parent's credential.
-	engineToken := strings.TrimSpace(os.Getenv("VAULT_ENGINE_TOKEN"))
-	filteredEnv := make([]string, 0, len(os.Environ()))
-	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "VAULT_ENGINE_TOKEN=") ||
-			strings.HasPrefix(item, "VAULT_TOKEN=") {
-			continue
-		}
-		filteredEnv = append(filteredEnv, item)
-	}
-	a.rustCmd.Env = append(filteredEnv, "VAULT_TOKEN="+engineToken)
-
-	if err := a.rustCmd.Start(); err != nil {
-		logger.SysWarn(op, "Could not start Rust Engine child process: "+err.Error())
-	} else {
-		logger.SysInfo(op, "Rust Engine child process successfully started")
-	}
 	return nil
 }
 
-func (a *App) Wait() {
+func (a *App) Wait() error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	defer signal.Stop(quit)
+	select {
+	case <-quit:
+		return nil
+	case err := <-a.costEngine.Done():
+		if err == nil {
+			return errors.New("embedded Cost Engine exited unexpectedly")
+		}
+		return fmt.Errorf("embedded Cost Engine exited unexpectedly: %w", err)
+	}
 }
 
 func (a *App) Stop() {
@@ -247,6 +296,17 @@ func (a *App) Stop() {
 		}
 	}
 
+	if a.walletAdmissionCancel != nil {
+		a.walletAdmissionCancel()
+	}
+	if a.walletAdmissionDone != nil {
+		select {
+		case <-a.walletAdmissionDone:
+		case <-time.After(3 * time.Second):
+			logger.SysWarn(op, "Timed out waiting for wallet admission relay")
+		}
+	}
+
 	if a.module != nil && a.module.ResourceOwnershipConsumer != nil {
 		a.module.ResourceOwnershipConsumer.Stop()
 	}
@@ -257,20 +317,15 @@ func (a *App) Stop() {
 		a.module.PersonalWalletProvisionConsumer.Stop()
 	}
 
-	if a.module != nil && a.module.ReconcilerWorker != nil {
-		a.module.ReconcilerWorker.Stop()
+	if a.module != nil && a.module.PersonalAuthorizationMiddleware != nil {
+		a.module.PersonalAuthorizationMiddleware.Close()
 	}
-	if a.module != nil && a.module.AuthorizationResolver != nil {
-		a.module.AuthorizationResolver.Close()
+	if a.module != nil && a.module.TenantAuthorizationMiddleware != nil {
+		a.module.TenantAuthorizationMiddleware.Close()
 	}
 
-	// Terminate Rust Engine child process
-	if a.rustCmd != nil && a.rustCmd.Process != nil {
-		logger.SysInfo(op, "Terminating Rust Engine child process...")
-		_ = a.rustCmd.Process.Signal(syscall.SIGTERM)
-		_ = a.rustCmd.Wait()
-		logger.SysInfo(op, "Rust Engine terminated.")
-	}
+	// Terminate the isolated Cost Engine lifecycle workflow.
+	a.costEngine.Stop()
 
 	// Shutdown HTTP Server
 	if a.httpServer != nil {
@@ -289,6 +344,9 @@ func (a *App) Stop() {
 		a.dbPool.Close()
 	}
 
+	if a.resourcePlanRedis != nil && a.resourcePlanRedis != a.redisClient {
+		_ = a.resourcePlanRedis.Close()
+	}
 	if a.redisClient != nil {
 		_ = a.redisClient.Close()
 	}

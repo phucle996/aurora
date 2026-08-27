@@ -1,6 +1,6 @@
 // Mail module chỉ wire bốn luồng rõ ràng:
-// Personal/Tenant × Consumer/Template. PostgreSQL giữ business data; Cache Redis chỉ giữ runtime
-// watch soft state. CDC/job-proxy đọc outbox bằng logical replication và không poll DB trong process này.
+// Personal/Tenant × Consumer/Template. PostgreSQL giữ business data; runtime read thuộc Zone
+// OTel/Victoria. CDC/job-proxy đọc outbox bằng logical replication và không poll DB trong process này.
 
 package mail
 
@@ -13,6 +13,7 @@ import (
 	mailRepoImpl "controlplane/internal/mail/repository"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailHandler "controlplane/internal/mail/transport/http/handler"
+	mailStream "controlplane/internal/mail/transport/stream"
 	"controlplane/internal/observability"
 	jobpayload "controlplane/internal/security"
 	"errors"
@@ -44,6 +45,8 @@ type Module struct {
 	TenantConsumerHandler   *mailHandler.TenantConsumerHandler
 	PersonalTemplateHandler *mailHandler.PersonalTemplateHandler
 	TenantTemplateHandler   *mailHandler.TenantTemplateHandler
+
+	CommercialAdmissionProjection *mailStream.CommercialAdmissionProjectionConsumer
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -77,49 +80,101 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Clien
 
 	// [COMMENT]: Repository được tách ngay tại DI boundary; không có generic repo tự chọn scope lúc runtime.
 	personalConsumerRepo := mailRepoImpl.NewPersonalConsumerRepository(db, cfg, protector)
+	if personalConsumerRepo == nil {
+		return nil, errors.New("mail module: failed to construct personal consumer repository")
+	}
 	tenantConsumerRepo := mailRepoImpl.NewTenantConsumerRepository(db, cfg, protector)
+	if tenantConsumerRepo == nil {
+		return nil, errors.New("mail module: failed to construct tenant consumer repository")
+	}
 	personalTemplateRepo := mailRepoImpl.NewPersonalTemplateRepository(db, cfg, protector)
+	if personalTemplateRepo == nil {
+		return nil, errors.New("mail module: failed to construct personal template repository")
+	}
 	tenantTemplateRepo := mailRepoImpl.NewTenantTemplateRepository(db, cfg, protector)
-	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil {
-		return nil, errors.New("mail module: failed to construct scoped repositories")
+	if tenantTemplateRepo == nil {
+		return nil, errors.New("mail module: failed to construct tenant template repository")
+	}
+	commercialAdmissionProjectionRepo := mailRepoImpl.NewMailCommercialAdmissionProjectionRepo(db, cfg.SchemaSQL.Mail)
+	if commercialAdmissionProjectionRepo == nil {
+		return nil, errors.New("mail module: failed to construct commercial admission projection repository")
+	}
+	commercialAdmissionProjectionSvc := mailSvcImpl.NewMailCommercialAdmissionProjectionService(commercialAdmissionProjectionRepo)
+	if commercialAdmissionProjectionSvc == nil {
+		return nil, errors.New("mail module: failed to construct commercial admission projection service")
+	}
+	commercialAdmissionProjection := mailStream.NewCommercialAdmissionProjectionConsumer(runtimeRedis, commercialAdmissionProjectionSvc)
+	if commercialAdmissionProjection == nil {
+		return nil, errors.New("mail module: failed to construct commercial admission projection consumer")
 	}
 
-	// [COMMENT]: Cache Redis chỉ giữ watch lease và runtime snapshot có TTL; cấu hình business
-	// vẫn nằm trong PostgreSQL và runtime động không đi qua Zone NATS KV.
 	workflowMetrics := otel.WorkflowRecorder("mail")
-	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, runtimeRedis, workflowMetrics)
-	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, runtimeRedis, workflowMetrics)
+	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, workflowMetrics)
+	if personalConsumerSvc == nil {
+		return nil, errors.New("mail module: failed to construct personal consumer service")
+	}
+	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, workflowMetrics)
+	if tenantConsumerSvc == nil {
+		return nil, errors.New("mail module: failed to construct tenant consumer service")
+	}
 	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo, workflowMetrics)
+	if personalTemplateSvc == nil {
+		return nil, errors.New("mail module: failed to construct personal template service")
+	}
 	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo, workflowMetrics)
+	if tenantTemplateSvc == nil {
+		return nil, errors.New("mail module: failed to construct tenant template service")
+	}
 	personalConsumerHandler := mailHandler.NewPersonalConsumerHandler(personalConsumerSvc)
+	if personalConsumerHandler == nil {
+		return nil, errors.New("mail module: failed to construct personal consumer handler")
+	}
 	tenantConsumerHandler := mailHandler.NewTenantConsumerHandler(tenantConsumerSvc)
+	if tenantConsumerHandler == nil {
+		return nil, errors.New("mail module: failed to construct tenant consumer handler")
+	}
 	personalTemplateHandler := mailHandler.NewPersonalTemplateHandler(personalTemplateSvc)
+	if personalTemplateHandler == nil {
+		return nil, errors.New("mail module: failed to construct personal template handler")
+	}
 	tenantTemplateHandler := mailHandler.NewTenantTemplateHandler(tenantTemplateSvc)
+	if tenantTemplateHandler == nil {
+		return nil, errors.New("mail module: failed to construct tenant template handler")
+	}
 
 	return &Module{
-		enabled:                 true,
-		L1Registry:              cacheEngine,
-		PersonalConsumerRepo:    personalConsumerRepo,
-		TenantConsumerRepo:      tenantConsumerRepo,
-		PersonalTemplateRepo:    personalTemplateRepo,
-		TenantTemplateRepo:      tenantTemplateRepo,
-		PersonalConsumerService: personalConsumerSvc,
-		TenantConsumerService:   tenantConsumerSvc,
-		PersonalTemplateService: personalTemplateSvc,
-		TenantTemplateService:   tenantTemplateSvc,
-		PersonalConsumerHandler: personalConsumerHandler,
-		TenantConsumerHandler:   tenantConsumerHandler,
-		PersonalTemplateHandler: personalTemplateHandler,
-		TenantTemplateHandler:   tenantTemplateHandler,
+		enabled:                       true,
+		L1Registry:                    cacheEngine,
+		PersonalConsumerRepo:          personalConsumerRepo,
+		TenantConsumerRepo:            tenantConsumerRepo,
+		PersonalTemplateRepo:          personalTemplateRepo,
+		TenantTemplateRepo:            tenantTemplateRepo,
+		PersonalConsumerService:       personalConsumerSvc,
+		TenantConsumerService:         tenantConsumerSvc,
+		PersonalTemplateService:       personalTemplateSvc,
+		TenantTemplateService:         tenantTemplateSvc,
+		PersonalConsumerHandler:       personalConsumerHandler,
+		TenantConsumerHandler:         tenantConsumerHandler,
+		PersonalTemplateHandler:       personalTemplateHandler,
+		TenantTemplateHandler:         tenantTemplateHandler,
+		CommercialAdmissionProjection: commercialAdmissionProjection,
 	}, nil
 }
 
 // Start quản lý vòng đời của các tiến trình chạy ngầm (đã lược bỏ OutboxPoller).
 func (m *Module) Start(ctx context.Context) error {
+	if m.IsEnabled() && m.CommercialAdmissionProjection != nil {
+		if err := m.CommercialAdmissionProjection.Start(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // Stop dừng dọn dẹp các tiến trình chạy ngầm khi tắt control plane gracefully.
 func (m *Module) Stop(ctx context.Context) error {
+	if m.IsEnabled() && m.CommercialAdmissionProjection != nil {
+		m.CommercialAdmissionProjection.Stop()
+	}
 	return nil
 }

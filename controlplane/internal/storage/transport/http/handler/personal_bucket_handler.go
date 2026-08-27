@@ -2,8 +2,10 @@ package storageHandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -35,15 +37,18 @@ func formatUsedMegabytes(bytes int64) string {
 
 // [COMMENT]: PersonalBucketHandler xử lý các HTTP request quản trị Bucket của người dùng cá nhân/workspace.
 type PersonalBucketHandler struct {
-	personalSvc storageSvcInterface.PersonalBucketService
+	personalSvc      storageSvcInterface.PersonalBucketService
+	accessSessionSvc storageSvcInterface.PersonalStorageAccessSessionService
 }
 
 // [COMMENT]: NewPersonalBucketHandler khởi tạo controller xử lý các endpoint Bucket cá nhân.
 func NewPersonalBucketHandler(
 	personalSvc storageSvcInterface.PersonalBucketService,
+	accessSessionSvc storageSvcInterface.PersonalStorageAccessSessionService,
 ) *PersonalBucketHandler {
 	return &PersonalBucketHandler{
-		personalSvc: personalSvc,
+		personalSvc:      personalSvc,
+		accessSessionSvc: accessSessionSvc,
 	}
 }
 
@@ -69,10 +74,13 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// 2. Bind JSON Request Body sử dụng cấu trúc DTO
+	// 2. Stream decode Request Body có giới hạn 64KB để chống DoS
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.CreateBucketRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 
@@ -90,12 +98,12 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		CapacityQuotaBytes:   req.QuotaBytes,
 		UserID:               userID,
 		Policy:               req.Policy,
-		EncryptEnabled:       *req.EncryptEnabled,
-		VersioningEnabled:    *req.VersioningEnabled,
-		ObjectLockingEnabled: *req.ObjectLockingEnabled,
-		ReplicationEnabled:   *req.ReplicationEnabled,
+		EncryptEnabled:       req.EncryptEnabled,
+		VersioningEnabled:    req.VersioningEnabled,
+		ObjectLockingEnabled: req.ObjectLockingEnabled,
+		ReplicationEnabled:   req.ReplicationEnabled,
 		RetentionDays:        req.RetentionDays,
-		LegalHoldEnabled:     *req.LegalHoldEnabled,
+		LegalHoldEnabled:     req.LegalHoldEnabled,
 		Tags:                 req.Tags,
 	}
 	createResult, createErr := h.personalSvc.CreateBucketForPersonal(ctx, param)
@@ -107,6 +115,8 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		case errors.Is(createErr, storageTaxonomy.ErrInvalidBucketName):
 			logger.HandlerWarn(c, op, createErr, "invalid bucket name format")
 			apires.RespondBadRequest(c, "invalid bucket name format")
+		case errors.Is(createErr, storageTaxonomy.ErrCommercialAdmissionDenied):
+			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, createErr)
 			apires.RespondInternalError(c, "internal_error")
@@ -159,6 +169,8 @@ func (h *PersonalBucketHandler) Get(c *gin.Context) {
 		"name":                 bucket.Name,
 		"capacity_quota_bytes": bucket.CapacityQuotaBytes,
 		"used_mb":              formatUsedMegabytes(bucket.UsedBytes),
+		"versioning_enabled":   bucket.VersioningEnabled,
+		"lifecycle_rules":      bucket.LifecycleRules,
 		"created_at":           bucket.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at":           bucket.UpdatedAt.UTC().Format(time.RFC3339),
 	}, "get bucket details success")
@@ -200,6 +212,8 @@ func (h *PersonalBucketHandler) List(c *gin.Context) {
 			"name":                 b.Name,
 			"capacity_quota_bytes": b.CapacityQuotaBytes,
 			"used_mb":              formatUsedMegabytes(b.UsedBytes),
+			"versioning_enabled":   b.VersioningEnabled,
+			"lifecycle_rules":      b.LifecycleRules,
 			"created_at":           b.CreatedAt.UTC().Format(time.RFC3339),
 			"updated_at":           b.UpdatedAt.UTC().Format(time.RFC3339),
 		}
@@ -259,9 +273,16 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.UpdateQuotaRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+	if req.QuotaBytes <= 0 {
+		apires.RespondBadRequest(c, "quota_bytes must be positive")
 		return
 	}
 
@@ -275,12 +296,186 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 			apires.RespondBadRequest(c, "requested quota must leave at least 1GB of free space above current usage")
 			return
 		}
+		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
+			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			return
+		}
 		logger.HandlerError(c, op, updateErr)
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
 
 	apires.RespondSuccess(c, nil, "bucket quota updated")
+}
+
+// [COMMENT]: UpdateVersioning cập nhật trạng thái versioning cho bucket cá nhân.
+func (h *PersonalBucketHandler) UpdateVersioning(c *gin.Context) {
+	const op = "storage.personal_bucket.update_versioning"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	idStr := c.Param("id")
+	bucketID, err := uuid.Parse(idStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
+	var req storageDto.UpdateBucketVersioningRequest
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+
+	updatedBucket, updateErr := h.personalSvc.UpdateBucketVersioning(ctx, bucketID, userID, req.VersioningEnabled)
+	if updateErr != nil {
+		if errors.Is(updateErr, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "bucket not found")
+			return
+		}
+		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
+			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			return
+		}
+		logger.HandlerError(c, op, updateErr)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	apires.RespondSuccess(c, gin.H{
+		"id":                 updatedBucket.ID.String(),
+		"name":               updatedBucket.Name,
+		"status":             updatedBucket.Status,
+		"versioning_enabled": updatedBucket.VersioningEnabled,
+	}, "bucket versioning updated")
+}
+
+// [COMMENT]: GetLifecycle lấy cấu hình lifecycle rules của bucket.
+func (h *PersonalBucketHandler) GetLifecycle(c *gin.Context) {
+	const op = "storage.personal_bucket.get_lifecycle"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	idStr := c.Param("id")
+	bucketID, err := uuid.Parse(idStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+
+	rules, getErr := h.personalSvc.GetBucketLifecycle(ctx, bucketID, userID)
+	if getErr != nil {
+		if errors.Is(getErr, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "bucket not found")
+			return
+		}
+		logger.HandlerError(c, op, getErr)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	apires.RespondSuccess(c, gin.H{"rules": rules}, "get bucket lifecycle success")
+}
+
+// [COMMENT]: UpdateLifecycle cập nhật cấu hình lifecycle rules cho bucket.
+func (h *PersonalBucketHandler) UpdateLifecycle(c *gin.Context) {
+	const op = "storage.personal_bucket.update_lifecycle"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	idStr := c.Param("id")
+	bucketID, err := uuid.Parse(idStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
+	var req storageDto.UpdateBucketLifecycleRequest
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+
+	if len(req.Rules) > 100 {
+		apires.RespondBadRequest(c, "too many lifecycle rules (max 100)")
+		return
+	}
+
+	domainRules := make([]storageEntity.BucketLifecycleRule, len(req.Rules))
+	ruleIDs := make(map[string]bool)
+	for i, r := range req.Rules {
+		r.ID = strings.TrimSpace(r.ID)
+		if r.ID == "" || len(r.ID) > 64 {
+			apires.RespondBadRequest(c, "rule id must be non-empty and at most 64 characters")
+			return
+		}
+		if ruleIDs[r.ID] {
+			apires.RespondBadRequest(c, fmt.Sprintf("duplicate rule id: %s", r.ID))
+			return
+		}
+		ruleIDs[r.ID] = true
+
+		if r.ExpirationDays < 0 || r.NoncurrentVersionExpirationDays < 0 || r.AbortIncompleteMultipartUploadDays < 0 {
+			apires.RespondBadRequest(c, "days parameters in lifecycle rules must be non-negative")
+			return
+		}
+
+		domainRules[i] = storageEntity.BucketLifecycleRule{
+			ID:                                 r.ID,
+			Enabled:                            r.Enabled,
+			Prefix:                             r.Prefix,
+			ExpirationDays:                     r.ExpirationDays,
+			NoncurrentVersionExpirationDays:    r.NoncurrentVersionExpirationDays,
+			AbortIncompleteMultipartUploadDays: r.AbortIncompleteMultipartUploadDays,
+		}
+	}
+
+	updatedBucket, updateErr := h.personalSvc.UpdateBucketLifecycle(ctx, bucketID, userID, domainRules)
+	if updateErr != nil {
+		if errors.Is(updateErr, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "bucket not found")
+			return
+		}
+		if errors.Is(updateErr, storageTaxonomy.ErrVersioningRequired) {
+			apires.RespondBadRequest(c, "noncurrent version expiration requires bucket versioning to be enabled")
+			return
+		}
+		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
+			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			return
+		}
+		logger.HandlerError(c, op, updateErr)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	apires.RespondSuccess(c, gin.H{
+		"id":              updatedBucket.ID.String(),
+		"name":            updatedBucket.Name,
+		"status":          updatedBucket.Status,
+		"lifecycle_rules": updatedBucket.LifecycleRules,
+	}, "bucket lifecycle updated")
 }
 
 // [COMMENT]: Delete khởi động tiến trình xóa hoàn toàn bucket cá nhân.
@@ -312,17 +507,11 @@ func (h *PersonalBucketHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Lấy bucket name vật lý từ URL query parameter
-	bucketName := strings.TrimSpace(c.Query("name"))
-	if bucketName == "" {
-		apires.RespondBadRequest(c, "missing bucket name query parameter")
-		return
-	}
-
-	// [COMMENT]: Khởi tạo thực thể tham số xóa
+	// The physical bucket name is durable resource authority. The browser only
+	// selects the UUID path target; the service resolves the name under owner
+	// scope before building the Zone command.
 	param := &storageEntity.DeletePersonalBucket{
 		BucketID:    bucketID,
-		BucketName:  bucketName,
 		WorkspaceID: workspaceID,
 		ZoneID:      zoneID,
 		UserID:      userID,
@@ -367,9 +556,12 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid bucket id format")
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 65536)
 	var req storageDto.RequestStorageAccessRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
 		return
 	}
 	duration := req.DurationSeconds
@@ -383,6 +575,7 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 	}
 	allowed := map[string]struct{}{"ListBucket": {}, "GetObject": {}, "PutObject": {}, "DeleteObject": {}, "GetObjectTagging": {}, "PutObjectTagging": {}}
 	seen := make(map[string]struct{}, len(actions))
+	uniqueActions := make([]string, 0, len(actions))
 	for _, action := range actions {
 		if _, valid := allowed[action]; !valid {
 			apires.RespondBadRequest(c, "unsupported storage action")
@@ -392,7 +585,9 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 			continue
 		}
 		seen[action] = struct{}{}
+		uniqueActions = append(uniqueActions, action)
 	}
+	actions = uniqueActions
 	keyPrefix := strings.TrimSpace(req.KeyPrefix)
 	if len(keyPrefix) > 256 || strings.ContainsAny(keyPrefix, "\r\n") {
 		apires.RespondBadRequest(c, "invalid key_prefix")
@@ -417,25 +612,15 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		ExpiresAtUnixSeconds: uint64(time.Now().Add(time.Duration(duration) * time.Second).Unix()),
 		PolicyRevision:       1,
 	}
-	// Service performs the owner lookup before persisting the auth projection.
-	bucket, err := h.personalSvc.GetBucket(ctx, bucketID, userID)
-	if err != nil {
+	if err := h.accessSessionSvc.CreatePersonalStorageAccessSession(ctx, session); err != nil {
+		if errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied) {
+			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			return
+		}
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "bucket not found")
 			return
 		}
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-	if bucket.ZoneID != zoneID {
-		// A valid user must not be able to prepare a session for a bucket in a
-		// different routed Zone, even if the bucket UUID is otherwise owned.
-		apires.RespondNotFound(c, "bucket not found")
-		return
-	}
-	session.BucketName = bucket.Name
-	if err := h.personalSvc.CreateStorageAccessSession(ctx, session); err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return
@@ -447,4 +632,55 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 		"expires_at":        time.Unix(int64(session.ExpiresAtUnixSeconds), 0).UTC().Format(time.RFC3339),
 		"gateway_path":      "/zone-control/v1/storage/",
 	}, "storage access session is being prepared")
+}
+
+func (h *PersonalBucketHandler) GetAccessSessionStatus(c *gin.Context) {
+	const op = "storage.personal_bucket.get_access_session_status"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+	bucketID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+	accessSessionID, err := uuid.Parse(c.Param("access_session_id"))
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid access session id format")
+		return
+	}
+	status, err := h.accessSessionSvc.GetPersonalStorageAccessSessionStatus(ctx, accessSessionID, bucketID, workspaceID, userID, zoneID)
+	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "storage access session not found")
+			return
+		}
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+	response := gin.H{
+		"access_session_id": accessSessionID.String(),
+		"bucket_id":         bucketID.String(),
+		"status":            status.State,
+	}
+	if status.CompletedAt != nil {
+		response["completed_at"] = status.CompletedAt.UTC().Format(time.RFC3339)
+	}
+	if status.State == "FAILED" && status.ErrorCode != nil {
+		response["error_code"] = *status.ErrorCode
+	}
+	apires.RespondSuccess(c, response, "get storage access session status success")
 }

@@ -9,6 +9,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "../../proto/cost-manager/engine/storage_usage.proto",
             "../../proto/cost-manager/engine/pricing_event.proto",
             "../../proto/cost-manager/engine/storage_usage_report.proto",
+            "../../proto/cost-manager/engine/hypervisor_allocation_event.proto",
+            "../../proto/cost-manager/engine/hypervisor_network_usage_report.proto",
+            "../../proto/cost-manager/engine/mail_accepted_usage.proto",
         ],
         &["../../proto/cost-manager/engine"],
     )?;

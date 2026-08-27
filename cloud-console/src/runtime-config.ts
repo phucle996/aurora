@@ -2,6 +2,7 @@ export type PublicRuntimeConfig = {
   envoyUrl: string;
   centrifugoWsUrl: string;
   costConsoleUrl: string;
+  zonePublicBaseDomain: string;
 };
 
 declare global {

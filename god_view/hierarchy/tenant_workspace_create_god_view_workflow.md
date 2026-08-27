@@ -8,14 +8,17 @@ neutral browser route.
 
 | Item | Contract |
 |---|---|
-| Browser API | `POST /api/v1/hierarchy/workspaces` |
-| Internal target | `POST /api/v1/tenant/hierarchy/workspaces` |
+| Browser API | `POST /api/v1/critical/hierarchy/workspaces` |
+| Internal target | `POST /api/v1/tenant/critical/hierarchy/workspaces` |
 | Authority | current tenant membership with `hierarchy:workspace:create` at level `*` |
 | Zone | ACR-verified selected Zone; browser cannot choose `x-zone-id` |
 | Durable SoT | `hierarchy.tenant_workspaces` |
 
 Payload contains `name`, `code`, and optional `description`. It never contains
 `tenant_id`, `owner_id`, or `zone_id`.
+
+ACR consumes a session proof bound to the exact request before the tenant
+rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`.
 
 ## Key contracts
 

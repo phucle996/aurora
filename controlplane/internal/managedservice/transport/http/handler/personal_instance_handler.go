@@ -114,11 +114,13 @@ func (h *PersonalInstanceHandler) ListPersonalInstances(c *gin.Context) {
 	for _, item := range result.Items {
 		items = append(items, gin.H{
 			"id": item.ID, "code": item.Code, "name": item.Name,
-			"desired":          gin.H{"state": item.DesiredState, "generation": item.Generation, "active_revision_id": item.ActiveRevisionID, "pending_revision_id": item.PendingRevisionID},
-			"observed":         gin.H{"state": item.ObservedState, "version": item.ObservedStateVersion, "observed_at": item.ObservedAt},
-			"metadata_version": item.MetadataVersion,
-			"latest_operation": gin.H{"id": item.LatestOperationID, "kind": item.LatestOperationKind, "state": item.LatestOperationState, "generation": item.LatestOperationGen, "attempt": item.LatestOperationTry, "created_at": item.LatestOperationAt},
-			"created_at":       item.CreatedAt, "updated_at": item.UpdatedAt,
+			"state":               item.State,
+			"generation":          item.Generation,
+			"active_revision_id":  item.ActiveRevisionID,
+			"pending_revision_id": item.PendingRevisionID,
+			"metadata_version":    item.MetadataVersion,
+			"latest_operation":    gin.H{"id": item.LatestOperationID, "kind": item.LatestOperationKind, "state": item.LatestOperationState, "generation": item.LatestOperationGen, "attempt": item.LatestOperationTry, "created_at": item.LatestOperationAt},
+			"created_at":          item.CreatedAt, "updated_at": item.UpdatedAt,
 		})
 	}
 	nextCursor := ""
@@ -196,13 +198,16 @@ func (h *PersonalInstanceHandler) GetPersonalInstance(c *gin.Context) {
 		"context": gin.H{"scope": "personal", "workspace_id": workspaceID, "zone_id": zoneID},
 		"instance": gin.H{
 			"id": result.ID, "code": result.Code, "name": result.Name,
-			"desired":          gin.H{"state": result.DesiredState, "generation": result.Generation, "revision_sequence": result.RevisionSequence, "active_revision_id": result.ActiveRevisionID, "pending_revision_id": result.PendingRevisionID},
-			"observed":         gin.H{"state": result.ObservedState, "version": result.ObservedStateVersion, "output": result.ObservedOutput, "observed_at": result.ObservedAt},
-			"metadata_version": result.MetadataVersion,
-			"network_contract": gin.H{"namespace": result.NetworkContract.Namespace, "components": networkComponents},
-			"resize_contract":  resizeContract,
-			"latest_operation": gin.H{"id": result.LatestOperationID, "kind": result.LatestOperationKind, "state": result.LatestOperationState, "generation": result.LatestOperationGen, "attempt": result.LatestOperationTry, "created_at": result.LatestOperationAt, "completed_at": result.LatestOperationDoneAt},
-			"created_at":       result.CreatedAt, "updated_at": result.UpdatedAt,
+			"state":               result.State,
+			"generation":          result.Generation,
+			"revision_sequence":   result.RevisionSequence,
+			"active_revision_id":  result.ActiveRevisionID,
+			"pending_revision_id": result.PendingRevisionID,
+			"metadata_version":    result.MetadataVersion,
+			"network_contract":    gin.H{"namespace": result.NetworkContract.Namespace, "components": networkComponents},
+			"resize_contract":     resizeContract,
+			"latest_operation":    gin.H{"id": result.LatestOperationID, "kind": result.LatestOperationKind, "state": result.LatestOperationState, "generation": result.LatestOperationGen, "attempt": result.LatestOperationTry, "created_at": result.LatestOperationAt, "completed_at": result.LatestOperationDoneAt},
+			"created_at":          result.CreatedAt, "updated_at": result.UpdatedAt,
 		},
 	}, "managed service instance fetched")
 }
@@ -567,7 +572,7 @@ func (h *PersonalInstanceHandler) CreatePersonalInstance(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondAccepted(c, gin.H{"instance": gin.H{"id": result.ID, "code": result.Code, "name": result.Name, "desired": gin.H{"state": result.DesiredState, "generation": result.Generation, "pending_revision_id": result.PendingRevisionID}}, "operation": gin.H{"id": result.OperationID, "kind": result.OperationKind, "state": result.OperationState, "delivery_epoch": result.DeliveryEpoch}}, "managed service instance accepted")
+	apires.RespondAccepted(c, gin.H{"instance": gin.H{"id": result.ID, "code": result.Code, "name": result.Name, "state": result.State, "generation": result.Generation, "pending_revision_id": result.PendingRevisionID}, "operation": gin.H{"id": result.OperationID, "kind": result.OperationKind, "state": result.OperationState, "delivery_epoch": result.DeliveryEpoch}}, "managed service instance accepted")
 }
 
 func (h *PersonalInstanceHandler) ResizePersonalInstance(c *gin.Context) {

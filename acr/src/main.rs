@@ -11,6 +11,7 @@ mod gateway;
 mod infra;
 mod observability;
 pub mod pkg;
+mod runtime_read;
 mod sre;
 mod storage;
 mod token;
@@ -63,9 +64,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     OtelTracer::init(&config);
 
-    let redis_client = match crate::infra::redis::client_from_vault(
+    let redis_client = match crate::infra::redis::client_from_vault_with_mode(
         &vault_client,
         crate::infra::redis::AUTH_STATE_CONNECTION_PATH,
+        config.auth_state_redis_mode,
     )
     .await
     {
@@ -79,9 +81,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-    let shared_redis_client = match crate::infra::redis::client_from_vault(
+    let shared_redis_client = match crate::infra::redis::client_from_vault_with_mode(
         &vault_client,
         crate::infra::redis::SHARED_L2_CONNECTION_PATH,
+        config.shared_l2_redis_mode,
     )
     .await
     {
@@ -166,19 +169,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shared_redis_bus.clone(),
     )
     .await;
-    if let Err(error) = crate::user::device::start_eviction_outbox_relay(
-        redis_client.clone(),
-        shared_redis_bus.clone(),
-    )
-    .await
-    {
-        Logger::sys_error(
-            "main.shared_redis",
-            "Failed to initialize durable device eviction relay",
-            &error,
-        );
-        std::process::exit(1);
-    }
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
         .parse()

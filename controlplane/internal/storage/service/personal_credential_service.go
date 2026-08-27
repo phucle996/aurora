@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"controlplane/internal/observability"
+	"controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
-	storageproto "controlplane/internal/storage/transport/rpc/proto"
+	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/crypto"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -23,21 +23,18 @@ import (
 
 // [COMMENT]: PersonalCredentialSvcImpl thực thi nghiệp vụ quản lý tài khoản keys của MinIO cho cá nhân.
 type PersonalCredentialSvcImpl struct {
-	repo       storageRepoInterface.PersonalCredentialRepo
-	bucketRepo storageRepoInterface.PersonalBucketRepo
-	metrics    observability.WorkflowRecorder
+	repo    storageRepoInterface.PersonalCredentialRepo
+	metrics observability.WorkflowRecorder
 }
 
 // [COMMENT]: NewPersonalCredentialService tạo mới instance thực thi PersonalCredentialService.
 func NewPersonalCredentialService(
 	repo storageRepoInterface.PersonalCredentialRepo,
-	bucketRepo storageRepoInterface.PersonalBucketRepo,
 	metrics observability.WorkflowRecorder,
 ) storageSvcInterface.PersonalCredentialService {
 	return &PersonalCredentialSvcImpl{
-		repo:       repo,
-		bucketRepo: bucketRepo,
-		metrics:    metrics,
+		repo:    repo,
+		metrics: metrics,
 	}
 }
 
@@ -53,11 +50,11 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	}
 
 	// [COMMENT]: Sinh ngẫu nhiên cặp Access Key và Secret Key
-	accessKey, err := crypto.GenerateAccessKey()
+	accessKey, err := security.GenerateAccessKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "generate_access_key_failed")
 	}
-	rawSecretKey, err := crypto.GenerateSecretKey()
+	rawSecretKey, err := security.GenerateSecretKey()
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "generate_secret_key_failed")
 	}
@@ -72,6 +69,7 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 		AccessKey: accessKey,
 		SecretKey: rawSecretKey,
 		Policy:    param.Policy,
+		State:     "CREATING",
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -133,16 +131,11 @@ func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketI
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	// [COMMENT]: Validate bucket ownership using GetByID check
-	bucket, err := s.bucketRepo.GetByID(ctx, bucketID, userID)
-	if err != nil || bucket == nil {
-		result, reason = observability.ResultRejected, observability.ReasonNotFound
-		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
-	}
-
-	// [COMMENT]: Gọi repo lấy trực tiếp danh sách thực thể rút gọn PersonalCredentialListItem
-	creds, err := s.repo.ListByBucket(ctx, bucketID)
+	creds, err := s.repo.ListByBucket(ctx, bucketID, userID)
 	if err != nil {
+		if errors.Is(err, storageTaxonomy.ErrNotFound) {
+			result, reason = observability.ResultRejected, observability.ReasonNotFound
+		}
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
@@ -204,6 +197,10 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
+}
+
+func (s *PersonalCredentialSvcImpl) ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error) {
+	return s.repo.ListAccessKeys(ctx, bucketID, userID)
 }
 
 // [COMMENT]: PolicyStatement và PolicyDoc dùng để parse cấu trúc JSON Policy từ Client

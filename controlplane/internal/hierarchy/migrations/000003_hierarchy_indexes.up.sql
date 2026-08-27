@@ -32,3 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_tenant_workspaces_lookup ON tenant_workspaces (zo
 
 -- [COMMENT]: Ràng buộc duy nhất: mã workspace theo từng tenant scope (mỗi tenant không có code trùng nhau)
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_workspaces_tenant_code ON tenant_workspaces (tenant_id, code);
+
+CREATE INDEX IF NOT EXISTS hierarchy_cost_outbox_claim_idx
+    ON cost_outbox_records (available_at, id)
+    WHERE status IN ('PENDING', 'PUBLISHING');

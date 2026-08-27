@@ -47,6 +47,13 @@ pub(crate) async fn run_bucket_scanner(
         {
             continue;
         }
+        // Bind every shard to the UTC boundary that triggered this scan. A
+        // slow shard may finish after the next hour, but it must not drift
+        // into a different billing barrier than its peers.
+        let scan_boundary = Utc::now();
+        let billing_window_end =
+            DateTime::<Utc>::from_timestamp(scan_boundary.timestamp().div_euclid(3_600) * 3_600, 0)
+                .ok_or_else(|| "storage scan billing window is invalid".to_string())?;
         let Some(buckets) =
             scan_all_customer_storage_bucket_sizes(&config, &state, assignment_epoch, shard_id)
                 .await?
@@ -54,9 +61,6 @@ pub(crate) async fn run_bucket_scanner(
             return Ok(());
         };
         let observed_at = Utc::now();
-        let billing_window_end =
-            DateTime::<Utc>::from_timestamp(observed_at.timestamp().div_euclid(3_600) * 3_600, 0)
-                .ok_or_else(|| "storage scan billing window is invalid".to_string())?;
         let scan_generation = Uuid::new_v4().to_string();
         if !state
             .assignment_is_current(&assignment_key, assignment_epoch)
@@ -64,16 +68,38 @@ pub(crate) async fn run_bucket_scanner(
         {
             return Ok(());
         }
-        persist_capacity_scan(
-            &clickhouse,
-            zone_id,
-            shard_id,
-            &scan_generation,
-            observed_at,
-            billing_window_end,
-            &buckets,
-        )
-        .await?;
+        loop {
+            if !state
+                .assignment_is_current(&assignment_key, assignment_epoch)
+                .await?
+            {
+                return Ok(());
+            }
+            match persist_capacity_scan(
+                &clickhouse,
+                zone_id,
+                shard_id,
+                &scan_generation,
+                observed_at,
+                billing_window_end,
+                &buckets,
+            )
+            .await
+            {
+                Ok(()) => break,
+                Err(error) => {
+                    tracing::warn!(
+                        event_code = "ZONE_STORAGE_CAPACITY_JOURNAL_RETRY",
+                        shard_id,
+                        billing_window_end = %billing_window_end,
+                        error = %error
+                    );
+                    if !wait_or_cancel(&shutdown, Duration::from_secs(5)).await {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if buckets.is_empty() {
             continue;
         }
@@ -259,7 +285,13 @@ async fn scan_all_customer_storage_bucket_sizes(
                     .await
                     .map_err(|error| format!("list objects for {name}: {error}"))?;
                 for object in response.contents.unwrap_or_default() {
-                    total_size = total_size.saturating_add(object.size.unwrap_or_default());
+                    let size = object.size.unwrap_or_default();
+                    if size < 0 {
+                        return Err(format!("MinIO returned negative object size for {name}"));
+                    }
+                    total_size = total_size
+                        .checked_add(size)
+                        .ok_or_else(|| format!("bucket size exceeds BIGINT for {name}"))?;
                 }
                 if response.is_truncated.unwrap_or(false) {
                     continuation_token = response.next_continuation_token;

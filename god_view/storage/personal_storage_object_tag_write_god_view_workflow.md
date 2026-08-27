@@ -9,8 +9,8 @@ signal. The write itself is private S3 `PutObjectTagging` signed by Zone Envoy.
 Browser calls
 `PUT /zone-control/v1/storage/buckets/{physical_bucket}/objects/{object_key}/tags`
 with a non-empty UTF-8 tag XML body and `x-aurora-access-session-id`. ACR
-requires `PutObjectTagging` action, matching actor/Zone Central record and
-prefix-safe external path. No `/personal` route rewrite or Controlplane
+authenticates and signs actor/workspace/Zone/session plus exact request facts.
+Zone KV must grant `PutObjectTagging` and the prefix-safe external path. No `/personal` route rewrite or Controlplane
 `Authorize` middleware runs at this request; ownership was proved in the
 access-session workflow and every request is re-bound at ACR/Zone.
 
@@ -21,7 +21,7 @@ access-session workflow and every request is re-bound at ACR/Zone.
 | Header | Use |
 |---|---|
 | `Cookie` | ACR authenticates Trinity session. Zone Lua strips it. |
-| `x-aurora-access-session-id` | Opaque Central/Zone access projection lookup handle. |
+| `x-aurora-access-session-id` | Opaque Zone capability correlation UUID, not bearer authority. |
 | `Origin` | ACR CORS allow-list. |
 | `X-Requested-With: XMLHttpRequest` or `Sec-Fetch-Site: same-origin|same-site` | ACR CSRF condition for `PUT`. |
 | `Content-Type: application/xml` | Set by Cloud Console. ACR body checker only requires non-empty UTF-8; MinIO interprets XML. |
@@ -58,31 +58,30 @@ access-session workflow and every request is re-bound at ACR/Zone.
 
 | Key / component | Store | Operation | Invariant |
 |---|---|---|---|
-| `storage_access:{session_id}` | Central Auth-State Redis | ACR protobuf GET | Must include `PutObjectTagging`, current actor and current claim Zone. |
-| Signed assertion | Vault Transit | Encoded JSON and Ed25519 signature | Exact external PUT, path and XML bytes are bound for up to 10 seconds. |
-| `AURORA_ZONE_ACCESS/{session_id}` | Zone JetStream KV | Watch/direct read | Zone record repeats action/scope/identity and must equal assertion. |
+| Signed assertion | Vault Transit | Schema-2 identity/request facts and Ed25519 signature | Exact external PUT, path and XML bytes are bound for up to 10 seconds; no policy fields. |
+| `AURORA_ZONE_ACCESS/{session_id}` | Zone JetStream KV | Sole capability read | Zone derives resource/bucket/policy and binds action/scope/identity/expiry. |
+| `AURORA_ZONE_ADMISSION/{resource_id}` | Zone JetStream KV | Admission read | Current `ALLOW` required before mutation. |
 | jti replay entry | Zone authorizer Moka | One local consume | Prevents same assertion bytes being reused at the same replica. |
 
 ## Phase 1 — Client → Envoy → ACR
 
 Envoy sends body to ACR as `CheckRequest`. ACR performs CORS, Zone Control
-pre/post-auth limits, Trinity verification and CSRF. It reads Central record,
-classifies only `PUT .../tags` as `PutObjectTagging`, rejects empty/non-UTF8
-body and unsafe path/query, calculates hashes from original bytes, then signs
-assertion through Vault Transit. It forwards no browser credentials to Zone.
+pre/post-auth limits, Trinity verification and CSRF. Its Auth-State read is only
+the Trinity session. It classifies the reviewed `PUT .../tags` route, rejects
+empty/non-UTF8 body, hashes original bytes and signs without deciding policy.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant E as Central Envoy
     participant A as ACR ExtAuthz
-    participant AR as Auth-State Redis
+    participant AR as Auth-State Trinity session
     participant V as Vault Transit
 
     B->>E: PUT object tags XML and access session header
     E->>A: CheckRequest exact path headers and XML bytes
-    A->>AR: Verify Trinity session and Central access record
-    A->>A: CORS rate CSRF action prefix and UTF8 checks
+    A->>AR: Verify Trinity user/device session
+    A->>A: CORS rate CSRF UUID context route and UTF8 checks
     alt rejected
         A-->>E: Local 400, 401, 403 or 429
         E-->>B: error
@@ -125,21 +124,23 @@ sequenceDiagram
 ## Phase 3 — Zone recheck, S3 write and response
 
 Zone authorizer verifies key id/signature, issuer/audience, its Zone, 8 KiB
-assertion size, method/path/body hashes, timestamp and jti. It then reads KV and
-rechecks complete record equality, `PutObjectTagging`, prefix and expiry. Only
-then is the body delivered to MinIO. A returned upstream status is relayed.
+assertion size, method/path/body hashes, timestamp and jti. It then reads KV,
+binds assertion identity, checks record integrity, `PutObjectTagging`, bucket,
+prefix and expiry, and requires current resource admission. Only then is the body delivered to MinIO.
 
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Authorizer
     participant K as Assertion keyring and replay cache
     participant KV as Zone access KV
+    participant AD as Zone admission KV
     participant ZE as Zone Envoy
     participant M as MinIO
     participant B as Browser
 
     ZA->>K: Verify assertion and consume jti
     ZA->>KV: Read matching access session record
+    ZA->>AD: Require ALLOW for record resource id
     alt all scopes match
         ZA-->>ZE: Allow
         ZE->>M: PUT rewritten tagging XML
@@ -159,6 +160,7 @@ sequenceDiagram
 | Condition | Behavior |
 |---|---|
 | Browser omits CSRF signal | ACR denies before Vault signing or Zone call. |
+| Wallet admission missing or suspended | Zone denies before MinIO. |
 | XML changes in transit | Zone body hash no longer matches assertion and denies. |
 | Client exceeds UI tag limits | Gateway may still forward valid UTF-8; MinIO decides semantic validity. UI limits are not a server authorization contract. |
 | Same assertion resent | Zone local replay cache rejects; a fresh request gets a fresh assertion. |

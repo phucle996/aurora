@@ -11,7 +11,7 @@ import (
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
+	mailproto "controlplane/internal/mail/transport/proto"
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"

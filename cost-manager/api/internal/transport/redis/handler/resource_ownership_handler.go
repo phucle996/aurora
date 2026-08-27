@@ -6,14 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"cost-manager/api/internal/config"
 	"cost-manager/api/internal/domain/entity"
+	billingSvcInterface "cost-manager/api/internal/domain/service"
 	ownershipv1 "cost-manager/api/internal/genproto/billing/ownership/v1"
-	"cost-manager/api/internal/service"
+	billingTaxonomy "cost-manager/api/internal/taxonomy"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/google/uuid"
@@ -21,21 +22,43 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ============================================================================
+// HẰNG SỐ CẤU HÌNH REDIS STREAM VÀ THỜI GIAN LEASE
+// ============================================================================
 const (
-	resourceOwnershipStream  = "stream:{billing}:resource_ownership"
-	resourceOwnershipGroup   = "cost-resource-ownership-v1"
-	resourceOwnershipDLQ     = "stream:{billing}:resource_ownership:dlq"
+	// Stream chính nhận sự kiện thay đổi chủ sở hữu tài nguyên từ Job Orchestrator
+	resourceOwnershipStream = "stream:{billing}:resource_ownership"
+
+	// Tên Consumer Group của Cost Manager phục vụ phân phối tin nhắn cân bằng tải
+	resourceOwnershipGroup = "cost-resource-ownership-v1"
+
+	// Stream Dead-Letter Queue lưu trữ các bản ghi vi phạm hợp đồng (corrupted / invalid)
+	resourceOwnershipDLQ = "stream:{billing}:resource_ownership:dlq"
+
+	// Thời gian chờ tối thiểu (30s) trước khi một pod khác được phép reclaim message bị treo
 	resourceOwnershipReclaim = 30 * time.Second
-	resourceOwnershipBatch   = int64(32)
+
+	// Số lượng tin nhắn tối đa đọc trong một đợt (batch)
+	resourceOwnershipBatch = int64(32)
+
+	// Giới hạn kích thước tối đa của một payload protobuf (64 KB) để chống tấn công cạn kiệt bộ nhớ
 	resourceOwnershipMaxSize = 64 * 1024
+
+	// Kích thước tối đa của DLQ Stream trước khi bắt đầu drop message cũ (Approximate MaxLen)
 	resourceOwnershipDLQSize = int64(10_000)
 )
 
-// ResourceOwnershipConsumer is the Central-internal ownership transport.
-// Billing PostgreSQL inbox remains the idempotency and apply boundary.
+// ============================================================================
+// RESOURCE OWNERSHIP CONSUMER - BỘ TIẾP NHẬN SỰ KIỆN SỞ HỮU TÀI NGUYÊN
+// ============================================================================
+//
+// Vai trò kiến trúc:
+// - Lắng nghe các sự kiện `ResourceOwnershipChangedV1` từ Job Orchestrator phát qua Shared Redis Stream.
+// - Xác thực hợp đồng dữ liệu nghiêm ngặt trước khi chuyển giao cho Billing Service Layer.
+// - Quản lý chu trình xác nhận (XACK / XDEL) và tự động nhận lại các message bị rớt (XAUTOCLAIM) khi pod crash.
 type ResourceOwnershipConsumer struct {
 	sharedRedis *goredis.Client
-	ownership   service.ResourceOwnershipService
+	ownership   billingSvcInterface.ResourceOwnershipService
 	consumer    string
 
 	cancel context.CancelFunc
@@ -43,25 +66,20 @@ type ResourceOwnershipConsumer struct {
 	once   sync.Once
 }
 
+// NewResourceOwnershipConsumer khởi tạo Consumer với định danh Consumer Name độc nhất dựa trên Node Hostname toàn cục + UUID ngẫu nhiên.
 func NewResourceOwnershipConsumer(
 	sharedRedis *goredis.Client,
-	ownership service.ResourceOwnershipService,
-) (*ResourceOwnershipConsumer, error) {
-	if sharedRedis == nil || ownership == nil {
-		return nil, errors.New("resource ownership consumer requires Shared Redis and ownership service")
-	}
-	host, err := os.Hostname()
-	if err != nil || strings.TrimSpace(host) == "" {
-		host = "cost-manager"
-	}
+	ownership billingSvcInterface.ResourceOwnershipService,
+) *ResourceOwnershipConsumer {
 	return &ResourceOwnershipConsumer{
 		sharedRedis: sharedRedis,
 		ownership:   ownership,
-		consumer:    host + "-" + uuid.NewString(),
+		consumer:    config.GetNodeHostname() + "-" + uuid.NewString(),
 		done:        make(chan struct{}),
-	}, nil
+	}
 }
 
+// Start khởi động Consumer: Tạo Consumer Group (idempotent) và chạy vòng lặp xử lý nền.
 func (s *ResourceOwnershipConsumer) Start() error {
 	if s == nil {
 		return errors.New("resource ownership consumer is nil")
@@ -70,6 +88,8 @@ func (s *ResourceOwnershipConsumer) Start() error {
 		return errors.New("resource ownership consumer already started")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Tạo Consumer Group nếu chưa tồn tại (bỏ qua lỗi BUSYGROUP nếu đã được tạo từ trước)
 	if err := s.sharedRedis.XGroupCreateMkStream(
 		ctx,
 		resourceOwnershipStream,
@@ -84,12 +104,15 @@ func (s *ResourceOwnershipConsumer) Start() error {
 	return nil
 }
 
+// run duy trì vòng lặp chính tiếp nhận sự kiện: Kết hợp XAutoClaim (nhặt tin nhắn cũ bị treo) và XReadGroup (đọc tin mới).
 func (s *ResourceOwnershipConsumer) run(ctx context.Context) {
 	defer close(s.done)
 	claimCursor := "0-0"
 	for ctx.Err() == nil {
-		// [COMMENT]: Apply timeout is 10 seconds; reclaim only after 30 seconds so
-		// a healthy pod is not raced by another replica while committing Billing DB.
+		// ─────────────────────────────────────────────────────────────────────
+		// BƯỚC 1: XAUTOCLAIM - Nhặt lại các message đang Pending quá 30 giây
+		// (Do pod trước đó bị sập hoặc mất kết nối mạng đột ngột)
+		// ─────────────────────────────────────────────────────────────────────
 		claimed, nextCursor, err := s.sharedRedis.XAutoClaim(ctx, &goredis.XAutoClaimArgs{
 			Stream:   resourceOwnershipStream,
 			Group:    resourceOwnershipGroup,
@@ -103,17 +126,19 @@ func (s *ResourceOwnershipConsumer) run(ctx context.Context) {
 				return
 			}
 			logger.SysError("billing.ownership.redis.reclaim", err.Error())
-			if !waitContext(ctx, time.Second) {
+			select {
+			case <-ctx.Done():
 				return
+			case <-time.After(time.Second):
 			}
 			continue
 		}
-		// [COMMENT]: Preserve Redis' scan cursor so a poison entry near the head
-		// cannot starve older pending entries beyond the first claim batch.
+
 		claimCursor = nextCursor
 		for _, message := range claimed {
 			s.process(ctx, message)
 		}
+		// Nếu vừa claim được tin nhắn, tiếp tục vòng lặp để xử lý dứt điểm các tin nhắn pending
 		if len(claimed) > 0 {
 			continue
 		}
@@ -121,6 +146,10 @@ func (s *ResourceOwnershipConsumer) run(ctx context.Context) {
 			continue
 		}
 
+		// ─────────────────────────────────────────────────────────────────────
+		// BƯỚC 2: XREADGROUP - Đọc các tin nhắn mới phát sinh (kí hiệu '>')
+		// Block tối đa 5 giây chờ đợi có message mới
+		// ─────────────────────────────────────────────────────────────────────
 		streams, err := s.sharedRedis.XReadGroup(ctx, &goredis.XReadGroupArgs{
 			Group:    resourceOwnershipGroup,
 			Consumer: s.consumer,
@@ -136,8 +165,10 @@ func (s *ResourceOwnershipConsumer) run(ctx context.Context) {
 				return
 			}
 			logger.SysError("billing.ownership.redis.read", err.Error())
-			if !waitContext(ctx, time.Second) {
+			select {
+			case <-ctx.Done():
 				return
+			case <-time.After(time.Second):
 			}
 			continue
 		}
@@ -149,42 +180,131 @@ func (s *ResourceOwnershipConsumer) run(ctx context.Context) {
 	}
 }
 
+// process xử lý từng message nhận được từ Redis Stream và chuyển giao xuống Service Layer.
 func (s *ResourceOwnershipConsumer) process(ctx context.Context, message goredis.XMessage) {
-	eventIDText := redisString(message.Values["event_id"])
-	eventTypeText := redisString(message.Values["event_type"])
-	payload := redisBytes(message.Values["payload"])
+	var eventIDText string
+	switch v := message.Values["event_id"].(type) {
+	case string:
+		eventIDText = v
+	case []byte:
+		eventIDText = string(v)
+	}
+
+	var eventTypeText string
+	switch v := message.Values["event_type"].(type) {
+	case string:
+		eventTypeText = v
+	case []byte:
+		eventTypeText = string(v)
+	}
+
+	var payload []byte
+	switch v := message.Values["payload"].(type) {
+	case []byte:
+		payload = v
+	case string:
+		payload = []byte(v)
+	}
+
+	// 1. Kiểm tra giới hạn dung lượng payload
 	if len(payload) == 0 || len(payload) > resourceOwnershipMaxSize {
 		s.deadLetter(ctx, message, "invalid_payload_size")
 		return
 	}
 
+	// 2. Giải mã (Unmarshal) Protobuf
 	wire := &ownershipv1.ResourceOwnershipChangedV1{}
-	eventID, eventErr := uuid.Parse(eventIDText)
 	protoErr := proto.Unmarshal(payload, wire)
+	eventID, eventErr := uuid.Parse(eventIDText)
 	wireEventID, wireEventErr := uuid.FromBytes(wire.GetEventId())
 	resourceID, resourceErr := uuid.FromBytes(wire.GetResourceId())
 	ownerID, ownerErr := uuid.FromBytes(wire.GetOwnerId())
 	zoneID, zoneErr := uuid.FromBytes(wire.GetZoneId())
 	sourceJobID, sourceJobErr := uuid.FromBytes(wire.GetSourceJobId())
 	effectiveAt, timeErr := time.Parse(time.RFC3339Nano, wire.GetEffectiveAt())
+
 	eventType := entity.ResourceOwnershipEventType(wire.GetEventType())
-	validEventType := eventType == entity.ResourceOwnershipEventCreated ||
-		eventType == entity.ResourceOwnershipEventDeleted
+	validEventType := eventType == entity.ResourceOwnershipEventCreated || eventType == entity.ResourceOwnershipEventDeleted
 	validOwnerType := wire.GetOwnerType() == "PERSONAL" || wire.GetOwnerType() == "TENANT"
+	validResourceType := wire.GetResourceType() == "STORAGE_BUCKET" ||
+		wire.GetResourceType() == "HYPERVISOR_VM" ||
+		wire.GetResourceType() == "MAIL_CONSUMER"
+
+	// Inline kiểm tra định dạng W3C Traceparent
+	validTraceparent := true
+	if tp := wire.GetTraceparent(); tp != "" {
+		parts := strings.Split(tp, "-")
+		if len(parts) != 4 || len(parts[0]) != 2 || parts[0] == "ff" ||
+			len(parts[1]) != 32 || len(parts[2]) != 16 || len(parts[3]) != 2 {
+			validTraceparent = false
+		} else {
+			version, vErr := hex.DecodeString(parts[0])
+			traceID, tErr := hex.DecodeString(parts[1])
+			spanID, sErr := hex.DecodeString(parts[2])
+			flags, fErr := hex.DecodeString(parts[3])
+			if vErr != nil || tErr != nil || sErr != nil || fErr != nil || len(version) != 1 || len(flags) != 1 {
+				validTraceparent = false
+			} else {
+				traceZero, spanZero := true, true
+				for _, b := range traceID {
+					if b != 0 {
+						traceZero = false
+						break
+					}
+				}
+				for _, b := range spanID {
+					if b != 0 {
+						spanZero = false
+						break
+					}
+				}
+				if traceZero || spanZero {
+					validTraceparent = false
+				}
+			}
+		}
+	}
+
+	// =========================================================================
+	// HÀNG RÀO HỢP ĐỒNG (CONTRACT BOUNDARY GUARDS)
+	// =========================================================================
+
+	// Guard 1: Tính toàn vẹn của Header & Message Envelope
 	if eventErr != nil || protoErr != nil || wireEventErr != nil ||
-		resourceErr != nil || ownerErr != nil || zoneErr != nil || sourceJobErr != nil ||
-		timeErr != nil || eventID == uuid.Nil || wireEventID != eventID ||
-		eventTypeText != wire.GetEventType() || resourceID == uuid.Nil ||
-		ownerID == uuid.Nil || zoneID == uuid.Nil || sourceJobID == uuid.Nil ||
-		wire.GetSchemaVersion() != 1 || wire.GetSourceVersion() <= 0 ||
-		wire.GetResourceType() != "STORAGE_BUCKET" ||
-		strings.TrimSpace(wire.GetResourceName()) == "" ||
-		len(wire.GetResourceName()) > 255 || !validTraceparent(wire.GetTraceparent()) ||
-		!validEventType || !validOwnerType {
+		eventID == uuid.Nil || wireEventID != eventID || eventTypeText != wire.GetEventType() {
 		s.deadLetter(ctx, message, "invalid_contract")
 		return
 	}
 
+	// Guard 2: Tính hợp lệ của các định danh tài nguyên & chủ sở hữu
+	if resourceErr != nil || resourceID == uuid.Nil ||
+		ownerErr != nil || ownerID == uuid.Nil ||
+		zoneErr != nil || zoneID == uuid.Nil ||
+		sourceJobErr != nil || sourceJobID == uuid.Nil {
+		s.deadLetter(ctx, message, "invalid_contract")
+		return
+	}
+
+	// Guard 3: Schema version và thời gian hiệu lực
+	if wire.GetSchemaVersion() != 1 || wire.GetSourceVersion() <= 0 || timeErr != nil {
+		s.deadLetter(ctx, message, "invalid_contract")
+		return
+	}
+
+	// Guard 4: Phân loại tài nguyên và ràng buộc tên
+	if !validEventType || !validOwnerType || !validResourceType ||
+		strings.TrimSpace(wire.GetResourceName()) == "" || len(wire.GetResourceName()) > 255 {
+		s.deadLetter(ctx, message, "invalid_contract")
+		return
+	}
+
+	// Guard 5: Chuẩn phân tán W3C Traceparent
+	if !validTraceparent {
+		s.deadLetter(ctx, message, "invalid_contract")
+		return
+	}
+
+	// 3. Tính mã băm SHA-256 của payload để phục vụ dedupe và đối soát toàn vẹn trong Inbox
 	hash := sha256.Sum256(payload)
 	event := &entity.ResourceOwnershipEvent{
 		EventID:        eventID,
@@ -199,16 +319,19 @@ func (s *ResourceOwnershipConsumer) process(ctx context.Context, message goredis
 		EventType:      eventType,
 		PayloadHashHex: hex.EncodeToString(hash[:]),
 	}
+
+	// 4. Chuyển giao xuống Service Layer để thực thi giao dịch ghi vào PostgreSQL Billing DB
 	applyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err := s.ownership.ProcessResourceOwnershipEvent(applyCtx, event)
 	cancel()
 	if err != nil {
-		if errors.Is(err, entity.ErrResourceOwnershipIntegrity) {
+		// Nếu là lỗi xung đột toàn vẹn dữ liệu không thể phục hồi -> đưa vào DLQ
+		if errors.Is(err, billingTaxonomy.ErrResourceOwnershipIntegrity) {
 			s.deadLetter(ctx, message, "integrity_conflict")
 			return
 		}
-		// [COMMENT]: Billing/DB failures are not poison. Keep the message pending
-		// indefinitely and alert; XAUTOCLAIM provides failover without data loss.
+		// Lỗi kết nối DB tạm thời KHÔNG PHẢI là tin nhắn độc (poison).
+		// Giữ tin nhắn ở trạng thái Pending trong Redis; cơ chế XAutoClaim sẽ retry sau khi DB hồi phục.
 		logger.SysError(
 			"billing.ownership.redis.apply",
 			fmt.Sprintf("event_id=%s: %v", eventID, err),
@@ -216,27 +339,49 @@ func (s *ResourceOwnershipConsumer) process(ctx context.Context, message goredis
 		return
 	}
 
+	// 5. Giao dịch thành công: Thực hiện pipeline XACK và XDEL để xóa vĩnh viễn tin nhắn khỏi Redis Stream
 	if _, err := s.sharedRedis.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
 		pipe.XAck(ctx, resourceOwnershipStream, resourceOwnershipGroup, message.ID)
 		pipe.XDel(ctx, resourceOwnershipStream, message.ID)
 		return nil
 	}); err != nil {
-		// Redelivery is safe because billing.ownership_event_inbox stores
-		// event_id plus payload hash in the same Billing transaction.
+		// Nếu lệnh ACK thất bại do mạng, việc gửi lại (redelivery) vẫn an toàn (Idempotent)
+		// vì bảng `billing.ownership_event_inbox` đã lưu event_id và payload_hash trong cùng 1 transaction.
 		logger.SysError("billing.ownership.redis.ack", err.Error())
 	}
 }
 
+// deadLetter cách ly tin nhắn lỗi sang Dead-Letter Queue (DLQ) và ACK khỏi Stream chính.
 func (s *ResourceOwnershipConsumer) deadLetter(
 	ctx context.Context,
 	message goredis.XMessage,
 	reason string,
 ) {
-	payload := redisBytes(message.Values["payload"])
+	var payload []byte
+	switch v := message.Values["payload"].(type) {
+	case []byte:
+		payload = v
+	case string:
+		payload = []byte(v)
+	}
 	payloadHash := sha256.Sum256(payload)
-	// All keys share the {billing} hash tag, so DLQ + ACK + delete remains one
-	// Redis Cluster transaction. Never copy arbitrary rejected bytes into a
-	// second store; the bounded fingerprint is sufficient for diagnosis.
+
+	var eventIDText string
+	switch v := message.Values["event_id"].(type) {
+	case string:
+		eventIDText = v
+	case []byte:
+		eventIDText = string(v)
+	}
+
+	var eventTypeText string
+	switch v := message.Values["event_type"].(type) {
+	case string:
+		eventTypeText = v
+	case []byte:
+		eventTypeText = string(v)
+	}
+
 	if _, err := s.sharedRedis.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
 		pipe.XAdd(ctx, &goredis.XAddArgs{
 			Stream: resourceOwnershipDLQ,
@@ -245,8 +390,8 @@ func (s *ResourceOwnershipConsumer) deadLetter(
 			Values: map[string]any{
 				"source_stream_id": message.ID,
 				"reason":           reason,
-				"event_id":         redisString(message.Values["event_id"]),
-				"event_type":       redisString(message.Values["event_type"]),
+				"event_id":         eventIDText,
+				"event_type":       eventTypeText,
 				"payload_len":      len(payload),
 				"payload_sha256":   hex.EncodeToString(payloadHash[:]),
 			},
@@ -261,6 +406,7 @@ func (s *ResourceOwnershipConsumer) deadLetter(
 	logger.SysWarn("billing.ownership.redis.dlq", "ownership event moved to DLQ: "+reason)
 }
 
+// Stop dừng hoạt động Consumer một cách an toàn (Graceful Shutdown).
 func (s *ResourceOwnershipConsumer) Stop() {
 	if s == nil {
 		return
@@ -276,63 +422,4 @@ func (s *ResourceOwnershipConsumer) Stop() {
 			logger.SysWarn("billing.ownership.redis.stop", "timed out waiting for ownership consumer")
 		}
 	})
-}
-
-func redisString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case []byte:
-		return string(typed)
-	default:
-		return ""
-	}
-}
-
-func redisBytes(value any) []byte {
-	switch typed := value.(type) {
-	case string:
-		return []byte(typed)
-	case []byte:
-		return typed
-	default:
-		return nil
-	}
-}
-
-func validTraceparent(value string) bool {
-	if value == "" {
-		return true
-	}
-	parts := strings.Split(value, "-")
-	if len(parts) != 4 || len(parts[0]) != 2 || parts[0] == "ff" ||
-		len(parts[1]) != 32 || len(parts[2]) != 16 || len(parts[3]) != 2 {
-		return false
-	}
-	version, versionErr := hex.DecodeString(parts[0])
-	traceID, traceErr := hex.DecodeString(parts[1])
-	spanID, spanErr := hex.DecodeString(parts[2])
-	flags, flagsErr := hex.DecodeString(parts[3])
-	return versionErr == nil && traceErr == nil && spanErr == nil && flagsErr == nil &&
-		len(version) == 1 && len(flags) == 1 && !allZero(traceID) && !allZero(spanID)
-}
-
-func allZero(value []byte) bool {
-	for _, item := range value {
-		if item != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-func waitContext(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }

@@ -114,9 +114,15 @@ sequenceDiagram
     R->>DB: lock PERSONAL payment intent
     R->>DB: compare provider amount currency and provider payment uniqueness
     R->>DB: lock personal wallet
-    R->>DB: UPDATE cash balance and activation status
+    R->>DB: UPDATE cash balance and preserve PENDING_ACTIVATION if pending
+    opt wallet was PENDING_ACTIVATION
+        R->>DB: INSERT storage_pending_activation_reconcile request
+        R->>DB: INSERT SUSPEND_BILLABLE wallet admission outbox
+    else wallet was CREDIT_EXHAUSTED suspension
+        R->>DB: transition to ACTIVE and INSERT ALLOW admission outbox
+    end
     R->>DB: INSERT deterministic TOP_UP ledger entry
-    opt first activation with referral reservation
+    opt wallet is active and referral reservation is eligible
         R->>DB: advisory owner onboarding lock and reservation lock
         R->>DB: insert deterministic credit grant and PROMO_CREDIT ledger
         R->>DB: insert redemption and mark reservation REDEEMED or REJECTED
@@ -132,9 +138,10 @@ sequenceDiagram
 | inbox insert | unique `(provider, provider_event_id)` stores payload hash, PERSONAL owner type and payment intent ID |
 | duplicate event | same hash/owner/intent and already SETTLED provider payment returns replay success; a different hash/owner/intent is a conflict |
 | intent | must exist with `owner_type=PERSONAL`, same provider, amount and currency; a second intent cannot claim same provider payment ID |
-| wallet | `FOR UPDATE`; CLOSED or invalid state is rejected; `PENDING_ACTIVATION` becomes ACTIVE; an already SUSPENDED wallet remains SUSPENDED |
+| wallet | `FOR UPDATE`; CLOSED or invalid state is rejected; `PENDING_ACTIVATION` remains `PENDING_ACTIVATION/NOT_ACTIVATED` until historical Storage reconciliation; only `CREDIT_EXHAUSTED` suspension can reopen |
+| admission | wallet version, reason and `SUSPEND_BILLABLE`/`ALLOW` outbox row commit with the wallet transition; pending top-up never emits `ALLOW` |
 | monetary journal | deterministic SHA1 derived TOP_UP ledger ID records post-credit cash and promotional balances; duplicate insert cannot mint twice |
-| referral | only on wallet activation; reservation must be the same user, RESERVED, timely, eligible and not already redeemed; its terms are snapshotted, not reread from campaign |
+| referral | activation-only reservation is not redeemed while the wallet remains pending; it is handled by the activation workflow after reconciliation |
 | settlement | intent gets provider payment ID and `SETTLED`; inbox gets `APPLIED` in the same commit |
 
 ### Rejection, retry and recovery
@@ -146,9 +153,38 @@ sequenceDiagram
 | identical replay after success | inbox and settled intent are locked then returned as `Replayed` | handler returns successful empty response; no second ledger/timeline item |
 | Redis activity publish fails | money transaction already committed | logged only; must not make provider retry settlement |
 
-## Phase 4 — Best-effort account timeline projection
+## Phase 4 — Storage activation handoff
 
-Only after a new committed settlement, `PersonalPaymentService` submits `useractivity.Append` to Shared Redis with a 150 ms detached timeout. The event uses action `billing.wallet.top_up` or `billing.wallet.activate`, system actor, the settled provider event as operation ID, wallet resource, amount/currency, and referral/activation metadata. This is a UX projection, not a ledger/retry participant.
+When the committed wallet was `PENDING_ACTIVATION`, the payment workflow hands
+off only a durable request keyed by wallet. The Storage Engine later reloads
+historical `WALLET_PENDING_ACTIVATION` lines and their pinned pricing versions;
+it may transition the wallet to `ACTIVE` only after those lines are terminal and
+the wallet remains credit-positive. This payment workflow never re-rates usage,
+calls a Zone, or lifts admission from the webhook path.
+
+```mermaid
+sequenceDiagram
+    participant DB as Billing PostgreSQL
+    participant E as Storage pending-activation worker
+    participant L as Wallet ledger
+    participant O as Wallet admission outbox
+
+    DB-->>E: committed storage_pending_activation_reconcile request
+    E->>DB: lock request, wallet and pending historical lines
+    E->>DB: reload owner and pinned pricing evidence
+    alt all lines settle and credit remains positive
+        E->>L: append deterministic USAGE_CHARGE rows
+        E->>DB: mark lines RESOLVED/SETTLED and wallet ACTIVE
+        E->>O: append versioned ALLOW
+    else unresolved evidence or credit exhausted
+        E->>DB: keep request BLOCKED or wallet SUSPENDED(CREDIT_EXHAUSTED)
+        E->>O: append SUSPEND_BILLABLE when state changes
+    end
+```
+
+## Phase 5 — Best-effort account timeline projection
+
+Only after a new committed settlement, `PersonalPaymentService` submits `useractivity.Append` to Shared Redis with a 150 ms detached timeout. The event uses action `billing.wallet.top_up` or `billing.wallet.activate` (the latter only when a credit-exhausted suspension reopens), system actor, the settled provider event as operation ID, wallet resource, amount/currency, and bounded admission metadata. Pending activation is projected by its Storage reconciliation workflow, not by the webhook. This is a UX projection, not a ledger/retry participant.
 
 ```mermaid
 sequenceDiagram

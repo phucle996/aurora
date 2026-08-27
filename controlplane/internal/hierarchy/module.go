@@ -44,16 +44,16 @@ import (
 )
 
 type Module struct {
-	zoneRedis                *hierarchyPubsubHandler.ZoneRedisHandler
-	tenantService            *hierarchySvcImpl.TenantService
-	ZoneHandler              *hierarchyHandler.ZoneHandler
-	ZoneEncryptionKeyHandler *hierarchyHandler.ZoneEncryptionKeyHandler
-	ZoneEncryptionKeyService hierarchySvcInterface.ZoneEncryptionKeyService
-	WorkspacePersonalHandler *hierarchyHandler.WorkspacePersonalHandler
-	WorkspaceTenantHandler   *hierarchyHandler.WorkspaceTenantHandler
-	TenantHandler            *hierarchyHandler.TenantHandler
-	TenantInvitationHandler  *hierarchyHandler.TenantInvitationHandler
-	L1Registry               *cacheengine.CacheRegistry
+	zoneRedis                  *hierarchyPubsubHandler.ZoneRedisHandler
+	ZoneHandler                *hierarchyHandler.ZoneHandler
+	ZoneEncryptionKeyHandler   *hierarchyHandler.ZoneEncryptionKeyHandler
+	ZoneEncryptionKeyService   hierarchySvcInterface.ZoneEncryptionKeyService
+	WorkspacePersonalHandler   *hierarchyHandler.WorkspacePersonalHandler
+	WorkspaceTenantHandler     *hierarchyHandler.WorkspaceTenantHandler
+	TenantHandler              *hierarchyHandler.TenantHandler
+	TenantInvitationHandler    *hierarchyHandler.TenantInvitationHandler
+	L1Registry                 *cacheengine.CacheRegistry
+	tenantWalletProvisionRelay *hierarchySvcImpl.TenantWalletProvisionRelay
 }
 
 // NewModule dựng dependency graph của Hierarchy và trả về Module hoàn chỉnh.
@@ -156,13 +156,18 @@ func NewModule(
 	if tenantRepo == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant repository is nil")
 	}
-	tenantService := hierarchySvcImpl.NewTenantService(tenantRepo, metrics)
+	tenantWalletProvisionRelay, err := hierarchySvcImpl.NewTenantWalletProvisionRelay(
+		tenantRepo,
+		rds,
+		cfg.Redis.DurableReplicaAcks,
+		cfg.Redis.DurableWait,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hierarchy module: initialize tenant wallet provision relay: %w", err)
+	}
+	tenantService := hierarchySvcImpl.NewTenantService(tenantRepo, metrics, tenantWalletProvisionRelay.Notify)
 	if tenantService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant service is nil")
-	}
-	concreteTenantService, ok := tenantService.(*hierarchySvcImpl.TenantService)
-	if !ok {
-		return nil, fmt.Errorf("hierarchy module: concrete tenant service is unavailable")
 	}
 	tHandler := hierarchyHandler.NewTenantHandler(tenantService)
 	if tHandler == nil {
@@ -184,28 +189,17 @@ func NewModule(
 	// [COMMENT]: Lược bỏ việc khởi tạo BackpressureService do đã chuyển đổi hoàn toàn sang mô hình event-driven ở job-orchestrator.
 
 	return &Module{
-		zoneRedis:                zoneRedis,
-		tenantService:            concreteTenantService,
-		ZoneHandler:              zHandler,
-		ZoneEncryptionKeyHandler: zoneEncryptionKeyHTTPHandler,
-		ZoneEncryptionKeyService: zoneEncryptionKeyService,
-		WorkspacePersonalHandler: wPersonalHandler,
-		WorkspaceTenantHandler:   wTenantHandler,
-		TenantHandler:            tHandler,
-		TenantInvitationHandler:  tenantInvitationHandler,
-		L1Registry:               cacheEngine,
+		zoneRedis:                  zoneRedis,
+		ZoneHandler:                zHandler,
+		ZoneEncryptionKeyHandler:   zoneEncryptionKeyHTTPHandler,
+		ZoneEncryptionKeyService:   zoneEncryptionKeyService,
+		WorkspacePersonalHandler:   wPersonalHandler,
+		WorkspaceTenantHandler:     wTenantHandler,
+		TenantHandler:              tHandler,
+		TenantInvitationHandler:    tenantInvitationHandler,
+		L1Registry:                 cacheEngine,
+		tenantWalletProvisionRelay: tenantWalletProvisionRelay,
 	}, nil
-}
-
-func (m *Module) SetTenantBillingOutboxNotifier(notify func()) error {
-	if notify == nil {
-		return fmt.Errorf("hierarchy module: tenant billing outbox notifier is nil")
-	}
-	if m.tenantService == nil {
-		return fmt.Errorf("hierarchy module: concrete tenant service is unavailable")
-	}
-	m.tenantService.SetBillingOutboxNotifier(notify)
-	return nil
 }
 
 // Stop hủy các background goroutine của module Hierarchy an toàn.
@@ -215,5 +209,8 @@ func (m *Module) Stop() {
 	}
 	if m.zoneRedis != nil {
 		m.zoneRedis.Stop()
+	}
+	if m.tenantWalletProvisionRelay != nil {
+		m.tenantWalletProvisionRelay.Stop()
 	}
 }

@@ -23,6 +23,10 @@ fn consumer_event(version: u64, hash_seed: u8) -> MailConsumerUpsertV1 {
         desired_state: 2,
         parallelism: 4,
         config_sha256: vec![hash_seed; 32],
+        owner_id: [4_u8; 16].to_vec(),
+        owner_type: "PERSONAL".to_string(),
+        workspace_id: [5_u8; 16].to_vec(),
+        zone_id: [6_u8; 16].to_vec(),
     };
     event.config_sha256 = canonical_consumer_sha256(&event).to_vec();
     event
@@ -30,7 +34,7 @@ fn consumer_event(version: u64, hash_seed: u8) -> MailConsumerUpsertV1 {
 
 fn test_runtime(max_entries: usize) -> MailConfigurationRuntime {
     MailConfigurationRuntime {
-        zone_id: "zone-a".to_string(),
+        zone_id: uuid::Uuid::from_bytes([6_u8; 16]).to_string(),
         instance_id: "pod-a".to_string(),
         scan_interval: Duration::from_secs(60),
         scan_page_size: 16,
@@ -50,6 +54,10 @@ fn test_runtime(max_entries: usize) -> MailConfigurationRuntime {
 fn configuration(id: &str, version: u64, hash: u8) -> Arc<RuntimeConsumerConfiguration> {
     Arc::new(RuntimeConsumerConfiguration {
         consumer_id: id.to_string(),
+        owner_id: uuid::Uuid::from_bytes([4_u8; 16]).to_string(),
+        owner_type: "PERSONAL".to_string(),
+        workspace_id: uuid::Uuid::from_bytes([5_u8; 16]).to_string(),
+        zone_id: uuid::Uuid::from_bytes([6_u8; 16]).to_string(),
         config_version: version,
         config_sha256: [hash; 32],
         stream: RuntimeStreamSource {
