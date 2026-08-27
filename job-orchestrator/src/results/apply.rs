@@ -108,13 +108,15 @@ pub async fn apply_result(
             }
             "STORAGE" => storage::apply::apply_storage_result(
                 pg_client,
-                result.job_id,
-                &wire.job_topic,
-                &wire.result_status,
-                error_code,
-                error_message,
-                &wire.result_payload,
-                wire.result_payload_schema_version,
+                storage::apply::StorageResultRequest {
+                    job_id: result.job_id,
+                    job_topic: &wire.job_topic,
+                    status: &wire.result_status,
+                    error_code,
+                    error_message,
+                    result_payload: &wire.result_payload,
+                    result_payload_schema_version: wire.result_payload_schema_version,
+                },
             )
             .await
             .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string())),

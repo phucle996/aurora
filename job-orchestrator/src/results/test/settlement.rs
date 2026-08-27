@@ -145,7 +145,8 @@ async fn storage_lifecycle_and_managed_retry_settle_in_postgres() {
             completed_at timestamptz, updated_at timestamptz, error_code text, error_message text
         );
         CREATE TABLE storage.personal_buckets (
-            id uuid PRIMARY KEY, lifecycle_rules jsonb DEFAULT '[]', status text, updated_at timestamptz
+            id uuid PRIMARY KEY, lifecycle_rules jsonb DEFAULT '[]', status text, updated_at timestamptz,
+            capacity_quota_bytes bigint DEFAULT 1024, versioning_enabled boolean DEFAULT false
         );
         CREATE TABLE storage.tenant_buckets (LIKE storage.personal_buckets INCLUDING ALL);
         CREATE SCHEMA managed_service;
@@ -173,10 +174,34 @@ async fn storage_lifecycle_and_managed_retry_settle_in_postgres() {
             actual_rules: Vec::new(),
         }
         .encode_to_vec();
-        let outcome = crate::results::storage::bucket::resolve_bucket_lifecycle(
-            &mut client,
+        // A lifecycle job cannot be settled through either of the other topic owners.
+        assert!(crate::results::storage::bucket::resolve_bucket_resize(
+            &client,
             event,
-            "storage.bucket.lifecycle",
+            "SUCCEEDED",
+            None,
+            None,
+            &payload,
+            1,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(crate::results::storage::bucket::resolve_bucket_versioning(
+            &client,
+            event,
+            "SUCCEEDED",
+            None,
+            None,
+            &payload,
+            1,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        let outcome = crate::results::storage::bucket::resolve_bucket_lifecycle(
+            &client,
+            event,
             "SUCCEEDED",
             None,
             None,
@@ -197,6 +222,76 @@ async fn storage_lifecycle_and_managed_retry_settle_in_postgres() {
             .unwrap()
             .get(0);
         assert_eq!(state, "READY");
+
+        let quota_payload = crate::contracts::storage::BucketQuotaAppliedV1 {
+            schema_version: 1,
+            bucket_id: bucket.to_string(),
+            actual_quota_bytes: 2048,
+        }
+        .encode_to_vec();
+        let versioning_payload = crate::contracts::storage::BucketVersioningAppliedV1 {
+            schema_version: 1,
+            bucket_id: bucket.to_string(),
+            actual_versioning_enabled: true,
+        }
+        .encode_to_vec();
+        for (topic, payload) in [
+            ("storage.bucket.resize", &quota_payload),
+            ("storage.bucket.versioning", &versioning_payload),
+        ] {
+            let update_event = Uuid::new_v4();
+            client.execute(
+                "INSERT INTO storage.storage_outbox_records(event_id,job_topic,owner_type,status,resource_id) VALUES($1,$2,$3,'PROCESSING',$4)",
+                &[&update_event, &topic, &owner, &bucket.to_string()],
+            ).await.unwrap();
+            client
+                .execute(
+                    &format!("UPDATE storage.{branch}_buckets SET status='UPDATING' WHERE id=$1"),
+                    &[&bucket],
+                )
+                .await
+                .unwrap();
+            assert!(crate::results::storage::bucket::resolve_bucket_lifecycle(
+                &client,
+                update_event,
+                "SUCCEEDED",
+                None,
+                None,
+                payload,
+                1,
+            )
+            .await
+            .unwrap()
+            .is_none());
+            for replay in [false, true] {
+                let outcome = crate::results::storage::apply::apply_storage_result(
+                    &client,
+                    crate::results::storage::apply::StorageResultRequest {
+                        job_id: update_event,
+                        job_topic: topic,
+                        status: "SUCCEEDED",
+                        error_code: None,
+                        error_message: None,
+                        result_payload: payload,
+                        result_payload_schema_version: 1,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(outcome.is_none(), replay, "{owner} {topic} replay={replay}");
+            }
+            let settled = client.query_one(
+                &format!("SELECT b.status, b.capacity_quota_bytes, b.versioning_enabled, o.status FROM storage.{branch}_buckets b JOIN storage.storage_outbox_records o ON o.resource_id=b.id::text WHERE o.event_id=$1"),
+                &[&update_event],
+            ).await.unwrap();
+            assert_eq!(settled.get::<_, String>(0), "READY");
+            assert_eq!(settled.get::<_, i64>(1), 2048);
+            assert_eq!(
+                settled.get::<_, bool>(2),
+                topic == "storage.bucket.versioning"
+            );
+            assert_eq!(settled.get::<_, String>(3), "SUCCEEDED");
+        }
         let text_control = "[]".to_owned();
         client
             .query_one("SELECT $1::text::jsonb", &[&text_control])

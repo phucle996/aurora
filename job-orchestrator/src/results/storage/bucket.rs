@@ -194,13 +194,14 @@ pub async fn resolve_bucket_creation(
 pub async fn resolve_bucket_resize(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
-    job_topic: &str,
     status: &str,
     error_code: Option<&str>,
     error_message: Option<&str>,
     result_payload: &[u8],
     result_payload_schema_version: u32,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
+    // This resolver can settle only its own workflow's outbox rows.
+    let job_topic = "storage.bucket.resize";
     Logger::sys_info(
         "storage_db.resolve_bucket_resize",
         &format!(
@@ -373,13 +374,14 @@ pub async fn resolve_bucket_resize(
 pub async fn resolve_bucket_versioning(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
-    job_topic: &str,
     status: &str,
     error_code: Option<&str>,
     error_message: Option<&str>,
     result_payload: &[u8],
     result_payload_schema_version: u32,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
+    // This resolver can settle only its own workflow's outbox rows.
+    let job_topic = "storage.bucket.versioning";
     Logger::sys_info(
         "storage_db.resolve_bucket_versioning",
         &format!(
@@ -550,13 +552,14 @@ pub async fn resolve_bucket_versioning(
 pub async fn resolve_bucket_lifecycle(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
-    job_topic: &str,
     status: &str,
     error_code: Option<&str>,
     error_message: Option<&str>,
     result_payload: &[u8],
     result_payload_schema_version: u32,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
+    // This resolver can settle only its own workflow's outbox rows.
+    let job_topic = "storage.bucket.lifecycle";
     Logger::sys_info(
         "storage_db.resolve_bucket_lifecycle",
         &format!(
