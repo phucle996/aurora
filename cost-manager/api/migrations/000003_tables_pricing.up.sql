@@ -154,6 +154,68 @@ CREATE TABLE billing.hypervisor_zone_price_adjustment_versions (
     )
 );
 
+-- Hypervisor resource plans are Cost-owned commercial catalog entries. A plan
+-- is the business identity; every revision is immutable and pins the limits
+-- selected by a VM. Zone multipliers intentionally remain outside this table.
+CREATE TABLE billing.hypervisor_resource_plans (
+    id              UUID PRIMARY KEY,
+    code            VARCHAR(128) NOT NULL UNIQUE,
+    display_name    VARCHAR(256) NOT NULL,
+    description     TEXT NOT NULL,
+    status          VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_hypervisor_resource_plan_code CHECK (code ~ '^[a-z0-9][a-z0-9._-]{0,127}$'),
+    CONSTRAINT ck_hypervisor_resource_plan_display_name CHECK (length(btrim(display_name)) BETWEEN 1 AND 256),
+    CONSTRAINT ck_hypervisor_resource_plan_status CHECK (status IN ('ACTIVE', 'RETIRED'))
+);
+
+CREATE TABLE billing.hypervisor_resource_plan_revisions (
+    id                  UUID PRIMARY KEY,
+    plan_id             UUID NOT NULL REFERENCES billing.hypervisor_resource_plans(id) ON DELETE RESTRICT,
+    revision_number     BIGINT NOT NULL,
+    status              VARCHAR(16) NOT NULL,
+    billing_model       VARCHAR(32) NOT NULL,
+    cpu_cores           BIGINT NOT NULL,
+    memory_mib          BIGINT NOT NULL,
+    boot_disk_gib       BIGINT NOT NULL,
+    content_sha256      CHAR(64) NOT NULL,
+    effective_from      TIMESTAMPTZ NOT NULL,
+    effective_to        TIMESTAMPTZ,
+    change_reason       TEXT NOT NULL,
+    created_by          UUID NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_hypervisor_resource_plan_revision UNIQUE (plan_id, revision_number),
+    CONSTRAINT ck_hypervisor_resource_plan_revision_status CHECK (status IN ('SCHEDULED', 'ACTIVE', 'SUPERSEDED', 'CANCELLED')),
+    CONSTRAINT ck_hypervisor_resource_plan_billing_model CHECK (billing_model = 'LIMIT_HOURLY'),
+    CONSTRAINT ck_hypervisor_resource_plan_cpu CHECK (cpu_cores BETWEEN 1 AND 1024),
+    CONSTRAINT ck_hypervisor_resource_plan_memory CHECK (memory_mib BETWEEN 1 AND 4194304),
+    CONSTRAINT ck_hypervisor_resource_plan_boot_disk CHECK (boot_disk_gib BETWEEN 1 AND 65536),
+    CONSTRAINT ck_hypervisor_resource_plan_hash CHECK (content_sha256 ~ '^[a-f0-9]{64}$'),
+    CONSTRAINT ck_hypervisor_resource_plan_window CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT ex_hypervisor_resource_plan_effective_window EXCLUDE USING gist (
+        plan_id WITH =,
+        tstzrange(effective_from, COALESCE(effective_to, 'infinity'::timestamptz), '[)') WITH &&
+    )
+);
+
+CREATE TABLE billing.hypervisor_resource_plan_outbox (
+    id              UUID PRIMARY KEY,
+    event_id        UUID NOT NULL UNIQUE,
+    plan_id         UUID NOT NULL REFERENCES billing.hypervisor_resource_plans(id) ON DELETE RESTRICT,
+    revision_id     UUID NOT NULL REFERENCES billing.hypervisor_resource_plan_revisions(id) ON DELETE RESTRICT,
+    payload         BYTEA NOT NULL,
+    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ,
+    claim_token     UUID,
+    lease_until     TIMESTAMPTZ,
+    available_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    retry_count     INT NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    CONSTRAINT ck_hypervisor_resource_plan_outbox_payload CHECK (octet_length(payload) BETWEEN 1 AND 65536),
+    CONSTRAINT ck_hypervisor_resource_plan_outbox_retry CHECK (retry_count >= 0)
+);
+
 -- Mail owns its Zone multiplier. Accepted-recipient evidence remains a flat
 -- usage workflow and the generic PAYG kernel receives only this rational lineage.
 CREATE TABLE billing.mail_zone_price_adjustment_versions (

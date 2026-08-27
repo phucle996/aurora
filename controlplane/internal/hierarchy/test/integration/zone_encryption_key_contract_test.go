@@ -87,7 +87,7 @@ func TestProtectedPayloadRetentionAndCommitRaceGuardsCoverEveryRuntimeOutbox(t *
 	}
 
 	for _, migration := range []string{
-		"../../../storage/migrations/000008_outbox_payload_protection.up.sql",
+		"../../../storage/migrations/000002_storage_job_outbox.up.sql",
 		"../../../mail/migrations/000005_outbox_payload_protection.up.sql",
 		"../../../hypervisor/migrations/000006_outbox_payload_protection.up.sql",
 		"../../../managedservice/migrations/000007_payload_protection.up.sql",

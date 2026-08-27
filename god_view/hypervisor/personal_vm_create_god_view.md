@@ -58,7 +58,7 @@
   "resource_plan_revision_id": "018e6a34-9999-7abc-def0-fedcba987654",
   "additional_disks": [
     {
-      "size_gb": 50
+      "size_gb": "50"
     }
   ],
   "ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... user@workstation"
@@ -152,7 +152,7 @@ sequenceDiagram
 
     %% Phase 2
     CP->>CP: Handler validates schema, UUIDs and additional disks
-    CP->>CP: CommercialAdmissionGate: Check ALLOW in Redis Projection
+    Note over CP,DB: Commercial admission is checked inside the VM CTE, not a service precheck
     CP->>CP: Read Cost-owned resource-plan revision from Hypervisor L2
     CP->>DB: Resolve Available Image in Zone (GetAvailableImage)
     CP->>CP: Compute spec_hash (SHA-256 binary packing)
@@ -520,3 +520,11 @@ non-future timestamp and uses it for activation billing; its own NOW is only
 processing metadata. A command-hash-bound success receipt in Zone KV prevents
 completed command replay from repeating provider mutations. This is DP observation
 time, not a claim that Proxmox exposes one atomic completion time for all create steps.
+
+## Resource plan admission bounds
+
+Boot disk and total boot+additional disk capacity are bounded to 65536 GiB.
+The service checks the final total even when additional_disks is empty. Projection
+insertion serializes per plan and converges under out-of-order/replayed events.
+L2 remains a fast path; durable revision/window/hash/policy checks stay in the VM
+CTE, with no GetResourcePlanRevision service fallback.

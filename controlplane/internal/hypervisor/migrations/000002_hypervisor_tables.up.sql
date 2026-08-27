@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource_plan_revisions (
     CONSTRAINT ck_hypervisor_resource_plan_billing_model CHECK (billing_model = 'LIMIT_HOURLY'),
     CONSTRAINT ck_hypervisor_resource_plan_cpu CHECK (cpu_cores BETWEEN 1 AND 1024),
     CONSTRAINT ck_hypervisor_resource_plan_memory CHECK (memory_mib BETWEEN 1 AND 4194304),
-    CONSTRAINT ck_hypervisor_resource_plan_boot_disk CHECK (boot_disk_gib BETWEEN 1 AND 1048576),
+    CONSTRAINT ck_hypervisor_resource_plan_boot_disk CHECK (boot_disk_gib BETWEEN 1 AND 65536),
     CONSTRAINT ck_hypervisor_resource_plan_hash CHECK (octet_length(content_sha256) = 32),
     CONSTRAINT ck_hypervisor_resource_plan_state CHECK (state IN ('ACTIVE', 'RETIRED')),
     CONSTRAINT ck_hypervisor_resource_plan_window CHECK (effective_to IS NULL OR effective_to > effective_from)

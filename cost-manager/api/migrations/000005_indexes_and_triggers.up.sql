@@ -18,6 +18,12 @@ CREATE INDEX idx_storage_zone_adjustment_lookup
 CREATE INDEX idx_hypervisor_zone_adjustment_lookup
     ON billing.hypervisor_zone_price_adjustment_versions(zone_id, effective_from DESC, version_number DESC)
     WHERE status <> 'CANCELLED';
+CREATE INDEX idx_hypervisor_resource_plan_effective
+    ON billing.hypervisor_resource_plan_revisions(plan_id, effective_from DESC, revision_number DESC)
+    WHERE status <> 'CANCELLED';
+CREATE INDEX idx_hypervisor_resource_plan_outbox_claim
+    ON billing.hypervisor_resource_plan_outbox(available_at, occurred_at, id)
+    WHERE published_at IS NULL;
 CREATE INDEX idx_mail_zone_adjustment_lookup
     ON billing.mail_zone_price_adjustment_versions(zone_id, effective_from DESC, version_number DESC)
     WHERE status <> 'CANCELLED';

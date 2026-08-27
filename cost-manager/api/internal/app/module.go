@@ -41,10 +41,12 @@ type Module struct {
 	StoragePricingHandler  *handler.StoragePricingHandler
 	PricingScheduleHandler *handler.PricingScheduleHandler
 
-	HypervisorPricingService billingSvcInterface.HypervisorPricingService
-	HypervisorPricingHandler *handler.HypervisorPricingHandler
-	MailPricingService       billingSvcInterface.MailPricingService
-	MailPricingHandler       *handler.MailPricingHandler
+	HypervisorPricingService      billingSvcInterface.HypervisorPricingService
+	HypervisorPricingHandler      *handler.HypervisorPricingHandler
+	HypervisorResourcePlanService billingSvcInterface.HypervisorResourcePlanService
+	HypervisorResourcePlanHandler *handler.HypervisorResourcePlanHandler
+	MailPricingService            billingSvcInterface.MailPricingService
+	MailPricingHandler            *handler.MailPricingHandler
 
 	ResourceOwnershipRepo     billingRepoInterface.ResourceOwnershipRepository
 	ResourceOwnershipService  billingSvcInterface.ResourceOwnershipService
@@ -65,6 +67,8 @@ func NewModule(
 	redisClient *redis.Client,
 	authRedisClient *redis.Client,
 	paymentCfg config.PaymentCfg,
+	resourcePlanRedis redis.UniversalClient,
+	relayCfg config.ResourcePlanRelayCfg,
 ) (*Module, error) {
 	if dbPool == nil {
 		return nil, fmt.Errorf("dbPool infrastructure connection cannot be nil")
@@ -225,6 +229,21 @@ func NewModule(
 	if hypervisorPricingHandler == nil {
 		return nil, fmt.Errorf("failed to initialize HypervisorPricingHandler: instance is nil")
 	}
+	if relayCfg.ReplicaAcks < 0 || relayCfg.DurableWait < time.Millisecond || relayCfg.DurableWait > 5*time.Second {
+		return nil, fmt.Errorf("invalid Hypervisor resource plan durability policy")
+	}
+	hypervisorResourcePlanRepo := repository.NewHypervisorResourcePlanRepository(dbPool)
+	if hypervisorResourcePlanRepo == nil {
+		return nil, fmt.Errorf("failed to initialize HypervisorResourcePlanRepository: instance is nil")
+	}
+	hypervisorResourcePlanService := service.NewHypervisorResourcePlanService(hypervisorResourcePlanRepo, resourcePlanRedis, entity.HypervisorResourcePlanRelayPolicy{ReplicaAcks: relayCfg.ReplicaAcks, DurableWait: relayCfg.DurableWait})
+	if hypervisorResourcePlanService == nil {
+		return nil, fmt.Errorf("failed to initialize HypervisorResourcePlanService: instance is nil")
+	}
+	hypervisorResourcePlanHandler := handler.NewHypervisorResourcePlanHandler(hypervisorResourcePlanService)
+	if hypervisorResourcePlanHandler == nil {
+		return nil, fmt.Errorf("failed to initialize HypervisorResourcePlanHandler: instance is nil")
+	}
 
 	mailPricingRepo := repository.NewMailPricingRepository(dbPool)
 	if mailPricingRepo == nil {
@@ -285,6 +304,8 @@ func NewModule(
 		PricingScheduleHandler:          pricingScheduleHandler,
 		HypervisorPricingService:        hypervisorPricingService,
 		HypervisorPricingHandler:        hypervisorPricingHandler,
+		HypervisorResourcePlanService:   hypervisorResourcePlanService,
+		HypervisorResourcePlanHandler:   hypervisorResourcePlanHandler,
 		MailPricingService:              mailPricingService,
 		MailPricingHandler:              mailPricingHandler,
 		ResourceOwnershipRepo:           ownershipRepo,

@@ -79,6 +79,12 @@ spec:
               containerPort: 9094
               protocol: TCP
           env:
+            - name: HYPERVISOR_RESOURCE_PLAN_REDIS_CLUSTER
+              value: "true"
+            - name: HYPERVISOR_RESOURCE_PLAN_REPLICA_ACKS
+              value: "1"
+            - name: HYPERVISOR_RESOURCE_PLAN_DURABLE_WAIT
+              value: "2s"
             - name: TZ
               value: "UTC"
             - name: PORT

@@ -13,6 +13,7 @@ import { cn } from '../../lib/utils';
 import { MailZoneAdjustmentPanel } from './MailZoneAdjustmentPanel';
 import { StorageZoneAdjustmentPanel } from './StorageZoneAdjustmentPanel';
 import { HypervisorZoneAdjustmentPanel } from './HypervisorZoneAdjustmentPanel';
+import { HypervisorResourcePlansPanel } from './HypervisorResourcePlansPanel';
 
 const EMPTY_BRACKET: PricingBracket = {
   range_start_quantity: '0',
@@ -233,6 +234,8 @@ export default function PricingSchedulesPage() {
           )}
         </section>
       </div>
+
+      <HypervisorResourcePlansPanel canPublish={canPublish} />
     </div>
   );
 }

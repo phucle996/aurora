@@ -30,6 +30,8 @@ DROP INDEX IF EXISTS billing.uq_resource_ownership_active_name;
 DROP INDEX IF EXISTS billing.uq_resource_ownership_active_resource;
 DROP INDEX IF EXISTS billing.idx_usage_settlement_retry;
 DROP INDEX IF EXISTS billing.idx_hypervisor_zone_adjustment_lookup;
+DROP INDEX IF EXISTS billing.idx_hypervisor_resource_plan_outbox_claim;
+DROP INDEX IF EXISTS billing.idx_hypervisor_resource_plan_effective;
 DROP INDEX IF EXISTS billing.idx_mail_zone_adjustment_lookup;
 DROP INDEX IF EXISTS billing.idx_storage_zone_adjustment_lookup;
 DROP INDEX IF EXISTS billing.idx_pricing_outbox_unpublished;

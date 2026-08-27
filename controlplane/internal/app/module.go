@@ -115,9 +115,6 @@ func NewGlobalModules(cfg *config.Config,
 	if iamModule == nil {
 		return nil, errors.New("app: init critical iam module: iam module is nil")
 	}
-	if err := hierarchyModule.SetTenantBillingOutboxNotifier(iamModule.NotifyBillingOutbox); err != nil {
-		return nil, fmt.Errorf("app: wire tenant billing outbox notifier: %w", err)
-	}
 
 	// Managed Service catalog is a Controlplane durable business module. A bad
 	// PostgreSQL/schema dependency must fail before readiness and route exposure.
@@ -131,7 +128,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ ảo hóa Hypervisor
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	hypervisorModule, err := hypervisor.NewModule(cfg, db, cacheEngine, otel, payloadProtector)
+	hypervisorModule, err := hypervisor.NewModule(cfg, db, rds, cacheEngine, otel, payloadProtector)
 	if err != nil {
 		// Log lỗi nghiêm trọng mức hệ thống phục vụ Alerting/Observability
 		logger.SysError("graceful.degradation.hypervisor", fmt.Sprintf("Failed to initialize hypervisor module: %v. Running in degraded mode.", err))
@@ -149,7 +146,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// [COMMENT]: Khởi tạo phân hệ Storage (Tier 2). Hỗ trợ chạy ở chế độ suy giảm (Degraded Mode).
-	storageModule, err := storage.NewModule(cfg, db, rds, authRds, cacheEngine, otel, payloadProtector, kafkaProducer)
+	storageModule, err := storage.NewModule(cfg, db, rds, cacheEngine, otel, payloadProtector, kafkaProducer)
 	if err != nil {
 		logger.SysError("graceful.degradation.storage", fmt.Sprintf("Failed to initialize storage module: %v. Running in degraded mode.", err))
 		storageModule = storage.NewDegradedModule(err)

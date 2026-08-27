@@ -233,6 +233,56 @@ export interface PublishedHypervisorZonePriceAdjustment {
 	checksum: string;
 }
 
+export interface HypervisorResourcePlan {
+	plan_id: string;
+	revision_id: string;
+	revision_number: string;
+	code: string;
+	display_name: string;
+	description: string;
+	billing_model: 'LIMIT_HOURLY';
+	cpu_cores: string;
+	memory_mib: string;
+	boot_disk_gib: string;
+	content_sha256: string;
+	effective_from: string;
+	effective_to: string | null;
+}
+
+export interface HypervisorResourcePlanAdminItem {
+	plan_id: string;
+	code: string;
+	display_name: string;
+	description: string;
+	state: string;
+	latest_revision_number: string;
+	effective_revision_number: string;
+}
+export interface HypervisorResourcePlanHistoryItem {
+	plan_id: string;
+	revision_id: string;
+	revision_number: string;
+	cpu_cores: string;
+	memory_mib: string;
+	boot_disk_gib: string;
+	effective_from: string;
+	effective_to: string | null;
+	state: string;
+	change_reason: string;
+	is_latest: boolean;
+	is_effective: boolean;
+}
+export interface HypervisorResourcePlansResponse {
+	plans: HypervisorResourcePlanAdminItem[];
+	next_cursor: string;
+	observed_at: string;
+}
+export interface HypervisorResourcePlanHistoryResponse {
+	revisions: HypervisorResourcePlanHistoryItem[];
+	next_cursor: string;
+	observed_at: string;
+}
+
 export const billingApi = {
   async getWalletSummary(signal?: AbortSignal): Promise<WalletSummary> {
     return request<WalletSummary>('/billing/wallet/summary', { method: 'GET', signal });
@@ -408,5 +458,41 @@ export const billingApi = {
 			method: 'POST',
 			body: payload,
 		});
+	},
+
+	async listHypervisorResourcePlans(limit = 50, signal?: AbortSignal, after = ''): Promise<HypervisorResourcePlansResponse> {
+		const query = new URLSearchParams({ limit: String(limit) });
+		if (after) query.set('after', after);
+		return request<HypervisorResourcePlansResponse>(`/billing/hypervisor/resource-plans?${query}`, { method: 'GET', signal });
+	},
+
+	async listHypervisorResourcePlanRevisions(planID: string, signal?: AbortSignal, before = ''): Promise<HypervisorResourcePlanHistoryResponse> {
+		const query = new URLSearchParams({ limit: '50' });
+		if (before) query.set('before', before);
+		return request<HypervisorResourcePlanHistoryResponse>(`/billing/hypervisor/resource-plans/${encodeURIComponent(planID)}/revisions?${query}`, { method: 'GET', signal });
+	},
+
+	async createHypervisorResourcePlan(payload: {
+		code: string;
+		display_name: string;
+		description: string;
+		cpu_cores: string;
+		memory_mib: string;
+		boot_disk_gib: string;
+		effective_from: string;
+		change_reason: string;
+	}): Promise<HypervisorResourcePlan> {
+		return criticalFetcher<HypervisorResourcePlan>('/billing/critical/hypervisor/resource-plans', { method: 'POST', body: payload });
+	},
+
+	async publishHypervisorResourcePlanRevision(planID: string, payload: {
+		expected_latest_revision: string;
+		cpu_cores: string;
+		memory_mib: string;
+		boot_disk_gib: string;
+		effective_from: string;
+		change_reason: string;
+	}): Promise<HypervisorResourcePlan> {
+		return criticalFetcher<HypervisorResourcePlan>(`/billing/critical/hypervisor/resource-plans/${encodeURIComponent(planID)}/revisions`, { method: 'POST', body: payload });
 	},
 };

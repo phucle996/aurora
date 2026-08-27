@@ -64,6 +64,15 @@ func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler
 		m.HypervisorPricingHandler.ListZonePriceAdjustments,
 	)
 	router.GET(
+		"/api/v1/billing/hypervisor/resource-plans",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.HypervisorResourcePlanHandler.ListAdmin,
+	)
+	router.GET("/api/v1/billing/hypervisor/resource-plans/:plan_id/revisions",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.HypervisorResourcePlanHandler.ListRevisions,
+	)
+	router.GET(
 		"/api/v1/billing/referrals",
 		m.PersonalAuthorizationMiddleware.Authorize("billing:credit:adjust", false),
 		m.PersonalAccountHandler.ListReferralCampaigns,
@@ -87,6 +96,18 @@ func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler
 		middleware.RequireSessionProof(),
 		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
 		m.HypervisorPricingHandler.CreateBasePriceVersion,
+	)
+	router.POST(
+		"/api/v1/billing/critical/hypervisor/resource-plans",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.HypervisorResourcePlanHandler.Create,
+	)
+	router.POST(
+		"/api/v1/billing/critical/hypervisor/resource-plans/:plan_id/revisions",
+		middleware.RequireSessionProof(),
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:publish", true),
+		m.HypervisorResourcePlanHandler.PublishRevision,
 	)
 	router.POST(
 		"/api/v1/billing/critical/mail/pricing-schedules/:code/versions",
@@ -139,6 +160,8 @@ func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler
 	// Dự toán cước phí thời gian thực (Real-time Estimation)
 	router.GET("/api/v1/personal/billing/wallet/estimate/storage", m.StoragePricingHandler.Estimate)
 	router.GET("/api/v1/personal/billing/wallet/estimate/hypervisor", m.HypervisorPricingHandler.Estimate)
+	router.GET("/api/v1/personal/billing/hypervisor/resource-plans", m.HypervisorResourcePlanHandler.ListEffective)
+	router.GET("/api/v1/personal/billing/wallet/hypervisor/resource-plans", m.HypervisorResourcePlanHandler.ListEffective)
 	router.GET("/api/v1/personal/billing/wallet/estimate/mail", m.MailPricingHandler.Estimate)
 
 	// ========================================================================
@@ -164,5 +187,15 @@ func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler
 		"/api/v1/tenant/billing/wallet/estimate/mail",
 		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:read", false),
 		m.MailPricingHandler.Estimate,
+	)
+	router.GET(
+		"/api/v1/tenant/billing/hypervisor/resource-plans",
+		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:read", false),
+		m.HypervisorResourcePlanHandler.ListEffective,
+	)
+	router.GET(
+		"/api/v1/tenant/billing/wallet/hypervisor/resource-plans",
+		m.TenantAuthorizationMiddleware.Authorize("billing:wallet:read", false),
+		m.HypervisorResourcePlanHandler.ListEffective,
 	)
 }

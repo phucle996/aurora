@@ -10,6 +10,7 @@ import (
 
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
 	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
+	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
 	hypervisorProto "controlplane/internal/hypervisor/transport/proto"
 	"controlplane/pkg/logger"
 
@@ -218,9 +219,10 @@ func (c *ResourcePlanProjectionConsumer) processMessage(ctx context.Context, mes
 	// - Code và DisplayName: Không được để trống
 	// - vCPU: 1 - 1024 cores
 	// - Memory: 1 MiB - 4 TiB (4,194,304 MiB)
-	// - BootDisk: 1 GiB - 1 PiB (1,048,576 GiB)
+	// - BootDisk: 1 GiB - 64 TiB (65,536 GiB), matching the VM total-disk ceiling.
 	if event.SchemaVersion != 1 ||
 		event.RevisionNumber == 0 ||
+		event.RevisionNumber > 9_223_372_036_854_775_807 ||
 		len(event.ContentSha256) != 32 ||
 		event.BillingModel != "LIMIT_HOURLY" ||
 		(event.State != "ACTIVE" && event.State != "RETIRED") ||
@@ -228,7 +230,7 @@ func (c *ResourcePlanProjectionConsumer) processMessage(ctx context.Context, mes
 		strings.TrimSpace(event.DisplayName) == "" ||
 		event.CpuCores == 0 || event.CpuCores > 1024 ||
 		event.MemoryMib == 0 || event.MemoryMib > 4_194_304 ||
-		event.BootDiskGib == 0 || event.BootDiskGib > 1_048_576 {
+		event.BootDiskGib == 0 || event.BootDiskGib > 65_536 {
 		logger.SysWarn("hypervisor.resource_plan.invalid", "resource plan hardware or contract bounds invalid")
 		c.ack(ctx, message.ID)
 		return
@@ -236,7 +238,7 @@ func (c *ResourcePlanProjectionConsumer) processMessage(ctx context.Context, mes
 
 	// 7. Chuyển đổi và chuẩn hóa mốc thời gian sang UTC
 	effectiveFrom, effectiveErr := time.Parse(time.RFC3339Nano, event.EffectiveFrom)
-	if effectiveErr != nil {
+	if effectiveErr != nil || effectiveFrom.IsZero() {
 		logger.SysWarn("hypervisor.resource_plan.invalid", "resource plan effective_from is invalid")
 		c.ack(ctx, message.ID)
 		return
@@ -291,8 +293,13 @@ func (c *ResourcePlanProjectionConsumer) processMessage(ctx context.Context, mes
 		AllowedCreate:  allowedCreate,
 	})
 
+	if errors.Is(err, hypervisorTaxonomy.ErrInvalidResourcePlanProjection) {
+		logger.SysWarn("hypervisor.resource_plan.conflict", "immutable revision or effective-time order conflict")
+		c.ack(ctx, message.ID)
+		return
+	}
 	if err != nil {
-		// Lỗi hệ thống tạm thời (DB connection / timeout) -> Không ACK để tự động thử lại
+		// Infrastructure failures remain pending for retry; deterministic conflicts do not.
 		logger.SysError("hypervisor.resource_plan.apply", fmt.Sprintf("transient error applying resource plan: %v", err))
 		return
 	}

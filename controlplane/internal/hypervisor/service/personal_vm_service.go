@@ -115,7 +115,7 @@ func (s *PersonalVMServiceImpl) Create(
 		resourcePlan.State != "ACTIVE" ||
 		resourcePlan.CpuCores == 0 || resourcePlan.CpuCores > 1024 ||
 		resourcePlan.MemoryMib == 0 || resourcePlan.MemoryMib > 4_194_304 ||
-		resourcePlan.BootDiskGib == 0 || resourcePlan.BootDiskGib > 1_048_576 ||
+		resourcePlan.BootDiskGib == 0 || resourcePlan.BootDiskGib > 65_536 ||
 		len(resourcePlan.ContentSha256) != sha256.Size ||
 		effectiveFrom.UTC().After(now) ||
 		(resourcePlan.EffectiveTo != "" && !effectiveTo.UTC().After(now)) {
@@ -144,14 +144,15 @@ func (s *PersonalVMServiceImpl) Create(
 	protoDisks := make([]*hypervisorproto.VmCreateAdditionalDiskV1, 0, len(input.AdditionalDisks))
 	for _, disk := range input.AdditionalDisks {
 		totalDiskGB += disk.SizeGB
-		if totalDiskGB > 65536 {
-			return nil, hypervisorTaxonomy.ErrResourcePlanUnavailable
-		}
 		additionalDiskSizes = append(additionalDiskSizes, disk.SizeGB)
 		protoDisks = append(protoDisks, &hypervisorproto.VmCreateAdditionalDiskV1{
 			DiskIndex: uint32(disk.DiskIndex),
 			SizeGb:    uint64(disk.SizeGB),
 		})
+	}
+
+	if totalDiskGB > 65536 {
+		return nil, hypervisorTaxonomy.ErrResourcePlanUnavailable
 	}
 
 	// [COMMENT]: 5. Tra cứu Image khả dụng trong Zone

@@ -23,6 +23,8 @@ var (
 	ErrStorageZoneAdjustmentConflict    = errors.New("billing: Storage Zone adjustment version conflict")
 	ErrHypervisorZoneAdjustmentConflict = errors.New("billing: Hypervisor Zone adjustment version conflict")
 	ErrMailZoneAdjustmentConflict       = errors.New("billing: Mail Zone adjustment version conflict")
+	ErrHypervisorResourcePlanNotFound   = errors.New("billing: Hypervisor resource plan not found")
+	ErrHypervisorResourcePlanConflict   = errors.New("billing: Hypervisor resource plan revision conflict")
 
 	// Lỗi liên quan đến Thuê bao Subscription
 	ErrSubscriptionNotFound = errors.New("billing: active subscription not found")

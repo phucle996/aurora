@@ -8,6 +8,9 @@ import (
 	hypervisorEntity "controlplane/internal/hypervisor/domain/entity"
 	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
 
+	hypervisorTaxonomy "controlplane/internal/hypervisor/taxonomy"
+
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,102 +32,92 @@ func NewHypervisorResourcePlanProjectionRepository(
 	}
 }
 
-// Insert ghi nhận bản ghi Resource Plan Revision mới vào cơ sở dữ liệu và tự động điều chỉnh khoảng thời gian hiệu lực (effective window) qua CTE.
+// Insert serializes only revisions of the same plan. The advisory lock is a
+// separate statement: the following CTE must see a fresh READ COMMITTED snapshot.
 func (r *hypervisorResourcePlanProjectionRepository) Insert(
 	ctx context.Context,
 	projection *hypervisorEntity.HypervisorResourcePlanProjection,
 ) error {
-	// [COMMENT]: Giao dịch CTE nguyên tử 3 bước:
-	// 1. inserted: Chèn revision mới (chống trùng lặp qua ON CONFLICT (revision_id) DO NOTHING).
-	// 2. closed_prior: Tự động đóng khoảng hiệu lực (effective_to = effective_from của bản ghi mới) cho các revision cũ hơn chưa có ngày kết thúc.
-	// 3. closed_from_successor: Đảm bảo tính nhất quán nếu nhận event lệch thứ tự (out-of-order) bằng cách gán effective_to bằng MIN(effective_from) của revision kế tiếp nếu đã tồn tại.
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("resource plan projection: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+		r.schema+":hypervisor-resource-plan:"+projection.PlanID.String()); err != nil {
+		return fmt.Errorf("resource plan projection: lock plan: %w", err)
+	}
+
 	query := fmt.Sprintf(`
-		WITH inserted AS (
-			INSERT INTO %s.hypervisor_resource_plan_revisions (
-				revision_id,
-				plan_id,
-				revision_number,
-				code,
-				display_name,
-				description,
-				billing_model,
-				cpu_cores,
-				memory_mib,
-				boot_disk_gib,
-				content_sha256,
-				effective_from,
-				effective_to,
-				state,
-				allow_create,
-				source_event_id
-			) VALUES (
-				$1,  -- revision_id
-				$2,  -- plan_id
-				$3,  -- revision_number
-				$4,  -- code
-				$5,  -- display_name
-				$6,  -- description
-				$7,  -- billing_model
-				$8,  -- cpu_cores
-				$9,  -- memory_mib
-				$10, -- boot_disk_gib
-				$11, -- content_sha256
-				$12, -- effective_from
-				$13, -- effective_to
-				$14, -- state
-				$15, -- allow_create
-				$16  -- source_event_id
+		WITH admissible AS MATERIALIZED (
+			SELECT 1
+			WHERE NOT EXISTS (
+				SELECT 1 FROM %[1]s.hypervisor_resource_plan_revisions existing
+				WHERE existing.revision_id = $1
+				  AND ROW(existing.plan_id, existing.revision_number, existing.code,
+				          existing.display_name, existing.description, existing.billing_model,
+				          existing.cpu_cores, existing.memory_mib, existing.boot_disk_gib,
+				          existing.content_sha256, existing.effective_from, existing.state, existing.allow_create)
+				      IS DISTINCT FROM
+				      ROW($2::uuid, $3::bigint, $4::varchar, $5::varchar, $6::text, $7::varchar,
+				          $8::integer, $9::bigint, $10::bigint, $11::bytea, $12::timestamptz,
+				          $14::varchar, $15::boolean)
 			)
+			AND NOT EXISTS (
+				SELECT 1 FROM %[1]s.hypervisor_resource_plan_revisions other
+				WHERE other.plan_id = $2 AND (
+					(other.revision_number = $3 AND other.revision_id <> $1)
+					OR (other.revision_number < $3 AND other.effective_from >= $12)
+					OR (other.revision_number > $3 AND other.effective_from <= $12)
+				)
+			)
+		),
+		inserted AS (
+			INSERT INTO %[1]s.hypervisor_resource_plan_revisions (
+				revision_id, plan_id, revision_number, code, display_name, description,
+				billing_model, cpu_cores, memory_mib, boot_disk_gib, content_sha256,
+				effective_from, effective_to, state, allow_create, source_event_id
+			)
+			SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+				LEAST($13::timestamptz, (
+					SELECT MIN(successor.effective_from)
+					FROM %[1]s.hypervisor_resource_plan_revisions successor
+					WHERE successor.plan_id = $2 AND successor.revision_number > $3
+				)), $14, $15, $16
+			FROM admissible
 			ON CONFLICT (revision_id) DO NOTHING
 			RETURNING revision_id
 		),
 		closed_prior AS (
-			UPDATE %s.hypervisor_resource_plan_revisions existing
+			UPDATE %[1]s.hypervisor_resource_plan_revisions prior
 			SET effective_to = $12
-			FROM inserted
-			WHERE existing.plan_id         = $2
-			  AND existing.revision_number < $3
-			  AND existing.effective_to IS NULL
-		),
-		closed_from_successor AS (
-			UPDATE %s.hypervisor_resource_plan_revisions current
-			SET effective_to = (
-				SELECT MIN(successor.effective_from)
-				FROM %s.hypervisor_resource_plan_revisions successor
-				WHERE successor.plan_id         = current.plan_id
-				  AND successor.revision_number > current.revision_number
-			)
-			WHERE current.revision_id = $1
-			  AND current.effective_to IS NULL
+			WHERE prior.plan_id = $2 AND prior.revision_number < $3
+			  AND (prior.effective_to IS NULL OR prior.effective_to > $12)
+			  AND EXISTS (SELECT 1 FROM admissible)
+			RETURNING revision_id
 		)
-		SELECT 1
-	`, r.schema, r.schema, r.schema, r.schema)
+		SELECT EXISTS (SELECT 1 FROM admissible) AND (
+			EXISTS (SELECT 1 FROM inserted) OR EXISTS (
+				SELECT 1 FROM %[1]s.hypervisor_resource_plan_revisions WHERE revision_id = $1
+			)
+		)
+	`, r.schema)
 
-	_, err := r.db.Exec(
-		ctx,
-		query,
-		projection.RevisionID,
-		projection.PlanID,
-		projection.RevisionNumber,
-		projection.Code,
-		projection.DisplayName,
-		projection.Description,
-		projection.BillingModel,
-		projection.CPUCores,
-		projection.MemoryMIB,
-		projection.BootDiskGIB,
-		projection.ContentSHA256,
-		projection.EffectiveFrom,
-		projection.EffectiveTo,
-		projection.State,
-		projection.AllowCreate,
+	var accepted bool
+	err = tx.QueryRow(ctx, query,
+		projection.RevisionID, projection.PlanID, projection.RevisionNumber,
+		projection.Code, projection.DisplayName, projection.Description, projection.BillingModel,
+		projection.CPUCores, projection.MemoryMIB, projection.BootDiskGIB, projection.ContentSHA256,
+		projection.EffectiveFrom, projection.EffectiveTo, projection.State, projection.AllowCreate,
 		projection.SourceEventID,
-	)
+	).Scan(&accepted)
 	if err != nil {
-		return fmt.Errorf("Hypervisor resource plan projection repo: insert revision: %w", err)
+		return fmt.Errorf("resource plan projection: apply revision: %w", err)
 	}
-
-	return nil
+	if !accepted {
+		return hypervisorTaxonomy.ErrInvalidResourcePlanProjection
+	}
+	return tx.Commit(ctx)
 }
 
 // ListEffective truy vấn danh sách tất cả các Resource Plan Revision đang trong khoảng thời gian có hiệu lực.

@@ -24,11 +24,12 @@ import (
 )
 
 type App struct {
-	Cfg             *config.Config
-	dbPool          *pgxpool.Pool
-	redisClient     *redis.Client
-	authRedisClient *redis.Client
-	module          *Module
+	Cfg               *config.Config
+	dbPool            *pgxpool.Pool
+	redisClient       *redis.Client
+	authRedisClient   *redis.Client
+	resourcePlanRedis redis.UniversalClient
+	module            *Module
 
 	httpServer            *http.Server
 	grpcServer            *googlegrpc.Server
@@ -85,6 +86,13 @@ func (a *App) Init() error {
 		return err
 	}
 	a.redisClient = redisClient
+	// Dedicated resource-plan connection; other workflows keep their own clients.
+	planOptions := redisClient.Options()
+	if a.Cfg.ResourcePlanRelay.Cluster {
+		a.resourcePlanRedis = redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{planOptions.Addr}, Username: planOptions.Username, Password: planOptions.Password, TLSConfig: planOptions.TLSConfig, ContextTimeoutEnabled: true})
+	} else {
+		a.resourcePlanRedis = redisClient
+	}
 
 	// [COMMENT]: Auth Redis dùng ACL riêng; Cost không có quyền truy cập session namespace.
 	authRedisClient, err := infra.ConnectRedis(context.Background(), vaultClient, infra.AuthStateConnectionPath)
@@ -95,7 +103,7 @@ func (a *App) Init() error {
 
 	// 5. Initialize Modules. Ownership is Central-internal and uses Shared Redis;
 	// Cost Manager no longer receives a cross-boundary NATS credential.
-	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment)
+	module, err := NewModule(a.dbPool, a.redisClient, a.authRedisClient, a.Cfg.Payment, a.resourcePlanRedis, a.Cfg.ResourcePlanRelay)
 	if err != nil {
 		return err
 	}
@@ -135,7 +143,7 @@ func (a *App) Start() error {
 		}
 	}
 
-	// Each pricing module owns its own durable relay, including its own cache hint.
+	// Each Cost workflow owns its own durable relay.
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	a.outboxCancel = outboxCancel
 	a.outboxDone = make(chan struct{})
@@ -149,6 +157,13 @@ func (a *App) Start() error {
 		if a.module != nil && a.module.HypervisorPricingService != nil {
 			workers.Add(1)
 			go func() { defer workers.Done(); a.module.HypervisorPricingService.RunPricingOutboxRelay(outboxCtx) }()
+		}
+		if a.module != nil && a.module.HypervisorResourcePlanService != nil {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				a.module.HypervisorResourcePlanService.RunHypervisorResourcePlanOutboxRelay(outboxCtx)
+			}()
 		}
 		if a.module != nil && a.module.MailPricingService != nil {
 			workers.Add(1)
@@ -329,6 +344,9 @@ func (a *App) Stop() {
 		a.dbPool.Close()
 	}
 
+	if a.resourcePlanRedis != nil && a.resourcePlanRedis != a.redisClient {
+		_ = a.resourcePlanRedis.Close()
+	}
 	if a.redisClient != nil {
 		_ = a.redisClient.Close()
 	}

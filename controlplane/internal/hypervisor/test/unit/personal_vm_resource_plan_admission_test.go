@@ -97,3 +97,45 @@ func TestPersonalVMServiceRejectsResourcePlanCacheMissBeforeComposingVM(t *testi
 		t.Fatal("service composed VM state after an L2 cache miss")
 	}
 }
+
+func TestPersonalVMServiceEnforcesBootAndTotalDiskLimit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		boot    uint64
+		extra   int64
+		allowed bool
+	}{
+		{"boot-at-limit", 65536, 0, true},
+		{"boot-over-limit-no-extra", 65537, 0, false},
+		{"total-at-limit", 65528, 8, true},
+		{"total-over-limit", 65536, 8, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			defer client.Close()
+			planID, revisionID := uuid.New(), uuid.New()
+			payload, err := proto.Marshal(&hypervisorProto.EffectiveHypervisorResourcePlanV1{
+				SchemaVersion: 1, PlanId: planID[:], RevisionId: revisionID[:], RevisionNumber: 1,
+				BillingModel: "LIMIT_HOURLY", State: "ACTIVE", CpuCores: 2, MemoryMib: 4096, BootDiskGib: test.boot,
+				ContentSha256: make([]byte, 32), EffectiveFrom: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), AllowedOperations: []string{"CREATE"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Set(context.Background(), "controlplane:hypervisor:resource-plan:v1:"+planID.String()+":"+revisionID.String(), payload, time.Minute).Err(); err != nil {
+				t.Fatal(err)
+			}
+			repo := &personalVMResourcePlanRepoStub{imageErr: errors.New("image boundary reached")}
+			svc := hypervisorSvcImpl.NewPersonalVMService(repo, client, observability.NewNoopWorkflowRecorder())
+			input := &hypervisorEntity.CreatePersonalVM{ResourcePlanID: planID, ResourcePlanRevisionID: revisionID}
+			if test.extra != 0 {
+				input.AdditionalDisks = []hypervisorEntity.PersonalVMCreateAdditionalDisk{{SizeGB: test.extra, DiskIndex: 1}}
+			}
+			_, _ = svc.Create(context.Background(), input)
+			if repo.imageRead != test.allowed {
+				t.Fatalf("imageRead=%v allowed=%v", repo.imageRead, test.allowed)
+			}
+		})
+	}
+}

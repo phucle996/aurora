@@ -218,6 +218,9 @@ services:
     # remaps VAULT_ENGINE_TOKEN only for the Engine child process.
     env_file:
       - ../../cost-manager/api/.env
+    environment:
+      HYPERVISOR_RESOURCE_PLAN_REDIS_CLUSTER: "false"
+      HYPERVISOR_RESOURCE_PLAN_REPLICA_ACKS: "0"
     depends_on:
       billing-psql:
         condition: service_healthy
