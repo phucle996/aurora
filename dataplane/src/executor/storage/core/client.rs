@@ -3,6 +3,10 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{Builder, Region};
 use aws_sdk_s3::Client as S3Client;
 
+#[cfg(test)]
+#[path = "../test/client.rs"]
+mod tests;
+
 /// [COMMENT]: MinioClient bọc AWS S3 SDK Client phục vụ tương tác an toàn với cụm MinIO L2.
 #[derive(Clone)]
 pub struct MinioClient {
@@ -46,7 +50,7 @@ impl MinioClient {
     }
 
     /// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
-    pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+    pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), String> {
         crate::observability::otel::OtelTracer::trace_result(
             "S3 CreateBucket",
             opentelemetry::trace::SpanKind::Client,
@@ -57,12 +61,14 @@ impl MinioClient {
             ],
             self.s3_client.create_bucket().bucket(bucket_name).send(),
         )
-        .await?;
+        .await
+        // Preserve the SDK service code used by the create workflow's replay handling.
+        .map_err(|error| aws_sdk_s3::Error::from(error).to_string())?;
         Ok(())
     }
 
     // A replay must continue credential cleanup after the bucket was removed.
-    pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+    pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), String> {
         let result = crate::observability::otel::OtelTracer::trace_result(
             "S3 DeleteBucket",
             opentelemetry::trace::SpanKind::Client,
@@ -84,7 +90,7 @@ impl MinioClient {
             {
                 Ok(())
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(aws_sdk_s3::Error::from(error).to_string()),
         }
     }
 
@@ -93,7 +99,7 @@ impl MinioClient {
         &self,
         bucket_name: &str,
         enabled: bool,
-    ) -> Result<(), aws_sdk_s3::Error> {
+    ) -> Result<(), String> {
         let status = if enabled {
             aws_sdk_s3::types::BucketVersioningStatus::Enabled
         } else {
@@ -117,7 +123,8 @@ impl MinioClient {
                 .versioning_configuration(config)
                 .send(),
         )
-        .await?;
+        .await
+        .map_err(|error| aws_sdk_s3::Error::from(error).to_string())?;
         Ok(())
     }
 
@@ -126,7 +133,7 @@ impl MinioClient {
         &self,
         bucket_name: &str,
         rules: Vec<aws_sdk_s3::types::LifecycleRule>,
-    ) -> Result<(), aws_sdk_s3::Error> {
+    ) -> Result<(), String> {
         if rules.is_empty() {
             crate::observability::otel::OtelTracer::trace_result(
                 "S3 DeleteBucketLifecycle",
@@ -141,7 +148,8 @@ impl MinioClient {
                     .bucket(bucket_name)
                     .send(),
             )
-            .await?;
+            .await
+            .map_err(|error| aws_sdk_s3::Error::from(error).to_string())?;
             return Ok(());
         }
 
@@ -167,7 +175,8 @@ impl MinioClient {
                 .lifecycle_configuration(config)
                 .send(),
         )
-        .await?;
+        .await
+        .map_err(|error| aws_sdk_s3::Error::from(error).to_string())?;
         Ok(())
     }
 }

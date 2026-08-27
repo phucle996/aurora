@@ -203,8 +203,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rustfmt, clippy" }
+      # Match the crate's pinned toolchain, not the moving stable channel.
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.97.0", components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "zone-control -> target"

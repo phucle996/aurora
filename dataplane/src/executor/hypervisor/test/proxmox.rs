@@ -122,6 +122,8 @@ async fn delete_task_history_rejects_wrong_scope_and_ignores_other_principals() 
     let (client, server) = mock_provider(vec![
         (path.clone(), Some(serde_json::json!([
             {"upid":"ours","node":"node","id":"100","type":"qmdestroy","user":"aurora@pve","tokenid":"dp"},
+            {"upid":"ours","node":"node","id":"100","type":"qmdestroy","user":"aurora@pve!dp"},
+            {"upid":"combined","node":"node","id":"100","type":"qmdestroy","user":"aurora@pve!dp"},
             {"upid":"other","node":"node","id":"100","type":"qmdestroy","user":"root@pam"}
         ]))),
         (path, Some(serde_json::json!([
@@ -130,7 +132,7 @@ async fn delete_task_history_rejects_wrong_scope_and_ignores_other_principals() 
     ]).await;
     assert_eq!(
         client.delete_tasks("node", 100).await.unwrap(),
-        vec!["ours"]
+        vec!["ours", "combined"]
     );
     assert!(client.delete_tasks("node", 100).await.is_err());
     server.await.unwrap();

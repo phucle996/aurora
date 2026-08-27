@@ -92,6 +92,38 @@ async fn prepared_generation_is_fenced_before_late_broker_start() {
 
 #[tokio::test]
 #[ignore = "requires dedicated AURORA_TEST_NATS"]
+async fn drain_accepts_identical_receipt_and_rejects_conflicting_receipt() {
+    for matching in [true, false] {
+        let (store, job, _, _, _) = fixture(3).await;
+        let command = MailConsumerDrainV1::decode(job.payload.as_ref()).unwrap();
+        let receipt = MailConsumerDrainedV1 {
+            schema_version: 1,
+            consumer_id: command.consumer_id,
+            config_version: command.config_version,
+            settled_slots: if matching { command.parallelism } else { 0 },
+        };
+        store
+            .config_create(
+                format!("mail.consumer.drain.result.{}.7", job.resource_id),
+                receipt.encode_to_vec().into(),
+            )
+            .await
+            .unwrap();
+        let result = apply_mail_consumer_drain(job, store).await;
+        if matching {
+            assert_eq!(result.unwrap().result_payload, receipt.encode_to_vec());
+        } else {
+            assert!(matches!(
+                result,
+                Err(ExecutorError::OutcomeUnknown(reason))
+                    if reason == "MAIL_DRAIN_RECEIPT_NOT_DURABLE"
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated AURORA_TEST_NATS"]
 async fn expired_lease_and_empty_replacement_do_not_discharge_crashed_owner() {
     let (store, job, head_key, _, _) = fixture(2).await;
     let lease_key = format!("mail.consumer.slot.{}.0", job.resource_id);

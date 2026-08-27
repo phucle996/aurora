@@ -647,18 +647,16 @@ pub async fn apply_mail_consumer_drain(
                 .config_create(&key, Bytes::from(bytes.clone()))
                 .await
                 .is_err()
-            {
-                if store
+                && store
                     .config_get(&key)
                     .await
                     .map_err(ExecutorError::OutcomeUnknown)?
                     .as_deref()
                     != Some(bytes.as_slice())
-                {
-                    return Err(ExecutorError::OutcomeUnknown(
-                        "MAIL_DRAIN_RECEIPT_NOT_DURABLE".into(),
-                    ));
-                }
+            {
+                return Err(ExecutorError::OutcomeUnknown(
+                    "MAIL_DRAIN_RECEIPT_NOT_DURABLE".into(),
+                ));
             }
             return Ok(ExecutionResult {
                 message: "Mail consumer drained".into(),

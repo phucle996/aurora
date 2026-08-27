@@ -291,7 +291,7 @@ fn verify_assertion(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| RuntimeReadError::Unavailable("RUNTIME_CLOCK_UNAVAILABLE"))?
         .as_secs() as i64;
-    let (path_only, query) = path.split_once('?').map_or((path, ""), |parts| parts);
+    let (path_only, query) = path.split_once('?').unwrap_or((path, ""));
     let route = path_only
         .strip_prefix("/zone-public/v1/runtime/")
         .ok_or(RuntimeReadError::Denied("RUNTIME_ROUTE_INVALID"))?;

@@ -193,12 +193,11 @@ impl ProxmoxClient {
                     return Err("VM_DELETE_TASK_HISTORY_SCOPE_INVALID".into());
                 }
                 // Some API versions expose user!token directly; others split it.
-                if (record.user == actor && record.tokenid.is_empty())
-                    || (record.user == user && record.tokenid == token)
+                if ((record.user == actor && record.tokenid.is_empty())
+                    || (record.user == user && record.tokenid == token))
+                    && !upids.contains(&record.upid)
                 {
-                    if !upids.contains(&record.upid) {
-                        upids.push(record.upid);
-                    }
+                    upids.push(record.upid);
                 }
             }
             if count < 64 {
