@@ -3,6 +3,8 @@ use std::fmt;
 // Định nghĩa mã lỗi của hệ thống ACR
 #[derive(Debug)]
 pub enum AcrError {
+    // Input violates a workflow invariant before any state is issued.
+    InvalidArgument(String),
     // Lỗi không tìm thấy Token hoặc Token hết hạn
     Unauthorized(String),
     // Lỗi từ chối truy cập (Bị chặn bởi Policy RBAC/ABAC)
@@ -23,6 +25,7 @@ impl std::error::Error for AcrError {}
 impl fmt::Display for AcrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AcrError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             AcrError::Unauthorized(msg) => write!(f, "Unauthorized: {}", msg),
             AcrError::Forbidden(msg) => write!(f, "Forbidden: {}", msg),
             AcrError::RedisError(msg) => write!(f, "Redis error: {}", msg),
@@ -37,6 +40,7 @@ impl fmt::Display for AcrError {
 impl From<AcrError> for tonic::Status {
     fn from(err: AcrError) -> Self {
         match err {
+            AcrError::InvalidArgument(msg) => tonic::Status::invalid_argument(msg),
             AcrError::Unauthorized(msg) => tonic::Status::unauthenticated(msg),
             AcrError::Forbidden(msg) => tonic::Status::permission_denied(msg),
             AcrError::RedisError(msg) => {

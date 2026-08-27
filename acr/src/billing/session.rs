@@ -6,7 +6,6 @@ use crate::error::AcrError;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use prost::Message;
-use tonic::Status;
 use uuid::Uuid;
 
 #[derive(Clone, PartialEq, Message)]
@@ -136,7 +135,7 @@ impl SessionManager {
 pub async fn release_billing_alias(
     session_mgr: &std::sync::Arc<SessionManager>,
     command: ReleaseBillingAliasCommand<'_>,
-) -> Result<ReleaseBillingAliasResult, Status> {
+) -> Result<ReleaseBillingAliasResult, AcrError> {
     let ReleaseBillingAliasCommand {
         user_id,
         username,
@@ -161,8 +160,7 @@ pub async fn release_billing_alias(
     };
     session_mgr
         .register_billing_alias(&alias, &alias_id)
-        .await
-        .map_err(|error| Status::internal(format!("Failed to save billing alias: {error}")))?;
+        .await?;
 
     Ok(ReleaseBillingAliasResult {
         alias_id,

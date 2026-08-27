@@ -105,7 +105,9 @@ fn signed_runtime_assertion_requires_a_bounded_window() {
     let (keys, headers, zone_id) = signed_headers(&path);
     assert!(matches!(
         verify_assertion(&keys, &zone_id, &headers, "GET", &path),
-        Err(RuntimeReadError::Denied("RUNTIME_ASSERTION_BINDING_INVALID"))
+        Err(RuntimeReadError::Denied(
+            "RUNTIME_ASSERTION_BINDING_INVALID"
+        ))
     ));
 }
 

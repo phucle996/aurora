@@ -8,7 +8,10 @@ async fn draining_stops_intake_without_fencing_already_owned_work() {
     fence.drain_requested.store(true, Ordering::Release);
     assert!(fence.is_draining());
     assert!(!fence.drain_is_complete());
-    let permit = fence.enter_submit().await.expect("drain must allow owned work to settle");
+    let permit = fence
+        .enter_submit()
+        .await
+        .expect("drain must allow owned work to settle");
     drop(permit);
     fence.mark_drained();
     fence.fence().await;

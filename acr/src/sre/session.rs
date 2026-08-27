@@ -8,7 +8,6 @@ use crate::error::AcrError;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use prost::Message;
-use tonic::Status;
 use uuid::Uuid;
 
 /// [COMMENT]: SreAccessSession — Protobuf struct cho SRE.
@@ -189,13 +188,14 @@ impl SessionManager {
 
 // ─── release_sre_session ────────────────────────────────────────────────────
 
-/// [COMMENT]: Cấp phát Trinity Session cho SRE.
+/// Issue an SRE Trinity. Failures carry only the public reason consumed by
+/// the SRE login handler, which always renders them as a local HTTP 500.
 pub async fn release_sre_session(
     session_mgr: &std::sync::Arc<SessionManager>,
     token_mgr: &std::sync::Arc<crate::sre::claims::SreTokenManager>,
     config: &crate::config::Config,
     device_public_key: &str,
-) -> Result<ReleaseSreSessionResult, Status> {
+) -> Result<ReleaseSreSessionResult, &'static str> {
     Logger::sys_info("sre.session.release", "Releasing SRE session");
 
     // 1. Sinh Access Key (UUIDv4) và Access Secret (UUIDv4)
@@ -225,7 +225,7 @@ pub async fn release_sre_session(
                 "Vault JWT signing failed for SRE",
                 &e.to_string(),
             );
-            return Err(Status::internal("Failed to issue session token"));
+            return Err("Failed to issue session token");
         }
     };
 
@@ -242,9 +242,9 @@ pub async fn release_sre_session(
                 "SRE login failed: Invalid device_public_key format or length",
                 "",
             );
-            return Err(Status::invalid_argument(
+            return Err(
                 "Invalid device_public_key format or length (must be a valid 32-byte Base64-encoded key)",
-            ));
+            );
         }
     }
 
@@ -258,7 +258,7 @@ pub async fn release_sre_session(
             "Redis SRE session registration failed",
             &e.to_string(),
         );
-        return Err(Status::internal("Failed to save session state"));
+        return Err("Failed to save session state");
     }
 
     Ok(ReleaseSreSessionResult {

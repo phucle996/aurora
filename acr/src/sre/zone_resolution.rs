@@ -7,11 +7,8 @@ use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use crate::sre::claims::SreClaims;
 use crate::user::zone_resolution::{resolve_zone_context, ZoneResolutionError};
-use envoy_types::ext_authz::v3::CheckResponseExt;
-use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tonic::{Response, Status};
 
 /// [COMMENT]: Phân giải và xác thực Zone dành riêng cho Admin (SRE).
 pub async fn resolve_and_verify_zone_admin(
@@ -22,7 +19,7 @@ pub async fn resolve_and_verify_zone_admin(
     client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,
-) -> Result<Vec<String>, Result<Response<CheckResponse>, Status>> {
+) -> Result<Vec<String>, &'static str> {
     use crate::gateway::ext_authz::extract_cookie_value;
     use crate::pkg::cookie::COOKIE_ZONE_CODE;
 
@@ -41,9 +38,7 @@ pub async fn resolve_and_verify_zone_admin(
                 "DENIED",
                 &format!("Admin requested zone code not found: {}", code),
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Zone unavailable"),
-            ))));
+            return Err("Zone unavailable");
         }
         Err(ZoneResolutionError::Missing) => {
             let sub = claims.as_ref().map(|c| c.sub.as_str()).unwrap_or("admin");
@@ -54,9 +49,7 @@ pub async fn resolve_and_verify_zone_admin(
                 "DENIED",
                 "Missing zone_code context (no cookie/header)",
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Zone unavailable"),
-            ))));
+            return Err("Zone unavailable");
         }
     };
 
@@ -74,9 +67,7 @@ pub async fn resolve_and_verify_zone_admin(
                     "DENIED",
                     &format!("Admin zone mismatch: JWT={:?}, Req={}", c.zone_id, zone_id),
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             } else if cookie_mismatch {
                 cookies_to_set_zone.push(format!(
                     "zone_code={}; Path=/admin; Secure; SameSite=Lax; Max-Age=31536000",
@@ -103,9 +94,7 @@ pub async fn resolve_and_verify_zone_admin(
                         zone_code, zone_status
                     ),
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             }
         }
     }

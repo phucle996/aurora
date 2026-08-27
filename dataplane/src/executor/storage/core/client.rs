@@ -76,10 +76,14 @@ impl MinioClient {
         .await;
         match result {
             Ok(_) => Ok(()),
-            Err(error) if error.as_service_error().is_some_and(|service| {
-                use aws_sdk_s3::error::ProvideErrorMetadata;
-                service.code() == Some("NoSuchBucket")
-            }) => Ok(()),
+            Err(error)
+                if error.as_service_error().is_some_and(|service| {
+                    use aws_sdk_s3::error::ProvideErrorMetadata;
+                    service.code() == Some("NoSuchBucket")
+                }) =>
+            {
+                Ok(())
+            }
             Err(error) => Err(error.into()),
         }
     }

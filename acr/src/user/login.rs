@@ -10,6 +10,7 @@
 // ======================================================================================================
 
 use crate::config::Config;
+use crate::error::AcrError;
 use crate::infra::iam_proto::auth::{VerifyUserCredentialsRequest, VerifyUserCredentialsResponse};
 use crate::infra::redis::{RedisRuntimeClient, SessionManager};
 use crate::infra::shared_redis::SharedRedisBus;
@@ -508,11 +509,12 @@ fn canonicalize_login_identity(
     Ok((username, tenant_domain))
 }
 
-/// [COMMENT]: Khởi tạo Trinity Session riêng cho User (dùng cho cả HTTP Login và gRPC Release)
+/// Issue a user Trinity only after Zone resolution and persist it before success.
+/// Return a compact workflow error; callers own their HTTP/gRPC response policy.
 pub async fn release_user_session(
     context: UserSessionIssueContext<'_>,
     command: ReleaseUserSessionCommand<'_>,
-) -> Result<ReleaseUserSessionResult, Status> {
+) -> Result<ReleaseUserSessionResult, AcrError> {
     let UserSessionIssueContext {
         session_mgr,
         token_mgr,
@@ -539,7 +541,9 @@ pub async fn release_user_session(
     let resolved_zone_id = Uuid::parse_str(zone_id)
         .ok()
         .filter(|value| !value.is_nil())
-        .ok_or_else(|| Status::invalid_argument("User session requires a concrete zone"))?;
+        .ok_or_else(|| {
+            AcrError::InvalidArgument("User session requires a concrete zone".to_string())
+        })?;
 
     let access_key = Uuid::now_v7().to_string();
     let access_secret = Uuid::new_v4().to_string();
@@ -572,7 +576,7 @@ pub async fn release_user_session(
                 "Failed to sign access token via Vault",
                 &e.to_string(),
             );
-            return Err(Status::internal(format!(
+            return Err(AcrError::Internal(format!(
                 "Failed to sign access token: {}",
                 e
             )));
@@ -602,7 +606,9 @@ pub async fn release_user_session(
             "Failed to register session state in Auth Redis",
             &e.to_string(),
         );
-        return Err(Status::internal("Failed to save session state"));
+        return Err(AcrError::Internal(
+            "Failed to save session state".to_string(),
+        ));
     }
 
     Ok(ReleaseUserSessionResult {

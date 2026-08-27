@@ -327,7 +327,11 @@ pub async fn handle_billing_handoff_exchange(
     .await
     {
         Ok(released) => released,
-        Err(error) => return Some(Err(error)),
+        Err(error) => {
+            return Some(Err(Status::internal(format!(
+                "Failed to save billing alias: {error}"
+            ))))
+        }
     };
 
     let mut builder = DeniedHttpResponseBuilder::new();

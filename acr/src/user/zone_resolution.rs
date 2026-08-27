@@ -7,12 +7,8 @@ use crate::infra::shared_redis::SharedRedisBus;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
 use crate::user::claims::Claims;
-use envoy_types::ext_authz::v3::CheckResponseExt;
-use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use tonic::{Response, Status};
 
 #[derive(Debug)]
 pub enum ZoneResolutionError {
@@ -66,7 +62,7 @@ pub async fn resolve_and_verify_zone_user(
     client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,
-) -> Result<Vec<String>, Result<Response<CheckResponse>, Status>> {
+) -> Result<Vec<String>, &'static str> {
     use crate::gateway::ext_authz::extract_cookie_value;
     use crate::pkg::cookie::COOKIE_ZONE_CODE;
 
@@ -86,9 +82,7 @@ pub async fn resolve_and_verify_zone_user(
                 "DENIED",
                 &format!("User requested zone code not found: {}", code),
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Zone unavailable"),
-            ))));
+            return Err("Zone unavailable");
         }
         Err(ZoneResolutionError::Missing) => {
             let sub = claims
@@ -102,9 +96,7 @@ pub async fn resolve_and_verify_zone_user(
                 "DENIED",
                 "Missing zone_code context (no cookie/header)",
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Zone unavailable"),
-            ))));
+            return Err("Zone unavailable");
         }
     };
 
@@ -123,9 +115,7 @@ pub async fn resolve_and_verify_zone_user(
                     "DENIED",
                     "Forbidden global zone access for non-admin",
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             }
 
             if zone_status != "active" && zone_status != "draining" {
@@ -139,9 +129,7 @@ pub async fn resolve_and_verify_zone_user(
                         zone_code, zone_status
                     ),
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             }
 
             let claims_mismatch = c.zone_id.as_ref() != Some(zone_id);
@@ -156,9 +144,7 @@ pub async fn resolve_and_verify_zone_user(
                     "DENIED",
                     &format!("User zone mismatch: JWT={:?}, Req={}", c.zone_id, zone_id),
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             } else if cookie_mismatch {
                 cookies_to_set_zone.push(format!(
                     "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
@@ -178,9 +164,7 @@ pub async fn resolve_and_verify_zone_user(
                     "DENIED",
                     "Anonymous user tried to access global zone",
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             }
             if zone_status != "active" && zone_status != "draining" {
                 Logger::authz_log(
@@ -193,9 +177,7 @@ pub async fn resolve_and_verify_zone_user(
                         zone_code
                     ),
                 );
-                return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Zone unavailable"),
-                ))));
+                return Err("Zone unavailable");
             }
         }
     }

@@ -30,7 +30,7 @@ pub async fn resolve_and_verify_tenant(
     client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,
-) -> Result<(), Result<Response<CheckResponse>, Status>> {
+) -> Result<(), &'static str> {
     use crate::gateway::ext_authz::extract_cookie_value;
 
     // [COMMENT]: 1. Lấy cookie/header tenant_id từ Client
@@ -55,9 +55,7 @@ pub async fn resolve_and_verify_tenant(
                     req_tenant_id, claims_tenant_id
                 ),
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Tenant unavailable"),
-            ))));
+            return Err("Tenant unavailable");
         }
 
         // [COMMENT]: 3. Nếu có tenant_id không phải "platform", validate UUID format
@@ -75,9 +73,7 @@ pub async fn resolve_and_verify_tenant(
                     req_tenant_id
                 ),
             );
-            return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::permission_denied("Tenant unavailable"),
-            ))));
+            return Err("Tenant unavailable");
         }
     }
 

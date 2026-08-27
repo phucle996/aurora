@@ -29,6 +29,11 @@ The catalog has a deliberately rebuildable cache chain. Auth-State Redis is not
 involved: this path uses the separate Shared Redis connection for hierarchy
 data and request-reply transport.
 
+ACR generates only protobuf messages from the local contracts. It does not
+generate or use a `ZoneService` gRPC client/server: the catalog request above
+travels through `SharedRedisBus`. This does not change the message wire format
+or ACR's Envoy ext_authz server, which comes from `envoy-types`.
+
 | Layer | Key / state | TTL | Writer | Reader and rule |
 | --- | --- | --- | --- | --- |
 | ACR L1 | code-to-ID, ID-to-status and ID-to-name entries | 30 seconds | catalog sync and invalidation subscriber | catalogue snapshot only when entries remain fresh |

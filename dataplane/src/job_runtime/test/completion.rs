@@ -4,11 +4,18 @@ use prost::Message;
 #[test]
 fn unknown_outcome_cannot_be_exhausted_into_a_false_failure() {
     let mut result = JobExecutionResult {
-        job_id: uuid::Uuid::new_v4().to_string(), resource_id: uuid::Uuid::new_v4().to_string(),
-        job_version: 1, attempt: 4, status: CompletionStatus::Retryable,
-        error_code: Some("JOB_OUTCOME_UNKNOWN".into()), message: "provider ACK unavailable".into(),
-        job_topic: "hypervisor.vm.delete".into(), source_domain: "HYPERVISOR".into(),
-        trace_id: String::new(), result_payload: Vec::new(), result_payload_schema_version: 0,
+        job_id: uuid::Uuid::new_v4().to_string(),
+        resource_id: uuid::Uuid::new_v4().to_string(),
+        job_version: 1,
+        attempt: 4,
+        status: CompletionStatus::Retryable,
+        error_code: Some("JOB_OUTCOME_UNKNOWN".into()),
+        message: "provider ACK unavailable".into(),
+        job_topic: "hypervisor.vm.delete".into(),
+        source_domain: "HYPERVISOR".into(),
+        trace_id: String::new(),
+        result_payload: Vec::new(),
+        result_payload_schema_version: 0,
     };
     result.mark_retry_exhausted();
     assert_eq!(result.status, CompletionStatus::Retryable);

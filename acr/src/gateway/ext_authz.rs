@@ -839,7 +839,11 @@ impl Authorization for ExtAuthzService {
             .await
             {
                 Ok(cookies) => cookies,
-                Err(res) => return res,
+                Err(reason) => {
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied(reason),
+                    )))
+                }
             }
         } else {
             match crate::user::zone_resolution::resolve_and_verify_zone_user(
@@ -854,13 +858,17 @@ impl Authorization for ExtAuthzService {
             .await
             {
                 Ok(cookies) => cookies,
-                Err(res) => return res,
+                Err(reason) => {
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied(reason),
+                    )))
+                }
             }
         };
 
         // Tenant Resolution
         if !is_billing {
-            if let Err(res) = resolve_and_verify_tenant(
+            if let Err(reason) = resolve_and_verify_tenant(
                 claims.as_mut(),
                 &cookie_header,
                 client_headers,
@@ -869,7 +877,9 @@ impl Authorization for ExtAuthzService {
             )
             .await
             {
-                return res;
+                return Ok(Response::new(CheckResponse::with_status(
+                    Status::permission_denied(reason),
+                )));
             }
         }
 
