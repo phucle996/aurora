@@ -40,8 +40,8 @@ const (
 	hypervisorPricingCacheKeyPrefix = "cost-manager:hypervisor:pricing:snapshot:v1"
 
 	// Thời gian sống (TTL) của bộ nhớ đệm:
-	hypervisorPricingCacheL1TTL    = time.Minute     // L1 Cache (RAM trong tiến trình): 1 phút
-	hypervisorPricingCacheL2TTL    = 5 * time.Minute // L2 Cache (Redis Cluster): 5 phút
+	hypervisorPricingCacheL1TTL    = time.Minute   // L1 Cache (RAM trong tiến trình): 1 phút
+	hypervisorPricingCacheL2TTL    = 1 * time.Hour // L2 Cache (Redis Cluster): 1 giờ (3600s)
 	hypervisorPricingEngineChannel = "billing.pricing.schedule.version.published"
 )
 
@@ -862,6 +862,8 @@ func (s *hypervisorPricingService) RunPricingSnapshotRefresh(ctx context.Context
 		select {
 		case <-ctx.Done():
 			return
+		// Pub/Sub invalidation can remove L2 at any time. Keep a short
+		// recovery cadence independent of the snapshot's one-hour TTL.
 		case <-time.After(15 * time.Second):
 		}
 	}

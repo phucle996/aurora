@@ -87,7 +87,7 @@ but cannot become pricing Source of Truth.
 | `capacity_bytes` | integer in inclusive range `1..1<<60` |
 | charge kind | fixed internally to `storage.capacity.gb_hour`; caller cannot request another metric |
 | L1 snapshot | in-process, one-minute TTL, immutable, current effective window required |
-| L2 snapshot | Shared Redis key during migration, five-minute maximum TTL, fully revalidated before use |
+| L2 snapshot | Storage-owned Shared Redis key, one-hour maximum TTL, fully revalidated before use |
 | DB fallback | Global Pricing Schedule is the base authority; the Storage-owned Zone adjustment table is the module modifier authority |
 
 ```mermaid
@@ -96,7 +96,7 @@ sequenceDiagram
     participant S as StorageQuoteWorkflow
     participant L1 as Pricing L1
     participant L2 as Shared Redis
-    participant R as PricingScheduleRepository
+    participant R as StoragePricingRepository
     participant DB as Billing PostgreSQL
     H->>H: parse capacity_bytes and set 2s deadline
     H->>S: EstimateStorage capacity plus trusted Zone
@@ -120,7 +120,15 @@ sequenceDiagram
 
 ### Cache integrity and recovery
 
-Before a Redis payload can answer an estimate, the cache validates IDs, service type, version/effective window, currency/checksum shape, continuous non-negative ranges from zero to one infinity range, and recalculates a 64-character checksum when present. `singleflight` prevents local miss stampedes. An invalidation generation fence prevents an in-flight old read from repopulating L1 after a pricing publish. Redis failure/missed PubSub never makes stale cache authoritative: the request falls through to PostgreSQL, and TTL/cold start rebuilds state.
+The Storage L2 value is binary `StoragePricingSnapshotCacheEntryV1`, not JSON.
+Before a Redis payload can answer an estimate, the cache protobuf-decodes it and
+validates raw 16-byte IDs, enum ownership/unit/model, microsecond effective
+window, 32-byte SHA-256 checksum, currency, and continuous non-negative ranges
+from zero to one infinity range. `singleflight` prevents local miss stampedes.
+An invalidation generation fence prevents an in-flight old read from
+repopulating L1 after a pricing publish. Redis failure/missed PubSub never makes
+stale cache authoritative: the request falls through to PostgreSQL, and
+TTL/cold start rebuilds state.
 
 ## Phase 3 — Exact progressive quote calculation and response
 
@@ -165,11 +173,13 @@ sequenceDiagram
 |---|---|
 | Cloud Trinity session or `iam:domain_alias:billing:{alias_id}` | ACR self-context binding; Cost Alias rechecks source IAM session |
 | process L1 pricing map | one-minute performance cache, generation-fenced |
-| `cost-manager:pricing:schedule:v3:storage.capacity.gb_hour` | Shared Redis five-minute cache for the exact `BYTE_HOUR` Global base; must pass full integrity checks |
+| `cost-manager:storage:pricing:snapshot:v1:storage.capacity.gb_hour` | Storage-owned Shared Redis one-hour cache for the exact `BYTE_HOUR` Global base; must pass full integrity checks |
+| `StoragePricingSnapshotCacheEntryV1` | Storage-owned binary L2 value; UUIDs are raw 16 bytes, checksum is raw 32 bytes, and all pricing BIGINTs are protobuf `int64` |
+| `billing.pricing.storage.version.published.v1` | Storage-only Protobuf invalidation hint; foreign module facts are ignored |
 | effective Global Pricing Schedule/version/brackets in Billing PostgreSQL | durable base pricing SoT |
 | `billing.storage_zone_price_adjustment_versions` | Storage-owned rational modifier SoT; absence at the boundary is explicit `1/1` inheritance |
 | `billing.wallets`, `payment_intents`, ledger | intentionally untouched by quote workflow |
 
 ## Code map
 
-[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/http/handler/pricing_schedule_handler.go`](../../cost-manager/api/internal/transport/http/handler/pricing_schedule_handler.go), [`cost-manager/api/internal/service/pricing_schedule_service.go`](../../cost-manager/api/internal/service/pricing_schedule_service.go), and [`cost-manager/api/internal/service/pricing_cache.go`](../../cost-manager/api/internal/service/pricing_cache.go).
+[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/http/handler/storage_pricing_handler.go`](../../cost-manager/api/internal/transport/http/handler/storage_pricing_handler.go), [`cost-manager/api/internal/service/storage_pricing_service.go`](../../cost-manager/api/internal/service/storage_pricing_service.go), and [`cost-manager/api/internal/repository/storage_pricing_repo.go`](../../cost-manager/api/internal/repository/storage_pricing_repo.go).

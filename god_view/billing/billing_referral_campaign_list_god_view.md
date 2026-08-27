@@ -92,8 +92,9 @@ sequenceDiagram
     alt miss or stale generation
         M->>SR: subscribe then publish IAM resolve
         SR-->>IAM: Billing RoleEntry request
-        IAM-->>SR: exact permissions
-        M->>L2: generation-fenced cache write
+        IAM->>L2: write personal projection
+        IAM-->>SR: one-byte refresh acknowledgement
+        M->>L2: re-read generation-fenced projection
     end
     M->>H: credit adjust allowed
     H->>S: ListReferralCampaigns

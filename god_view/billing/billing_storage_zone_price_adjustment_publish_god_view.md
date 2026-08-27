@@ -2,8 +2,9 @@
 
 This critical Storage pricing workflow appends one immutable multiplier for the
 verified operator Zone. It never publishes a PAYG base schedule and never
-mutates a wallet. Global base prices remain owned by the generic pricing
-schedule workflow; Storage owns how its trusted Zone selects an adjustment.
+mutates a wallet. Storage owns Global base-price publication in the separate
+Storage base-price workflow and owns how its trusted Zone selects an adjustment.
+The generic pricing-schedule service is read-only catalog infrastructure.
 
 ## API-scope contract
 
@@ -90,8 +91,8 @@ from Storage.
 ## Code map
 
 - `cost-manager/api/internal/transport/http/handler/storage_pricing_handler.go`
-- `cost-manager/api/internal/service/pricing_schedule_service.go`
-- `cost-manager/api/internal/repository/pricing_schedule_repo.go`
+- `cost-manager/api/internal/service/storage_pricing_service.go`
+- `cost-manager/api/internal/repository/storage_pricing_repo.go`
 - `cost-console/src/page/pricing-schedules/StorageZoneAdjustmentPanel.tsx`
 - `cost-manager/api/migrations/000003_tables_pricing.up.sql`
 - `cost-manager/engine/src/service/storage/usage_report_settlement.rs`

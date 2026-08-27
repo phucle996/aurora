@@ -41,8 +41,8 @@ const (
 	// storagePricingCacheL1TTL là thời gian tồn tại của bản ghi trong bộ nhớ RAM cục bộ (L1 Cache: 1 phút).
 	storagePricingCacheL1TTL = time.Minute
 
-	// storagePricingCacheL2TTL là thời gian tồn tại của bản ghi trên Redis (L2 Cache: 5 phút).
-	storagePricingCacheL2TTL    = 5 * time.Minute
+	// storagePricingCacheL2TTL là thời gian tồn tại của bản ghi trên Redis (L2 Cache: 1 giờ / 3600s).
+	storagePricingCacheL2TTL    = 1 * time.Hour
 	storagePricingEngineChannel = "billing.pricing.schedule.version.published"
 )
 

@@ -49,6 +49,9 @@ The platform outer command is now canonical too:
 | `aurora.transport.v1.JobCommandV1` | `proto/job-orchestrator/command.proto` | JO → DP outer command envelope |
 | `aurora.zone.transfer.v1.TransferGrantV1` / `TransferTicketV1` | `proto/zone/transfer_ticket.proto` | Control Authorizer → Zone Control → Public Edge ticket workflow |
 | `aurora.storage.metering.v1.StorageUsageReportV1` | `proto/cost-manager/engine/storage_usage_report.proto` | Zone-local storage journal → Kafka → JO → Cost Engine settlement |
+| `billing.pricing.storage.v1.StoragePricingSnapshotCacheEntryV1` | `proto/cost-manager/api/billing/pricing/storage/v1/storage_pricing_snapshot.proto` | Storage-owned Cost API Redis L2 snapshot; binary value, not an event |
+| `costmanager.api.billing.pricing.hypervisor.v1.HypervisorPricingSnapshotCacheEntryV1` | `proto/cost-manager/api/billing/pricing/hypervisor/v1/hypervisor_pricing_snapshot.proto` | Module-owned Cost API L2 snapshot read by Controlplane pricing gates; binary value, not an event |
+| `costmanager.api.billing.pricing.mail.v1.MailPricingSnapshotCacheEntryV1` | `proto/cost-manager/api/billing/pricing/mail/v1/mail_pricing_snapshot.proto` | Module-owned Cost API L2 snapshot read by Controlplane pricing gates; binary value, not an event |
 | `aurora.transport.v1.ProtectedPayloadV1` | `proto/security/payload.proto` | Opaque CP outbox payload and byte-identical JO relay |
 | `zone.ZoneReport` | `proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
 | `job_lifecycle.JobExecutionResultProto` | `proto/job-orchestrator/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |

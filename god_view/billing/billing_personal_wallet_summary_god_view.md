@@ -114,7 +114,7 @@ sequenceDiagram
 
 ### Wallet-provision recovery context
 
-After IAM activation commits `PersonalAccountActivatedV1`, its lifecycle relay XADDs `iam.personal_account.activated.v1` to `iam:personal-account:activated:v1`. The Cost adapter XREADGROUP/XAUTOCLAIM derives the PERSONAL/USD wallet command and inserts inbox event ID/payload hash plus the unique zero-balance `PENDING_ACTIVATION` wallet in one transaction; only commit is followed by XACK/XDEL. Same event/hash replays safely, different hash fails integrity, duplicate owner fact is absorbed by wallet uniqueness, and consumer/database failure leaves PEL for retry. Summary remains `404` while this is pending.
+After IAM activation commits `PersonalWalletProvisionRequestedV1`, its lifecycle relay XADDs `billing.personal_wallet.provision.requested.v1` to `billing:personal-wallet:provision:requested:v1`. The command names the exact `PERSONAL/USD` wallet. The Cost consumer validates that scope, inserts inbox event ID/payload hash plus the unique zero-balance `PENDING_ACTIVATION` wallet in one transaction, then XACK/XDEL only after commit. Same event/hash replays safely, different hash fails integrity, duplicate owner command is absorbed by wallet uniqueness, and consumer/database failure leaves PEL for retry. Summary remains `404` while this is pending.
 
 ```mermaid
 sequenceDiagram

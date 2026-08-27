@@ -100,6 +100,7 @@ sequenceDiagram
     participant P as RequireSessionProof
     participant M as FreshAuthorize
     participant SR as Shared Redis
+    participant L2 as Auth Redis
     participant IAM as IAM Billing authorization responder
     participant H as PersonalAccountHandler
     participant S as PersonalAccountService
@@ -109,7 +110,9 @@ sequenceDiagram
     P->>M: require current credit adjust permission
     M->>SR: subscribe then publish IAM request
     SR-->>IAM: resolve current RoleEntry
-    IAM-->>SR: permission reply
+    IAM->>L2: write fresh personal projection
+    IAM-->>SR: one-byte refresh acknowledgement
+    M->>L2: re-read and validate personal projection
     M->>H: authorized create
     H->>S: CreateReferralCampaign command
     S->>Repo: construct PAUSED version one campaign

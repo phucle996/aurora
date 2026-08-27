@@ -71,17 +71,17 @@ sequenceDiagram
 
 ## Phase 2 — Tenant permission resolution
 
-`ContextInjector` makes only ACR-injected user and tenant available. `AuthorizeTenant` asks `ResolveTenant(user, tenant, critical=false)` and requires `billing:wallet:read`. Normal caching is bounded and validation makes a tenant permission for one tenant unusable for another: tenant L1 is `{tenant}:{user}` for 2 seconds, tenant L2 is `authz:billing:tenant:{{tenant_id}}:{user_id}:data` for 5 seconds, and a cache miss request/reply round trip is subscribe-before-publish with a 900 ms deadline.
+ContextInjector exposes only ACR-injected user and tenant. The tenant authorization middleware uses its two-second L1 then five-second shared Auth Redis projection. A miss is subscribe-before-publish; IAM refills that projection and replies one-byte ok, then Cost re-reads and validates it.
 
 ```mermaid
 sequenceDiagram
-    participant M as AuthorizeTenant
-    participant AR as AuthorizationResolver
+    participant M as Authorize
+    participant AR as TenantAuthorizationMiddleware
     participant L1 as tenant L1
     participant L2 as Auth Redis
     participant SR as Shared Redis
     participant IAM as IAM responder
-    M->>AR: ResolveTenant user tenant noncritical
+    M->>AR: tenant authorization user tenant noncritical
     AR->>L1: lookup tenant user key
     alt no valid L1 entry
         AR->>L2: read scoped permission bytes
@@ -89,10 +89,11 @@ sequenceDiagram
             AR->>SR: subscribe unique reply
             AR->>SR: publish request ID user ID tenant ID
             SR->>IAM: fetch active membership permissions
-            IAM-->>SR: five-part permissions
+            IAM->>L2: write tenant projection
+            IAM-->>SR: one-byte ok
             SR-->>AR: reply within 900ms
+            AR->>L2: re-read tenant projection
             AR->>AR: require tenant and workspace-zero prefix
-            AR->>L2: cache for 5 seconds
         end
         AR->>L1: cache for 2 seconds
     end
@@ -144,4 +145,4 @@ sequenceDiagram
 
 ## Code map
 
-[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/middleware/identity.go`](../../cost-manager/api/internal/transport/middleware/identity.go), [`cost-manager/api/internal/service/authorization_resolver.go`](../../cost-manager/api/internal/service/authorization_resolver.go), and [`cost-manager/api/internal/repository/tenant_payment_repo.go`](../../cost-manager/api/internal/repository/tenant_payment_repo.go).
+[`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`cost-manager/api/internal/transport/middleware/tenant_authorization.go`](../../cost-manager/api/internal/transport/middleware/tenant_authorization.go), and [`cost-manager/api/internal/repository/tenant_payment_repo.go`](../../cost-manager/api/internal/repository/tenant_payment_repo.go).
