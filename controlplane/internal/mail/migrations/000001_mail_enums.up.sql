@@ -15,6 +15,6 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE n.nspname = current_schema() AND t.typname = 'mail_consumer_desired_state'
     ) THEN
-        CREATE TYPE mail_consumer_desired_state AS ENUM ('paused', 'enabled');
+        CREATE TYPE mail_consumer_desired_state AS ENUM ('paused', 'enabled', 'draining', 'drained', 'deleting');
     END IF;
 END $$;

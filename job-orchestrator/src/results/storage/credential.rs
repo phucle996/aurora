@@ -1,6 +1,8 @@
 use crate::observability::logger::Logger;
 
-// [COMMENT]: Xử lý khép lại vòng đời của job xóa Credential (xóa Outbox và Credential DB trên kết quả thành công, hoặc cập nhật FAILED).
+/// Settles `storage.credential.delete` without allowing the durable outbox to lead
+/// the real resource. Controlplane has already moved the credential to DELETING;
+/// JO hard-deletes only that owner branch after Dataplane confirms success.
 pub async fn resolve_credential_deletion(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
@@ -17,68 +19,140 @@ pub async fn resolve_credential_deletion(
         ),
     );
 
-    let row_opt = if status == "SUCCEEDED" {
-        // [COMMENT]: Khi job thành công: Xóa outbox record trước, sau đó xóa cứng credential ở cả personal_credentials và tenant_credentials.
-        // CTE đảm bảo tính toàn vẹn (xóa ở resource MinIO thành công mới thực hiện xóa sạch khỏi DB).
-        pg_client
+    let owner = pg_client
+        .query_opt(
+            "SELECT owner_type FROM storage.storage_outbox_records \
+             WHERE event_id = $1::uuid AND job_topic = $2 \
+               AND status IN ('PENDING', 'PROCESSING')",
+            &[&job_uuid, &job_topic],
+        )
+        .await?;
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    let owner_type: String = owner.get(0);
+
+    if status == "PROCESSING" {
+        return pg_client
             .query_opt(
-                "WITH deleted_outbox AS ( \
-                     DELETE FROM storage.storage_outbox_records \
-                     WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                     RETURNING actor_user_id::text, job_topic, trace_id, resource_id \
-                 ), \
-                 deleted_personal AS ( \
-                     DELETE FROM storage.personal_credentials \
-                     WHERE id = (SELECT resource_id::uuid FROM deleted_outbox) \
-                     RETURNING id \
-                 ), \
-                 deleted_tenant AS ( \
-                     DELETE FROM storage.tenant_credentials \
-                     WHERE id = (SELECT resource_id::uuid FROM deleted_outbox) \
-                     RETURNING id \
-                 ) \
-                 SELECT * FROM deleted_outbox",
+                "UPDATE storage.storage_outbox_records \
+                 SET status = 'PROCESSING', updated_at = NOW(), error_code = NULL, error_message = NULL \
+                 WHERE event_id = $1::uuid AND job_topic = $2 \
+                   AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&job_uuid, &job_topic],
             )
-            .await?
-    } else if status == "PROCESSING" {
-        // [COMMENT]: Khi job đang chạy, chỉ cập nhật trạng thái outbox sang 'PROCESSING'
-        pg_client
+            .await;
+    }
+
+    if status == "SUCCEEDED" {
+        return match owner_type.as_str() {
+            "PERSONAL" => pg_client
+                .query_opt(
+                    "WITH locked_outbox AS MATERIALIZED ( \
+                         SELECT event_id, resource_id::uuid AS resource_id \
+                         FROM storage.storage_outbox_records \
+                         WHERE event_id = $1::uuid AND job_topic = $2 AND owner_type = 'PERSONAL' \
+                           AND status IN ('PENDING', 'PROCESSING') FOR UPDATE \
+                     ), deleted_credential AS ( \
+                         DELETE FROM storage.personal_credentials credential \
+                         USING locked_outbox locked \
+                         WHERE credential.id = locked.resource_id AND credential.state = 'DELETING' \
+                         RETURNING credential.id \
+                     ) \
+                     UPDATE storage.storage_outbox_records outbox \
+                     SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW(), \
+                         error_code = NULL, error_message = NULL \
+                     FROM locked_outbox locked \
+                     WHERE outbox.event_id = locked.event_id \
+                       AND EXISTS (SELECT 1 FROM deleted_credential) \
+                     RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
+                    &[&job_uuid, &job_topic],
+                )
+                .await,
+            "TENANT" => pg_client
+                .query_opt(
+                    "WITH locked_outbox AS MATERIALIZED ( \
+                         SELECT event_id, resource_id::uuid AS resource_id \
+                         FROM storage.storage_outbox_records \
+                         WHERE event_id = $1::uuid AND job_topic = $2 AND owner_type = 'TENANT' \
+                           AND status IN ('PENDING', 'PROCESSING') FOR UPDATE \
+                     ), deleted_credential AS ( \
+                         DELETE FROM storage.tenant_credentials credential \
+                         USING locked_outbox locked \
+                         WHERE credential.id = locked.resource_id AND credential.state = 'DELETING' \
+                         RETURNING credential.id \
+                     ) \
+                     UPDATE storage.storage_outbox_records outbox \
+                     SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW(), \
+                         error_code = NULL, error_message = NULL \
+                     FROM locked_outbox locked \
+                     WHERE outbox.event_id = locked.event_id \
+                       AND EXISTS (SELECT 1 FROM deleted_credential) \
+                     RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
+                    &[&job_uuid, &job_topic],
+                )
+                .await,
+            _ => Ok(None),
+        };
+    }
+
+    match owner_type.as_str() {
+        "PERSONAL" => pg_client
             .query_opt(
-                "UPDATE storage.storage_outbox_records \
-                 SET status = $1, \
-                     error_code = NULL, \
-                     error_message = NULL \
-                 WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
-                &[&status, &job_uuid, &job_topic],
-            )
-            .await?
-    } else {
-        // [COMMENT]: Khi job thất bại: Chỉ cập nhật trạng thái Outbox sang FAILED kèm mã lỗi.
-        // Tuyệt đối không xóa Credential trong database để người dùng vẫn có thể thấy/sử dụng hoặc thực hiện retry xóa lại.
-        pg_client
-            .query_opt(
-                "UPDATE storage.storage_outbox_records \
-                 SET status = $1, \
-                     completed_at = CURRENT_TIMESTAMP, \
-                     error_code = $2, \
-                     error_message = $3 \
-                 WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
+                "WITH locked_outbox AS MATERIALIZED ( \
+                     SELECT event_id, resource_id::uuid AS resource_id \
+                     FROM storage.storage_outbox_records \
+                     WHERE event_id = $4::uuid AND job_topic = $5 AND owner_type = 'PERSONAL' \
+                       AND status IN ('PENDING', 'PROCESSING') FOR UPDATE \
+                 ), restored_credential AS ( \
+                     UPDATE storage.personal_credentials credential \
+                     SET state = 'READY', updated_at = NOW() \
+                     FROM locked_outbox locked \
+                     WHERE credential.id = locked.resource_id AND credential.state = 'DELETING' \
+                     RETURNING credential.id \
+                 ) \
+                 UPDATE storage.storage_outbox_records outbox \
+                 SET status = $1, completed_at = NOW(), updated_at = NOW(), \
+                     error_code = $2, error_message = $3 \
+                 FROM locked_outbox locked \
+                 WHERE outbox.event_id = locked.event_id \
+                   AND EXISTS (SELECT 1 FROM restored_credential) \
+                 RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
                 &[&status, &error_code, &error_message, &job_uuid, &job_topic],
             )
-            .await?
-    };
-
-    Ok(row_opt)
+            .await,
+        "TENANT" => pg_client
+            .query_opt(
+                "WITH locked_outbox AS MATERIALIZED ( \
+                     SELECT event_id, resource_id::uuid AS resource_id \
+                     FROM storage.storage_outbox_records \
+                     WHERE event_id = $4::uuid AND job_topic = $5 AND owner_type = 'TENANT' \
+                       AND status IN ('PENDING', 'PROCESSING') FOR UPDATE \
+                 ), restored_credential AS ( \
+                     UPDATE storage.tenant_credentials credential \
+                     SET state = 'READY', updated_at = NOW() \
+                     FROM locked_outbox locked \
+                     WHERE credential.id = locked.resource_id AND credential.state = 'DELETING' \
+                     RETURNING credential.id \
+                 ) \
+                 UPDATE storage.storage_outbox_records outbox \
+                 SET status = $1, completed_at = NOW(), updated_at = NOW(), \
+                     error_code = $2, error_message = $3 \
+                 FROM locked_outbox locked \
+                 WHERE outbox.event_id = locked.event_id \
+                   AND EXISTS (SELECT 1 FROM restored_credential) \
+                 RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
+                &[&status, &error_code, &error_message, &job_uuid, &job_topic],
+            )
+            .await,
+        _ => Ok(None),
+    }
 }
 
-// [COMMENT]: Xử lý khép lại vòng đời của job tạo Credential.
-// - SUCCEEDED: Xóa outbox record — credential đã tồn tại hợp lệ trong MinIO và DB, không cần làm gì thêm.
-// - PROCESSING: Cập nhật trạng thái outbox sang 'PROCESSING' để track tiến trình.
-// - FAILED: Xóa đồng thời outbox record VÀ credential record khỏi DB.
-//   Đảm bảo nguyên tắc atomicity: tạo thất bại tại MinIO thì DB cũng không được giữ lại record — cho phép retry với tên/key không bị conflict.
+/// Settles `storage.credential.create`. The credential row is retained as the
+/// single source of truth: CREATING becomes READY on success or ERROR on a
+/// terminal Dataplane failure. The outbox is settled only after that transition.
 pub async fn resolve_credential_creation(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
@@ -95,59 +169,101 @@ pub async fn resolve_credential_creation(
         ),
     );
 
-    let row_opt = if status == "SUCCEEDED" {
-        // [COMMENT]: Khi job thành công: Xóa outbox record, credential đã được tạo thành công ở MinIO nên giữ lại trong DB.
-        pg_client
+    let owner = pg_client
+        .query_opt(
+            "SELECT owner_type FROM storage.storage_outbox_records \
+             WHERE event_id = $1::uuid AND job_topic = $2 \
+               AND status IN ('PENDING', 'PROCESSING')",
+            &[&job_uuid, &job_topic],
+        )
+        .await?;
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    let owner_type: String = owner.get(0);
+
+    if status == "PROCESSING" {
+        return pg_client
             .query_opt(
-                "DELETE FROM storage.storage_outbox_records \
-                 WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
+                "UPDATE storage.storage_outbox_records \
+                 SET status = 'PROCESSING', updated_at = NOW(), error_code = NULL, error_message = NULL \
+                 WHERE event_id = $1::uuid AND job_topic = $2 \
+                   AND status IN ('PENDING', 'PROCESSING') \
                  RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&job_uuid, &job_topic],
             )
-            .await?
-    } else if status == "PROCESSING" {
-        // [COMMENT]: Khi job đang chạy, chỉ cập nhật trạng thái outbox sang 'PROCESSING'.
-        pg_client
-            .query_opt(
-                "UPDATE storage.storage_outbox_records \
-                 SET status = $1, \
-                     error_code = NULL, \
-                     error_message = NULL \
-                 WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
-                &[&status, &job_uuid, &job_topic],
-            )
-            .await?
+            .await;
+    }
+
+    let target_state = if status == "SUCCEEDED" {
+        "READY"
     } else {
-        // [COMMENT]: Khi job thất bại: Rollback atomically — xóa outbox VÀ xóa credential khỏi DB (personal + tenant).
-        // Lý do: Credential chưa được tạo thành công ở MinIO, để lại trong DB sẽ gây ra credential "ma" không dùng được.
-        // Xóa sạch để user có thể retry mà không bị conflict unique constraint (access_key).
-        pg_client
-            .query_opt(
-                "WITH deleted_outbox AS ( \
-                     UPDATE storage.storage_outbox_records \
-                     SET status = $1, \
-                         completed_at = CURRENT_TIMESTAMP, \
-                         error_code = $2, \
-                         error_message = $3 \
-                     WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
-                     RETURNING actor_user_id::text, job_topic, trace_id, resource_id \
-                 ), \
-                 deleted_personal AS ( \
-                     DELETE FROM storage.personal_credentials \
-                     WHERE id = (SELECT resource_id::uuid FROM deleted_outbox) \
-                     RETURNING id \
-                 ), \
-                 deleted_tenant AS ( \
-                     DELETE FROM storage.tenant_credentials \
-                     WHERE id = (SELECT resource_id::uuid FROM deleted_outbox) \
-                     RETURNING id \
-                 ) \
-                 SELECT * FROM deleted_outbox",
-                &[&status, &error_code, &error_message, &job_uuid, &job_topic],
-            )
-            .await?
+        "ERROR"
     };
 
-    Ok(row_opt)
+    match owner_type.as_str() {
+        "PERSONAL" => pg_client
+            .query_opt(
+                "WITH locked_outbox AS MATERIALIZED ( \
+                     SELECT event_id, resource_id::uuid AS resource_id \
+                     FROM storage.storage_outbox_records \
+                     WHERE event_id = $4::uuid AND job_topic = $5 AND owner_type = 'PERSONAL' \
+                       AND status IN ('PENDING', 'PROCESSING') FOR UPDATE \
+                 ), transitioned_credential AS ( \
+                     UPDATE storage.personal_credentials credential \
+                     SET state = $6, updated_at = NOW() \
+                     FROM locked_outbox locked \
+                     WHERE credential.id = locked.resource_id AND credential.state = 'CREATING' \
+                     RETURNING credential.id \
+                 ) \
+                 UPDATE storage.storage_outbox_records outbox \
+                 SET status = $1, completed_at = NOW(), updated_at = NOW(), \
+                     error_code = $2, error_message = $3 \
+                 FROM locked_outbox locked \
+                 WHERE outbox.event_id = locked.event_id \
+                   AND EXISTS (SELECT 1 FROM transitioned_credential) \
+                 RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
+                &[
+                    &status,
+                    &error_code,
+                    &error_message,
+                    &job_uuid,
+                    &job_topic,
+                    &target_state,
+                ],
+            )
+            .await,
+        "TENANT" => pg_client
+            .query_opt(
+                "WITH locked_outbox AS MATERIALIZED ( \
+                     SELECT event_id, resource_id::uuid AS resource_id \
+                     FROM storage.storage_outbox_records \
+                     WHERE event_id = $4::uuid AND job_topic = $5 AND owner_type = 'TENANT' \
+                       AND status IN ('PENDING', 'PROCESSING') FOR UPDATE \
+                 ), transitioned_credential AS ( \
+                     UPDATE storage.tenant_credentials credential \
+                     SET state = $6, updated_at = NOW() \
+                     FROM locked_outbox locked \
+                     WHERE credential.id = locked.resource_id AND credential.state = 'CREATING' \
+                     RETURNING credential.id \
+                 ) \
+                 UPDATE storage.storage_outbox_records outbox \
+                 SET status = $1, completed_at = NOW(), updated_at = NOW(), \
+                     error_code = $2, error_message = $3 \
+                 FROM locked_outbox locked \
+                 WHERE outbox.event_id = locked.event_id \
+                   AND EXISTS (SELECT 1 FROM transitioned_credential) \
+                 RETURNING outbox.actor_user_id::text, outbox.job_topic, outbox.trace_id, outbox.resource_id",
+                &[
+                    &status,
+                    &error_code,
+                    &error_message,
+                    &job_uuid,
+                    &job_topic,
+                    &target_state,
+                ],
+            )
+            .await,
+        _ => Ok(None),
+    }
 }

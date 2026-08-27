@@ -2,10 +2,10 @@
 
 > **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/tenant/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
 
-Tenant Bucket Quota update is an asynchronous mutation workflow. Controlplane validates
-storage quota headroom, updates desired capacity boundary in PostgreSQL, and writes a
-sealed Zone outbox command within an atomic CTE transaction. Physical hard quota adjustment
-occurs asynchronously on MinIO via Dataplane at the edge zone.
+Tenant Bucket Quota update is asynchronous. Controlplane validates quota headroom,
+keeps the last confirmed capacity unchanged, transitions `READY -> UPDATING`, and
+writes the requested target only in a sealed Zone command. Dataplane applies MinIO;
+JO promotes the typed actual result back to PostgreSQL.
 
 ---
 
@@ -45,7 +45,7 @@ tenant membership, resolves workspace and zone context, rewrites the path to
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": null, "message": "bucket quota updated"}` | Desired quota committed to PostgreSQL. |
+| `200` | `{"status": "success", "data": null, "message": "bucket quota updated"}` | Transition and sealed command committed; physical quota is still asynchronous. |
 | `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "quota leaves less than one GiB free"}` | Quota below current used storage. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:write` permission grant or inactive tenant membership. |
@@ -58,8 +58,8 @@ tenant membership, resolves workspace and zone context, rewrites the path to
 
 | Key / Transport | Store | Operation | Invariant |
 |---|---|---|---|
-| `storage.tenant_buckets.capacity_quota_bytes` | PostgreSQL | Locked update | Source of truth for desired bucket quota. |
-| `storage.storage_outbox_records` | PostgreSQL | Insert | Topic `storage.bucket.resize`, payload `BucketResizeSync`. |
+| `storage.tenant_buckets.capacity_quota_bytes` | PostgreSQL | Read, then JO actual update | Latest Zone-confirmed hard quota. |
+| `storage.storage_outbox_records` | PostgreSQL | Insert | Generic transport row; target quota is only in sealed `BucketResizeSync`. |
 | `storage.bucket.resize` | Kafka (Zone Command) | At-least-once publish | Sealed binary payload dispatched to the workspace's target Zone. |
 | `dataplane.job_result` | Kafka (Result) | Publish result | Dataplane returns terminal status (`SUCCEEDED` / `FAILED`). |
 
@@ -87,7 +87,7 @@ sequenceDiagram
 
 ---
 
-## Phase 2 — Controlplane Desired-State Transaction
+## Phase 2 — Controlplane Transition Transaction
 
 ```mermaid
 sequenceDiagram
@@ -109,7 +109,7 @@ sequenceDiagram
     Service->>Service: Build BucketResizeSync protobuf
     Service->>Protector: Seal payload bytes
     Service->>Repo: UpdateQuota(param, outboxRecord)
-    Repo->>PG: Execute atomic CTE (UPDATE tenant_buckets + INSERT storage_outbox_records)
+    Repo->>PG: CTE status READY->UPDATING + INSERT sealed command
     PG-->>Repo: Commit successful
     Repo-->>Service: Success
     Service-->>Handler: Success
@@ -151,8 +151,7 @@ sequenceDiagram
   ),
   updated_bucket AS (
       UPDATE storage.tenant_buckets
-      SET capacity_quota_bytes = $6,
-          status = 'UPDATING',
+      SET status = 'UPDATING',
           updated_at = NOW()
       WHERE id IN (SELECT id FROM authorized_target WHERE $6 >= used_bytes + 1073741824)
       RETURNING id, name, zone_id, tenant_id
@@ -161,17 +160,17 @@ sequenceDiagram
       INSERT INTO storage.storage_outbox_records (
           event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
           job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
-          actor_user_id, payload_key_id, rollback_quota_bytes
+          actor_user_id, payload_key_id
       )
       SELECT $7, ub.zone_id, 'storage.bucket.resize', $8, ub.tenant_id, 'TENANT', 'PENDING',
              1, ub.id::text, ub.name, 1, $9, 30,
-             $4, $10, at.capacity_quota_bytes
+             $4, $10
       FROM updated_bucket ub
       JOIN authorized_target at ON ub.id = at.id
   )
   SELECT id FROM updated_bucket;
   ```
-- **Output**: Atomic commit of updated `capacity_quota_bytes`, `status = 'UPDATING'`, and pending outbox record.
+- **Output**: Atomic `READY -> UPDATING` plus pending outbox. `capacity_quota_bytes` remains the last confirmed value.
 
 #### Hop 2.4: Controlplane → Browser
 - **Output**: HTTP `200 OK` JSON.
@@ -212,13 +211,16 @@ sequenceDiagram
     participant Centrifugo as Centrifugo WebSocket
     actor Browser as Cloud Console (Tenant)
 
-    DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
+    DP->>KafkaRes: SUCCEEDED + BucketQuotaAppliedV1
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED') & tenant_buckets (status = 'READY')
+    JO->>PG: Write actual quota + READY, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: TENANT_BUCKET_QUOTA_UPDATED { tenant_id, bucket_id, new_quota }
     Timeline->>Centrifugo: Publish to channel "tenant:storage:{tenant_id}:{workspace_id}"
     Centrifugo-->>Browser: WebSocket Push: { type: "BUCKET_QUOTA_UPDATED", id, capacity_quota_bytes, status: "READY" }
 ```
+
+`FAILED` carries no success payload. JO leaves `capacity_quota_bytes` unchanged,
+restores `UPDATING -> READY`, and only then settles the outbox as `FAILED`.
 
 ---
 

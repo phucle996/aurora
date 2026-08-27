@@ -55,25 +55,28 @@ impl Executor for BucketDeleteExecutor {
             .delete_bucket(&sync_data.name)
             .await
             .map_err(|e| {
-                ExecutorError::ExecutionFailed(format!(
+                ExecutorError::OutcomeUnknown(format!(
                     "Failed to delete bucket '{}' on MinIO: {}",
                     sync_data.name, e
                 ))
             })?;
 
-        // [COMMENT]: Step 2: Xóa sạch tất cả credentials và policies liên kết trên MinIO (idempotent, bỏ qua lỗi)
+        // Every owned credential and policy is part of deletion. Only a typed
+        // already-absent result is idempotent; infrastructure errors must retry.
         for access_key in &sync_data.access_keys {
             let policy_name = format!("policy-{}", access_key);
 
             Logger::sys_info(op, &format!("Xóa user '{}' trên MinIO...", access_key));
-            if let Err(e) = admin_client.delete_user(access_key).await {
-                Logger::sys_error(op, &format!("Xóa user '{}' thất bại", access_key), &e);
-            }
+            admin_client
+                .delete_user(access_key)
+                .await
+                .map_err(ExecutorError::OutcomeUnknown)?;
 
             Logger::sys_info(op, &format!("Xóa policy '{}' trên MinIO...", policy_name));
-            if let Err(e) = admin_client.delete_policy(&policy_name).await {
-                Logger::sys_error(op, &format!("Xóa policy '{}' thất bại", policy_name), &e);
-            }
+            admin_client
+                .delete_policy(&policy_name)
+                .await
+                .map_err(ExecutorError::OutcomeUnknown)?;
         }
 
         Logger::sys_info(

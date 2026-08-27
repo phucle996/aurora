@@ -4,9 +4,9 @@
 
 Tenant Bucket Lifecycle update is an asynchronous policy synchronization workflow.
 Controlplane validates lifecycle rules (strictly enforcing that noncurrent version expiration
-requires bucket versioning to be active), persists desired rules to PostgreSQL,
-and writes a sealed Zone outbox command within an atomic CTE transaction. Physical MinIO
-ILM configuration occurs asynchronously via Dataplane at the edge zone.
+requires bucket versioning to be active), keeps confirmed rules unchanged,
+transitions `READY -> UPDATING`, and writes requested rules only in a sealed Zone
+command. Dataplane applies MinIO and JO promotes `BucketLifecycleAppliedV1`.
 
 ---
 
@@ -61,7 +61,7 @@ Trinity tenant membership, resolves workspace and zone context, rewrites the pat
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": { "id": "...", "name": "...", "lifecycle_rules": [...] }, "message": "tenant bucket lifecycle rules updated"}` | Desired lifecycle rules committed to PostgreSQL. |
+| `200` | `data` includes `id`, `name`, `status=UPDATING` and last confirmed `lifecycle_rules` | Transition and sealed target command committed. |
 | `400` | `{"status": "error", "code": "VERSIONING_REQUIRED", "message": "noncurrent version expiration requires bucket versioning to be enabled"}` | Invariant violation: `noncurrent_version_expiration_days > 0` but bucket versioning is disabled. |
 | `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "invalid request body"}` | Validation error. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
@@ -164,8 +164,7 @@ sequenceDiagram
   ),
   updated_bucket AS (
       UPDATE storage.tenant_buckets
-      SET lifecycle_rules = $6::jsonb,
-          status = 'UPDATING',
+      SET status = 'UPDATING',
           updated_at = NOW()
       WHERE id IN (SELECT id FROM authorized_target)
       RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
@@ -184,7 +183,7 @@ sequenceDiagram
   SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
   FROM updated_bucket;
   ```
-- **Output**: Atomic commit of updated `lifecycle_rules` JSONB, `status = 'UPDATING'`, and pending outbox record.
+- **Output**: Atomic `READY -> UPDATING` and pending outbox; confirmed rules remain unchanged.
 
 #### Hop 2.4: Controlplane → Browser
 - **Output**: HTTP `200 OK` JSON.
@@ -230,13 +229,16 @@ sequenceDiagram
     participant Centrifugo as Centrifugo WebSocket
     actor Browser as Cloud Console (Tenant)
 
-    DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
+    DP->>KafkaRes: SUCCEEDED + BucketLifecycleAppliedV1
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED') & tenant_buckets (status = 'READY')
+    JO->>PG: Write actual rules + READY, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: TENANT_BUCKET_LIFECYCLE_UPDATED { tenant_id, bucket_id }
     Timeline->>Centrifugo: Publish to channel "tenant:storage:{tenant_id}:{workspace_id}"
     Centrifugo-->>Browser: WebSocket Push: { type: "BUCKET_LIFECYCLE_UPDATED", id, rules, status: "READY" }
 ```
+
+On terminal failure JO leaves confirmed rules unchanged, restores
+`UPDATING -> READY`, and only then marks the generic outbox row `FAILED`.
 
 ---
 
@@ -248,3 +250,10 @@ sequenceDiagram
 - **Controlplane Service**: `controlplane/internal/storage/service/tenant_bucket_service.go` (`UpdateBucketLifecycle`, `GetBucketLifecycle`)
 - **Controlplane Repository**: `controlplane/internal/storage/repository/tenant_bucket_repo.go` (`UpdateLifecycle`)
 - **Dataplane Executor**: `dataplane/src/executor/storage/lifecycle.rs`
+
+## PostgreSQL result binding — 2026-08-27
+
+JO serializes typed actual rules as text and binds them with `$4::text::jsonb`.
+Binding a Rust String directly as JSONB fails in tokio-postgres before the update.
+The owner-scoped CTE writes confirmed rules and READY together with outbox
+settlement. Real PostgreSQL regression tests cover both owner tables.

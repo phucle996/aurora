@@ -69,6 +69,7 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 		AccessKey: accessKey,
 		SecretKey: rawSecretKey,
 		Policy:    param.Policy,
+		State:     "CREATING",
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

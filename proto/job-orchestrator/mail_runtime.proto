@@ -108,13 +108,28 @@ message MailConsumerUpsertV1 {
   bytes zone_id = 16;
 }
 
+message MailConsumerDrainV1 {
+  uint32 schema_version = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  uint32 parallelism = 4;
+  uint32 timeout_seconds = 5;
+}
+message MailConsumerDrainedV1 {
+  uint32 schema_version = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  uint32 settled_slots = 4;
+}
+
 message MailConsumerDeleteV1 {
   MailEventMetadataV1 metadata = 1;
   bytes consumer_id = 2;
   // [COMMENT]: Tombstone version phải lớn hơn mọi upsert version trước đó.
   uint64 config_version = 3;
   // [COMMENT]: DP ngừng poll, drain outstanding rồi đóng connection trong giới hạn này.
-  uint32 drain_timeout_seconds = 4;
+  reserved 4;
+  reserved "drain_timeout_seconds";
   // [COMMENT]: Sanitized operator reason; không chứa secret hoặc customer payload.
   string reason = 5;
 }

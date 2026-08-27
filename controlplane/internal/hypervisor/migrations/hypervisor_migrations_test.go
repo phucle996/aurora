@@ -141,7 +141,7 @@ func TestHypervisorAllocationExportHasPendingAndResourceIndexes(t *testing.T) {
 	}
 }
 
-func TestPersonalVMHasNoDurableFailedState(t *testing.T) {
+func TestPersonalVMRetainsDurableFailedState(t *testing.T) {
 	enumBytes, err := fs.ReadFile(Files, "000001_hypervisor_enums.up.sql")
 	if err != nil {
 		t.Fatalf("read hypervisor enum migration: %v", err)
@@ -152,12 +152,12 @@ func TestPersonalVMHasNoDurableFailedState(t *testing.T) {
 	if vmTypeStart < 0 || imageTypeStart <= vmTypeStart {
 		t.Fatal("hypervisor VM enum declaration is missing")
 	}
-	if strings.Contains(enumSQL[vmTypeStart:imageTypeStart], "'FAILED'") {
-		t.Fatal("personal VM resources must be hard-deleted on terminal failure")
+	if !strings.Contains(enumSQL[vmTypeStart:imageTypeStart], "'FAILED'") {
+		t.Fatal("personal VM resources must retain terminal provisioning failure")
 	}
 }
 
-func TestPersonalVMDeleteRequiresDeletingStatusAtDatabaseBoundary(t *testing.T) {
+func TestHypervisorResourceDeleteRequiresTransitionalStateAtDatabaseBoundary(t *testing.T) {
 	functionBytes, err := fs.ReadFile(Files, "000004_hypervisor_functions.up.sql")
 	if err != nil {
 		t.Fatalf("read hypervisor function migration: %v", err)
@@ -166,6 +166,8 @@ func TestPersonalVMDeleteRequiresDeletingStatusAtDatabaseBoundary(t *testing.T) 
 	for _, required := range []string{
 		"hypervisor_require_vm_deleting_before_delete",
 		"IF OLD.status <> 'DELETING'",
+		"hypervisor_require_image_deleting_before_delete",
+		"IF OLD.state <> 'DELETING'",
 		"ERRCODE = 'check_violation'",
 	} {
 		if !strings.Contains(functionSQL, required) {
@@ -182,6 +184,9 @@ func TestPersonalVMDeleteRequiresDeletingStatusAtDatabaseBoundary(t *testing.T) 
 		"trg_hypervisor_vm_delete_requires_deleting",
 		"BEFORE DELETE ON personal_vms",
 		"EXECUTE FUNCTION hypervisor_require_vm_deleting_before_delete()",
+		"trg_hypervisor_image_delete_requires_deleting",
+		"BEFORE DELETE ON image_artifacts",
+		"EXECUTE FUNCTION hypervisor_require_image_deleting_before_delete()",
 	} {
 		if !strings.Contains(triggerSQL, required) {
 			t.Fatalf("personal VM deletion trigger is missing %q", required)

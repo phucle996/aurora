@@ -330,7 +330,7 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
-		  AND b.status NOT IN ('DELETING')
+		  AND b.status = 'READY'
 		FOR UPDATE
 	`, r.storage, r.hierarchy, r.storage, r.storage, r.hierarchy)
 
@@ -354,13 +354,16 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 
 	updateQuery := fmt.Sprintf(`
 		UPDATE %s.personal_buckets
-		SET capacity_quota_bytes = $1, status = 'UPDATING', updated_at = $2
-		WHERE id = $3
+		SET status = 'UPDATING', updated_at = $1
+		WHERE id = $2 AND status = 'READY'
 	`, r.storage)
 
-	_, err = tx.Exec(ctx, updateQuery, quotaBytes, time.Now(), id)
+	result, err := tx.Exec(ctx, updateQuery, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("storage repo: update personal bucket capacity failed: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("storage repo: personal bucket quota transition lost")
 	}
 
 	outbox.ResourceName = bucketName
@@ -436,7 +439,7 @@ func (r *PersonalBucketRepoImpl) UpdateVersioning(ctx context.Context, id uuid.U
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
-		  AND b.status NOT IN ('DELETING')
+		  AND b.status = 'READY'
 		FOR UPDATE
 	`, r.storage, r.storage, r.hierarchy)
 
@@ -474,16 +477,18 @@ func (r *PersonalBucketRepoImpl) UpdateVersioning(ctx context.Context, id uuid.U
 	now := time.Now()
 	updateQuery := fmt.Sprintf(`
 		UPDATE %s.personal_buckets
-		SET versioning_enabled = $1, status = 'UPDATING', updated_at = $2
-		WHERE id = $3
+		SET status = 'UPDATING', updated_at = $1
+		WHERE id = $2 AND status = 'READY'
 	`, r.storage)
 
-	_, err = tx.Exec(ctx, updateQuery, versioningEnabled, now, id)
+	result, err := tx.Exec(ctx, updateQuery, now, id)
 	if err != nil {
 		return nil, fmt.Errorf("storage repo: update versioning failed: %w", err)
 	}
+	if result.RowsAffected() != 1 {
+		return nil, errors.New("storage repo: personal bucket versioning transition lost")
+	}
 
-	b.VersioningEnabled = versioningEnabled
 	b.Status = storageEntity.BucketStatusUpdating
 	b.UpdatedAt = now
 
@@ -557,7 +562,7 @@ func (r *PersonalBucketRepoImpl) UpdateLifecycle(ctx context.Context, id uuid.UU
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
-		  AND b.status NOT IN ('DELETING')
+		  AND b.status = 'READY'
 		FOR UPDATE
 	`, r.storage, r.storage, r.hierarchy)
 
@@ -590,24 +595,21 @@ func (r *PersonalBucketRepoImpl) UpdateLifecycle(ctx context.Context, id uuid.UU
 		}
 	}
 
-	rulesJSON, err := json.Marshal(rules)
-	if err != nil {
-		return nil, fmt.Errorf("storage repo: marshal lifecycle rules failed: %w", err)
-	}
-
 	now := time.Now()
 	updateQuery := fmt.Sprintf(`
 		UPDATE %s.personal_buckets
-		SET lifecycle_rules = $1, status = 'UPDATING', updated_at = $2
-		WHERE id = $3
+		SET status = 'UPDATING', updated_at = $1
+		WHERE id = $2 AND status = 'READY'
 	`, r.storage)
 
-	_, err = tx.Exec(ctx, updateQuery, rulesJSON, now, id)
+	result, err := tx.Exec(ctx, updateQuery, now, id)
 	if err != nil {
 		return nil, fmt.Errorf("storage repo: update lifecycle failed: %w", err)
 	}
+	if result.RowsAffected() != 1 {
+		return nil, errors.New("storage repo: personal bucket lifecycle transition lost")
+	}
 
-	b.LifecycleRules = rules
 	b.Status = storageEntity.BucketStatusUpdating
 	b.UpdatedAt = now
 
@@ -668,7 +670,11 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			FROM %s.personal_buckets b
 			JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 			WHERE b.id = $1 AND w.owner_id = $2
-			  AND b.status NOT IN ('DELETING')
+			  AND b.status = 'READY'
+			  AND NOT EXISTS (
+				SELECT 1 FROM %s.personal_credentials credential
+				WHERE credential.bucket_id = b.id AND credential.state <> 'READY'
+			  )
 			FOR UPDATE
 		),
 		updated_bucket AS (
@@ -676,6 +682,13 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			SET status = 'DELETING', updated_at = NOW()
 			WHERE id IN (SELECT id FROM locked_bucket)
 			RETURNING id, name
+		),
+		updated_credentials AS (
+			UPDATE %s.personal_credentials credential
+			SET state = 'DELETING', updated_at = NOW()
+			WHERE credential.bucket_id IN (SELECT id FROM updated_bucket)
+			  AND credential.state = 'READY'
+			RETURNING credential.id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
@@ -684,8 +697,9 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			resource_name, rollback_quota_bytes
 		)
 		SELECT $3, $4, $5, $6, $7, $17, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, updated_bucket.name, NULL
-		FROM updated_bucket;
-	`, r.storage, r.hierarchy, r.storage, r.storage)
+		FROM updated_bucket
+		CROSS JOIN (SELECT count(*) FROM updated_credentials) transitioned_credentials;
+	`, r.storage, r.hierarchy, r.storage, r.storage, r.storage, r.storage)
 
 	res, err := r.db.Exec(ctx, query,
 		id,

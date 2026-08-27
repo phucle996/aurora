@@ -111,10 +111,9 @@
 ```mermaid
 stateDiagram-v2
     [*] --> PROVISIONING: Atomic CTE (personal_vms + outbox insert)
-    PROVISIONING --> PROVISIONING: Dataplane PROCESSING heartbeat
+    PROVISIONING --> PROVISIONING: Dataplane PROCESSING updates only the outbox
     PROVISIONING --> READY: Dataplane SUCCEEDED result settled (provider_vmid, ipv4, provisioned_at persisted)
-    PROVISIONING --> DELETING: Dataplane terminal FAILED / Provisioning timeout
-    DELETING --> [*]: Hard delete VM row in settlement transaction
+    PROVISIONING --> FAILED: Dataplane terminal FAILED settled after resource execution failure
     READY --> READY: Idempotent duplicate result replay
 ```
 
@@ -125,8 +124,8 @@ stateDiagram-v2
    - Nếu client gửi lại request trùng `(workspace_id, name)` với cùng `spec_hash` $\to$ Trả về `200 OK` với thông tin VM hiện tại, **tuyệt đối không sinh outbox thứ hai**.
    - Nếu client gửi request trùng tên nhưng khác cấu hình (`spec_hash` sai khác) $\to$ Trả về **`409 Conflict` (`ErrNameConflict`)**.
 2. **Terminal Failure Semantics**:
-   - Khi provisioning thất bại ở Dataplane, VM **không bao giờ ở lại trạng thái `FAILED` vĩnh viễn** trong bảng `personal_vms`. Result Worker của Job Orchestrator chuyển status sang `DELETING`, thực hiện dọn dẹp và xóa cứng dòng VM khỏi DB để giải phóng `(workspace_id, name)` cho user tạo lại.
-   - Bản ghi lỗi được lưu giữ tại `hypervisor_outbox_records` phục vụ tra cứu lỗi và auditing.
+   - Khi provisioning thất bại ở Dataplane, Result Worker chuyển đúng VM `PROVISIONING -> FAILED` và chỉ sau đó mới settle outbox `FAILED` trong cùng transaction.
+   - JO không suy diễn một `FAILED` result thành bằng chứng provider resource đã bị xóa; vì vậy nó không hard-delete VM row. Cleanup/retry là workflow riêng với provider-confirmed result.
 
 ---
 
@@ -372,6 +371,41 @@ FROM inserted_vm;
 
 ### Phase 4 — Dataplane Proxmox Provisioning & State Enforcement
 
+#### Watchdog deadline recovery — same operation, no terminal result
+
+`JobExecutionRuntime::execute_leased_job` registers the immutable command and
+Kafka source delivery with `JobExecutionLeaseRegistry`. `run_execution_watchdog`
+renews its fenced Zone KV lease (30-second TTL, ten-second scan). This does not
+extend the separate execution deadline. Preparing and result-publication phases
+keep lease renewal but do not count as executor timeouts.
+
+When the execution deadline expires, only the current registration may be removed
+and locally cancelled. The provider may still be cloning/configuring the VM;
+cancellation is not evidence of provider failure. The watchdog builds a retry of
+the same job ID, job version, attempt, delivery epoch, resource and protected
+payload, with a lease-TTL delay plus up to two seconds of jitter. It sends this
+directly to the existing `run_retry_scheduler`; there is no timeout result worker,
+new outbox table, Saga compensation or independent reconciliation workflow.
+
+`publish_retry_after_delay` republishes the encrypted command using the resource
+Kafka key. Only a successful broker ACK permits settling the original delivery,
+still subject to its assignment-epoch/contiguous-offset fence. Timeout recovery
+does not increment or exhaust the business attempt budget. Replay reacquires the
+resource lease and checks the same provider binding before continuing; it must
+not create another VM. No `FAILED` result or client completion notification is
+generated from the timeout; the CP VM stays `PROVISIONING`.
+
+Backpressure retains retries in a bounded watchdog queue without blocking other
+lease renewals. Queue overflow exits the critical watchdog so its supervisor
+restarts the process and Kafka replays uncommitted sources. Shutdown may discard
+in-memory pending retries, never the durable unacknowledged source. A result that
+has already entered completion phase wins over a stale watchdog timeout snapshot.
+The pending queue is observed as `dataplane_watchdog_recovery_queue_depth`.
+If retry publication fails, the critical scheduler exits for supervised restart:
+an unacknowledged offset is durable but is not automatically redelivered within
+the same Kafka assignment. A stale source ACK after successful publication remains
+fenced and does not restart the process solely because ownership changed.
+
 #### Hop 4.1: Dataplane Intake & Payload Unsealing
 1. Dataplane consumer nhận `JobCommandV1` từ Kafka partition của Zone.
 2. Dùng Zone X25519 Private Key giải mã payload thành `hypervisorproto.VmCreateV1`.
@@ -407,20 +441,20 @@ FROM inserted_vm;
 #### Hop 5.1: Job Orchestrator Result Worker Settlement
 - **Database Transaction**:
   ```sql
-  WITH settled_outbox AS (
-      UPDATE hypervisor.hypervisor_outbox_records
-      SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW()
-      WHERE event_id = $event_id AND status = 'PROCESSING'
-      RETURNING event_id, resource_id
-  )
+  WITH updated_vm AS (
   UPDATE hypervisor.personal_vms vm
   SET status = 'READY',
       provider_vmid = $provider_vmid,
       ipv4_address = $ipv4_address::inet,
-      provisioned_at = NOW(),
+      provisioned_at = TIMESTAMPTZ 'epoch' + $provider_completed_at_unix_ms::bigint * INTERVAL '1 millisecond',
       updated_at = NOW()
-  FROM settled_outbox
-  WHERE vm.id = $vm_id AND vm.status = 'PROVISIONING';
+  WHERE vm.id = $vm_id AND vm.status = 'PROVISIONING'
+  RETURNING vm.id
+  )
+  UPDATE hypervisor.hypervisor_outbox_records
+  SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW()
+  WHERE event_id = $event_id AND status IN ('PENDING', 'PROCESSING')
+    AND EXISTS (SELECT 1 FROM updated_vm);
   ```
 - **Commit**: Sau khi DB commit thành công, JO commit Kafka offset của result message.
 
@@ -439,8 +473,9 @@ FROM inserted_vm;
 |---|---|
 | **Ví tiền chưa mở / Bảng giá chưa sẵn sàng** | Bị chặn ngay tại Controlplane Precondition Gates $\to$ Trả về `402 Payment Required` hoặc `503 Service Unavailable`. Không tạo rác trong DB. |
 | **User bấm tạo 2 lần (Double Click / Network Retry)** | Câu lệnh SQL `ON CONFLICT (workspace_id, name) DO NOTHING` nhận diện VM đã tạo $\to$ Trả về `200 OK` với dữ liệu VM đang tạo, không sinh outbox thứ 2. |
-| **Cụm Proxmox hết tài nguyên RAM/Disk** | Dataplane thử lại với bounded backoff. Nếu kiệt tài nguyên $\to$ Bắn kết quả `FAILED` $\to$ JO chuyển VM sang `DELETING` và xóa cứng dòng VM, giải phóng tên cho user. |
+| **Cụm Proxmox hết tài nguyên RAM/Disk** | Dataplane thử lại với bounded backoff. Nếu kiệt tài nguyên $\to$ Bắn kết quả `FAILED` $\to$ JO giữ row và chuyển VM sang `FAILED`; outbox lưu lỗi để UI/refetch hiển thị đúng terminal outcome. |
 | **Dataplane sập nguồn giữa lúc đang Clone** | Kafka redeliver message sau timeout $\to$ Worker mới dùng Zone KV CAS Provider Binding để nhận diện VM đã tạo dở trên Proxmox, tiếp tục cấu hình hoặc dọn dẹp an toàn. |
+| **Watchdog hết execution deadline** | Hủy local execution và retry cùng operation/attempt sau lease TTL + jitter; không phát terminal `FAILED`, không xóa VM thật và không đổi CP `PROVISIONING`. |
 | **Replay Result cũ từ Kafka** | SQL Guard `WHERE status = 'PROCESSING'` ngăn chặn việc cập nhật đè lên các bản ghi đã settle. |
 | **Centrifugo WebSocket bị đứt kết nối** | Không ảnh hưởng đến dữ liệu bền vững. Khi user tải lại trang hoặc mở lại tab, API `GET /api/v1/hypervisor/vms` truy vấn từ PostgreSQL sẽ hiển thị đúng trạng thái `READY`. |
 
@@ -475,3 +510,13 @@ FROM inserted_vm;
 - **JO VM Result Worker (DB Settlement)**: [`job-orchestrator/src/results/hypervisor/vm.rs`](../../job-orchestrator/src/results/hypervisor/vm.rs), [`job-orchestrator/src/results/apply.rs`](../../job-orchestrator/src/results/apply.rs)
 - **Centrifugo Realtime Job Notification**: [`notification-service/src/application/job_notifications.rs`](../../notification-service/src/application/job_notifications.rs)
 - **PostgreSQL Schema & Tables**: `hypervisor.personal_vms`, `hypervisor.hypervisor_outbox_records`
+
+## Durable completion revision — 2026-08-27
+
+DP persists the first confirmed activation observation under
+`hypervisor.vm.activation.{resource_id}` before guest-agent polling, and returns
+it in VmCreateResultV1.provider_completed_at_unix_ms. JO validates the positive,
+non-future timestamp and uses it for activation billing; its own NOW is only
+processing metadata. A command-hash-bound success receipt in Zone KV prevents
+completed command replay from repeating provider mutations. This is DP observation
+time, not a claim that Proxmox exposes one atomic completion time for all create steps.

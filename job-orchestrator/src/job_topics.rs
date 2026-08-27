@@ -6,6 +6,7 @@ pub fn is_command_registered(source_domain: &str, job_topic: &str) -> bool {
             job_topic,
             "mail.consumer.upsert"
                 | "mail.consumer.delete"
+                | "mail.consumer.drain"
                 | "mail.template.version_published"
                 | "mail.template.deleted"
         ),
@@ -14,13 +15,19 @@ pub fn is_command_registered(source_domain: &str, job_topic: &str) -> bool {
             "storage.bucket.create"
                 | "storage.bucket.delete"
                 | "storage.bucket.resize"
+                | "storage.bucket.versioning"
+                | "storage.bucket.lifecycle"
+                | "storage.bucket.commercial_admission"
                 | "storage.credential.create"
                 | "storage.credential.delete"
                 | "storage.access.prepare"
         ),
         "HYPERVISOR" => matches!(
             job_topic,
-            "hypervisor.vm.create" | "hypervisor.image.import" | "hypervisor.image.delete"
+            "hypervisor.vm.create"
+                | "hypervisor.vm.delete"
+                | "hypervisor.image.import"
+                | "hypervisor.image.delete"
         ),
         "MANAGED_SERVICE" => job_topic == "managed_service.instance.execute",
         _ => false,
@@ -36,6 +43,7 @@ pub fn is_result_registered(source_domain: &str, job_topic: &str) -> bool {
             job_topic,
             "mail.consumer.upsert"
                 | "mail.consumer.delete"
+                | "mail.consumer.drain"
                 | "mail.template.version_published"
                 | "mail.template.deleted"
         ),
@@ -44,13 +52,19 @@ pub fn is_result_registered(source_domain: &str, job_topic: &str) -> bool {
             "storage.bucket.create"
                 | "storage.bucket.delete"
                 | "storage.bucket.resize"
+                | "storage.bucket.versioning"
+                | "storage.bucket.lifecycle"
+                | "storage.bucket.commercial_admission"
                 | "storage.credential.create"
                 | "storage.credential.delete"
                 | "storage.access.prepare"
         ),
         "HYPERVISOR" => matches!(
             job_topic,
-            "hypervisor.vm.create" | "hypervisor.image.import" | "hypervisor.image.delete"
+            "hypervisor.vm.create"
+                | "hypervisor.vm.delete"
+                | "hypervisor.image.import"
+                | "hypervisor.image.delete"
         ),
         "MANAGED_SERVICE" => job_topic == "managed_service.instance.execute",
         _ => false,
@@ -69,6 +83,7 @@ mod tests {
         assert!(!is_command_registered("MAIL", "storage.bucket.create"));
         assert!(!is_command_registered("STORAGE", "storage.unknown"));
         assert!(is_command_registered("HYPERVISOR", "hypervisor.vm.create"));
+        assert!(is_command_registered("HYPERVISOR", "hypervisor.vm.delete"));
         assert!(is_command_registered(
             "HYPERVISOR",
             "hypervisor.image.import"

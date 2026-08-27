@@ -1,6 +1,7 @@
-package mail
+package mail_test
 
 import (
+	mail "controlplane/internal/mail"
 	"strings"
 	"testing"
 
@@ -12,17 +13,17 @@ import (
 func TestRegisterRoutesUsesRewrittenPersonalAndTenantPrefixes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	module := &Module{
+	module := &mail.Module{
 		PersonalConsumerHandler: mailHandler.NewPersonalConsumerHandler(nil),
 		TenantConsumerHandler:   mailHandler.NewTenantConsumerHandler(nil),
 		PersonalTemplateHandler: mailHandler.NewPersonalTemplateHandler(nil),
 		TenantTemplateHandler:   mailHandler.NewTenantTemplateHandler(nil),
 	}
-	RegisterRoutes(router, module)
+	mail.RegisterRoutes(router, module)
 
 	routes := router.Routes()
-	if len(routes) != 26 {
-		t.Fatalf("route count = %d, want 26", len(routes))
+	if len(routes) != 28 {
+		t.Fatalf("route count = %d, want 28", len(routes))
 	}
 	for _, route := range routes {
 		if route.Path == "/api/v1/mail" {

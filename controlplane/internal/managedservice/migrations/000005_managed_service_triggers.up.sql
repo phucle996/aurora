@@ -26,3 +26,13 @@ DROP TRIGGER IF EXISTS trg_managed_service_outbox_immutable ON managed_service_o
 CREATE TRIGGER trg_managed_service_outbox_immutable
 BEFORE UPDATE ON managed_service_outbox_records
 FOR EACH ROW EXECUTE FUNCTION reject_managed_service_outbox_payload_rewrite();
+
+DROP TRIGGER IF EXISTS trg_personal_managed_service_delete_requires_deleting ON personal_managed_service_instances;
+CREATE TRIGGER trg_personal_managed_service_delete_requires_deleting
+BEFORE DELETE ON personal_managed_service_instances
+FOR EACH ROW EXECUTE FUNCTION require_managed_service_instance_deleting_before_delete();
+
+DROP TRIGGER IF EXISTS trg_tenant_managed_service_delete_requires_deleting ON tenant_managed_service_instances;
+CREATE TRIGGER trg_tenant_managed_service_delete_requires_deleting
+BEFORE DELETE ON tenant_managed_service_instances
+FOR EACH ROW EXECUTE FUNCTION require_managed_service_instance_deleting_before_delete();

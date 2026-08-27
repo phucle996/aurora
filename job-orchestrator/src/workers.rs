@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
-use crate::{storage_metering, storage_usage, zone_state};
+use crate::{hypervisor_metering, mail_metering, storage_metering, storage_usage, zone_state};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,6 +113,52 @@ impl RuntimeWorkers {
             }
         };
 
+        let hypervisor_metering_config = self.config.clone();
+        let hypervisor_metering_kafka = self.kafka.clone();
+        let hypervisor_metering_redis = self.cache_redis.clone();
+        let hypervisor_metering_worker = async move {
+            let mut failures = 0_u32;
+            loop {
+                if let Err(error) = hypervisor_metering::run_network_usage_report_relay(
+                    &hypervisor_metering_config,
+                    hypervisor_metering_kafka.clone(),
+                    &hypervisor_metering_redis,
+                )
+                .await
+                {
+                    Logger::sys_error(
+                        "workers.hypervisor_metering",
+                        "Hypervisor network usage relay stopped; retrying",
+                        &error.to_string(),
+                    );
+                }
+                retry_delay("hypervisor_metering", &mut failures).await;
+            }
+        };
+
+        let mail_metering_config = self.config.clone();
+        let mail_metering_kafka = self.kafka.clone();
+        let mail_metering_redis = self.cache_redis.clone();
+        let mail_metering_worker = async move {
+            let mut failures = 0_u32;
+            loop {
+                if let Err(error) = mail_metering::run_accepted_usage_relay(
+                    &mail_metering_config,
+                    mail_metering_kafka.clone(),
+                    &mail_metering_redis,
+                )
+                .await
+                {
+                    Logger::sys_error(
+                        "workers.mail_metering",
+                        "Mail accepted usage relay stopped; retrying",
+                        &error.to_string(),
+                    );
+                }
+                retry_delay("mail_metering", &mut failures).await;
+            }
+        };
+
         let watchdog_config = self.config.clone();
         let watchdog_redis = self.cache_redis.clone();
         let watchdog_worker = async move {
@@ -138,6 +184,8 @@ impl RuntimeWorkers {
             _ = metadata_worker => {}
             _ = storage_worker => {}
             _ = metering_worker => {}
+            _ = hypervisor_metering_worker => {}
+            _ = mail_metering_worker => {}
             _ = watchdog_worker => {}
         }
         Ok(())

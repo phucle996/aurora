@@ -101,6 +101,7 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		"access_key": cred.AccessKey,
 		"secret_key": cred.SecretKey, // Chứa raw secret key
 		"policy":     cred.Policy,
+		"state":      cred.State,
 		"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -146,6 +147,7 @@ func (h *PersonalCredentialHandler) List(c *gin.Context) {
 			"id":         cred.ID.String(),
 			"access_key": cred.AccessKey,
 			"policy":     cred.Policy,
+			"state":      cred.State,
 			"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
 			"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 		})

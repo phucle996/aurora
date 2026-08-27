@@ -462,14 +462,13 @@ func (r *TenantBucketRepoImpl) UpdateQuota(
 			  AND b.workspace_id = $2 
 			  AND b.tenant_id = $3 
 			  AND w.zone_id = $5
-			  AND b.status NOT IN ('DELETING')
+			  AND b.status = 'READY'
 			  AND (SELECT ok FROM admitted)
 			FOR UPDATE OF b
 		),
 		updated_bucket AS (
 			UPDATE %s.tenant_buckets
-			SET capacity_quota_bytes = $6,
-			    status = 'UPDATING',
+			SET status = 'UPDATING',
 			    updated_at = NOW()
 			WHERE id IN (SELECT id FROM authorized_target WHERE $6 >= used_bytes + 1073741824)
 			RETURNING id, name, zone_id, tenant_id
@@ -577,14 +576,13 @@ func (r *TenantBucketRepoImpl) UpdateVersioning(
 			  AND b.workspace_id = $2 
 			  AND b.tenant_id = $3 
 			  AND w.zone_id = $5
-			  AND b.status NOT IN ('DELETING')
+			  AND b.status = 'READY'
 			  AND (SELECT ok FROM admitted)
 			FOR UPDATE OF b
 		),
 		updated_bucket AS (
 			UPDATE %s.tenant_buckets
-			SET versioning_enabled = $6,
-			    status = 'UPDATING',
+			SET status = 'UPDATING',
 			    updated_at = NOW()
 			WHERE id IN (SELECT id FROM authorized_target)
 			RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes,
@@ -598,9 +596,9 @@ func (r *TenantBucketRepoImpl) UpdateVersioning(
 				job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
 				actor_user_id, payload_key_id
 			)
-			SELECT $7, at.zone_id, $8, $9, at.tenant_id, $10, $11,
-			       $12, at.id::text, at.name, $13, $14, $15,
-			       $4, $16
+			SELECT $6, at.zone_id, $7, $8, at.tenant_id, $9, $10,
+			       $11, at.id::text, at.name, $12, $13, $14,
+			       $4, $15
 			FROM authorized_target at
 		)
 		SELECT
@@ -636,7 +634,6 @@ func (r *TenantBucketRepoImpl) UpdateVersioning(
 		param.TenantID,
 		param.UserID,
 		param.ZoneID,
-		param.VersioningEnabled,
 		mo.EventID,
 		mo.JobTopic,
 		mo.Payload,
@@ -694,11 +691,6 @@ func (r *TenantBucketRepoImpl) UpdateLifecycle(
 	param *storageEntity.UpdateTenantBucketLifecycle,
 	outbox *storageEntity.StorageOutboxRecord,
 ) (*storageEntity.TenantBucket, error) {
-	rulesJSON, err := json.Marshal(param.Rules)
-	if err != nil {
-		return nil, fmt.Errorf("storage repo: marshal lifecycle rules failed: %w", err)
-	}
-
 	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
 		ZoneID:               outbox.ZoneID,
 		SourceDomain:         "STORAGE",
@@ -736,14 +728,13 @@ func (r *TenantBucketRepoImpl) UpdateLifecycle(
 			  AND b.workspace_id = $2 
 			  AND b.tenant_id = $3 
 			  AND w.zone_id = $5
-			  AND b.status NOT IN ('DELETING')
+			  AND b.status = 'READY'
 			  AND (SELECT ok FROM admitted)
 			FOR UPDATE OF b
 		),
 		updated_bucket AS (
 			UPDATE %s.tenant_buckets
-			SET lifecycle_rules = $6::jsonb,
-			    status = 'UPDATING',
+			SET status = 'UPDATING',
 			    updated_at = NOW()
 			WHERE id IN (SELECT id FROM authorized_target)
 			RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes,
@@ -757,9 +748,9 @@ func (r *TenantBucketRepoImpl) UpdateLifecycle(
 				job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
 				actor_user_id, payload_key_id
 			)
-			SELECT $7, at.zone_id, $8, $9, at.tenant_id, $10, $11,
-			       $12, at.id::text, at.name, $13, $14, $15,
-			       $4, $16
+			SELECT $6, at.zone_id, $7, $8, at.tenant_id, $9, $10,
+			       $11, at.id::text, at.name, $12, $13, $14,
+			       $4, $15
 			FROM authorized_target at
 		)
 		SELECT
@@ -795,7 +786,6 @@ func (r *TenantBucketRepoImpl) UpdateLifecycle(
 		param.TenantID,
 		param.UserID,
 		param.ZoneID,
-		string(rulesJSON),
 		mo.EventID,
 		mo.JobTopic,
 		mo.Payload,
@@ -886,7 +876,11 @@ func (r *TenantBucketRepoImpl) Delete(
 			  AND b.workspace_id = $2 
 			  AND b.tenant_id = $3 
 			  AND w.zone_id = $5
-			  AND b.status NOT IN ('DELETING')
+			  AND b.status = 'READY'
+			  AND NOT EXISTS (
+				SELECT 1 FROM %s.tenant_credentials credential
+				WHERE credential.bucket_id = b.id AND credential.state <> 'READY'
+			  )
 			FOR UPDATE OF b
 		),
 		updated_bucket AS (
@@ -895,6 +889,13 @@ func (r *TenantBucketRepoImpl) Delete(
 			    updated_at = NOW()
 			WHERE id IN (SELECT id FROM authorized_target)
 			RETURNING id, name, zone_id, tenant_id
+		),
+		updated_credentials AS (
+			UPDATE %s.tenant_credentials credential
+			SET state = 'DELETING', updated_at = NOW()
+			WHERE credential.bucket_id IN (SELECT id FROM updated_bucket)
+			  AND credential.state = 'READY'
+			RETURNING credential.id
 		),
 		inserted_outbox AS (
 			INSERT INTO %s.storage_outbox_records (
@@ -906,9 +907,10 @@ func (r *TenantBucketRepoImpl) Delete(
 			       $11, ub.id::text, ub.name, $12, $13, $14,
 			       $4, $15
 			FROM updated_bucket ub
+			CROSS JOIN (SELECT count(*) FROM updated_credentials) transitioned_credentials
 		)
 		SELECT id FROM updated_bucket;
-	`, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage)
+	`, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage, r.storage, r.storage)
 
 	var updatedID uuid.UUID
 	err = r.db.QueryRow(ctx, query,

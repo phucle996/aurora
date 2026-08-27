@@ -1,6 +1,7 @@
 use super::batcher::MailBatcherHandle;
 use super::model::{PreparedMail, SenderProfile};
 use crate::config::Config;
+use crate::executor::mail::metering::AcceptedUsagePublisher;
 use crate::executor::mail::runtime::configuration::{
     MailConfigurationRuntime, RuntimeConsumerConfiguration, RuntimeDesiredState,
     RuntimeTemplateSnapshot, RuntimeTemplateToken,
@@ -234,6 +235,7 @@ pub struct MailMessageProcessor {
     zone_kv: Arc<ZoneKvStore>,
     batcher: Arc<MailBatcherHandle>,
     sender: Arc<SenderProfile>,
+    accepted_usage: Arc<AcceptedUsagePublisher>,
     concurrency: Arc<Semaphore>,
 }
 
@@ -244,6 +246,7 @@ impl MailMessageProcessor {
         zone_kv: Arc<ZoneKvStore>,
         batcher: Arc<MailBatcherHandle>,
         sender: Arc<SenderProfile>,
+        accepted_usage: Arc<AcceptedUsagePublisher>,
     ) -> Arc<Self> {
         Arc::new(Self {
             zone_id: config.zone_id.clone(),
@@ -252,6 +255,7 @@ impl MailMessageProcessor {
             zone_kv,
             batcher,
             sender,
+            accepted_usage,
             concurrency: Arc::new(Semaphore::new(config.mail_stream_processor_concurrency)),
         })
     }
@@ -261,7 +265,7 @@ impl MailMessageProcessor {
         configuration: Arc<RuntimeConsumerConfiguration>,
         generation_fence: Arc<RuntimeGenerationFence>,
         payload: Bytes,
-        submission_id: String,
+        trusted_evidence_id: String,
     ) -> MailProcessingStatus {
         let stream_type = configuration
             .stream
@@ -283,7 +287,12 @@ impl MailMessageProcessor {
         );
         use opentelemetry::trace::{FutureExt, TraceContextExt};
         let status = self
-            .process_inner(configuration, generation_fence, payload, submission_id)
+            .process_inner(
+                configuration,
+                generation_fence,
+                payload,
+                trusted_evidence_id,
+            )
             .with_context(process_context.clone())
             .await;
         let (outcome, code) = processing_status_fields(&status);
@@ -302,7 +311,7 @@ impl MailMessageProcessor {
         configuration: Arc<RuntimeConsumerConfiguration>,
         generation_fence: Arc<RuntimeGenerationFence>,
         payload: Bytes,
-        submission_id: String,
+        trusted_evidence_id: String,
     ) -> MailProcessingStatus {
         // [COMMENT]: Global permit chặn tổng inflight của mọi suite nhưng không can thiệp cách broker ACK/retry.
         let _permit = match self.concurrency.acquire().await {
@@ -329,11 +338,22 @@ impl MailMessageProcessor {
         let current = self
             .configuration
             .active_consumer(&configuration.consumer_id);
-        if current.as_ref().is_none_or(|current| {
-            current.config_version != configuration.config_version
-                || current.config_sha256 != configuration.config_sha256
-                || current.desired_state != RuntimeDesiredState::Enabled
-        }) {
+        if generation_fence.is_accepting()
+            && current.as_ref().is_some_and(|current| {
+                current.config_version > configuration.config_version
+                    || (current.config_version == configuration.config_version
+                        && current.desired_state == RuntimeDesiredState::Paused)
+            })
+        {
+            generation_fence.request_drain();
+        }
+        if !generation_fence.is_draining()
+            && current.as_ref().is_none_or(|current| {
+                current.config_version != configuration.config_version
+                    || current.config_sha256 != configuration.config_sha256
+                    || current.desired_state != RuntimeDesiredState::Enabled
+            })
+        {
             return retryable("MAIL_RUNTIME_GENERATION_STALE");
         }
         if configuration.sender_profile_id != self.sender.id
@@ -370,11 +390,11 @@ impl MailMessageProcessor {
             Err(_) => return rejected("MAIL_RECIPIENT_INVALID"),
         };
         // [COMMENT]: Internal Protobuf event_id thắng broker coordinate để JMAP submission retry giữ cùng idempotency key.
-        let submission_id = envelope
+        let jmap_submission_id = envelope
             .event_id
             .map(uuid::Uuid::from_bytes)
             .map(|event_id| event_id.to_string())
-            .unwrap_or(submission_id);
+            .unwrap_or_else(|| trusted_evidence_id.clone());
 
         let template = match self
             .configuration
@@ -414,18 +434,29 @@ impl MailMessageProcessor {
         let current = self
             .configuration
             .active_consumer(&configuration.consumer_id);
-        if current.as_ref().is_none_or(|current| {
-            current.config_version != configuration.config_version
-                || current.config_sha256 != configuration.config_sha256
-                || current.desired_state != RuntimeDesiredState::Enabled
-        }) {
+        if generation_fence.is_accepting()
+            && current.as_ref().is_some_and(|current| {
+                current.config_version > configuration.config_version
+                    || (current.config_version == configuration.config_version
+                        && current.desired_state == RuntimeDesiredState::Paused)
+            })
+        {
+            generation_fence.request_drain();
+        }
+        if !generation_fence.is_draining()
+            && current.as_ref().is_none_or(|current| {
+                current.config_version != configuration.config_version
+                    || current.config_sha256 != configuration.config_sha256
+                    || current.desired_state != RuntimeDesiredState::Enabled
+            })
+        {
             drop(submit_permit);
             return retryable("MAIL_RUNTIME_GENERATION_STALE");
         }
         let result = self
             .batcher
             .submit(PreparedMail {
-                job_id: submission_id.clone(),
+                job_id: jmap_submission_id,
                 recipient,
                 subject,
                 text_body: None,
@@ -436,7 +467,40 @@ impl MailMessageProcessor {
         drop(submit_permit);
 
         let status = match result {
-            Ok(_) => MailProcessingStatus::Accepted,
+            Ok(_) => {
+                let evidence_id = match uuid::Uuid::parse_str(&trusted_evidence_id) {
+                    Ok(value) if !value.is_nil() => value,
+                    _ => return retryable("MAIL_ACCEPTED_EVIDENCE_ID_INVALID"),
+                };
+                let zone_id = match uuid::Uuid::parse_str(&self.zone_id) {
+                    Ok(value) if !value.is_nil() => value,
+                    _ => return retryable("MAIL_ACCEPTED_EVIDENCE_ZONE_INVALID"),
+                };
+                let resource_id = match uuid::Uuid::parse_str(&configuration.consumer_id) {
+                    Ok(value) if !value.is_nil() => value,
+                    _ => return retryable("MAIL_ACCEPTED_EVIDENCE_RESOURCE_INVALID"),
+                };
+                let accepted_at_unix_ms = chrono::Utc::now().timestamp_millis();
+                let mut retry_delay = std::time::Duration::from_millis(100);
+                loop {
+                    if !generation_fence.is_accepting() {
+                        return retryable("MAIL_ACCEPTED_EVIDENCE_PENDING");
+                    }
+                    match self
+                        .accepted_usage
+                        .publish(evidence_id, zone_id, resource_id, accepted_at_unix_ms)
+                        .await
+                    {
+                        Ok(()) => break MailProcessingStatus::Accepted,
+                        Err(_) => {
+                            tokio::time::sleep(retry_delay).await;
+                            retry_delay = retry_delay
+                                .saturating_mul(2)
+                                .min(std::time::Duration::from_secs(5));
+                        }
+                    }
+                }
+            }
             Err(error)
                 if matches!(
                     error.code.as_str(),

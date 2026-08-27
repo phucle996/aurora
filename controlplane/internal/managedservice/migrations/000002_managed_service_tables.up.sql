@@ -188,13 +188,6 @@ CREATE TABLE IF NOT EXISTS personal_managed_service_instances (
     create_intent_sha256 BYTEA NOT NULL CHECK (octet_length(create_intent_sha256) = 32),
     active_revision_id UUID NULL,
     pending_revision_id UUID NULL,
-    observed_state managed_service_observed_state NOT NULL DEFAULT 'unknown',
-    observed_state_version BIGINT NOT NULL DEFAULT 0 CHECK (observed_state_version >= 0),
-    observed_output JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (
-        jsonb_typeof(observed_output) = 'object'
-        AND octet_length(observed_output::text) <= 65536
-    ),
-    observed_at TIMESTAMPTZ NULL,
     metadata_version BIGINT NOT NULL DEFAULT 1 CHECK (metadata_version > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -285,13 +278,6 @@ CREATE TABLE IF NOT EXISTS tenant_managed_service_instances (
     create_intent_sha256 BYTEA NOT NULL CHECK (octet_length(create_intent_sha256) = 32),
     active_revision_id UUID NULL,
     pending_revision_id UUID NULL,
-    observed_state managed_service_observed_state NOT NULL DEFAULT 'unknown',
-    observed_state_version BIGINT NOT NULL DEFAULT 0 CHECK (observed_state_version >= 0),
-    observed_output JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (
-        jsonb_typeof(observed_output) = 'object'
-        AND octet_length(observed_output::text) <= 65536
-    ),
-    observed_at TIMESTAMPTZ NULL,
     metadata_version BIGINT NOT NULL DEFAULT 1 CHECK (metadata_version > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

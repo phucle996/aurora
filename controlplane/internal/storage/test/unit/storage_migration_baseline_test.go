@@ -49,7 +49,16 @@ func TestStorageMigrationBaselineContainsFinalSchemaOnly(t *testing.T) {
 	}
 
 	resourceSQL := string(resources)
-	for _, required := range []string{"personal_buckets", "tenant_buckets", "used_bytes_observed_at"} {
+	for _, required := range []string{
+		"personal_buckets",
+		"tenant_buckets",
+		"used_bytes_observed_at",
+		"state IN ('CREATING', 'READY', 'DELETING', 'ERROR')",
+		"trg_personal_credential_delete_requires_deleting",
+		"trg_tenant_credential_delete_requires_deleting",
+		"trg_personal_bucket_delete_requires_deleting",
+		"trg_tenant_bucket_delete_requires_deleting",
+	} {
 		if !strings.Contains(resourceSQL, required) {
 			t.Fatalf("resource baseline is missing %q", required)
 		}

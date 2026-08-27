@@ -43,7 +43,6 @@ type ChangeConsumerStateRequest struct {
 }
 
 type DeleteConsumerRequest struct {
-	ExpectedConfigVersion uint64 `json:"expected_config_version" binding:"required,min=1"`
-	DrainTimeoutSeconds   uint32 `json:"drain_timeout_seconds" binding:"required,min=1,max=3600"`
+	ExpectedConfigVersion string `json:"expected_config_version"`
 	Reason                string `json:"reason"`
 }

@@ -45,7 +45,7 @@ Trinity tenant membership, resolves workspace and zone context, rewrites the pat
 
 | Status | Payload | Reason |
 |---|---|---|
-| `201` | `{"status": "success", "data": { "id": "...", "access_key": "...", "secret_key": "...", "policy": "...", "created_at": "..." }, "message": "tenant credential created successfully"}` | Credential created in PostgreSQL; outbox command queued. Plaintext secret is returned only once. |
+| `201` | `{"status": "success", "data": { "id": "...", "access_key": "...", "secret_key": "...", "policy": "...", "state": "CREATING", "created_at": "..." }, "message": "tenant credential created successfully"}` | Credential promise and outbox command are durable. Plaintext secret is returned only once. |
 | `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "invalid policy format"}` | Invalid policy JSON. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:credential:write` permission grant or inactive tenant membership. |
@@ -141,9 +141,9 @@ sequenceDiagram
   ),
   ins_credential AS (
       INSERT INTO storage.tenant_credentials (
-          id, bucket_id, access_key, policy, created_at, updated_at
+          id, bucket_id, access_key, policy, state, created_at, updated_at
       )
-      SELECT $6, ab.id, $7, $8, NOW(), NOW()
+      SELECT $6, ab.id, $7, $8, 'CREATING', NOW(), NOW()
       FROM authorized_bucket ab
       RETURNING id, bucket_id, access_key, policy, created_at, updated_at
   ),
@@ -162,7 +162,7 @@ sequenceDiagram
   SELECT id, bucket_id, access_key, policy, created_at, updated_at
   FROM ins_credential;
   ```
-- **Output**: Atomic insertion of 1 `tenant_credentials` row and 1 pending outbox row.
+- **Output**: Atomic insertion of one `CREATING` credential and one pending outbox row.
 
 #### Hop 2.4: Controlplane → Browser
 - **Output**: HTTP `201 Created` JSON with one-time plaintext `secret_key`.
@@ -205,11 +205,15 @@ sequenceDiagram
 
     DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED')
+    JO->>PG: Credential CREATING->READY, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: TENANT_CREDENTIAL_CREATED { tenant_id, bucket_id, credential_id }
     Timeline->>Centrifugo: Publish to channel "tenant:storage:{tenant_id}:{workspace_id}"
     Centrifugo-->>Browser: WebSocket Push: { type: "CREDENTIAL_CREATED", id, access_key }
 ```
+
+Terminal failure transitions `CREATING -> ERROR` before the outbox becomes
+`FAILED`; JO does not erase the resource evidence merely because provisioning
+failed.
 
 ---
 

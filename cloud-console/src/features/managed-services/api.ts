@@ -84,20 +84,17 @@ function decodeManagedServiceOperation(value: unknown): ManagedServiceOperation 
 
 function decodeAcceptedInstance(value: unknown) {
   const source = managedRecord(value, "Managed Service accepted response is invalid.");
-  const desired = managedRecord(source.desired, "Managed Service accepted response is invalid.");
-  const state = desired.state === undefined ? undefined : managedString(desired.state, "Managed Service accepted response is invalid.");
-  const pendingRevisionID = desired.pending_revision_id === null || desired.pending_revision_id === undefined
-    ? desired.pending_revision_id as string | null | undefined
-    : managedString(desired.pending_revision_id, "Managed Service accepted response is invalid.");
+  const state = source.state === undefined ? undefined : managedString(source.state, "Managed Service accepted response is invalid.");
+  const pendingRevisionID = source.pending_revision_id === null || source.pending_revision_id === undefined
+    ? source.pending_revision_id as string | null | undefined
+    : managedString(source.pending_revision_id, "Managed Service accepted response is invalid.");
   return {
     id: managedString(source.id, "Managed Service accepted response is invalid."),
     code: managedString(source.code, "Managed Service accepted response is invalid."),
     name: source.name === undefined ? undefined : managedString(source.name, "Managed Service accepted response is invalid."),
-    desired: {
-      state,
-      generation: managedNumber(desired.generation, "Managed Service accepted response is invalid."),
-      pending_revision_id: pendingRevisionID,
-    },
+    state,
+    generation: managedNumber(source.generation, "Managed Service accepted response is invalid."),
+    pending_revision_id: pendingRevisionID,
   };
 }
 
@@ -115,24 +112,15 @@ function decodeAcceptedOperation(value: unknown) {
 
 function decodeManagedServiceInstanceSummary(value: unknown): ManagedServiceInstanceSummary {
   const source = managedRecord(value, "Managed Service instance response is invalid.");
-  const desired = managedRecord(source.desired, "Managed Service instance response is invalid.");
-  const observed = managedRecord(source.observed, "Managed Service instance response is invalid.");
   const latest = source.latest_operation;
   return {
     id: managedString(source.id, "Managed Service instance response is invalid."),
     code: managedString(source.code, "Managed Service instance response is invalid."),
     name: managedString(source.name, "Managed Service instance response is invalid."),
-    desired: {
-      state: managedString(desired.state, "Managed Service instance response is invalid."),
-      generation: managedNumber(desired.generation, "Managed Service instance response is invalid."),
-      active_revision_id: desired.active_revision_id === null || desired.active_revision_id === undefined ? desired.active_revision_id as string | null | undefined : managedString(desired.active_revision_id, "Managed Service instance response is invalid."),
-      pending_revision_id: desired.pending_revision_id === null || desired.pending_revision_id === undefined ? desired.pending_revision_id as string | null | undefined : managedString(desired.pending_revision_id, "Managed Service instance response is invalid."),
-    },
-    observed: {
-      state: managedString(observed.state, "Managed Service instance response is invalid."),
-      version: managedNumber(observed.version, "Managed Service instance response is invalid."),
-      observed_at: observed.observed_at === null || observed.observed_at === undefined ? observed.observed_at as string | null | undefined : managedString(observed.observed_at, "Managed Service instance response is invalid."),
-    },
+    state: managedString(source.state, "Managed Service instance response is invalid."),
+    generation: managedNumber(source.generation, "Managed Service instance response is invalid."),
+    active_revision_id: source.active_revision_id === null || source.active_revision_id === undefined ? source.active_revision_id as string | null | undefined : managedString(source.active_revision_id, "Managed Service instance response is invalid."),
+    pending_revision_id: source.pending_revision_id === null || source.pending_revision_id === undefined ? source.pending_revision_id as string | null | undefined : managedString(source.pending_revision_id, "Managed Service instance response is invalid."),
     metadata_version: managedNumber(source.metadata_version, "Managed Service instance response is invalid."),
     latest_operation: latest === null || latest === undefined ? null : decodeManagedServiceOperation(latest),
     created_at: source.created_at === undefined ? undefined : managedString(source.created_at, "Managed Service instance response is invalid."),
@@ -143,17 +131,11 @@ function decodeManagedServiceInstanceSummary(value: unknown): ManagedServiceInst
 function decodeManagedServiceInstance(value: unknown): ManagedServiceInstance {
   const source = managedRecord(value, "Managed Service instance response is invalid.");
   const summary = decodeManagedServiceInstanceSummary(source);
-  const desired = managedRecord(source.desired, "Managed Service instance response is invalid.");
-  const observed = managedRecord(source.observed, "Managed Service instance response is invalid.");
   const network = source.network_contract;
   const resize = source.resize_contract;
   return {
     ...summary,
-    desired: { ...summary.desired, revision_sequence: managedNumber(desired.revision_sequence, "Managed Service instance response is invalid.") },
-    observed: {
-      ...summary.observed,
-      output: observed.output === null || observed.output === undefined ? observed.output as Record<string, unknown> | null | undefined : managedRecord(observed.output, "Managed Service observed output is invalid."),
-    },
+    revision_sequence: managedNumber(source.revision_sequence, "Managed Service instance response is invalid."),
     network_contract: network === null || network === undefined ? null : (() => {
       const sourceNetwork = managedRecord(network, "Managed Service network contract is invalid.");
       if (typeof sourceNetwork.namespace !== "string" || sourceNetwork.namespace.length > 253 || !Array.isArray(sourceNetwork.components)) throw new Error("Managed Service network contract is invalid.");

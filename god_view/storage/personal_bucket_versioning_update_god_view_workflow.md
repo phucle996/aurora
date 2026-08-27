@@ -3,10 +3,10 @@
 > **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/personal/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
 
 Bucket Versioning update is an asynchronous state synchronization workflow.
-Controlplane records desired versioning state (`versioning_enabled: true | false`)
-and writes a sealed Zone outbox command within an atomic CTE transaction. A `200 OK`
-means the desired state has been safely persisted to PostgreSQL; physical S3 engine
-application occurs asynchronously via Dataplane at the edge zone.
+Controlplane keeps the confirmed `versioning_enabled` value unchanged, transitions
+the bucket `READY -> UPDATING`, and writes the target only in a sealed Zone command.
+A `200 OK` means that promise is durable; Dataplane applies the physical setting and
+JO later promotes the typed actual result.
 
 ---
 
@@ -48,7 +48,7 @@ a `BucketVersioningSync` outbox job.
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": { "id": "...", "name": "...", "versioning_enabled": true }, "message": "bucket versioning updated"}` | Desired versioning state committed to PostgreSQL. |
+| `200` | `data` includes `id`, `name`, `status=UPDATING` and the last confirmed `versioning_enabled` | Transition and sealed target command committed. |
 | `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "invalid request body"}` | Invalid JSON or missing `versioning_enabled` boolean. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:write` permission grant. |
@@ -63,7 +63,7 @@ a `BucketVersioningSync` outbox job.
 | Key / Transport | Store | Operation | Invariant |
 |---|---|---|---|
 | Auth-State session | Redis (Central) | Read / verify | Edge must never allow client to forge user or workspace context. |
-| `storage.personal_buckets.versioning_enabled` | PostgreSQL | Locked update | Source of truth for desired bucket versioning state. |
+| `storage.personal_buckets.versioning_enabled` | PostgreSQL | Read, then JO actual update | Latest Zone-confirmed versioning state. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert | Topic `storage.bucket.versioning`, payload `BucketVersioningSync`. |
 | `storage.bucket.versioning` | Kafka (Zone Command) | At-least-once publish | Sealed binary payload dispatched to the bucket's target Zone. |
 | `dataplane.job_result` | Kafka (Result) | Publish result | Dataplane returns terminal status (`SUCCEEDED` / `FAILED`). |
@@ -199,7 +199,7 @@ sequenceDiagram
   ),
   updated_bucket AS (
       UPDATE storage.personal_buckets
-      SET versioning_enabled = $3,
+      SET status = 'UPDATING',
           updated_at = NOW()
       WHERE id IN (SELECT id FROM target_bucket)
       RETURNING id, name, workspace_id, zone_id, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
@@ -214,7 +214,7 @@ sequenceDiagram
   SELECT id, name, workspace_id, zone_id, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
   FROM updated_bucket;
   ```
-- **Output**: Atomic commit of updated `versioning_enabled` column and `storage_outbox_records` pending row.
+- **Output**: Atomic `READY -> UPDATING` and pending outbox. The returned entity still contains the last confirmed versioning value.
 
 #### Hop 2.4: Controlplane → Browser
 - **Input**: Updated `PersonalBucket` entity.
@@ -301,9 +301,9 @@ sequenceDiagram
     participant Centrifugo as Centrifugo WebSocket
     actor Browser as Cloud Console
 
-    DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
+    DP->>KafkaRes: SUCCEEDED + BucketVersioningAppliedV1
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED', completed_at = NOW())
+    JO->>PG: Write actual versioning + READY, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: BUCKET_VERSIONING_UPDATED { bucket_id, versioning_enabled }
     Timeline->>PG: Insert user timeline / audit log record
     Timeline->>Centrifugo: Publish to channel "personal:storage:{user_id}"
@@ -321,7 +321,7 @@ sequenceDiagram
       job_id: "01916fe8-444a-714d-91b5-555e5fbdd98b",
       topic: "storage.bucket.versioning",
       status: JOB_STATUS_SUCCEEDED,
-      result_payload: [],
+      result_payload: BucketVersioningAppliedV1,
       error_message: ""
     }
     ```
@@ -332,11 +332,14 @@ sequenceDiagram
 - **Input**: `JobResult` consumed by Central Job Orchestrator.
 - **SQL Execution**:
   ```sql
+  WITH updated_bucket AS (
+    UPDATE storage.personal_buckets
+    SET versioning_enabled = $actual, status = 'READY', updated_at = NOW()
+    WHERE id = $bucket_id AND status = 'UPDATING' RETURNING id
+  )
   UPDATE storage.storage_outbox_records
-  SET status = 'SUCCEEDED',
-      completed_at = NOW(),
-      updated_at = NOW()
-  WHERE event_id = $1 AND status IN ('PENDING', 'PROCESSING');
+  SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW()
+  WHERE event_id = $event_id AND EXISTS (SELECT 1 FROM updated_bucket);
   ```
 - **Output**: Outbox record transition to terminal state `SUCCEEDED`.
 
@@ -385,7 +388,7 @@ sequenceDiagram
 | Client sends invalid boolean | HTTP `400 Bad Request` | Request terminated before DB interaction. |
 | User does not own bucket | HTTP `404 Not Found` | No DB mutation or outbox insert occurs. |
 | DB transaction fails | HTTP `500 Internal Error` | Transaction rolled back; outbox record is never published. |
-| MinIO API temporarily unreachable | Dataplane retries with exponential backoff; fallback to `mc admin` CLI | If terminal failure, Dataplane reports `FAILED`; JO marks outbox `FAILED` and emits failure notification. |
+| MinIO API temporarily unreachable | Dataplane retries with exponential backoff | Terminal failure carries no success payload; JO keeps the confirmed value, restores `READY`, then marks outbox `FAILED`. |
 | Duplicate Kafka message delivery | Idempotent S3 `PutBucketVersioning` execution | MinIO accepts identical versioning status without side-effects. |
 
 ---

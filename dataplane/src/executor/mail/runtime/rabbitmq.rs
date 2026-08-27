@@ -240,7 +240,12 @@ pub async fn run(
     renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut tasks = JoinSet::<Result<(), &'static str>>::new();
 
+    generation_fence.mark_running();
     loop {
+        if generation_fence.is_draining() && tasks.is_empty() {
+            generation_fence.mark_drained();
+            break;
+        }
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = renew.tick() => {
@@ -261,7 +266,7 @@ pub async fn run(
                     }
                 }
             }
-            next = consumer.next(), if tasks.len() < context.max_slot_inflight => {
+            next = consumer.next(), if !generation_fence.is_draining() && tasks.len() < context.max_slot_inflight => {
                 let Some(next) = next else {
                     context.write_health("ERROR", &configuration, slot, generation, &lease, "MAIL_RABBITMQ_CONSUMER_CLOSED").await;
                     break;
@@ -329,5 +334,7 @@ pub async fn run(
     generation_fence.fence().await;
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
-    let _ = connection.close(200, "aurora-close".into()).await;
+    if connection.close(200, "aurora-close".into()).await.is_err() {
+        generation_fence.mark_running();
+    }
 }

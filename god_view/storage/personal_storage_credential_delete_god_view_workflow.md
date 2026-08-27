@@ -58,7 +58,7 @@ credential's persisted access key.
 | Store / transport | Operation | Invariant |
 |---|---|---|
 | Auth-State session plus workspace cookie | ACR verify and overwrite | Browser cannot choose owner or trusted context. |
-| `storage.personal_credentials` | Read/retain initially, delete after Zone success | Credential id is Central resource fence. |
+| `storage.personal_credentials` | `READY -> DELETING`, hard-delete after Zone success | Credential id and lifecycle state are the Central resource fence; DB rejects hard-delete unless state is `DELETING`. |
 | `storage.storage_outbox_records` | Insert `storage.credential.delete` | Ciphertext carries body access key, trusted Zone and credential resource id. |
 | Zone command and result Kafka topics | At-least-once | Result is authoritative for Central hard delete. |
 
@@ -94,8 +94,9 @@ sequenceDiagram
 Handler parses both UUIDs and requires JSON access key. Service serializes
 `CredentialSync{id=credential_id,access_key=client_value}` and sets
 `storage.credential.delete` outbox metadata from trusted Zone. Repository
-seals payload then CTE verifies bucket owner/workspace and credential id, and
-inserts outbox. It does not delete credential row yet.
+seals payload then CTE verifies a `READY` bucket and `READY` credential, changes
+the credential to `DELETING`, and inserts outbox. It does not hard-delete the
+credential row here.
 
 ```mermaid
 sequenceDiagram
@@ -112,7 +113,7 @@ sequenceDiagram
     H->>S: DeleteCredential
     S->>R: Insert delete outbox
     R->>V: Seal CredentialSync with client access key
-    R->>PG: CTE verify owned bucket and credential id
+    R->>PG: CTE verify READY bucket/credential, set DELETING
     alt verified CTE row
         R->>PG: INSERT durable delete command
         PG-->>H: command accepted
@@ -127,9 +128,8 @@ sequenceDiagram
 
 Dataplane decodes `CredentialSync`, requires non-empty access key, then deletes
 MinIO user and derived `policy-{access_key}`. It returns a Kafka result. JO on
-success deletes matching outbox and Central credential id. On failure it keeps
-credential row and records terminal failure, allowing later retry of the
-workflow.
+success hard-deletes only a `DELETING` credential and then settles outbox. On
+failure it restores `DELETING -> READY` before recording terminal failure.
 
 ```mermaid
 sequenceDiagram
@@ -147,11 +147,11 @@ sequenceDiagram
     alt both operations succeed
         DP->>KR: SUCCEEDED
         KR-->>JO: result
-        JO->>PG: Delete outbox and Central credential by resource id
+        JO->>PG: Hard-delete DELETING credential, then settle outbox
     else either operation fails
         DP->>KR: FAILED
         KR-->>JO: result
-        JO->>PG: Mark outbox FAILED and retain credential
+        JO->>PG: Restore credential READY, then mark outbox FAILED
     end
 ```
 
@@ -162,7 +162,7 @@ sequenceDiagram
 | Body access key differs from credential id | CTE still accepts owned credential id, but Dataplane deletes MinIO user/policy for body value. This is a critical command-binding vulnerability that can affect another physical key reachable by the Zone admin credential. |
 | Current Zone differs from credential bucket Zone | CTE validates user/workspace/credential id but not Zone. It routes outbox using current ACR Zone, which can direct a valid credential id to a wrong Zone. |
 | MinIO user delete succeeds, policy delete fails | Dataplane reports FAILED. Central credential remains even though user is already deleted; retry can fail because user no longer exists. |
-| Result replay | Outbox status guard prevents second Central delete. |
+| Result replay | Outbox status plus credential-state guard prevents a second Central delete. |
 | Caller learns credential existence | Owner/credential mismatch maps to `404`. |
 | Safer future contract | Repository must obtain persisted access key under the same ownership fence and derive payload from that row, never from body. This is implementation work, not performed by this documentation change. |
 

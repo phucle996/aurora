@@ -24,7 +24,7 @@ contract admin riêng và không được suy diễn thành customer owner branc
 | Thuộc tính | Contract |
 | --- | --- |
 | Trạng thái | P00–P07 core shipped: durable JO command dispatch, Zone Dataplane execution/result producer, direct personal/tenant settlement, hard-delete fence và terminal timeline projection; safe connection output và full fault-suite integration còn gated |
-| Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant desired state, immutable revision, operation, deletion fence và outbox |
+| Business SoT | Controlplane PostgreSQL: system catalog, personal/tenant single lifecycle state, immutable revision, operation, deletion fence và outbox |
 | Durable transport | PostgreSQL outbox/WAL → Job Orchestrator → Kafka → Dataplane Zone → Kafka result → JO/Controlplane settle |
 | Runtime executor | Dataplane đúng Zone gọi Kubernetes API; Controlplane không có Kubernetes credential/client |
 | Delivery | At-least-once; ordering chỉ theo `instance_id`; external fence là `instance_id + operation_id + generation` |
@@ -107,20 +107,21 @@ template và workload không được ghi đè metadata protected.
 ## 3. Lifecycle state machine
 
 `ManagedServiceInstance` là resource lâu dài; `ManagedServiceOperation` là một lần
-thực thi thay đổi resource. Observed state là snapshot riêng, không thay lifecycle.
+thực thi thay đổi resource. Instance chỉ có một cột lifecycle `state`; runtime health
+không được chiếu ngược vào Controlplane mà được đọc từ Zone Runtime Stream.
 
 | Aggregate | States | Invariant |
 | --- | --- | --- |
-| Instance lifecycle | `PROVISIONING`, `ACTIVE`, `DELETING` | Không có `DELETE_FAILED`; mỗi instance có tối đa một operation non-terminal |
+| Instance lifecycle | `PROVISIONING`, `ACTIVE`, `UPDATING`, `DELETING` | Mỗi instance có tối đa một operation non-terminal; state chuyển tiếp là lời hứa durable của CP |
 | Operation status | `ACCEPTED`, `RETRYING`, `SUCCEEDED`, `TERMINAL_FAILED` | `DISPATCHING`/`RUNNING` chỉ còn để đọc dữ liệu cũ; Kafka ACK không phải operation transition |
-| Observed state | `UNKNOWN`, `PROGRESSING`, `READY`, `DEGRADED` | Không dùng cho authorization, billing hoặc terminal lifecycle decision độc lập |
 
 ```mermaid
 stateDiagram-v2
     [*] --> PROVISIONING: CREATE desired state + outbox committed
     PROVISIONING --> ACTIVE: CREATE result SUCCEEDED / pending revision promoted
     PROVISIONING --> PROVISIONING: CREATE retry or terminal failure
-    ACTIVE --> ACTIVE: RESIZE desired state / old active revision remains
+    ACTIVE --> UPDATING: RESIZE command + pending revision committed
+    UPDATING --> ACTIVE: matching result promotes target or rejects it
     ACTIVE --> DELETING: DELETE desired state + outbox committed
     DELETING --> [*]: DELETE result confirms entire graph gone
     DELETING --> DELETING: retry or terminal failure
@@ -136,8 +137,8 @@ stateDiagram-v2
     RETRYING --> TERMINAL_FAILED: terminal result or retry budget exhausted
 ```
 
-Create terminal failure giữ instance `PROVISIONING`. Resize terminal failure clear
-pending revision, giữ active revision cũ và lưu target revision làm evidence. Delete
+Create terminal failure giữ instance `PROVISIONING`. Resize terminal failure chuyển
+`UPDATING -> ACTIVE`, clear pending revision, giữ active revision cũ và lưu target revision làm evidence. Delete
 terminal failure giữ instance `DELETING`; không rollback mù về `ACTIVE`. Manual retry
 reuse operation/generation/event/exact ciphertext và tăng `delivery_epoch`; không tạo
 operation/generation mới. Automatic delivery retry giữ operation/generation/revision
@@ -188,8 +189,8 @@ Managed Service V1 has no NATS subject, no Redis Pub/Sub runtime envelope and no
 Kubernetes API ACK, pod RAM, OTel, Victoria, NATS or Centrifugo; it is settled only by
 the current durable outbox/object/operation result transaction. A bounded JO reconciler
 resets only stale PENDING/PROCESSING markers; WAL/CDC remains the sole command
-redispatch path. The V1 Dataplane result carries no safe connection fields, so
-`observed_output` remains `{}` and no connection read route is exposed yet.
+redispatch path. The V1 Dataplane result carries no safe connection fields, and no
+connection projection/read route is exposed from Controlplane.
 
 ## Critical customer mutation boundary
 
@@ -295,10 +296,12 @@ the verified typed context. Personal SQL can touch only physical personal tables
 tenant SQL can touch only physical tenant tables and must predicate tenant, workspace
 and Zone identity in the same statement.
 
-The projection keeps desired, observed and operation states separate. It may return
-bounded safe observed output and sanitized operation errors, but never selects or
+The projection returns one lifecycle `state`, pinned active/pending revisions and
+sanitized operation errors, but never selects or
 serializes protected command bytes, canonical input, input hash, desired-spec hash or create
 intent hash. Responses are `private, no-store` and use bounded opaque keyset cursors.
+Runtime health/output belongs to the Zone Runtime Stream API and is not persisted in
+`personal_managed_service_instances` or `tenant_managed_service_instances`.
 
 Resize, rename, delete and retry workflows exist as independent personal/tenant slices;
 there is no generic configuration or runtime-metadata patch. Rename uses optimistic
@@ -377,8 +380,9 @@ Failure semantics:
 ### 7.1 Resize
 
 Resize requires expected active generation. It creates a new immutable
-`InstanceRevision`, target generation and RESIZE operation/outbox in one CTE. Existing
-active revision remains serving until the matching current result succeeds. Only fields
+`InstanceRevision`, target generation and RESIZE operation/outbox and changes the one
+instance state from `ACTIVE` to `UPDATING` in one CTE. Existing active revision remains
+serving until the matching current result succeeds. Only fields
 declared by the published SRE resize capability are accepted; arbitrary configuration,
 template, component graph or Kubernetes spec patches are rejected. A same target desired
 hash returns the non-terminal operation; a different target while one is active returns
@@ -448,7 +452,7 @@ Producer, broker and consumer enforce a 1,000,000-byte total record/payload ceil
 Every UUID is 16 raw bytes; schema version, route, Zone, source event, all revision/hash
 fences and trace context are validated before side effect. Malformed/oversize/cross-Zone
 record is quarantined/DLQ without raw payload. Stale but well-formed result is ignored
-with sanitized metric/audit and never overwrites a newer desired/observed state.
+with sanitized metric/audit and never overwrites a newer lifecycle/revision fence.
 Durable command DLQ chỉ dùng taxonomy `COMMAND_CONTRACT_INVALID`,
 `COMMAND_ZONE_MISMATCH` hoặc `COMMAND_HASH_MISMATCH`; detailed parser/crypto code chỉ ở
 log/trace local có redaction.
@@ -508,15 +512,15 @@ JO result settlement is one Controlplane PostgreSQL CTE/transaction:
 
 ```text
 lock scoped outbox + instance + operation
-  → verify source event + Zone + operation + generation + delivery epoch + attempt + revision + hashes
-  → write bounded observed snapshot and monotonic version
-  → update outbox and object/operation lifecycle together
+  → verify source event + Zone + operation + generation + delivery epoch + exact attempt + revision + hashes
+  → mutate the resource lifecycle/pinned revision first
+  → update operation and outbox terminal state only when that resource CTE returned a row
 ```
 
 Only current fence may change lifecycle. Duplicate result converges through the
 outbox status/current-operation predicates; no result inbox or second result SoT is
 created. A stale attempt/generation/source event is not a terminal failure and cannot
-mutate desired/observed state. Malformed result is quarantine/DLQ data, not stale data.
+mutate lifecycle state or revision heads. Malformed result is quarantine/DLQ data, not stale data.
 
 Retry budget is exactly five deliveries, outer attempts `0..4`. Generic Dataplane job runtime
 backs off with `30s`, `2m`, `10m`, `30m` plus jitter, republishes the exact committed
@@ -618,3 +622,12 @@ P00 review đã freeze contract này. P05 mở JO command route/dispatcher; P06 
 Dataplane executor/result producer; P07 mở customer mutation, direct settlement,
 timeline và bounded exact-command redispatch. Safe connection output và live fault
 suite vẫn là release gate chưa đóng.
+
+## Settlement retry fence revision — 2026-08-27
+
+For both personal and tenant operations, JO accepts a DP retry attempt greater
+than or equal to the recorded attempt only within the exact command event,
+delivery epoch, generation, instance revision, blueprint revision, Zone and
+content-hash fences. A lower attempt cannot overwrite a newer observation.
+DP owns automatic attempt increments; requiring equality stranded successful
+retries. The actual PostgreSQL regression test invokes both owner branches.

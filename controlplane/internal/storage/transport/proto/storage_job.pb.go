@@ -550,6 +550,189 @@ func (x *BucketLifecycleSync) GetRules() []*LifecycleRuleSync {
 	return nil
 }
 
+// Dataplane emits these typed settlement payloads only after the matching
+// MinIO mutation returns success. JO promotes these actual values into Central
+// SoT; the generic outbox never stores Storage-specific target columns.
+type BucketQuotaAppliedV1 struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion    uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	BucketId         string                 `protobuf:"bytes,2,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
+	ActualQuotaBytes int64                  `protobuf:"varint,3,opt,name=actual_quota_bytes,json=actualQuotaBytes,proto3" json:"actual_quota_bytes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *BucketQuotaAppliedV1) Reset() {
+	*x = BucketQuotaAppliedV1{}
+	mi := &file_storage_job_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BucketQuotaAppliedV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BucketQuotaAppliedV1) ProtoMessage() {}
+
+func (x *BucketQuotaAppliedV1) ProtoReflect() protoreflect.Message {
+	mi := &file_storage_job_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BucketQuotaAppliedV1.ProtoReflect.Descriptor instead.
+func (*BucketQuotaAppliedV1) Descriptor() ([]byte, []int) {
+	return file_storage_job_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *BucketQuotaAppliedV1) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *BucketQuotaAppliedV1) GetBucketId() string {
+	if x != nil {
+		return x.BucketId
+	}
+	return ""
+}
+
+func (x *BucketQuotaAppliedV1) GetActualQuotaBytes() int64 {
+	if x != nil {
+		return x.ActualQuotaBytes
+	}
+	return 0
+}
+
+type BucketVersioningAppliedV1 struct {
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion           uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	BucketId                string                 `protobuf:"bytes,2,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
+	ActualVersioningEnabled bool                   `protobuf:"varint,3,opt,name=actual_versioning_enabled,json=actualVersioningEnabled,proto3" json:"actual_versioning_enabled,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *BucketVersioningAppliedV1) Reset() {
+	*x = BucketVersioningAppliedV1{}
+	mi := &file_storage_job_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BucketVersioningAppliedV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BucketVersioningAppliedV1) ProtoMessage() {}
+
+func (x *BucketVersioningAppliedV1) ProtoReflect() protoreflect.Message {
+	mi := &file_storage_job_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BucketVersioningAppliedV1.ProtoReflect.Descriptor instead.
+func (*BucketVersioningAppliedV1) Descriptor() ([]byte, []int) {
+	return file_storage_job_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BucketVersioningAppliedV1) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *BucketVersioningAppliedV1) GetBucketId() string {
+	if x != nil {
+		return x.BucketId
+	}
+	return ""
+}
+
+func (x *BucketVersioningAppliedV1) GetActualVersioningEnabled() bool {
+	if x != nil {
+		return x.ActualVersioningEnabled
+	}
+	return false
+}
+
+type BucketLifecycleAppliedV1 struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	BucketId      string                 `protobuf:"bytes,2,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`
+	ActualRules   []*LifecycleRuleSync   `protobuf:"bytes,3,rep,name=actual_rules,json=actualRules,proto3" json:"actual_rules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BucketLifecycleAppliedV1) Reset() {
+	*x = BucketLifecycleAppliedV1{}
+	mi := &file_storage_job_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BucketLifecycleAppliedV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BucketLifecycleAppliedV1) ProtoMessage() {}
+
+func (x *BucketLifecycleAppliedV1) ProtoReflect() protoreflect.Message {
+	mi := &file_storage_job_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BucketLifecycleAppliedV1.ProtoReflect.Descriptor instead.
+func (*BucketLifecycleAppliedV1) Descriptor() ([]byte, []int) {
+	return file_storage_job_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *BucketLifecycleAppliedV1) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *BucketLifecycleAppliedV1) GetBucketId() string {
+	if x != nil {
+		return x.BucketId
+	}
+	return ""
+}
+
+func (x *BucketLifecycleAppliedV1) GetActualRules() []*LifecycleRuleSync {
+	if x != nil {
+		return x.ActualRules
+	}
+	return nil
+}
+
 // Ephemeral access projection written to the Zone-local KV. This contract
 // deliberately carries authorization metadata only; it never carries an S3
 // secret, STS token, or credential material.
@@ -572,7 +755,7 @@ type StorageAccessPrepareRequest struct {
 
 func (x *StorageAccessPrepareRequest) Reset() {
 	*x = StorageAccessPrepareRequest{}
-	mi := &file_storage_job_proto_msgTypes[7]
+	mi := &file_storage_job_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -584,7 +767,7 @@ func (x *StorageAccessPrepareRequest) String() string {
 func (*StorageAccessPrepareRequest) ProtoMessage() {}
 
 func (x *StorageAccessPrepareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_job_proto_msgTypes[7]
+	mi := &file_storage_job_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -597,7 +780,7 @@ func (x *StorageAccessPrepareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageAccessPrepareRequest.ProtoReflect.Descriptor instead.
 func (*StorageAccessPrepareRequest) Descriptor() ([]byte, []int) {
-	return file_storage_job_proto_rawDescGZIP(), []int{7}
+	return file_storage_job_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *StorageAccessPrepareRequest) GetAccessSessionId() string {
@@ -700,7 +883,7 @@ type StorageAccessRecord struct {
 
 func (x *StorageAccessRecord) Reset() {
 	*x = StorageAccessRecord{}
-	mi := &file_storage_job_proto_msgTypes[8]
+	mi := &file_storage_job_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -712,7 +895,7 @@ func (x *StorageAccessRecord) String() string {
 func (*StorageAccessRecord) ProtoMessage() {}
 
 func (x *StorageAccessRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_job_proto_msgTypes[8]
+	mi := &file_storage_job_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -725,7 +908,7 @@ func (x *StorageAccessRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageAccessRecord.ProtoReflect.Descriptor instead.
 func (*StorageAccessRecord) Descriptor() ([]byte, []int) {
-	return file_storage_job_proto_rawDescGZIP(), []int{8}
+	return file_storage_job_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StorageAccessRecord) GetSchemaVersion() uint32 {
@@ -825,7 +1008,7 @@ type StorageAccessPrepareResponse struct {
 
 func (x *StorageAccessPrepareResponse) Reset() {
 	*x = StorageAccessPrepareResponse{}
-	mi := &file_storage_job_proto_msgTypes[9]
+	mi := &file_storage_job_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -837,7 +1020,7 @@ func (x *StorageAccessPrepareResponse) String() string {
 func (*StorageAccessPrepareResponse) ProtoMessage() {}
 
 func (x *StorageAccessPrepareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_job_proto_msgTypes[9]
+	mi := &file_storage_job_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -850,7 +1033,7 @@ func (x *StorageAccessPrepareResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageAccessPrepareResponse.ProtoReflect.Descriptor instead.
 func (*StorageAccessPrepareResponse) Descriptor() ([]byte, []int) {
-	return file_storage_job_proto_rawDescGZIP(), []int{9}
+	return file_storage_job_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *StorageAccessPrepareResponse) GetAccessSessionId() string {
@@ -940,7 +1123,19 @@ const file_storage_job_proto_rawDesc = "" +
 	"\x13BucketLifecycleSync\x12\x1b\n" +
 	"\tbucket_id\x18\x01 \x01(\tR\bbucketId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x120\n" +
-	"\x05rules\x18\x03 \x03(\v2\x1a.storage.LifecycleRuleSyncR\x05rules\"\x9e\x03\n" +
+	"\x05rules\x18\x03 \x03(\v2\x1a.storage.LifecycleRuleSyncR\x05rules\"\x88\x01\n" +
+	"\x14BucketQuotaAppliedV1\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1b\n" +
+	"\tbucket_id\x18\x02 \x01(\tR\bbucketId\x12,\n" +
+	"\x12actual_quota_bytes\x18\x03 \x01(\x03R\x10actualQuotaBytes\"\x9b\x01\n" +
+	"\x19BucketVersioningAppliedV1\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1b\n" +
+	"\tbucket_id\x18\x02 \x01(\tR\bbucketId\x12:\n" +
+	"\x19actual_versioning_enabled\x18\x03 \x01(\bR\x17actualVersioningEnabled\"\x9d\x01\n" +
+	"\x18BucketLifecycleAppliedV1\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1b\n" +
+	"\tbucket_id\x18\x02 \x01(\tR\bbucketId\x12=\n" +
+	"\factual_rules\x18\x03 \x03(\v2\x1a.storage.LifecycleRuleSyncR\vactualRules\"\x9e\x03\n" +
 	"\x1bStorageAccessPrepareRequest\x12*\n" +
 	"\x11access_session_id\x18\x01 \x01(\tR\x0faccessSessionId\x12!\n" +
 	"\fbinding_hash\x18\x02 \x01(\tR\vbindingHash\x12\x19\n" +
@@ -994,7 +1189,7 @@ func file_storage_job_proto_rawDescGZIP() []byte {
 	return file_storage_job_proto_rawDescData
 }
 
-var file_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_storage_job_proto_goTypes = []any{
 	(*BucketCreateSync)(nil),             // 0: storage.BucketCreateSync
 	(*CredentialSync)(nil),               // 1: storage.CredentialSync
@@ -1003,17 +1198,21 @@ var file_storage_job_proto_goTypes = []any{
 	(*BucketVersioningSync)(nil),         // 4: storage.BucketVersioningSync
 	(*LifecycleRuleSync)(nil),            // 5: storage.LifecycleRuleSync
 	(*BucketLifecycleSync)(nil),          // 6: storage.BucketLifecycleSync
-	(*StorageAccessPrepareRequest)(nil),  // 7: storage.StorageAccessPrepareRequest
-	(*StorageAccessRecord)(nil),          // 8: storage.StorageAccessRecord
-	(*StorageAccessPrepareResponse)(nil), // 9: storage.StorageAccessPrepareResponse
+	(*BucketQuotaAppliedV1)(nil),         // 7: storage.BucketQuotaAppliedV1
+	(*BucketVersioningAppliedV1)(nil),    // 8: storage.BucketVersioningAppliedV1
+	(*BucketLifecycleAppliedV1)(nil),     // 9: storage.BucketLifecycleAppliedV1
+	(*StorageAccessPrepareRequest)(nil),  // 10: storage.StorageAccessPrepareRequest
+	(*StorageAccessRecord)(nil),          // 11: storage.StorageAccessRecord
+	(*StorageAccessPrepareResponse)(nil), // 12: storage.StorageAccessPrepareResponse
 }
 var file_storage_job_proto_depIdxs = []int32{
 	5, // 0: storage.BucketLifecycleSync.rules:type_name -> storage.LifecycleRuleSync
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	5, // 1: storage.BucketLifecycleAppliedV1.actual_rules:type_name -> storage.LifecycleRuleSync
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_storage_job_proto_init() }
@@ -1027,7 +1226,7 @@ func file_storage_job_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_storage_job_proto_rawDesc), len(file_storage_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

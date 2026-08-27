@@ -64,6 +64,27 @@ message BucketLifecycleSync {
   repeated LifecycleRuleSync rules = 3;
 }
 
+// Dataplane emits these typed settlement payloads only after the matching
+// MinIO mutation returns success. JO promotes these actual values into Central
+// SoT; the generic outbox never stores Storage-specific target columns.
+message BucketQuotaAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  int64 actual_quota_bytes = 3;
+}
+
+message BucketVersioningAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  bool actual_versioning_enabled = 3;
+}
+
+message BucketLifecycleAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  repeated LifecycleRuleSync actual_rules = 3;
+}
+
 // Ephemeral access projection written to the Zone-local KV. This contract
 // deliberately carries authorization metadata only; it never carries an S3
 // secret, STS token, or credential material.

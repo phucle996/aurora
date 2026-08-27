@@ -9,6 +9,17 @@ const consumersTab = new URL(
 const runtimeEntrypoint = new URL("../runtime-entrypoint.mjs", import.meta.url);
 const proxy = new URL("../src/proxy.ts", import.meta.url);
 
+test("consumer drain is explicit and delete requires confirmed drained state", async () => {
+  const source = await readFile(consumersTab, "utf8");
+  const api = await readFile(new URL("../src/features/mail/api.ts", import.meta.url), "utf8");
+  assert.match(source, /drainMailConsumer\(consumer\.id, consumer\.config_version\)/);
+  assert.match(source, /disabled=\{consumer\.desired_state !== "drained" \|\| remove\.isPending\}/);
+  assert.match(source, /consumer\.desired_state === "draining" \|\| consumer\.desired_state === "deleting"/);
+  assert.match(api, /\/api\/v1\/critical\/mail\/consumers\/\$\{encodeURIComponent\(id\)\}\/drain/);
+  assert.match(api, /expected_config_version: String\(expectedConfigVersion\), timeout_seconds: 30/);
+  assert.doesNotMatch(api, /drain_timeout_seconds/);
+});
+
 test("mail runtime reads use the generic Zone Edge contract", async () => {
   const source = await readFile(consumersTab, "utf8");
   assert.match(source, /mintMailConsumerRuntimeRead\(\s*detailConsumerID,\s*"health",\s*60,/);

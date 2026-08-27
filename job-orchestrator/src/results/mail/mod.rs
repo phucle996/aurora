@@ -1,5 +1,5 @@
 pub mod apply;
-mod consumer;
+pub(crate) mod consumer;
 mod template;
 
 #[cfg(test)]

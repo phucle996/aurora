@@ -3,6 +3,7 @@ package mailSvcInterface
 import (
 	"context"
 	mailEntity "controlplane/internal/mail/domain/entity"
+	"github.com/google/uuid"
 )
 
 type PersonalConsumerService interface {
@@ -12,4 +13,5 @@ type PersonalConsumerService interface {
 	UpdateConsumer(context.Context, *mailEntity.UpdatePersonalConsumer) (*mailEntity.UpdatePersonalConsumer, error)
 	ChangeConsumerState(context.Context, *mailEntity.ChangePersonalConsumerState) (*mailEntity.ChangePersonalConsumerState, error)
 	DeleteConsumer(context.Context, *mailEntity.DeletePersonalConsumer) error
+	Drain(context.Context, mailEntity.PersonalConsumerDrainCommand) (uuid.UUID, error)
 }

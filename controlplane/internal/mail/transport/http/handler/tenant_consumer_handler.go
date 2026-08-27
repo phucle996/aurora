@@ -655,12 +655,13 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 	}
 
 	req.Reason = strings.TrimSpace(req.Reason)
-	if req.ExpectedConfigVersion == 0 || req.DrainTimeoutSeconds == 0 || req.DrainTimeoutSeconds > 3600 || len(req.Reason) > 512 {
+	expectedVersion, err := strconv.ParseUint(req.ExpectedConfigVersion, 10, 63)
+	if err != nil || expectedVersion == 0 || len(req.Reason) > 512 {
 		apires.RespondBadRequest(c, "invalid delete parameters")
 		return
 	}
 
-	command := &mailEntity.DeleteTenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DrainTimeoutSeconds: req.DrainTimeoutSeconds, Reason: req.Reason}
+	command := &mailEntity.DeleteTenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: expectedVersion, Reason: req.Reason}
 	err = h.svc.DeleteConsumer(ctx, command)
 	if err != nil {
 		switch {
@@ -680,4 +681,65 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 		return
 	}
 	apires.RespondAccepted(c, gin.H{"consumer_id": consumerID.String(), "operation_id": command.OperationID.String()}, "mail consumer deletion scheduled")
+}
+
+func (h *TenantConsumerHandler) Drain(c *gin.Context) {
+	const op = "mail.tenant.consumer.drain"
+	actor, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	workspace, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+	zone, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+	tenant, ok := pkgcontext.GetTenantID(c, op)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		apires.RespondBadRequest(c, "invalid consumer id")
+		return
+	}
+	var body struct {
+		ExpectedConfigVersion string `json:"expected_config_version"`
+		TimeoutSeconds        uint32 `json:"timeout_seconds"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&body); err != nil {
+		apires.RespondBadRequest(c, "invalid drain request")
+		return
+	}
+	if err = decoder.Decode(&struct{}{}); err != io.EOF {
+		apires.RespondBadRequest(c, "expected one JSON object")
+		return
+	}
+	version, err := strconv.ParseUint(body.ExpectedConfigVersion, 10, 63)
+	if err != nil || version == 0 || body.TimeoutSeconds == 0 || body.TimeoutSeconds > 3600 {
+		apires.RespondBadRequest(c, "invalid version or timeout")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	operation, err := h.svc.Drain(ctx, mailEntity.TenantConsumerDrainCommand{ActorUserID: actor, WorkspaceID: workspace, ZoneID: zone, TenantID: tenant, ConsumerID: id, ExpectedConfigVersion: version, TimeoutSeconds: body.TimeoutSeconds})
+	if errors.Is(err, mailTaxonomy.ErrConsumerNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"message": "consumer not found"})
+		return
+	}
+	if errors.Is(err, mailTaxonomy.ErrVersionConflict) || errors.Is(err, mailTaxonomy.ErrOperationInProgress) {
+		c.JSON(http.StatusConflict, gin.H{"message": "consumer state changed or operation in progress"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "consumer drain failed"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"consumer_id": id, "operation_id": operation, "desired_state": "draining"}})
 }

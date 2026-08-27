@@ -22,7 +22,7 @@ pub(super) async fn reconcile_tenant_consumers(
                AND job_topic='mail.consumer.upsert' \
              ORDER BY source_outbox_id DESC LIMIT 1 \
          ) p ON TRUE \
-         WHERE w.zone_id=$1 AND c.id::text > $2 ORDER BY c.id LIMIT $3",
+         WHERE w.zone_id=$1 AND c.id::text > $2 AND c.desired_state IN ('enabled','paused') ORDER BY c.id LIMIT $3",
             &[&zone_id, &cursor_id, &limit],
         )
         .await?;

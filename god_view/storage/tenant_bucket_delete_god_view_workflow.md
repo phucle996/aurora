@@ -2,10 +2,9 @@
 
 > **Critical-route revision (2026-08-26):** the public request is `DELETE /api/v1/critical/storage/buckets/{bucket_id}`; ACR consumes the exact session proof and rewrites only to `/api/v1/tenant/critical/storage/buckets/{bucket_id}`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
 
-Tenant Bucket Deletion is an asynchronous resource teardown mutation. Controlplane deletes
-the bucket and all associated credentials within PostgreSQL and writes a sealed Zone outbox
-command in an atomic CTE transaction. Physical MinIO bucket deletion and credential revocation
-occur asynchronously via Dataplane at the edge zone.
+Tenant Bucket Deletion is asynchronous. Controlplane transitions the bucket and
+all child credentials to `DELETING` while inserting the sealed Zone command.
+Central rows are hard-deleted only after Dataplane confirms physical teardown.
 
 ---
 
@@ -33,7 +32,7 @@ tenant membership, resolves workspace and zone context, rewrites the path to
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": null, "message": "tenant bucket deletion initiated"}` | Bucket deleted from PostgreSQL; outbox command queued. |
+| `200` | `{"status": "success", "data": null, "message": "tenant bucket deletion initiated"}` | Bucket/credentials are `DELETING`; outbox command is queued. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:delete` permission grant or inactive tenant membership. |
 | `404` | `{"status": "error", "code": "NOT_FOUND", "message": "bucket not found"}` | Bucket does not exist or is not owned by the tenant workspace. |
@@ -85,7 +84,7 @@ sequenceDiagram
     Service->>Service: Build BucketDeleteSync protobuf
     Service->>Protector: Seal payload bytes
     Service->>Repo: Delete(bucketID, workspaceID, tenantID, userID, zoneID, outboxRecord)
-    Repo->>PG: Execute atomic CTE (DELETE tenant_buckets + INSERT storage_outbox_records)
+    Repo->>PG: Atomic bucket/credentials -> DELETING + INSERT outbox
     PG-->>Repo: Commit successful
     Repo-->>Service: Success
     Service-->>Handler: Success
@@ -138,6 +137,13 @@ sequenceDiagram
       WHERE id IN (SELECT id FROM authorized_target)
       RETURNING id, name, zone_id, tenant_id
   ),
+  updated_credentials AS (
+      UPDATE storage.tenant_credentials
+      SET state = 'DELETING', updated_at = NOW()
+      WHERE bucket_id IN (SELECT id FROM updated_bucket)
+        AND state = 'READY'
+      RETURNING id
+  ),
   inserted_outbox AS (
       INSERT INTO storage.storage_outbox_records (
           event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
@@ -151,7 +157,12 @@ sequenceDiagram
   )
   SELECT id FROM updated_bucket;
   ```
-- **Output**: Atomic update of bucket `status = 'DELETING'` and insertion of pending outbox record.
+- **Output**: Atomic bucket/credential transition to `DELETING` and pending outbox insertion.
+
+The authorized bucket and every child credential must be `READY`. Incomplete
+`PROVISIONING`/`FAILED` resources and `CREATING`/`ERROR` credentials are not
+silently normalized by user delete; the repository rejects the command so a
+dedicated reconciliation path can preserve their real prior state.
 
 #### Hop 2.4: Controlplane → Browser
 - **Output**: HTTP `200 OK` JSON.
@@ -232,10 +243,10 @@ sequenceDiagram
   - `zone_id`: `<> 00000000-0000-0000-0000-000000000000`
 - **State Transition / Durable Effects**:
   - Khi `SUCCEEDED`:
-    - Physical deletion: Xóa dòng `storage.tenant_buckets` (`id = locked.resource_id`), schema cascade tự động dọn sạch `storage.tenant_credentials`.
+    - Physical deletion: Hard-delete only a `DELETING` bucket; DB trigger enforces the state and cascade removes `DELETING` credentials.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'SUCCEEDED'`, cập nhật `completed_at = NOW()`.
   - Khi `FAILED`:
-    - Khôi phục bucket: Cập nhật `storage.tenant_buckets.status = 'READY'`.
+    - Khôi phục resource: Bucket `DELETING -> READY` và child credentials `DELETING -> READY` trước khi settle outbox `FAILED`.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'FAILED'`, cập nhật `completed_at = NOW()`.
 - **Output Schema (`SettledOutboxRecord`)**:
   - `resource_id`: UUID (`bucket_id`)
@@ -405,3 +416,11 @@ sequenceDiagram
 - **Cost Engine Settlement Worker**: `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - **Cost Engine Pricing Runtime & Lease**: `cost-manager/engine/src/engine/` (`pricing_runtime.rs`, `settlement.rs`, `lease.rs`)
 - **Billing PostgreSQL Tables**: `billing.resource_ownership_projection`, `billing.usage_charges`, `billing.usage_charge_lines`, `billing.wallets`
+
+## Resource completion revision — 2026-08-27
+
+Bucket deletion succeeds only after the bucket and every listed owned credential
+and policy have been removed. S3 NoSuchBucket is idempotent; cleanup errors are not
+ignored. An unknown infrastructure outcome retries the same command/attempt,
+instead of exhausting into FAILED and falsely restoring READY after partial deletion.
+The generic success receipt prevents repeating a completed deletion on replay.

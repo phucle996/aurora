@@ -49,8 +49,8 @@ through Zone OTel/Victoria and is never bridged by JO.
 | Mail reconciliation | PostgreSQL snapshot | Kafka Zone command after fencing | `reconcile/mail/` |
 | Managed Service reconciliation | PostgreSQL outbox | Resets delivery marker only; WAL replays the immutable command | `reconcile/managed_service.rs` |
 
-`RuntimeWorkers` owns the Zone state, metadata, storage and watchdog futures
-directly. They are not detached tasks.
+`RuntimeWorkers` owns the Zone state, metadata, storage, metering and watchdog
+futures directly. They are not detached tasks.
 The process exits on a terminal critical sibling worker and a cancellation token
 stops the changefeed before OpenTelemetry shutdown.
 

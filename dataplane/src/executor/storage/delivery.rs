@@ -50,6 +50,18 @@ pub async fn dispatch_storage_job(
             exec.execute(payload).await
         }
 
+        // [COMMENT]: Định tuyến cấu hình Versioning bucket
+        "bucket.versioning" => {
+            let exec = super::BucketVersioningExecutor;
+            exec.execute(payload).await
+        }
+
+        // [COMMENT]: Định tuyến cấu hình Lifecycle rules bucket
+        "bucket.lifecycle" => {
+            let exec = super::BucketLifecycleExecutor;
+            exec.execute(payload).await
+        }
+
         // [COMMENT]: Định tuyến xóa bucket
         "bucket.delete" => {
             let exec = super::BucketDeleteExecutor;
@@ -58,6 +70,11 @@ pub async fn dispatch_storage_job(
 
         "access.prepare" => {
             let exec = super::StorageAccessPrepareExecutor::new(zone_kv);
+            exec.execute(payload).await
+        }
+
+        "bucket.commercial_admission" => {
+            let exec = super::BucketCommercialAdmissionExecutor::new(zone_kv);
             exec.execute(payload).await
         }
 

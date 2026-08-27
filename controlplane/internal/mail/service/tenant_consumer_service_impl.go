@@ -467,7 +467,7 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mai
 		s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt))
 	}()
 
-	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
+	// Delete yêu cầu drained; repository chuyển cùng cột state sang deleting và append outbox nguyên tử.
 	current, err := s.repo.GetByID(ctx, &mailEntity.GetTenantConsumer{
 		ActorUserID: req.ActorUserID,
 		TenantID:    req.TenantID,
@@ -493,10 +493,9 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mai
 			OccurredAtUnixMs: updatedAt.UnixMilli(),
 			Producer:         "controlplane-mail",
 		},
-		ConsumerId:          req.ID[:],
-		ConfigVersion:       deleteFence,
-		DrainTimeoutSeconds: req.DrainTimeoutSeconds,
-		Reason:              req.Reason,
+		ConsumerId:    req.ID[:],
+		ConfigVersion: deleteFence,
+		Reason:        req.Reason,
 	}
 
 	var traceID []byte
@@ -523,7 +522,7 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mai
 		ResourceID:           req.ID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
-		Idle:                 req.DrainTimeoutSeconds + 30,
+		Idle:                 60,
 	}
 
 	// [COMMENT]: Repository khóa aggregate và chỉ insert outbox; JO hard-delete record sau Zone ACK.
@@ -533,4 +532,32 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mai
 	}
 	req.OperationID = outbox.EventID
 	return nil
+}
+
+func (s *tenantConsumerServiceImpl) Drain(ctx context.Context, cmd mailEntity.TenantConsumerDrainCommand) (uuid.UUID, error) {
+	target, err := s.repo.LoadDrainTarget(ctx, cmd)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if target.ConfigVersion != cmd.ExpectedConfigVersion {
+		return uuid.Nil, mailTaxonomy.ErrVersionConflict
+	}
+	if target.State != mailEntity.ConsumerEnabled && target.State != mailEntity.ConsumerPaused {
+		return uuid.Nil, mailTaxonomy.ErrOperationInProgress
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.MailConsumerDrainV1{
+		SchemaVersion: 1, ConsumerId: cmd.ConsumerID[:], ConfigVersion: target.ConfigVersion,
+		Parallelism: target.Parallelism, TimeoutSeconds: cmd.TimeoutSeconds,
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	id := uuid.New()
+	outbox := mailEntity.MailOutboxRecord{EventID: id, ZoneID: cmd.ZoneID, JobTopic: "mail.consumer.drain",
+		Payload: payload, ActorUserID: cmd.ActorUserID, Status: mailEntity.OutboxStatusPending, JobVersion: 1,
+		ResourceID: cmd.ConsumerID.String(), PayloadSchemaVersion: 1, Idle: min(cmd.TimeoutSeconds+30, 3600)}
+	if err = s.repo.RequestDrain(ctx, cmd, target.Parallelism, outbox); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
 }

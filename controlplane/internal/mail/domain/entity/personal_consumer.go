@@ -144,8 +144,22 @@ type DeletePersonalConsumer struct {
 	ID                    uuid.UUID
 	WorkspaceID           uuid.UUID
 	ExpectedConfigVersion uint64
-	DrainTimeoutSeconds   uint32
 	Reason                string
 	OperationID           uuid.UUID
 	UpdatedAt             time.Time
+}
+
+type PersonalConsumerDrainCommand struct {
+	ActorUserID uuid.UUID
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
+
+	ConsumerID            uuid.UUID
+	ExpectedConfigVersion uint64
+	TimeoutSeconds        uint32
+}
+type PersonalConsumerDrainTarget struct {
+	ConfigVersion uint64
+	Parallelism   uint32
+	State         ConsumerDesiredState
 }

@@ -64,6 +64,24 @@ message BucketLifecycleSync {
   repeated LifecycleRuleSync rules = 3;
 }
 
+message BucketQuotaAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  int64 actual_quota_bytes = 3;
+}
+
+message BucketVersioningAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  bool actual_versioning_enabled = 3;
+}
+
+message BucketLifecycleAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  repeated LifecycleRuleSync actual_rules = 3;
+}
+
 message StorageAccessPrepareRequest {
   string access_session_id = 1;
   string binding_hash = 2;

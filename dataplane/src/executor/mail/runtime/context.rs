@@ -20,6 +20,8 @@ const ENVELOPE_NONCE_BYTES: usize = 12;
 /// [COMMENT]: Fence thuộc Aurora runtime generation, không giả lập ACK semantics của bất kỳ broker nào.
 #[derive(Debug)]
 pub struct RuntimeGenerationFence {
+    drain_requested: AtomicBool,
+    drain_completed: AtomicBool,
     accepting: AtomicBool,
     gate: Arc<RwLock<()>>,
     // [COMMENT]: Monotonic local deadline chặn stale settlement nếu runtime bị stall quá Zone lease TTL trước renew tick kế tiếp.
@@ -29,6 +31,9 @@ pub struct RuntimeGenerationFence {
 impl RuntimeGenerationFence {
     pub fn new(lease_ttl: Duration) -> Arc<Self> {
         Arc::new(Self {
+            drain_requested: AtomicBool::new(false),
+            // Connection setup has not admitted any broker work yet.
+            drain_completed: AtomicBool::new(true),
             accepting: AtomicBool::new(true),
             gate: Arc::new(RwLock::new(())),
             lease_deadline: StdRwLock::new(Instant::now() + lease_ttl),
@@ -45,6 +50,22 @@ impl RuntimeGenerationFence {
 
     pub fn is_accepting(&self) -> bool {
         self.accepting.load(Ordering::Acquire) && self.lease_is_live()
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.drain_requested.load(Ordering::Acquire)
+    }
+    pub fn request_drain(&self) {
+        self.drain_requested.store(true, Ordering::Release);
+    }
+    pub fn mark_running(&self) {
+        self.drain_completed.store(false, Ordering::Release);
+    }
+    pub fn mark_drained(&self) {
+        self.drain_completed.store(true, Ordering::Release);
+    }
+    pub fn drain_is_complete(&self) -> bool {
+        self.drain_completed.load(Ordering::Acquire)
     }
 
     pub fn lease_is_live(&self) -> bool {
@@ -204,6 +225,33 @@ impl StreamRuntimeContext {
             Ok(true) => {
                 // [COMMENT]: Chỉ server-acknowledged renew mới đẩy local deadline; lỗi mạng không được tự gia hạn quyền settlement.
                 generation_fence.refresh_lease(self.lease_ttl);
+                // This is the control/renewal path, not a read per message.
+                let key = format!("mail.consumer.head.{}", configuration.consumer_id);
+                match self.zone_kv.config_get(&key).await {
+                    Ok(Some(bytes)) => {
+                        match serde_json::from_slice::<crate::infra::zone_kv::ConsumerConfigHead>(
+                            &bytes,
+                        ) {
+                            Ok(head)
+                                if !head.tombstoned
+                                    && head.version >= configuration.config_version
+                                    && (matches!(
+                                        head.desired_state.as_str(),
+                                        "DRAINING" | "PAUSED"
+                                    ) || (head.version > configuration.config_version
+                                        && head.desired_state == "ENABLED")) =>
+                            {
+                                generation_fence.request_drain();
+                            }
+                            Ok(head)
+                                if head.version == configuration.config_version
+                                    && head.desired_state == "ENABLED"
+                                    && !head.tombstoned => {}
+                            _ => return false,
+                        }
+                    }
+                    _ => return false,
+                }
                 self.write_health("RUNNING", configuration, slot, generation, lease, "")
                     .await;
                 true

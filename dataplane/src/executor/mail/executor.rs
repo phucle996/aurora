@@ -9,8 +9,18 @@ pub async fn dispatch_mail_job(
     _zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
     // [COMMENT]: Projection là control path riêng; delivery payload chỉ được broker runtime xử lý.
+    if action == "consumer.drain" {
+        return super::consumer::apply_mail_consumer_drain(
+            payload,
+            mail_runtime
+                .configuration
+                .zone_kv()
+                .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
+        )
+        .await;
+    }
     if action == "consumer.upsert" {
-        return super::projection::apply_mail_consumer_upsert(
+        return super::consumer::apply_mail_consumer_upsert(
             payload,
             mail_runtime
                 .configuration
@@ -21,7 +31,7 @@ pub async fn dispatch_mail_job(
         .await;
     }
     if action == "consumer.delete" {
-        return super::projection::apply_mail_consumer_delete(
+        return super::consumer::apply_mail_consumer_delete(
             payload,
             mail_runtime
                 .configuration

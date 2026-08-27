@@ -211,7 +211,12 @@ pub async fn run(
         .count(read_batch_size)
         .block(500);
 
+    generation_fence.mark_running();
     'runtime: loop {
+        if generation_fence.is_draining() && tasks.is_empty() {
+            generation_fence.mark_drained();
+            break;
+        }
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = renew.tick() => {
@@ -232,7 +237,7 @@ pub async fn run(
                     }
                 }
             }
-            _ = reclaim.tick(), if tasks.len().saturating_add(read_batch_size) <= context.max_slot_inflight => {
+            _ = reclaim.tick(), if !generation_fence.is_draining() && tasks.len().saturating_add(read_batch_size) <= context.max_slot_inflight => {
                 // [COMMENT]: PEL của pod chết được claim theo batch nhỏ; entry chưa terminal không biến mất sau restart.
                 let claimed: redis::RedisResult<RedisClaimReply> = redis::cmd("XAUTOCLAIM")
                     .arg(&payload.stream_key)
@@ -339,7 +344,7 @@ pub async fn run(
                 &stream_keys,
                 &read_ids,
                 &read_options,
-            ), if tasks.len().saturating_add(read_batch_size) <= context.max_slot_inflight => {
+            ), if !generation_fence.is_draining() && tasks.len().saturating_add(read_batch_size) <= context.max_slot_inflight => {
                 match result {
                     Ok(reply) => {
                         for key in reply.keys {

@@ -85,7 +85,7 @@ func (r *TenantCredentialRepoImpl) Create(
 			 AND m.status = 'active'
 			WHERE b.id = $1 
 			  AND b.workspace_id = $2 
-			  AND b.tenant_id = $3 
+			  AND b.tenant_id = $3
 			  AND w.zone_id = $5
 			  AND (SELECT ok FROM admitted)
 			FOR KEY SHARE OF b
@@ -170,7 +170,7 @@ func (r *TenantCredentialRepoImpl) GetByID(
 	zoneID uuid.UUID,
 ) (*storageEntity.TenantCredential, error) {
 	query := fmt.Sprintf(`
-		SELECT c.id, c.bucket_id, c.access_key, c.policy, c.created_at, c.updated_at
+		SELECT c.id, c.bucket_id, c.access_key, c.policy, c.state, c.created_at, c.updated_at
 		FROM %s.tenant_credentials c
 		JOIN %s.tenant_buckets b ON c.bucket_id = b.id
 		JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
@@ -191,6 +191,7 @@ func (r *TenantCredentialRepoImpl) GetByID(
 		&c.BucketID,
 		&c.AccessKey,
 		&c.Policy,
+		&c.State,
 		&c.CreatedAt,
 		&c.UpdatedAt,
 	)
@@ -213,7 +214,7 @@ func (r *TenantCredentialRepoImpl) ListByBucket(
 	zoneID uuid.UUID,
 ) ([]*storageEntity.TenantCredential, error) {
 	query := fmt.Sprintf(`
-		SELECT c.id, c.bucket_id, c.access_key, c.policy, c.created_at, c.updated_at
+		SELECT c.id, c.bucket_id, c.access_key, c.policy, c.state, c.created_at, c.updated_at
 		FROM %s.tenant_credentials c
 		JOIN %s.tenant_buckets b ON c.bucket_id = b.id
 		JOIN %s.tenant_workspaces w ON b.workspace_id = w.id
@@ -223,8 +224,9 @@ func (r *TenantCredentialRepoImpl) ListByBucket(
 		 AND m.status = 'active'
 		WHERE c.bucket_id = $1 
 		  AND b.workspace_id = $2 
-		  AND b.tenant_id = $3 
-		  AND w.zone_id = $5
+			  AND b.tenant_id = $3
+			  AND w.zone_id = $5
+			  AND b.status = 'READY'
 		ORDER BY c.created_at DESC
 	`, r.storage, r.storage, r.hierarchy, r.hierarchy)
 
@@ -242,6 +244,7 @@ func (r *TenantCredentialRepoImpl) ListByBucket(
 			&c.BucketID,
 			&c.AccessKey,
 			&c.Policy,
+			&c.State,
 			&c.CreatedAt,
 			&c.UpdatedAt,
 		)
@@ -288,10 +291,13 @@ func (r *TenantCredentialRepoImpl) Delete(
 			  AND b.workspace_id = $3 
 			  AND b.tenant_id = $4 
 			  AND w.zone_id = $6
+			  AND b.status = 'READY'
+			  AND c.state = 'READY'
 			FOR UPDATE OF c
 		),
-		deleted_credential AS (
-			DELETE FROM %s.tenant_credentials
+		updated_credential AS (
+			UPDATE %s.tenant_credentials
+			SET state = 'DELETING', updated_at = NOW()
 			WHERE id IN (SELECT id FROM authorized_credential)
 			RETURNING id
 		),
@@ -308,10 +314,10 @@ func (r *TenantCredentialRepoImpl) Delete(
 			       ac.bucket_name
 			FROM authorized_credential ac
 		)
-		SELECT id FROM deleted_credential;
+		SELECT id FROM updated_credential;
 	`, r.storage, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage)
 
-	var deletedID uuid.UUID
+	var updatedID uuid.UUID
 	err = r.db.QueryRow(ctx, query,
 		param.CredentialID,
 		param.BucketID,
@@ -332,7 +338,7 @@ func (r *TenantCredentialRepoImpl) Delete(
 		mo.ErrorCode,
 		mo.ErrorMessage,
 		mo.PayloadKeyID,
-	).Scan(&deletedID)
+	).Scan(&updatedID)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

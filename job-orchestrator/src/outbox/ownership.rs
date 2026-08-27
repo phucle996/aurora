@@ -12,17 +12,32 @@ pub mod ownership_proto {
     include!(concat!(env!("OUT_DIR"), "/billing_ownership.rs"));
 }
 
+/// [COMMENT]: Namespace UUID cố định dùng để sinh deterministic UUIDv5 cho từng Resource Ownership Event.
 const OWNERSHIP_NAMESPACE: Uuid = Uuid::from_bytes([
     0x6b, 0x18, 0x4e, 0x2a, 0x9f, 0x3c, 0x5d, 0x71, 0x8a, 0x2b, 0x1c, 0x4f, 0x6e, 0x7d, 0x0e, 0x3f,
 ]);
+
+/// [COMMENT]: Danh sách các Storage Topic tác động trực tiếp đến sự tồn tại của tài nguyên tính cước (Billable Resource).
+/// - `storage.bucket.create`: Tạo bucket mới -> Sinh sự kiện `RESOURCE_CREATED` cho Central Billing.
+/// - `storage.bucket.delete`: Xóa bucket -> Sinh sự kiện `RESOURCE_DELETED` để dừng tính cước.
 const OWNERSHIP_TOPICS: [&str; 2] = ["storage.bucket.create", "storage.bucket.delete"];
 
+/// [COMMENT]: Cấu trúc chứa dữ liệu sự kiện đã chuẩn bị xong để phát sang Redis Stream.
 struct OwnershipIntent {
     event_id: Uuid,
     event_type: &'static str,
     payload: Vec<u8>,
 }
 
+/// [COMMENT]: Background Worker quét bù sự kiện sở hữu tài nguyên (Recovery / Failover Relay).
+///
+/// Vai trò kiến trúc:
+/// - Khi một Bucket Job thành công (`SUCCEEDED`), Fast-Path (`publish_for_job`) sẽ cố gắng đẩy sự kiện sang Redis ngay.
+/// - Nếu Redis gặp sự cố mạng hoặc downtime tạm thời, cột `ownership_published_at` trên PostgreSQL vẫn là `NULL`.
+/// - `OwnershipRelay` chạy nền theo chu kỳ, dùng `claim_pending` (kỹ thuật `FOR UPDATE SKIP LOCKED` + Lease Lock)
+///   để quét lại các dòng chưa gửi thành công và re-publish sang Redis.
+/// - Đảm bảo: Sự cố Redis KHÔNG BAO GIỜ làm mất thông tin chủ sở hữu tài nguyên của Central Billing
+///   và KHÔNG BAO GIỜ làm nghẽn tiến trình commit offset của Kafka Result Worker.
 pub struct OwnershipRelay {
     config: Config,
     publisher: Arc<SharedStreamPublisher>,
@@ -39,9 +54,8 @@ impl OwnershipRelay {
         }
     }
 
+    /// [COMMENT]: Vòng lặp chính duy trì phiên làm việc của Recovery Relay.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // The durable row survives a local wake loss. Startup drain plus a
-        // jittered periodic scan provides failover without hot polling.
         loop {
             match self.run_session().await {
                 Ok(()) => return Err("ownership relay PostgreSQL session ended".into()),
@@ -57,6 +71,7 @@ impl OwnershipRelay {
         }
     }
 
+    /// [COMMENT]: Phiên quét và xử lý từng lô (batch) các bản ghi outbox chưa được đồng bộ sang Redis.
     async fn run_session(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let client =
             crate::infra::postgres::connect(&self.config.postgres, "ownership.postgres").await?;
@@ -90,6 +105,7 @@ impl OwnershipRelay {
         }
     }
 
+    /// [COMMENT]: Jitter ngẫu nhiên tránh tình trạng các worker replica cùng quét DB tại cùng một microsecond (Thundering Herd).
     fn worker_jitter_secs(&self) -> u64 {
         let seed = self
             .worker_id
@@ -99,9 +115,13 @@ impl OwnershipRelay {
     }
 }
 
-/// Fast path called after the result transaction commits. Failure is persisted
-/// on the same storage outbox row and recovered by OwnershipRelay, so callers
-/// may settle the Kafka result without coupling it to a Redis outage.
+/// [COMMENT]: Fast-Path phát sự kiện Ownership ngay sau khi Result Worker commit xong giao dịch SUCCEEDED.
+///
+/// Luồng xử lý:
+/// 1. Kiểm tra topic có thuộc `OWNERSHIP_TOPICS` không (`storage.bucket.create` / `delete`).
+/// 2. Đọc metadata từ dòng `storage.storage_outbox_records` có `status = 'SUCCEEDED'` và `ownership_published_at IS NULL`.
+/// 3. Đóng gói Protobuf `ResourceOwnershipChangedV1` và `XADD` vào Redis Stream `stream:{billing_ownership}`.
+/// 4. Đánh dấu `ownership_published_at = NOW()` để hoàn tất vòng đời.
 pub async fn publish_for_job(
     client: &Client,
     publisher: &SharedStreamPublisher,
@@ -156,6 +176,7 @@ pub async fn publish_for_job(
     );
     let stream_id = publish_result?;
 
+    // [COMMENT]: Cập nhật mốc thời gian đã gửi thành công sang Redis
     client
         .execute(
             "UPDATE storage.storage_outbox_records \
@@ -180,6 +201,8 @@ pub async fn publish_for_job(
     Ok(true)
 }
 
+/// [COMMENT]: Tranh chấp nhận quyền xử lý (Distributed Claim) các dòng outbox chưa gửi bằng `FOR UPDATE SKIP LOCKED`.
+/// Đặt `ownership_locked_until` để tránh bị worker khác giành giật trong thời gian lease đang có hiệu lực.
 async fn claim_pending(
     client: &Client,
     worker_id: &str,
@@ -214,6 +237,16 @@ async fn claim_pending(
         .collect())
 }
 
+/// [COMMENT]: Chuyển đổi bản ghi Outbox PostgreSQL thành Protobuf Payload `ResourceOwnershipChangedV1`.
+///
+/// Các trường dữ liệu cốt lõi bàn giao cho Central Billing:
+/// - `resource_id`: UUID của Bucket
+/// - `resource_type`: "STORAGE_BUCKET"
+/// - `resource_name`: Tên bucket thực tế trên MinIO
+/// - `owner_id`: UUID của User (nếu Personal) hoặc Workspace/Tenant (nếu Tenant)
+/// - `owner_type`: "PERSONAL" hoặc "TENANT"
+/// - `zone_id`: Zone vật lý chứa bucket
+/// - `event_type`: "RESOURCE_CREATED" (bắt đầu tính cước) hoặc "RESOURCE_DELETED" (dừng tính cước)
 fn build_intent(row: &Row) -> Result<OwnershipIntent, Box<dyn std::error::Error + Send + Sync>> {
     let job_id: Uuid = row.get(0);
     let job_topic: String = row.get(1);
@@ -270,6 +303,7 @@ fn build_intent(row: &Row) -> Result<OwnershipIntent, Box<dyn std::error::Error 
     })
 }
 
+/// [COMMENT]: Ghi nhận lỗi khi gửi sự kiện thất bại để phục vụ quan sát (Observability) và nhả lock cho lần retry sau.
 async fn record_failure(client: &Client, job_id: Uuid, job_topic: &str, error: &str) {
     let bounded_error = bounded_utf8(error, 512);
     let _ = client
@@ -295,12 +329,15 @@ async fn record_failure(client: &Client, job_id: Uuid, job_topic: &str, error: &
     );
 }
 
+/// [COMMENT]: Sinh Event ID mang tính quyết định (Deterministic UUIDv5) từ `job_id` và `event_type`.
+/// Đảm bảo tính Idempotent: Nếu sự kiện được gửi lại nhiều lần, Event ID vẫn giữ nguyên.
 fn ownership_event_id(job_id: Uuid, event_type: &str) -> Uuid {
     let mut seed = job_id.as_bytes().to_vec();
     seed.extend_from_slice(event_type.as_bytes());
     Uuid::new_v5(&OWNERSHIP_NAMESPACE, &seed)
 }
 
+/// [COMMENT]: Cắt chuỗi UTF-8 an toàn tại ranh giới ký tự hợp lệ để không vượt quá giới hạn dung lượng lưu trữ.
 fn bounded_utf8(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_string();

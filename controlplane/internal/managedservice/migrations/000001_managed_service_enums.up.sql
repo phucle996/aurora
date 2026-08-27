@@ -40,13 +40,7 @@ END $$;
 
 DO $$
 BEGIN
-    CREATE TYPE managed_service_instance_state AS ENUM ('provisioning', 'active', 'deleting');
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$
-BEGIN
-    CREATE TYPE managed_service_observed_state AS ENUM ('unknown', 'progressing', 'ready', 'degraded');
+    CREATE TYPE managed_service_instance_state AS ENUM ('provisioning', 'active', 'updating', 'deleting');
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 

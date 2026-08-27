@@ -8,6 +8,7 @@ use super::dispatcher::dispatch_stream_runtime;
 use crate::config::Config;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
+use prost::Message;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +27,7 @@ struct RuntimeSlotHandle {
     config_version: u64,
     config_sha256: [u8; 32],
     cancel: CancellationToken,
+    fence: Arc<RuntimeGenerationFence>,
     task: JoinHandle<()>,
     retry_at: Instant,
 }
@@ -161,7 +163,9 @@ impl MailConsumerSupervisor {
                         && slot.config_sha256 == configuration.config_sha256)
             });
             if !still_desired {
-                slot.cancel.cancel();
+                // COW/Pause stops intake, but the old generation must finish
+                // already-owned work with its pinned configuration.
+                slot.fence.request_drain();
             }
             if slot.task.is_finished() && (!still_desired || Instant::now() >= slot.retry_at) {
                 remove.push(key.clone());
@@ -195,6 +199,16 @@ impl MailConsumerSupervisor {
         }
 
         for configuration in configurations {
+            let head = self
+                .context
+                .zone_kv
+                .config_get(format!("mail.consumer.head.{}", configuration.consumer_id))
+                .await;
+            if !matches!(head, Ok(Some(ref bytes)) if serde_json::from_slice::<crate::infra::zone_kv::ConsumerConfigHead>(bytes)
+                .is_ok_and(|head| !head.tombstoned && head.version == configuration.config_version && head.desired_state == "ENABLED"))
+            {
+                continue;
+            }
             for slot_number in 0..configuration.parallelism {
                 if slots.len() >= self.max_slots_per_pod {
                     return;
@@ -210,9 +224,11 @@ impl MailConsumerSupervisor {
                 let slot_cancel = cancel.clone();
                 let supervisor = self.clone();
                 let slot_configuration = configuration.clone();
+                let fence = RuntimeGenerationFence::new(self.context.lease_ttl);
+                let slot_fence = fence.clone();
                 let task = tokio::spawn(async move {
                     supervisor
-                        .run_slot(slot_configuration, slot_number, slot_cancel)
+                        .run_slot(slot_configuration, slot_number, slot_cancel, slot_fence)
                         .await;
                 });
                 let mut retry_hasher = std::collections::hash_map::DefaultHasher::new();
@@ -224,6 +240,7 @@ impl MailConsumerSupervisor {
                         config_version: configuration.config_version,
                         config_sha256: configuration.config_sha256,
                         cancel,
+                        fence,
                         task,
                         // [COMMENT]: Failed connect/lease claim không được biến central supervisor tick thành CAS loop 500 ms.
                         retry_at: Instant::now()
@@ -240,6 +257,7 @@ impl MailConsumerSupervisor {
         configuration: Arc<RuntimeConsumerConfiguration>,
         slot: u32,
         cancel: CancellationToken,
+        generation_fence: Arc<RuntimeGenerationFence>,
     ) {
         let lease_key = format!("mail.consumer.slot.{}.{}", configuration.consumer_id, slot);
         let owner_id = format!(
@@ -267,22 +285,165 @@ impl MailConsumerSupervisor {
             }
         };
         let generation = lease.fencing_token;
-        let generation_fence = RuntimeGenerationFence::new(self.context.lease_ttl);
-        self.context
-            .write_health("STARTING", &configuration, slot, generation, &lease, "")
-            .await;
-
-        dispatch_stream_runtime(
-            self.context.clone(),
-            configuration.clone(),
+        generation_fence.refresh_lease(self.context.lease_ttl);
+        // Register before checking the intake barrier. Every runtime that could
+        // start before DRAINING is now visible independently of lease retention.
+        // A replacement never overwrites an older generation's pending entry.
+        let generation_id = uuid::Uuid::new_v4().to_string();
+        let journal_key = format!(
+            "mail.consumer.runtime.{}.{generation_id}",
+            configuration.consumer_id
+        );
+        let mut journal = crate::executor::mail::runtime_proto::MailConsumerRuntimeGenerationV1 {
+            schema_version: 1,
+            consumer_id: configuration.consumer_id.clone(),
+            generation_id: generation_id.clone(),
+            config_version: configuration.config_version,
             slot,
-            generation,
-            lease.clone(),
-            generation_fence.clone(),
-            cancel.clone(),
-        )
-        .await;
+            fencing_token: lease.fencing_token,
+            lease_owner_id: lease.owner_id.clone(),
+            phase: 1,
+        };
+        let mut journal_revision = match self
+            .context
+            .zone_kv
+            .config_create(&journal_key, bytes::Bytes::from(journal.encode_to_vec()))
+            .await
+        {
+            Ok(revision) => revision,
+            Err(_) => return, // Unknown create ACK must never enable intake.
+        };
+        let head_key = format!("mail.consumer.head.{}", configuration.consumer_id);
+        let mut may_start = false;
+        for _ in 0..8 {
+            let Ok(Some(entry)) = self.context.zone_kv.config_entry(&head_key).await else {
+                break;
+            };
+            let Ok(mut head) =
+                serde_json::from_slice::<crate::infra::zone_kv::ConsumerConfigHead>(&entry.value)
+            else {
+                break;
+            };
+            if head.tombstoned
+                || head.version != configuration.config_version
+                || head.desired_state != "ENABLED"
+                || generation_fence.is_draining()
+            {
+                break;
+            }
+            if head.runtime_generations.contains(&generation_id) {
+                may_start = true; // CoversLost CAS ACK, still under the ENABLED gate.
+                break;
+            }
+            // Bound unknown generations rather than forgetting their work.
+            if head.runtime_generations.len() >= 4096 {
+                break;
+            }
+            head.runtime_generations.push(generation_id.clone());
+            let Ok(bytes) = serde_json::to_vec(&head) else {
+                break;
+            };
+            if self
+                .context
+                .zone_kv
+                .config_update(&head_key, bytes.into(), entry.revision)
+                .await
+                .is_ok()
+            {
+                may_start = true;
+                break;
+            }
+        }
+        if may_start {
+            // Drain can retire a prepared generation after a crash. CAS this
+            // exact journal revision before touching the broker, so a delayed
+            // old pod cannot start after its prepared entry was discharged.
+            journal.phase = 2;
+            match self
+                .context
+                .zone_kv
+                .config_update(
+                    &journal_key,
+                    journal.encode_to_vec().into(),
+                    journal_revision,
+                )
+                .await
+            {
+                Ok(revision) => journal_revision = revision,
+                Err(_) => return,
+            }
+            self.context
+                .write_health("STARTING", &configuration, slot, generation, &lease, "")
+                .await;
+            dispatch_stream_runtime(
+                self.context.clone(),
+                configuration.clone(),
+                slot,
+                generation,
+                lease.clone(),
+                generation_fence.clone(),
+                cancel.clone(),
+            )
+            .await;
+        }
         generation_fence.fence().await;
+
+        if generation_fence.drain_is_complete() {
+            // Persist settlement before retiring head membership. Lost ACK or
+            // death between these steps can now be finished by the Drain job.
+            journal.phase = 3;
+            match self
+                .context
+                .zone_kv
+                .config_update(
+                    &journal_key,
+                    journal.encode_to_vec().into(),
+                    journal_revision,
+                )
+                .await
+            {
+                Ok(revision) => journal_revision = revision,
+                Err(_) => return,
+            }
+            // Remove only our generation, never replace the whole generation
+            // set read before another pod registered or a COW upsert committed.
+            let mut retired = false;
+            for _ in 0..8 {
+                let Ok(Some(entry)) = self.context.zone_kv.config_entry(&head_key).await else {
+                    break;
+                };
+                let Ok(mut head) = serde_json::from_slice::<
+                    crate::infra::zone_kv::ConsumerConfigHead,
+                >(&entry.value) else {
+                    break;
+                };
+                if !head.runtime_generations.contains(&generation_id) {
+                    retired = true;
+                    break;
+                }
+                head.runtime_generations.retain(|id| id != &generation_id);
+                let Ok(bytes) = serde_json::to_vec(&head) else {
+                    break;
+                };
+                if self
+                    .context
+                    .zone_kv
+                    .config_update(&head_key, bytes.into(), entry.revision)
+                    .await
+                    .is_ok()
+                {
+                    retired = true;
+                    break;
+                }
+            }
+            if retired {
+                let _ = self
+                    .context
+                    .zone_kv
+                    .config_delete_revision(&journal_key, journal_revision)
+                    .await;
+            }
+        }
 
         if cancel.is_cancelled() {
             self.context

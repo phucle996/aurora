@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { type APIError } from "@/shared/api/http";
 import { getMailEstimate } from "@/features/billing/api";
 import { formatMicroUnits } from "@/features/billing/money";
-import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, mintMailConsumerRuntimeRead, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/features/mail/api";
+import { changeMailConsumerState, createMailConsumer, drainMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, mintMailConsumerRuntimeRead, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/features/mail/api";
 import { useRealtime } from "@/realtime/provider";
 import { publicRuntimeConfig } from "@/runtime-config";
 
@@ -56,6 +56,8 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 	const consumers = useQuery({
     queryKey,
     queryFn: ({ signal }) => listMailConsumers(signal),
+    refetchInterval: (query) => query.state.data?.some((consumer) =>
+      consumer.desired_state === "draining" || consumer.desired_state === "deleting") ? 3_000 : false,
     enabled,
 	});
 	const pricing = useQuery({
@@ -251,9 +253,18 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
+  const drain = useMutation({
+    mutationFn: (consumer: MailConsumer) => drainMailConsumer(consumer.id, consumer.config_version),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey });
+      toast.success("Drain requested. Delete becomes available after all runtime slots settle.");
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
   const remove = useMutation({
     mutationFn: (consumer: MailConsumer) => deleteMailConsumer(consumer.id, consumer.config_version),
-    onSuccess: () => {
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey });
       toast.success("Consumer deletion scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -367,9 +378,10 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
                 setRuntimeStreamStatus("connecting");
                 setDetailConsumerID(consumer.id);
               }}><Eye /></Button>
-              {canUpdate && <Button variant="ghost" size="icon-sm" title="Edit" onClick={() => openEdit(consumer)}><Pencil /></Button>}
-              {canUpdate && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : consumer.source_configured ? "Resume" : "Configure broker credentials before resume"} disabled={stateChange.isPending || (consumer.desired_state !== "enabled" && !consumer.source_configured)} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
-              {canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" className="text-destructive" title="Delete" />}><Trash2 /></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {consumer.name}?</AlertDialogTitle><AlertDialogDescription>An enabled consumer will drain before deletion. In-flight messages may finish.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(consumer)}>Request deletion</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}
+              {canUpdate && <Button variant="ghost" size="icon-sm" title="Edit" disabled={!["enabled", "paused"].includes(consumer.desired_state)} onClick={() => openEdit(consumer)}><Pencil /></Button>}
+              {canUpdate && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : consumer.source_configured ? "Resume" : "Configure broker credentials before resume"} disabled={!["enabled", "paused", "drained"].includes(consumer.desired_state) || stateChange.isPending || (consumer.desired_state !== "enabled" && !consumer.source_configured)} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
+              {canDelete && ["enabled", "paused"].includes(consumer.desired_state) && <Button variant="outline" size="sm" disabled={drain.isPending} onClick={() => drain.mutate(consumer)}>Drain</Button>}
+              {canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" className="text-destructive" title={consumer.desired_state === "drained" ? "Delete drained consumer" : "Drain this consumer before deleting"} disabled={consumer.desired_state !== "drained" || remove.isPending} />}><Trash2 /></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {consumer.name}?</AlertDialogTitle><AlertDialogDescription>The backend has confirmed this consumer is drained. Deletion removes its runtime configuration.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={consumer.desired_state !== "drained" || remove.isPending} onClick={() => remove.mutate(consumer)}>Request deletion</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}
             </div></td></tr>)}
           </tbody></table></div>
         )}

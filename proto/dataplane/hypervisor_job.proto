@@ -14,6 +14,17 @@ message VmCreateV1 {
   uint64 image_revision = 10;
   bytes image_sha256 = 11;
   uint64 provider_template_vmid = 12;
+  reserved 13;
+  repeated VmCreateAdditionalDiskV1 additional_disks = 14;
+  bytes resource_plan_id = 15;
+  bytes resource_plan_revision_id = 16;
+  uint64 resource_plan_revision_number = 17;
+  bytes resource_plan_content_sha256 = 18;
+}
+
+message VmCreateAdditionalDiskV1 {
+  uint32 disk_index = 1;
+  uint64 size_gb = 2;
 }
 
 message VmCreateResultV1 {
@@ -24,6 +35,36 @@ message VmCreateResultV1 {
   uint64 provider_vmid = 5;
   string ipv4_address = 6;
   bytes config_hash = 7;
+  int64 provider_completed_at_unix_ms = 8;
+}
+
+message VmDeleteV1 {
+  uint32 schema_version = 1;
+  bytes vm_id = 2;
+  string provider_name = 3;
+  uint64 provider_vmid = 4;
+}
+
+message VmDeleteResultV1 {
+  uint32 schema_version = 1;
+  bytes vm_id = 2;
+  string provider_name = 3;
+  uint64 provider_vmid = 4;
+  int64 provider_completed_at_unix_ms = 5;
+}
+
+// Zone-local journal owned only by the VM delete workflow. Generic job/outbox
+// contracts never acquire provider-specific columns.
+message VmDeleteJournalV1 {
+  uint32 schema_version = 1;
+  bytes vm_id = 2;
+  string provider_name = 3;
+  uint64 provider_vmid = 4;
+  string provider_node = 5;
+  repeated string previous_task_upids = 6;
+  string task_upid = 7;
+  int64 provider_completed_at_unix_ms = 8;
+  uint32 failed_tasks = 9;
 }
 
 message ImageImportV1 {

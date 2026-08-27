@@ -65,6 +65,8 @@ CREATE TABLE personal_credentials (
     bucket_id UUID NOT NULL,
     access_key VARCHAR(255) NOT NULL,
     policy TEXT NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'CREATING'
+        CHECK (state IN ('CREATING', 'READY', 'DELETING', 'ERROR')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_personal_credentials_bucket
@@ -80,6 +82,8 @@ CREATE TABLE tenant_credentials (
     bucket_id UUID NOT NULL,
     access_key VARCHAR(255) NOT NULL,
     policy TEXT NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'CREATING'
+        CHECK (state IN ('CREATING', 'READY', 'DELETING', 'ERROR')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_tenant_credentials_bucket
@@ -89,3 +93,43 @@ CREATE TABLE tenant_credentials (
 
 CREATE INDEX idx_tenant_credentials_bucket
     ON tenant_credentials(bucket_id);
+
+CREATE FUNCTION require_storage_credential_deleting_before_delete()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.state <> 'DELETING' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            MESSAGE = 'storage credential must be DELETING before hard delete';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER trg_personal_credential_delete_requires_deleting
+BEFORE DELETE ON personal_credentials
+FOR EACH ROW EXECUTE FUNCTION require_storage_credential_deleting_before_delete();
+
+CREATE TRIGGER trg_tenant_credential_delete_requires_deleting
+BEFORE DELETE ON tenant_credentials
+FOR EACH ROW EXECUTE FUNCTION require_storage_credential_deleting_before_delete();
+
+CREATE FUNCTION require_storage_bucket_deleting_before_delete()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.status <> 'DELETING' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            MESSAGE = 'storage bucket must be DELETING before hard delete';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER trg_personal_bucket_delete_requires_deleting
+BEFORE DELETE ON personal_buckets
+FOR EACH ROW EXECUTE FUNCTION require_storage_bucket_deleting_before_delete();
+
+CREATE TRIGGER trg_tenant_bucket_delete_requires_deleting
+BEFORE DELETE ON tenant_buckets
+FOR EACH ROW EXECUTE FUNCTION require_storage_bucket_deleting_before_delete();

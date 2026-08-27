@@ -3,9 +3,9 @@
 > **Critical-route revision (2026-08-26):** ACR consumes the exact session proof for the public `/api/v1/critical/storage/...` mutation and rewrites only to the corresponding `/api/v1/tenant/critical/storage/...` target. Controlplane runs `RequireSessionProof` before `Authorize`; older non-critical route text below is superseded.
 
 Tenant Bucket Versioning update is an asynchronous state synchronization workflow.
-Controlplane updates desired versioning state in PostgreSQL and writes a sealed Zone
-outbox command within an atomic CTE transaction. Physical S3 versioning configuration
-occurs asynchronously on MinIO via Dataplane at the edge zone.
+Controlplane leaves confirmed versioning unchanged, transitions `READY -> UPDATING`,
+and stores the target only inside the sealed Zone command. Dataplane applies MinIO;
+JO validates `BucketVersioningAppliedV1` and promotes the actual value.
 
 ---
 
@@ -45,7 +45,7 @@ Trinity tenant membership, resolves workspace and zone context, rewrites the pat
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": { "id": "...", "name": "...", "versioning_enabled": true }, "message": "tenant bucket versioning updated"}` | Desired versioning state committed to PostgreSQL. |
+| `200` | `data` includes `id`, `name`, `status=UPDATING` and the last confirmed `versioning_enabled` | Transition and sealed target command committed. |
 | `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "invalid request body"}` | Invalid JSON. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:write` permission grant or inactive tenant membership. |
@@ -139,8 +139,7 @@ sequenceDiagram
   ),
   updated_bucket AS (
       UPDATE storage.tenant_buckets
-      SET versioning_enabled = $6,
-          status = 'UPDATING',
+      SET status = 'UPDATING',
           updated_at = NOW()
       WHERE id IN (SELECT id FROM authorized_target)
       RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
@@ -159,7 +158,7 @@ sequenceDiagram
   SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
   FROM updated_bucket;
   ```
-- **Output**: Atomic commit of updated `versioning_enabled`, `status = 'UPDATING'`, and pending outbox record.
+- **Output**: Atomic `READY -> UPDATING` and pending outbox; confirmed `versioning_enabled` remains unchanged.
 
 #### Hop 2.4: Controlplane → Browser
 - **Output**: HTTP `200 OK` JSON.
@@ -204,13 +203,17 @@ sequenceDiagram
     participant Centrifugo as Centrifugo WebSocket
     actor Browser as Cloud Console (Tenant)
 
-    DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
+    DP->>KafkaRes: SUCCEEDED + BucketVersioningAppliedV1
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED') & tenant_buckets (status = 'READY')
+    JO->>PG: Write actual versioning + READY, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: TENANT_BUCKET_VERSIONING_UPDATED { tenant_id, bucket_id, versioning_enabled }
     Timeline->>Centrifugo: Publish to channel "tenant:storage:{tenant_id}:{workspace_id}"
     Centrifugo-->>Browser: WebSocket Push: { type: "BUCKET_VERSIONING_UPDATED", id, versioning_enabled, status: "READY" }
 ```
+
+On terminal failure JO requires an empty success payload, keeps the confirmed
+versioning value, restores `UPDATING -> READY`, and only then marks the outbox
+`FAILED`.
 
 ---
 

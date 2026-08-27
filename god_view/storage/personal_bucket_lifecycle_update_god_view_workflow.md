@@ -4,10 +4,10 @@
 
 Bucket Lifecycle update is an asynchronous policy synchronization workflow.
 Controlplane validates lifecycle rules (enforcing that noncurrent version expiration
-requires bucket versioning to be active), persists desired rules to PostgreSQL,
-and writes a sealed Zone outbox command within an atomic CTE transaction. A `200 OK`
-means the desired state has been safely persisted; physical S3 ILM engine configuration
-occurs asynchronously via Dataplane at the edge zone.
+requires bucket versioning to be active), keeps confirmed rules unchanged,
+transitions `READY -> UPDATING`, and writes requested rules only in a sealed Zone
+command. A `200 OK` means the promise is durable; Dataplane applies S3 ILM and JO
+promotes the typed actual rules.
 
 ---
 
@@ -64,7 +64,7 @@ the owned bucket record, and inserts a `BucketLifecycleSync` outbox job.
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": { "id": "...", "name": "...", "lifecycle_rules": [...] }, "message": "bucket lifecycle rules updated"}` | Desired lifecycle rules committed to PostgreSQL. |
+| `200` | `data` includes `id`, `name`, `status=UPDATING` and last confirmed `lifecycle_rules` | Transition and sealed target command committed. |
 | `400` | `{"status": "error", "code": "VERSIONING_REQUIRED", "message": "noncurrent version expiration requires bucket versioning to be enabled"}` | Invariant violation: `noncurrent_version_expiration_days > 0` but bucket versioning is disabled. |
 | `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "invalid request body"}` | Validation error (duplicate rule ID, invalid days, etc.). |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
@@ -80,7 +80,7 @@ the owned bucket record, and inserts a `BucketLifecycleSync` outbox job.
 | Key / Transport | Store | Operation | Invariant |
 |---|---|---|---|
 | Auth-State session | Redis (Central) | Read / verify | Edge must never allow client to forge user or workspace context. |
-| `storage.personal_buckets.lifecycle_rules` | PostgreSQL | Locked update | Source of truth for desired bucket lifecycle rules. |
+| `storage.personal_buckets.lifecycle_rules` | PostgreSQL | Read, then JO actual update | Latest Zone-confirmed lifecycle rules. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert | Topic `storage.bucket.lifecycle`, payload `BucketLifecycleSync`. |
 | `storage.bucket.lifecycle` | Kafka (Zone Command) | At-least-once publish | Sealed binary payload dispatched to the bucket's target Zone. |
 | `dataplane.job_result` | Kafka (Result) | Publish result | Dataplane returns terminal status (`SUCCEEDED` / `FAILED`). |
@@ -232,7 +232,7 @@ sequenceDiagram
   ),
   updated_bucket AS (
       UPDATE storage.personal_buckets
-      SET lifecycle_rules = $3::jsonb,
+      SET status = 'UPDATING',
           updated_at = NOW()
       WHERE id IN (SELECT id FROM target_bucket)
       RETURNING id, name, workspace_id, zone_id, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
@@ -247,7 +247,7 @@ sequenceDiagram
   SELECT id, name, workspace_id, zone_id, capacity_quota_bytes, used_bytes, versioning_enabled, lifecycle_rules, created_at, updated_at
   FROM updated_bucket;
   ```
-- **Output**: Atomic commit of updated `lifecycle_rules` JSONB column and `storage_outbox_records` pending row.
+- **Output**: Atomic `READY -> UPDATING` and pending outbox. Confirmed `lifecycle_rules` are unchanged until settlement.
 
 #### Hop 2.4: Controlplane → Browser
 - **Input**: Updated `PersonalBucket` entity.
@@ -350,9 +350,9 @@ sequenceDiagram
     participant Centrifugo as Centrifugo WebSocket
     actor Browser as Cloud Console
 
-    DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
+    DP->>KafkaRes: SUCCEEDED + BucketLifecycleAppliedV1
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED', completed_at = NOW())
+    JO->>PG: Write actual rules + READY, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: BUCKET_LIFECYCLE_UPDATED { bucket_id, rule_count }
     Timeline->>PG: Insert user timeline / audit log record
     Timeline->>Centrifugo: Publish to channel "personal:storage:{user_id}"
@@ -370,7 +370,7 @@ sequenceDiagram
       job_id: "01916fe8-444a-714d-91b5-555e5fbdd98b",
       topic: "storage.bucket.lifecycle",
       status: JOB_STATUS_SUCCEEDED,
-      result_payload: [],
+      result_payload: BucketLifecycleAppliedV1,
       error_message: ""
     }
     ```
@@ -381,11 +381,14 @@ sequenceDiagram
 - **Input**: `JobResult` consumed by Central Job Orchestrator.
 - **SQL Execution**:
   ```sql
+  WITH updated_bucket AS (
+    UPDATE storage.personal_buckets
+    SET lifecycle_rules = $actual_rules, status = 'READY', updated_at = NOW()
+    WHERE id = $bucket_id AND status = 'UPDATING' RETURNING id
+  )
   UPDATE storage.storage_outbox_records
-  SET status = 'SUCCEEDED',
-      completed_at = NOW(),
-      updated_at = NOW()
-  WHERE event_id = $1 AND status IN ('PENDING', 'PROCESSING');
+  SET status = 'SUCCEEDED', completed_at = NOW(), updated_at = NOW()
+  WHERE event_id = $event_id AND EXISTS (SELECT 1 FROM updated_bucket);
   ```
 - **Output**: Outbox record transition to terminal state `SUCCEEDED`.
 
@@ -435,7 +438,7 @@ sequenceDiagram
 | Duplicate rule ID in request | HTTP `400 Bad Request` | Request rejected in handler validation. |
 | User does not own bucket | HTTP `404 Not Found` | No DB mutation or outbox insert occurs. |
 | DB transaction fails | HTTP `500 Internal Error` | Transaction rolled back; outbox record is never published. |
-| MinIO API temporarily unreachable | Dataplane retries with exponential backoff | If terminal failure, Dataplane reports `FAILED`; JO marks outbox `FAILED` and emits failure notification. |
+| MinIO API temporarily unreachable | Dataplane retries with exponential backoff | Terminal failure leaves confirmed rules unchanged, restores `READY`, then marks outbox `FAILED`. |
 | Duplicate Kafka message delivery | Idempotent S3 `PutBucketLifecycleConfiguration` execution | MinIO replaces entire lifecycle rule set idempotently. |
 
 ---
@@ -451,3 +454,10 @@ sequenceDiagram
 - **Dataplane Executor**: `dataplane/src/executor/storage/lifecycle.rs` (`BucketLifecycleExecutor`)
 - **Dataplane Router**: `dataplane/src/executor/storage/delivery.rs` (`"bucket.lifecycle"`)
 - **Cloud Console UI**: `cloud-console/src/app/(console)/storage/[id]/components/LifecycleTab.tsx`
+
+## PostgreSQL result binding — 2026-08-27
+
+JO serializes typed actual rules as text and binds them with `$4::text::jsonb`.
+Binding a Rust String directly as JSONB fails in tokio-postgres before the update.
+The owner-scoped CTE writes confirmed rules and READY together with outbox
+settlement. Real PostgreSQL regression tests cover both owner tables.

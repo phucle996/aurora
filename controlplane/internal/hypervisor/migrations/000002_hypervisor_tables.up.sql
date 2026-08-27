@@ -1,6 +1,6 @@
 -- Resource tables are declared before transport/operation records. A terminal
--- VM provisioning failure removes the personal_vms row but retains its outbox
--- fence for bounded diagnostics and duplicate-result settlement.
+-- VM provisioning failure retains the personal_vms row in FAILED together with
+-- its outbox fence for truthful recovery and duplicate-result settlement.
 CREATE TABLE IF NOT EXISTS image_artifacts (
     id UUID PRIMARY KEY,
     zone_id UUID NOT NULL,

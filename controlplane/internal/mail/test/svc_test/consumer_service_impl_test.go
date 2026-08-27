@@ -19,18 +19,97 @@ import (
 
 // [COMMENT]: Mock repository capture hỗ trợ kiểm tra thao tác tạo/sửa/xóa Personal Consumer và lưu vệt outbox
 type personalConsumerRepoCapture struct {
-	created   *mailEntity.CreatePersonalConsumer
-	current   *mailEntity.GetPersonalConsumer
-	updated   *mailEntity.UpdatePersonalConsumer
-	outbox    *mailEntity.MailOutboxRecord
-	updateErr error
+	drainTarget mailEntity.PersonalConsumerDrainTarget
+	created     *mailEntity.CreatePersonalConsumer
+	current     *mailEntity.GetPersonalConsumer
+	updated     *mailEntity.UpdatePersonalConsumer
+	outbox      *mailEntity.MailOutboxRecord
+	updateErr   error
 }
 
 type tenantConsumerRepoCapture struct {
-	updated   *mailEntity.UpdateTenantConsumer
-	outbox    *mailEntity.MailOutboxRecord
-	current   *mailEntity.GetTenantConsumer
-	updateErr error
+	drainTarget mailEntity.TenantConsumerDrainTarget
+	updated     *mailEntity.UpdateTenantConsumer
+	outbox      *mailEntity.MailOutboxRecord
+	current     *mailEntity.GetTenantConsumer
+	updateErr   error
+}
+
+func (r *personalConsumerRepoCapture) LoadDrainTarget(context.Context, mailEntity.PersonalConsumerDrainCommand) (mailEntity.PersonalConsumerDrainTarget, error) {
+	return r.drainTarget, nil
+}
+func (r *personalConsumerRepoCapture) RequestDrain(_ context.Context, _ mailEntity.PersonalConsumerDrainCommand, _ uint32, outbox mailEntity.MailOutboxRecord) error {
+	r.outbox = &outbox
+	return r.updateErr
+}
+func (r *tenantConsumerRepoCapture) LoadDrainTarget(context.Context, mailEntity.TenantConsumerDrainCommand) (mailEntity.TenantConsumerDrainTarget, error) {
+	return r.drainTarget, nil
+}
+func (r *tenantConsumerRepoCapture) RequestDrain(_ context.Context, _ mailEntity.TenantConsumerDrainCommand, _ uint32, outbox mailEntity.MailOutboxRecord) error {
+	r.outbox = &outbox
+	return r.updateErr
+}
+
+func TestConsumerDrainUsesCurrentVersionAndScopedOutbox(t *testing.T) {
+	for _, scope := range []string{"personal", "tenant"} {
+		t.Run(scope, func(t *testing.T) {
+			id, actor, workspace, zone := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			var operation uuid.UUID
+			var err error
+			var outbox *mailEntity.MailOutboxRecord
+			if scope == "personal" {
+				repo := &personalConsumerRepoCapture{drainTarget: mailEntity.PersonalConsumerDrainTarget{ConfigVersion: 7, Parallelism: 4, State: mailEntity.ConsumerEnabled}}
+				service := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder())
+				operation, err = service.Drain(context.Background(), mailEntity.PersonalConsumerDrainCommand{ActorUserID: actor, WorkspaceID: workspace, ZoneID: zone, ConsumerID: id, ExpectedConfigVersion: 7, TimeoutSeconds: 30})
+				outbox = repo.outbox
+			} else {
+				repo := &tenantConsumerRepoCapture{drainTarget: mailEntity.TenantConsumerDrainTarget{ConfigVersion: 7, Parallelism: 4, State: mailEntity.ConsumerPaused}}
+				service := mailSvcImpl.NewTenantConsumerService(repo, observability.NewNoopWorkflowRecorder())
+				operation, err = service.Drain(context.Background(), mailEntity.TenantConsumerDrainCommand{ActorUserID: actor, WorkspaceID: workspace, ZoneID: zone, TenantID: uuid.New(), ConsumerID: id, ExpectedConfigVersion: 7, TimeoutSeconds: 30})
+				outbox = repo.outbox
+			}
+			if err != nil || operation == uuid.Nil || outbox == nil {
+				t.Fatalf("drain: operation=%v err=%v", operation, err)
+			}
+			if outbox.EventID != operation || outbox.JobTopic != "mail.consumer.drain" || outbox.ZoneID != zone || outbox.ResourceID != id.String() || outbox.ActorUserID != actor {
+				t.Fatalf("wrong outbox: %#v", outbox)
+			}
+			var command mailproto.MailConsumerDrainV1
+			if err = proto.Unmarshal(outbox.Payload, &command); err != nil {
+				t.Fatal(err)
+			}
+			if command.SchemaVersion != 1 || command.ConfigVersion != 7 || command.Parallelism != 4 || command.TimeoutSeconds != 30 || !bytes.Equal(command.ConsumerId, id[:]) {
+				t.Fatalf("wrong command: %v", &command)
+			}
+		})
+	}
+}
+
+func TestConsumerDrainRejectsStaleVersionAndBusyState(t *testing.T) {
+	for _, state := range []mailEntity.ConsumerDesiredState{mailEntity.ConsumerEnabled, mailEntity.ConsumerDraining, mailEntity.ConsumerDrained, mailEntity.ConsumerDeleting} {
+		for _, scope := range []string{"personal", "tenant"} {
+			expected := uint64(7)
+			want := mailTaxonomy.ErrOperationInProgress
+			if state == mailEntity.ConsumerEnabled {
+				expected = 6
+				want = mailTaxonomy.ErrVersionConflict
+			}
+			var err error
+			var outbox *mailEntity.MailOutboxRecord
+			if scope == "personal" {
+				repo := &personalConsumerRepoCapture{drainTarget: mailEntity.PersonalConsumerDrainTarget{ConfigVersion: 7, Parallelism: 1, State: state}}
+				_, err = mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).Drain(context.Background(), mailEntity.PersonalConsumerDrainCommand{ExpectedConfigVersion: expected})
+				outbox = repo.outbox
+			} else {
+				repo := &tenantConsumerRepoCapture{drainTarget: mailEntity.TenantConsumerDrainTarget{ConfigVersion: 7, Parallelism: 1, State: state}}
+				_, err = mailSvcImpl.NewTenantConsumerService(repo, observability.NewNoopWorkflowRecorder()).Drain(context.Background(), mailEntity.TenantConsumerDrainCommand{ExpectedConfigVersion: expected})
+				outbox = repo.outbox
+			}
+			if !errors.Is(err, want) || outbox != nil {
+				t.Fatalf("%s/%s: err=%v outbox=%v", scope, state, err, outbox)
+			}
+		}
+	}
 }
 
 func (r *tenantConsumerRepoCapture) Create(context.Context, *mailEntity.CreateTenantConsumer, *mailEntity.MailOutboxRecord) error {
@@ -285,7 +364,6 @@ func TestPersonalDeleteUsesNextAllocatorAsTombstoneFence(t *testing.T) {
 		ZoneID:                current.ZoneID,
 		ID:                    current.ID,
 		ExpectedConfigVersion: 4,
-		DrainTimeoutSeconds:   30,
 	}
 	// [COMMENT]: Thực thi yêu cầu xóa consumer qua service
 	if err := mailSvcImpl.NewPersonalConsumerService(repo, observability.NewNoopWorkflowRecorder()).DeleteConsumer(context.Background(), command); err != nil {

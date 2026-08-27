@@ -77,7 +77,7 @@ func (r *personalInstanceRepository) CreatePersonalInstance(ctx context.Context,
 		if err := tx.Commit(ctx); err != nil {
 			return nil, taxonomy.ErrUnavailable
 		}
-		return &entity.CreatePersonalInstanceResult{ID: existingID, Code: in.Code, Name: existingName, DesiredState: existingState, Generation: existingGeneration, RevisionSequence: existingSequence, PendingRevisionID: existingPending, OperationID: operationID, OperationKind: kind, OperationState: state, DeliveryEpoch: epoch, Deduplicated: true}, nil
+		return &entity.CreatePersonalInstanceResult{ID: existingID, Code: in.Code, Name: existingName, State: existingState, Generation: existingGeneration, RevisionSequence: existingSequence, PendingRevisionID: existingPending, OperationID: operationID, OperationKind: kind, OperationState: state, DeliveryEpoch: epoch, Deduplicated: true}, nil
 	}
 	if !errors.Is(existingErr, pgx.ErrNoRows) {
 		return nil, taxonomy.ErrUnavailable
@@ -163,7 +163,7 @@ func (r *personalInstanceRepository) CreatePersonalInstance(ctx context.Context,
 	)
 	SELECT instance.id,instance.code,instance.name,instance.state,instance.generation,instance.revision_sequence,instance.pending_revision_id,operation.id,operation.kind,operation.state,operation.delivery_epoch
 	FROM inserted_instance instance CROSS JOIN inserted_operation operation`, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema)
-	err = tx.QueryRow(ctx, query, in.InstanceID, in.WorkspaceID, in.UserID, in.ZoneID, in.Code, in.Name, in.CreateIntentSHA256, in.InstanceRevisionID, in.BlueprintRevisionID, bundleHash, componentContractHash, inputSchemaHash, protected.Payload, payloadHash[:], protected.KeyID, in.InputSHA256, desiredHash, in.OperationID, in.CommandEventID, in.TraceID).Scan(&result.ID, &result.Code, &result.Name, &result.DesiredState, &result.Generation, &result.RevisionSequence, &result.PendingRevisionID, &result.OperationID, &result.OperationKind, &result.OperationState, &result.DeliveryEpoch)
+	err = tx.QueryRow(ctx, query, in.InstanceID, in.WorkspaceID, in.UserID, in.ZoneID, in.Code, in.Name, in.CreateIntentSHA256, in.InstanceRevisionID, in.BlueprintRevisionID, bundleHash, componentContractHash, inputSchemaHash, protected.Payload, payloadHash[:], protected.KeyID, in.InputSHA256, desiredHash, in.OperationID, in.CommandEventID, in.TraceID).Scan(&result.ID, &result.Code, &result.Name, &result.State, &result.Generation, &result.RevisionSequence, &result.PendingRevisionID, &result.OperationID, &result.OperationKind, &result.OperationState, &result.DeliveryEpoch)
 	if err != nil {
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
@@ -249,7 +249,7 @@ func (r *personalInstanceRepository) ResizePersonalInstance(ctx context.Context,
 	}
 	payloadHash := sha256.Sum256(protected.Payload)
 	var result entity.ResizePersonalInstanceResult
-	query := fmt.Sprintf(`WITH inserted_revision AS (INSERT INTO %s.personal_managed_service_instance_revisions(id,instance_id,revision,blueprint_revision_id,zone_id,template_bundle_sha256,component_contract_sha256,input_schema_sha256,protected_command_payload,protected_command_payload_sha256,payload_key_id,input_sha256,desired_spec_sha256,created_by) SELECT $1,$2,instance.revision_sequence+1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13 FROM %s.personal_managed_service_instances instance WHERE instance.id=$2 RETURNING id), updated_instance AS (UPDATE %s.personal_managed_service_instances SET generation=$14,revision_sequence=revision_sequence+1,pending_revision_id=(SELECT id FROM inserted_revision),updated_at=now() WHERE id=$2 AND state='active' RETURNING id,code,generation,pending_revision_id), inserted_operation AS (INSERT INTO %s.personal_managed_service_operations(id,instance_id,target_revision_id,blueprint_revision_id,zone_id,kind,state,generation,attempt,delivery_epoch,current_command_event_id,status_version,template_bundle_sha256,component_contract_sha256,input_sha256,desired_spec_sha256,actor_user_id,retained_until) SELECT $15,$2,(SELECT id FROM inserted_revision),$3,$4,'resize','accepted',$14,0,0,$16,1,$5,$6,$11,$12,$17,now()+interval '30 days' RETURNING id,kind::text,state::text,delivery_epoch), inserted_outbox AS (INSERT INTO %s.managed_service_outbox_records(event_id,zone_id,job_topic,payload,payload_key_id,owner_id,owner_type,actor_user_id,status,available_at,job_version,resource_id,payload_schema_version,trace_id,delivery_epoch) VALUES($16,$4,'managed_service.instance.execute',$8,$10,$17,'PERSONAL',$17,'PENDING',now(),1,$2::text,1,$18,0) RETURNING event_id) SELECT updated_instance.id,updated_instance.code,updated_instance.generation,updated_instance.pending_revision_id,inserted_operation.id,inserted_operation.kind,inserted_operation.state,inserted_operation.delivery_epoch FROM updated_instance CROSS JOIN inserted_operation`, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema)
+	query := fmt.Sprintf(`WITH inserted_revision AS (INSERT INTO %s.personal_managed_service_instance_revisions(id,instance_id,revision,blueprint_revision_id,zone_id,template_bundle_sha256,component_contract_sha256,input_schema_sha256,protected_command_payload,protected_command_payload_sha256,payload_key_id,input_sha256,desired_spec_sha256,created_by) SELECT $1,$2,instance.revision_sequence+1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13 FROM %s.personal_managed_service_instances instance WHERE instance.id=$2 RETURNING id), updated_instance AS (UPDATE %s.personal_managed_service_instances SET state='updating',generation=$14,revision_sequence=revision_sequence+1,pending_revision_id=(SELECT id FROM inserted_revision),updated_at=now() WHERE id=$2 AND state='active' RETURNING id,code,generation,pending_revision_id), inserted_operation AS (INSERT INTO %s.personal_managed_service_operations(id,instance_id,target_revision_id,blueprint_revision_id,zone_id,kind,state,generation,attempt,delivery_epoch,current_command_event_id,status_version,template_bundle_sha256,component_contract_sha256,input_sha256,desired_spec_sha256,actor_user_id,retained_until) SELECT $15,$2,(SELECT id FROM inserted_revision),$3,$4,'resize','accepted',$14,0,0,$16,1,$5,$6,$11,$12,$17,now()+interval '30 days' RETURNING id,kind::text,state::text,delivery_epoch), inserted_outbox AS (INSERT INTO %s.managed_service_outbox_records(event_id,zone_id,job_topic,payload,payload_key_id,owner_id,owner_type,actor_user_id,status,available_at,job_version,resource_id,payload_schema_version,trace_id,delivery_epoch) VALUES($16,$4,'managed_service.instance.execute',$8,$10,$17,'PERSONAL',$17,'PENDING',now(),1,$2::text,1,$18,0) RETURNING event_id) SELECT updated_instance.id,updated_instance.code,updated_instance.generation,updated_instance.pending_revision_id,inserted_operation.id,inserted_operation.kind,inserted_operation.state,inserted_operation.delivery_epoch FROM updated_instance CROSS JOIN inserted_operation`, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema, r.managedSchema)
 	if err := tx.QueryRow(ctx, query, in.InstanceRevisionID, instanceID, blueprintRevisionID, in.ZoneID, bundleHash, componentHash, schemaHash, protected.Payload, payloadHash[:], protected.KeyID, in.InputSHA256, in.DesiredSpecSHA256, in.UserID, nextGeneration, in.OperationID, in.CommandEventID, in.UserID, in.TraceID).Scan(&result.ID, &result.Code, &result.Generation, &result.PendingRevisionID, &result.OperationID, &result.OperationKind, &result.OperationState, &result.DeliveryEpoch); err != nil {
 		return nil, taxonomy.ErrUnavailable
 	}
@@ -400,8 +400,7 @@ func (r *personalInstanceRepository) ListPersonalInstances(ctx context.Context, 
 		WHERE workspace.id=$1 AND workspace.owner_id=$2 AND workspace.zone_id=$3
 	)
 	SELECT instance.id,instance.code,instance.name,instance.state::text,instance.generation,
-		instance.active_revision_id,instance.pending_revision_id,instance.observed_state::text,
-		instance.observed_state_version,instance.observed_at,instance.metadata_version,
+		instance.active_revision_id,instance.pending_revision_id,instance.metadata_version,
 		instance.created_at,instance.updated_at,
 		latest.id,latest.kind,latest.state,latest.generation,latest.attempt,latest.created_at
 	FROM scope
@@ -429,9 +428,8 @@ func (r *personalInstanceRepository) ListPersonalInstances(ctx context.Context, 
 	for rows.Next() {
 		var item entity.PersonalInstanceListItem
 		if err := rows.Scan(
-			&item.ID, &item.Code, &item.Name, &item.DesiredState, &item.Generation,
-			&item.ActiveRevisionID, &item.PendingRevisionID, &item.ObservedState,
-			&item.ObservedStateVersion, &item.ObservedAt, &item.MetadataVersion,
+			&item.ID, &item.Code, &item.Name, &item.State, &item.Generation,
+			&item.ActiveRevisionID, &item.PendingRevisionID, &item.MetadataVersion,
 			&item.CreatedAt, &item.UpdatedAt,
 			&item.LatestOperationID, &item.LatestOperationKind, &item.LatestOperationState,
 			&item.LatestOperationGen, &item.LatestOperationTry, &item.LatestOperationAt,
@@ -460,8 +458,7 @@ func (r *personalInstanceRepository) GetPersonalInstance(ctx context.Context, in
 	)
 	SELECT instance.id,instance.code,instance.name,instance.state::text,instance.generation,
 		instance.revision_sequence,instance.active_revision_id,instance.pending_revision_id,
-		instance.observed_state::text,instance.observed_state_version,instance.observed_output,
-		instance.observed_at,instance.metadata_version,instance.created_at,instance.updated_at,
+		instance.metadata_version,instance.created_at,instance.updated_at,
 		latest.id,latest.kind,latest.state,latest.generation,latest.attempt,latest.created_at,latest.completed_at,
 		COALESCE(blueprint_revision.component_contract,'[]'::jsonb),
 		COALESCE(blueprint_revision.contract_version,''),COALESCE(blueprint_revision.input_schema,'{}'::jsonb),
@@ -486,10 +483,9 @@ func (r *personalInstanceRepository) GetPersonalInstance(ctx context.Context, in
 	var result entity.PersonalInstanceDetail
 	var componentContract []byte
 	err := r.db.QueryRow(ctx, query, in.WorkspaceID, in.UserID, in.ZoneID, in.Code).Scan(
-		&result.ID, &result.Code, &result.Name, &result.DesiredState, &result.Generation,
+		&result.ID, &result.Code, &result.Name, &result.State, &result.Generation,
 		&result.RevisionSequence, &result.ActiveRevisionID, &result.PendingRevisionID,
-		&result.ObservedState, &result.ObservedStateVersion, &result.ObservedOutput,
-		&result.ObservedAt, &result.MetadataVersion, &result.CreatedAt, &result.UpdatedAt,
+		&result.MetadataVersion, &result.CreatedAt, &result.UpdatedAt,
 		&result.LatestOperationID, &result.LatestOperationKind, &result.LatestOperationState,
 		&result.LatestOperationGen, &result.LatestOperationTry, &result.LatestOperationAt,
 		&result.LatestOperationDoneAt, &componentContract, &result.ResizeContractVersion,

@@ -465,7 +465,7 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 			  ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
 			WHERE w.id = $1 AND w.zone_id = $2 AND w.tenant_id = $17
 		), target AS MATERIALIZED (
-			SELECT config_version
+			SELECT config_version, desired_state
 			FROM %s.tenant_mail_consumers
 			WHERE id = $4 AND workspace_id = $1
 			  AND EXISTS (SELECT 1 FROM authorized)
@@ -474,14 +474,18 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 			SELECT 1 FROM %s.mail_outbox_records
 			WHERE resource_id=$4::text AND status IN ('PENDING','PROCESSING')
 			LIMIT 1
-		), outbox_inserted AS (
+		), transitioned AS (
+            UPDATE %s.tenant_mail_consumers c SET desired_state='deleting',updated_at=NOW()
+            FROM target t WHERE c.id=$4 AND t.config_version=$5 AND t.desired_state='drained'
+                AND c.desired_state='drained' AND NOT EXISTS (SELECT 1 FROM live_operation)
+            RETURNING c.id
+        ), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle, payload_key_id
 			)
 			SELECT $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18
-			FROM target
-			WHERE config_version=$5 AND NOT EXISTS (SELECT 1 FROM live_operation)
+			FROM transitioned
 			RETURNING id
 		)
 		SELECT
@@ -490,7 +494,7 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 			EXISTS (SELECT 1 FROM live_operation),
 			EXISTS (SELECT 1 FROM outbox_inserted),
 			(SELECT id FROM outbox_inserted)
-	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema),
+	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
 		consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.ID, consumer.ExpectedConfigVersion,
 		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion,
@@ -524,6 +528,48 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 	outbox.ID = outboxID.Int64
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("mail tenant consumer repo: commit delete: %w", err)
+	}
+	return nil
+}
+
+func (r *tenantConsumerRepoPostgres) LoadDrainTarget(ctx context.Context, cmd mailEntity.TenantConsumerDrainCommand) (mailEntity.TenantConsumerDrainTarget, error) {
+	var target mailEntity.TenantConsumerDrainTarget
+	err := r.db.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version,c.parallelism,c.desired_state::text
+ FROM %s.tenant_mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id
+ JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active'
+ WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), cmd.ConsumerID, cmd.WorkspaceID, cmd.ZoneID, cmd.ActorUserID, cmd.TenantID).Scan(&target.ConfigVersion, &target.Parallelism, &target.State)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return target, mailTaxonomy.ErrConsumerNotFound
+	}
+	return target, err
+}
+func (r *tenantConsumerRepoPostgres) RequestDrain(ctx context.Context, cmd mailEntity.TenantConsumerDrainCommand, parallelism uint32, outbox mailEntity.MailOutboxRecord) error {
+	sealed, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "MAIL", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: 1, PayloadSchemaVersion: 1}, outbox.Payload)
+	if err != nil {
+		return err
+	}
+	var accepted bool
+	err = r.db.QueryRow(ctx, fmt.Sprintf(`WITH target AS MATERIALIZED (
+ SELECT c.id FROM %s.tenant_mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id
+ JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active'
+ WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5
+ AND c.config_version=$6 AND c.parallelism=$7 AND c.desired_state IN ('enabled','paused')
+ FOR UPDATE OF c
+ ), transitioned AS (
+ UPDATE %s.tenant_mail_consumers c SET desired_state='draining',updated_at=NOW()
+ FROM target t WHERE c.id=t.id AND c.desired_state IN ('enabled','paused')
+ AND NOT EXISTS(SELECT 1 FROM %s.mail_outbox_records o WHERE o.resource_id=c.id::text AND o.status IN ('PENDING','PROCESSING'))
+ RETURNING c.id
+ ), appended AS (
+ INSERT INTO %s.mail_outbox_records(event_id,zone_id,job_topic,payload,payload_key_id,actor_user_id,status,job_version,resource_id,payload_schema_version,idle)
+ SELECT $8,$3,'mail.consumer.drain',$9,$10,$4,'PENDING',1,id::text,1,$11 FROM transitioned RETURNING id
+ ) SELECT EXISTS(SELECT 1 FROM appended)`, r.mailSchema, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema),
+		cmd.ConsumerID, cmd.WorkspaceID, cmd.ZoneID, cmd.ActorUserID, cmd.TenantID, cmd.ExpectedConfigVersion, parallelism, outbox.EventID, sealed.Payload, sealed.KeyID, outbox.Idle).Scan(&accepted)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		return mailTaxonomy.ErrVersionConflict
 	}
 	return nil
 }

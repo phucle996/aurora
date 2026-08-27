@@ -408,6 +408,7 @@ func (h *TenantBucketHandler) UpdateVersioning(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                 bucket.ID.String(),
 		"name":               bucket.Name,
+		"status":             bucket.Status,
 		"versioning_enabled": bucket.VersioningEnabled,
 	}, "tenant bucket versioning updated")
 }
@@ -553,6 +554,7 @@ func (h *TenantBucketHandler) UpdateLifecycle(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":              bucket.ID.String(),
 		"name":            bucket.Name,
+		"status":          bucket.Status,
 		"lifecycle_rules": bucket.LifecycleRules,
 	}, "tenant bucket lifecycle rules updated")
 }

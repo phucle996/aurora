@@ -63,6 +63,7 @@ source settlement.
 | State | Writer | Dataplane use |
 | --- | --- | --- |
 | `AURORA_ZONE_CONFIG` metadata | assigned Zone Control projection | cached admission/config read |
+| `AURORA_ZONE_JOB_COMPLETION` | DP completion workflow | immutable terminal evidence; isolated discard-new quota, no unsafe TTL |
 | `AURORA_ZONE_HEALTH/zone.node.*` | each Dataplane sampler | source for Zone Control aggregation |
 | `AURORA_ZONE_COORDINATION/signal.workers.scale` | assigned Zone Control scaler | validate and apply target |
 | job execution lease | Dataplane execution boundary | duplicate/failure fencing |

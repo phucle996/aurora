@@ -494,6 +494,12 @@ impl MailConfigurationRuntime {
                 ));
                 continue;
             }
+            // Drain is an operation barrier, not a new immutable configuration.
+            // Existing slots finish through their renewal path; do not cancel
+            // their in-flight work or try to decode DRAINING as an upsert.
+            if head.desired_state == "DRAINING" {
+                continue;
+            }
             let record = RegistryRecord {
                 config_version: head.version,
                 state: if head.tombstoned {

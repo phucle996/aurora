@@ -78,7 +78,7 @@ workspace đã xác minh mới được inject lại.
 | Workspace cookie | Browser then ACR | Read by ACR, overwrite `x-workspace-id` | Browser header is removed. Cookie is selection input, while CP permission and repository ownership remain fences. |
 | `user_role:{user_id}` | Controlplane L1/cache registry | Load compiled personal permissions | `Authorize` checks exact or `*` workspace permission. |
 | `storage.personal_buckets` | PostgreSQL | Insert with `status='PROVISIONING'` | In-flight candidate. Physical status transitions to `READY` upon JO settlement. |
-| `storage.personal_credentials` | PostgreSQL | Insert access key and policy only | The secret key is intentionally not retained in this table. |
+| `storage.personal_credentials` | PostgreSQL | Insert access key, policy and `state=CREATING` | The secret key is intentionally not retained; JO promotes this bootstrap credential with the bucket. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert `storage.bucket.create` in same CTE | First durable async command boundary. Payload is HPKE-protected and has immutable `zone_id`. |
 | `aurora.jobs.commands.zone.{zone_id}.v1` | Kafka | JO publishes `JobCommandV1` from WAL | At-least-once delivery. `event_id` is job id. |
 | `aurora.jobs.results.v1` | Kafka | Dataplane publishes result | JO settles only the matching durable outbox row. |
@@ -138,7 +138,7 @@ Trước khi mở transaction tạo bucket, Service kiểm tra `CommercialAdmiss
 - Nếu `ALLOW` $\to$ Repository mã hóa payload `BucketCreateSync` và thực thi CTE nguyên tử:
   1. Xác minh `personal_workspaces.owner_id == user_id`.
   2. Tạo dòng `personal_buckets` với trạng thái `status = 'PROVISIONING'`.
-  3. Tạo dòng `personal_credentials` (lưu access_key + policy).
+  3. Tạo dòng `personal_credentials` với `state = 'CREATING'` (lưu access_key + policy).
   4. Tạo dòng `storage_outbox_records` với `status = 'PENDING'`.
 
 ```mermaid
@@ -210,7 +210,10 @@ sequenceDiagram
 
 ## Phase 4 — Job Settlement & Resource Ownership Handover (Billing Registry)
 
-Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi CTE cập nhật `personal_buckets.status = 'READY'`, chuyển outbox sang `SUCCEEDED`, và **ngay lập tức kích hoạt luồng Fast-Path đẩy sự kiện sở hữu (`RESOURCE_CREATED`) sang Cost Manager** để mở sổ theo dõi cước.
+Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi
+resource-first CTE: bucket `PROVISIONING -> READY` và bootstrap credential
+`CREATING -> READY`; chỉ sau khi cả hai row được promote mới chuyển outbox sang
+`SUCCEEDED` và kích hoạt ownership fast path.
 
 ```mermaid
 sequenceDiagram
@@ -227,7 +230,7 @@ sequenceDiagram
 
     DP->>KR: Publish JobResult (job_id, status: SUCCEEDED)
     KR-->>JO: Consume JobResult
-    JO->>PG: 1. Settle DB: outbox = 'SUCCEEDED' & personal_buckets.status = 'READY'
+    JO->>PG: 1. Bucket READY + credential READY, then outbox SUCCEEDED
     
     rect rgb(255, 245, 240)
     Note over JO,Proj: Luồng chuyển giao sở hữu sang Billing (Fast-Path)
@@ -260,9 +263,10 @@ sequenceDiagram
 - **State Transition / Durable Effects**:
   - Khi `SUCCEEDED`:
     - Resource status: Cập nhật `storage.personal_buckets.status = 'READY'`.
+    - Bootstrap credential: Cập nhật `storage.personal_credentials.state = 'READY'`.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'SUCCEEDED'`, cập nhật `completed_at = NOW()`.
   - Khi `FAILED`:
-    - Candidate deletion: Xóa dòng `storage.personal_buckets` (`id = resource_id`), schema cascade tự động xóa sạch `storage.personal_credentials`.
+    - Resource evidence: Cập nhật bucket `PROVISIONING -> FAILED` và bootstrap credential `CREATING -> ERROR`; không hard-delete bằng một kết quả provisioning thất bại.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'FAILED'`, cập nhật `completed_at = NOW()`.
 - **Output Schema (`SettledOutboxRecord`)**:
   - `resource_id`: UUID (`bucket_id`)
@@ -422,7 +426,7 @@ sequenceDiagram
 | Condition | Actual behavior |
 |---|---|
 | HTTP returns `201`, then Zone provisioning fails | Bootstrap secret has already been disclosed. JO removes candidate bucket and credential later; caller must treat completion notification or later read as authoritative. |
-| MinIO bucket create succeeds but quota/user/policy fails | Dataplane attempts compensating deletes. Those best-effort rollbacks can themselves fail. |
+| MinIO bucket create succeeds but quota/user/policy fails | Dataplane retries the same forward provisioning steps. It never compensates by deleting an already-created bucket/user/policy. |
 | Duplicate Kafka command | Stable job id and executor side effects are intended to be retry-safe, but `create_user` does not explicitly accept an already-existing user as success. |
 | Job result replay | SQL guard only settles PENDING or PROCESSING row. |
 | No actor ownership in the CTE | No bucket, credential or outbox is inserted. |
@@ -466,3 +470,12 @@ sequenceDiagram
 - **Cost Engine Settlement Worker**: `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - **Cost Engine Pricing Runtime & Lease**: `cost-manager/engine/src/engine/` (`pricing_runtime.rs`, `settlement.rs`, `lease.rs`)
 - **Billing PostgreSQL Tables**: `billing.resource_ownership_projection`, `billing.usage_charges`, `billing.usage_charge_lines`, `billing.wallets`
+
+## Completion replay revision — 2026-08-27
+
+Partial bucket provisioning retries forward and never runs compensating deletes.
+Completed jobs persist a protobuf success receipt in Zone config KV, bound to
+the exact authenticated command hash and operation epoch, before result publication.
+A matching replay republishes that result; a conflicting or unreadable receipt
+fails closed. Receipt retention/garbage collection still needs an explicit safe
+replay-horizon contract before high-volume production use.

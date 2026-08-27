@@ -353,6 +353,7 @@ func (h *PersonalBucketHandler) UpdateVersioning(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                 updatedBucket.ID.String(),
 		"name":               updatedBucket.Name,
+		"status":             updatedBucket.Status,
 		"versioning_enabled": updatedBucket.VersioningEnabled,
 	}, "bucket versioning updated")
 }
@@ -472,6 +473,7 @@ func (h *PersonalBucketHandler) UpdateLifecycle(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":              updatedBucket.ID.String(),
 		"name":            updatedBucket.Name,
+		"status":          updatedBucket.Status,
 		"lifecycle_rules": updatedBucket.LifecycleRules,
 	}, "bucket lifecycle updated")
 }

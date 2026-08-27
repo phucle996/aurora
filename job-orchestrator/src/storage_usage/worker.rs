@@ -37,6 +37,11 @@ pub async fn run_bucket_sizes_listener(
                     if snapshot.schema_version == 1
                         && snapshot.event_id.len() == 16
                         && snapshot.zone_id.len() == 16
+                        && snapshot.observed_at_unix_ms > 0
+                        && snapshot.observed_at_unix_ms
+                            <= chrono::Utc::now()
+                                .timestamp_millis()
+                                .saturating_add(300_000)
                         && snapshot.buckets.len() <= 50_000
                         && snapshot.buckets.iter().all(|bucket| {
                             bucket.size_bytes >= 0
@@ -80,6 +85,10 @@ pub async fn run_bucket_sizes_listener(
                 }
             };
             let _zone_id = uuid::Uuid::from_slice(&snapshot.zone_id)?.to_string();
+            let observed_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                snapshot.observed_at_unix_ms,
+            )
+            .ok_or("storage size snapshot observation timestamp is invalid")?;
             let current = snapshot
                 .buckets
                 .into_iter()
@@ -91,8 +100,13 @@ pub async fn run_bucket_sizes_listener(
             for (bucket_name, size_bytes) in &current {
                 let mut target_user_ids = Vec::new();
                 if bucket_name.starts_with("ws-") {
-                    match store::update_personal_bucket_size(&pg_client, bucket_name, *size_bytes)
-                        .await
+                    match store::update_personal_bucket_size(
+                        &pg_client,
+                        bucket_name,
+                        *size_bytes,
+                        observed_at,
+                    )
+                    .await
                     {
                         Ok(Some(owner_id)) => {
                             target_user_ids.push(owner_id);
@@ -109,8 +123,13 @@ pub async fn run_bucket_sizes_listener(
                         }
                     }
                 } else if bucket_name.starts_with("tn-") {
-                    match store::update_tenant_bucket_size(&pg_client, bucket_name, *size_bytes)
-                        .await
+                    match store::update_tenant_bucket_size(
+                        &pg_client,
+                        bucket_name,
+                        *size_bytes,
+                        observed_at,
+                    )
+                    .await
                     {
                         Ok(user_ids) => target_user_ids = user_ids,
                         Err(error) => {

@@ -22,12 +22,21 @@ Tài liệu kiến trúc chính:
 |---|---|
 | Kafka transport | Per-Zone command, result, metadata, report, storage snapshot |
 | Zone NATS `AURORA_ZONE_CONFIG` | Zone metadata và mail immutable projection |
+| Zone NATS `AURORA_ZONE_JOB_COMPLETION` | Immutable terminal receipts; 512 MiB discard-new quota, không TTL |
 | Zone NATS `AURORA_ZONE_HEALTH` | Rebuildable current health |
 | Zone NATS `AURORA_ZONE_COORDINATION` | CAS lease và fencing |
 | Zone NATS `AURORA_ZONE_RUNTIME_REPLAY` | Dataplane bootstrap provision file KV history 1, TTL 30 giây; Zone Public Authorizer CAS `jti` |
 | Pod memory | Worker registry, admission counters, mail L1 và dynamic lag |
 
 Dataplane không kết nối CP/Billing PostgreSQL, Shared/Auth Redis hoặc Vault.
+Completion KV yêu cầu quyền bootstrap/read/write tương ứng trên NATS scoped
+credential. Receipt cũ trong config KV vẫn được đọc để replay không chạy lại
+mutation. Không bật GC trước khi có terminal-settlement acknowledgement và
+transport-enforced replay retirement; đầy quota phải fail-closed, không evict.
+Receipt schema 2 giữ cả SUCCEEDED/FAILED, schema 1 cũ chỉ có success vẫn đọc được.
+Cần quiesce DP binary cũ trước khi đổi writer sang bucket mới; read fallback
+không bảo đảm an toàn cho mixed-version writers.
+
 `NATS_ZONE_URL` chỉ là Zone-local JetStream. Zone KV luôn mở qua trust root
 `NATS_ZONE_TLS_CA`, scoped credential file `NATS_ZONE_CREDS`, và client certificate/key
 `NATS_ZONE_TLS_CERT`/`NATS_ZONE_TLS_KEY` khi listener dùng mTLS. Dev Compose bật mTLS thật với CA dùng
@@ -105,10 +114,26 @@ sequenceDiagram
 - Settlement serialize theo partition, hỗ trợ sparse offset và giới hạn cửa sổ fetched-but-not-terminal
   ở `4 × Ready workers`; record cao không làm commit vượt record thấp.
 - Lease giảm concurrent duplicate nhưng external executor vẫn phải idempotent.
-- Watchdog renew lease bounded-concurrent với timeout; timeout report được giữ trong bounded pending
-  queue khi Kafka reporter bận rồi mới publish terminal result/settle.
-- Critical intake/retry/completion/watchdog exit hoặc panic làm process fail-safe shutdown, fence
+- Watchdog renew lease 30 giây theo chu kỳ 10 giây; execution deadline độc lập với lease TTL.
+  Deadline chỉ hủy future cục bộ, không chứng minh resource mutation thất bại. Watchdog đưa cùng
+  job ID/version/attempt/delivery epoch và ciphertext vào retry scheduler hiện có sau 30–32 giây
+  (lease TTL + jitter), không tạo terminal result. Recovery không tiêu thụ business retry budget.
+  Source chỉ được settle sau Kafka retry publish ACK; restart trước đó replay source cũ.
+  Retry publish thất bại khiến critical scheduler thoát để supervisor restart/replay;
+  không chỉ log rồi để source kẹt trong assignment hiện tại. ACK của assignment cũ
+  vẫn bị fence, không được commit offset của owner mới.
+- Queue recovery có giới hạn và không block gia hạn lease khác. Overflow khiến critical watchdog
+  thoát để supervisor restart/replay, không bỏ quên source trong assignment hiện tại.
+  Gauge `dataplane_watchdog_recovery_queue_depth` theo dõi pending recovery; không còn timeout
+  completion reporter hoặc gauge `dataplane_watchdog_completion_queue_depth`.
+- Critical intake/retry/watchdog exit hoặc panic làm process fail-safe shutdown, fence
   execution đang active và trả lỗi để container supervisor restart.
+
+Watchdog regression checks: `cargo test job_runtime` runs deadline/unit checks.
+With a disposable Kafka broker, run
+`AURORA_TEST_KAFKA=127.0.0.1:19092 cargo test job_runtime -- --ignored` for
+protected-command/last-attempt replay, stale registration, completion race and
+recovery queue backpressure checks. These tests do not mutate provider resources.
 
 ## 3. Admission và autoscaling
 
@@ -132,6 +157,14 @@ Mail configuration hydrate từ Zone KV; customer broker connection chỉ đư�
 - render escaped parameters rồi batch JMAP;
 - customer broker settlement giữ native semantics;
 - slot ownership dùng Zone KV lease/fencing.
+
+Ghi chú chốt ngày 2026-08-27: chưa triển khai per-message inbox. Phần này được
+hoãn để thiết kế cùng hướng thay persistence KV của Mail tại Zone bằng PostgreSQL
+sau này; không chuyển storage backend hoặc thay thời điểm ACK broker trong commit
+hiện tại. Pod chết sau khi nhận việc vẫn có thể khiến Drain kẹt; Delete tiếp tục
+bị chặn để không báo hoàn tất sai. Xem giới hạn và quyết định đã chấp nhận trong
+[Personal Drain](../god_view/mail/personal_mail_consumer_drain_god_view_workflow.md#deferred-decision--2026-08-27)
+và [Tenant Drain](../god_view/mail/tenant_mail_consumer_drain_god_view_workflow.md#deferred-decision--2026-08-27).
 
 Customer payload mặc định là `{to, parameter}` JSON. Internal verification topic dùng
 `MailDispatchEnvelopeV1` Protobuf nhưng vẫn map thành cùng logical render request.

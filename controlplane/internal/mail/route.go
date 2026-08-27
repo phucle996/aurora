@@ -14,6 +14,8 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	}
 
 	// [COMMENT]: `email` là RBAC capability; `mail` trong URL chỉ là transport namespace tương thích.
+	router.POST("/api/v1/tenant/critical/mail/consumers/:id/drain", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.TenantConsumerHandler.Drain)
+	router.POST("/api/v1/personal/critical/mail/consumers/:id/drain", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:delete", module.L1Registry, "*"), module.PersonalConsumerHandler.Drain)
 	router.POST("/api/v1/personal/critical/mail/consumers", middleware.RequireSessionProof(), middleware.Authorize("email:consumer:create", module.L1Registry, "*"), module.PersonalConsumerHandler.Create)
 	router.GET("/api/v1/personal/mail/consumers", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.List)
 	router.GET("/api/v1/personal/mail/consumers/:id", middleware.Authorize("email:consumer:read", module.L1Registry, "*"), module.PersonalConsumerHandler.Get)

@@ -34,8 +34,8 @@ BEGIN
         JOIN pg_namespace namespace ON namespace.oid = enum_type.typnamespace
         WHERE namespace.nspname = 'hypervisor'
           AND enum_type.typname = 'hypervisor_vm_status'
-    ) IS DISTINCT FROM ARRAY['PROVISIONING', 'READY', 'DELETING']::text[] THEN
-        RAISE EXCEPTION 'personal VM enum must contain exactly PROVISIONING, READY and DELETING';
+    ) IS DISTINCT FROM ARRAY['PROVISIONING', 'READY', 'DELETING', 'FAILED']::text[] THEN
+        RAISE EXCEPTION 'personal VM enum must contain exactly PROVISIONING, READY, DELETING and FAILED';
     END IF;
 
     IF (
@@ -101,6 +101,17 @@ BEGIN
           AND NOT trigger_record.tgisinternal
     ) THEN
         RAISE EXCEPTION 'personal VM deletion status guard trigger is missing or disabled';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'hypervisor.image_artifacts'::regclass
+          AND trigger_record.tgname = 'trg_hypervisor_image_delete_requires_deleting'
+          AND trigger_record.tgenabled <> 'D'
+          AND NOT trigger_record.tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'hypervisor image deletion state guard trigger is missing or disabled';
     END IF;
 END
 $$;

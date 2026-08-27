@@ -68,7 +68,7 @@ verification (`tenant_workspaces`, `tenant_memberships`, `tenant_buckets`) befor
 | `hierarchy.tenant_workspaces` | PostgreSQL | Key share check | Source of truth for `zone_id` and `tenant_id`. |
 | `hierarchy.tenant_memberships` | PostgreSQL | Read under CTE | User must be in `active` status within the tenant. |
 | `storage.tenant_buckets` | PostgreSQL | Insert | Physical bucket record owned by the workspace. |
-| `storage.tenant_credentials` | PostgreSQL | Insert | One-time bootstrap credential record. |
+| `storage.tenant_credentials` | PostgreSQL | Insert `state=CREATING` | One-time bootstrap credential promise; secret remains response/payload-only. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert | Topic `storage.bucket.create`, payload `BucketCreateSync`. |
 | `storage.bucket.create` | Kafka (Zone Command) | At-least-once publish | Sealed binary payload dispatched to the workspace's target Zone. |
 
@@ -204,9 +204,9 @@ sequenceDiagram
   ),
   ins_credential AS (
       INSERT INTO storage.tenant_credentials (
-          id, bucket_id, access_key, policy, created_at, updated_at
+          id, bucket_id, access_key, policy, state, created_at, updated_at
       )
-      SELECT $cred_id, ib.id, $access_key, $policy, NOW(), NOW()
+      SELECT $cred_id, ib.id, $access_key, $policy, 'CREATING', NOW(), NOW()
       FROM ins_bucket ib
   ),
   inserted_outbox AS (
@@ -223,7 +223,7 @@ sequenceDiagram
   SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
   FROM ins_bucket;
   ```
-- **Output**: Atomic commit of 1 `tenant_buckets` record with `status = 'PROVISIONING'`, 1 `tenant_credentials` record, and 1 pending `storage_outbox_records` row.
+- **Output**: Atomic commit of one `PROVISIONING` bucket, one `CREATING` credential, and one pending outbox row.
 
 #### Hop 2.4: Controlplane → Browser
 - **Input**: `CreatedBucketResult` entity.
@@ -303,7 +303,9 @@ sequenceDiagram
 
 ## Phase 4 — Job Settlement & Resource Ownership Handover (Billing Registry)
 
-Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi CTE cập nhật `tenant_buckets.status = 'READY'`, chuyển outbox sang `SUCCEEDED`, và **ngay lập tức kích hoạt luồng Fast-Path đẩy sự kiện sở hữu (`RESOURCE_CREATED`) sang Cost Manager** để thiết lập sổ theo dõi cước.
+JO settles resource first: bucket `PROVISIONING -> READY` and bootstrap
+credential `CREATING -> READY`; only then may the outbox become `SUCCEEDED` and
+the ownership fast path open billing.
 
 ```mermaid
 sequenceDiagram
@@ -320,7 +322,7 @@ sequenceDiagram
 
     DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: 1. Settle DB: outbox = 'SUCCEEDED' & tenant_buckets.status = 'READY'
+    JO->>PG: 1. Bucket READY + credential READY, then outbox SUCCEEDED
     
     rect rgb(255, 245, 240)
     Note over JO,Proj: Luồng chuyển giao sở hữu sang Billing (Fast-Path)
@@ -355,9 +357,10 @@ sequenceDiagram
 - **State Transition / Durable Effects**:
   - Khi `SUCCEEDED`:
     - Resource status: Cập nhật `storage.tenant_buckets.status = 'READY'`.
+    - Bootstrap credential: Cập nhật `storage.tenant_credentials.state = 'READY'`.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'SUCCEEDED'`, cập nhật `completed_at = NOW()`.
   - Khi `FAILED`:
-    - Candidate deletion: Xóa dòng `storage.tenant_buckets` (`id = resource_id`), schema cascade tự động xóa sạch `storage.tenant_credentials`.
+    - Resource evidence: Cập nhật bucket `PROVISIONING -> FAILED` và bootstrap credential `CREATING -> ERROR`; không xóa dấu vết resource từ một failure result.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'FAILED'`, cập nhật `completed_at = NOW()`.
 - **Output Schema (`SettledOutboxRecord`)**:
   - `resource_id`: UUID (`bucket_id`)
@@ -517,7 +520,7 @@ sequenceDiagram
 | User is inactive in tenant | HTTP `403 Forbidden` | CTE Block 1 returns 0 rows; zero mutations occur. |
 | Workspace does not match context zone | HTTP `403 Forbidden` / `404 Not Found` | CTE Block 1 returns 0 rows; prevents cross-zone split brain. |
 | Physical bucket name collision | HTTP `409 Conflict` | Unique constraint violation trapped; rolled back. |
-| Zone provisioning fails | Dataplane reports `FAILED` | JO marks outbox `FAILED` and deletes candidate bucket/credential row. |
+| Zone provisioning fails | Dataplane reports `FAILED` | JO preserves bucket/credential failure evidence; provisioning failure is not deletion authority. |
 | Ownership Stream unavailable | Backpressure / Network Timeout | Outbox record retains `ownership_published_at = NULL`; `OwnershipRelay` recovers asynchronously. |
 
 ---
@@ -556,3 +559,12 @@ sequenceDiagram
 - **Cost Engine Settlement Worker**: `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - **Cost Engine Pricing Runtime & Lease**: `cost-manager/engine/src/engine/` (`pricing_runtime.rs`, `settlement.rs`, `lease.rs`)
 - **Billing PostgreSQL Tables**: `billing.resource_ownership_projection`, `billing.usage_charges`, `billing.usage_charge_lines`, `billing.wallets`
+
+## Completion replay revision — 2026-08-27
+
+Partial bucket provisioning retries forward and never runs compensating deletes.
+Completed jobs persist a protobuf success receipt in Zone config KV, bound to
+the exact authenticated command hash and operation epoch, before result publication.
+A matching replay republishes that result; a conflicting or unreadable receipt
+fails closed. Receipt retention/garbage collection still needs an explicit safe
+replay-horizon contract before high-volume production use.

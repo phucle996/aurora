@@ -99,6 +99,7 @@ export type FormDraftValue = FormDraftScalar | FormDraftScalar[];
 export type ManagedServiceLifecycleState =
   | "provisioning"
   | "active"
+  | "updating"
   | "deleting"
   | "deleted"
   | "failed"
@@ -134,17 +135,10 @@ export type ManagedServiceInstanceSummary = {
   id: string;
   code: string;
   name: string;
-  desired: {
-    state: ManagedServiceLifecycleState;
-    generation: number;
-    active_revision_id?: string | null;
-    pending_revision_id?: string | null;
-  };
-  observed: {
-    state: string;
-    version: number;
-    observed_at?: string | null;
-  };
+  state: ManagedServiceLifecycleState;
+  generation: number;
+  active_revision_id?: string | null;
+  pending_revision_id?: string | null;
   metadata_version: number;
   latest_operation?: ManagedServiceOperation | null;
   created_at?: string;
@@ -165,12 +159,7 @@ export type ManagedServiceNetworkComponent = {
 };
 
 export type ManagedServiceInstance = ManagedServiceInstanceSummary & {
-  desired: ManagedServiceInstanceSummary["desired"] & {
-    revision_sequence: number;
-  };
-  observed: ManagedServiceInstanceSummary["observed"] & {
-    output?: Record<string, unknown> | null;
-  };
+  revision_sequence: number;
   network_contract?: {
     namespace: string;
     components: ManagedServiceNetworkComponent[];

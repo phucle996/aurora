@@ -1,8 +1,10 @@
 mod changefeed;
 mod config;
 mod contracts;
+mod hypervisor_metering;
 mod infra;
 mod job_topics;
+mod mail_metering;
 mod observability;
 mod outbox;
 mod reconcile;
@@ -106,7 +108,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache_redis.clone(),
         ownership_publisher.clone(),
     );
-    let ownership_relay = outbox::OwnershipRelay::new(config.clone(), ownership_publisher);
+    let ownership_relay = outbox::OwnershipRelay::new(config.clone(), ownership_publisher.clone());
+    let hypervisor_allocation_relay =
+        outbox::HypervisorAllocationRelay::new(config.clone(), ownership_publisher.clone());
+    let mail_billing_relay = outbox::MailBillingRelay::new(config.clone(), ownership_publisher);
     contracts::verify_generated_contracts();
     let runtime_workers = RuntimeWorkers::new(config.clone(), cache_redis.clone(), kafka.clone());
     let shutdown = CancellationToken::new();
@@ -144,6 +149,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match res {
                 Ok(()) => Err("ownership relay stopped unexpectedly".into()),
                 Err(error) => Err(format!("ownership relay failed: {error}").into()),
+            }
+        }
+        res = hypervisor_allocation_relay.run() => {
+            MetricsManager::record_worker_termination("hypervisor_allocation_relay");
+            match res {
+                Ok(()) => Err("Hypervisor allocation relay stopped unexpectedly".into()),
+                Err(error) => Err(format!("Hypervisor allocation relay failed: {error}").into()),
+            }
+        }
+        res = mail_billing_relay.run() => {
+            MetricsManager::record_worker_termination("mail_billing_relay");
+            match res {
+                Ok(()) => Err("Mail billing relay stopped unexpectedly".into()),
+                Err(error) => Err(format!("Mail billing relay failed: {error}").into()),
             }
         }
         _ = reconcile::mail::run_periodic_mail_reconciliation(

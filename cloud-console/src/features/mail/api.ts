@@ -1,7 +1,7 @@
 import { fetchJSON } from "@/shared/api/http";
 import { criticalFetchJSON } from "@/shared/api/critical";
 
-export type MailDesiredState = "paused" | "enabled";
+export type MailDesiredState = "paused" | "enabled" | "draining" | "drained" | "deleting";
 export type MailSourceType = "kafka" | "redis_stream" | "nats_jetstream" | "rabbitmq";
 
 export type MailConsumer = {
@@ -156,9 +156,17 @@ export async function changeMailConsumerState(id: string, action: "pause" | "res
 export async function deleteMailConsumer(id: string, expectedConfigVersion: number): Promise<MailDeleteOperation> {
   const response = await criticalFetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/critical/mail/consumers/${encodeURIComponent(id)}`, {
     method: "DELETE",
-    body: { expected_config_version: expectedConfigVersion, drain_timeout_seconds: 30, reason: "console delete" },
+    body: { expected_config_version: String(expectedConfigVersion), reason: "console delete" },
   });
   return requireData(response, "Mail consumer delete operation is missing");
+}
+
+export async function drainMailConsumer(id: string, expectedConfigVersion: number): Promise<MailDeleteOperation> {
+  const response = await criticalFetchJSON<DataEnvelope<MailDeleteOperation>>(
+    `/api/v1/critical/mail/consumers/${encodeURIComponent(id)}/drain`,
+    { method: "POST", body: { expected_config_version: String(expectedConfigVersion), timeout_seconds: 30 } },
+  );
+  return requireData(response, "Mail drain operation is missing");
 }
 
 export async function listMailTemplates(signal?: AbortSignal): Promise<MailTemplate[]> {

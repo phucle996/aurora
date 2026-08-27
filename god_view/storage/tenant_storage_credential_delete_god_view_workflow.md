@@ -2,10 +2,9 @@
 
 > **Critical-route revision (2026-08-26):** credential revocation uses the public `/api/v1/critical/storage/...` route. ACR consumes the exact session proof before the sole `/api/v1/tenant/critical/storage/...` rewrite, and Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
 
-Tenant Credential Deletion is an asynchronous credential revocation mutation. Controlplane
-deletes the credential record in PostgreSQL and writes a sealed Zone outbox command in an atomic
-CTE transaction. Physical service account revocation on MinIO occurs asynchronously via Dataplane
-at the edge zone.
+Tenant Credential Deletion is asynchronous. Controlplane changes the credential
+`READY -> DELETING` and writes the sealed Zone command atomically. The Central row
+is hard-deleted only after Dataplane confirms physical revocation.
 
 ---
 
@@ -34,7 +33,7 @@ Controlplane requires `storage:credential:delete` permission.
 
 | Status | Payload | Reason |
 |---|---|---|
-| `200` | `{"status": "success", "data": null, "message": "tenant credential deletion initiated"}` | Credential deleted from PostgreSQL; outbox command queued. |
+| `200` | `{"status": "success", "data": null, "message": "tenant credential deletion initiated"}` | Credential is `DELETING`; outbox command is queued. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:credential:delete` permission grant or inactive tenant membership. |
 | `404` | `{"status": "error", "code": "NOT_FOUND", "message": "credential not found"}` | Credential does not exist or bucket is not owned by the tenant workspace. |
@@ -86,7 +85,7 @@ sequenceDiagram
     Service->>Service: Build CredentialSync (delete action)
     Service->>Protector: Seal payload bytes
     Service->>Repo: Delete(credentialID, bucketID, workspaceID, tenantID, userID, zoneID, outboxRecord)
-    Repo->>PG: Execute atomic CTE (DELETE tenant_credentials + INSERT storage_outbox_records)
+    Repo->>PG: Atomic CTE READY->DELETING + INSERT outbox
     PG-->>Repo: Commit successful
     Repo-->>Service: Success
     Service-->>Handler: Success
@@ -128,8 +127,9 @@ sequenceDiagram
         AND w.zone_id = $6
       FOR UPDATE OF c
   ),
-  deleted_credential AS (
-      DELETE FROM storage.tenant_credentials
+  updated_credential AS (
+      UPDATE storage.tenant_credentials
+      SET state = 'DELETING', updated_at = NOW()
       WHERE id IN (SELECT id FROM authorized_credential)
       RETURNING id
   ),
@@ -144,9 +144,9 @@ sequenceDiagram
              $5, $10
       FROM authorized_credential ac
   )
-  SELECT id FROM deleted_credential;
+  SELECT id FROM updated_credential;
   ```
-- **Output**: Atomic deletion of `tenant_credentials` row and pending outbox insert.
+- **Output**: Atomic `READY -> DELETING` transition and pending outbox insert.
 
 #### Hop 2.4: Controlplane → Browser
 - **Output**: HTTP `200 OK` JSON.
@@ -189,11 +189,15 @@ sequenceDiagram
 
     DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: Settle storage_outbox_records (status = 'SUCCEEDED')
+    JO->>PG: Hard-delete DELETING credential, then settle outbox SUCCEEDED
     JO->>Timeline: Publish Event: TENANT_CREDENTIAL_DELETED { tenant_id, bucket_id, credential_id }
     Timeline->>Centrifugo: Publish to channel "tenant:storage:{tenant_id}:{workspace_id}"
     Centrifugo-->>Browser: WebSocket Push: { type: "CREDENTIAL_DELETED", id }
 ```
+
+The database hard-delete trigger rejects any credential whose state is not
+`DELETING`. On terminal Zone failure JO restores `DELETING -> READY` before it
+settles the outbox as `FAILED`.
 
 ---
 

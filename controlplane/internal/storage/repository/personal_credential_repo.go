@@ -61,7 +61,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 			SELECT pb.id
 			FROM %s.personal_buckets pb
 			JOIN %s.personal_workspaces w ON pb.workspace_id = w.id
-			WHERE pb.name = $2 AND w.owner_id = $3 AND pb.workspace_id = $4
+			WHERE pb.name = $2 AND w.owner_id = $3 AND pb.workspace_id = $4 AND pb.status = 'READY'
 			  AND (SELECT ok FROM admitted)
 		),
 		ins_cred AS (
@@ -136,7 +136,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 
 func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error) {
 	query := fmt.Sprintf(`
-		SELECT b.id, c.id, c.access_key, c.policy, c.created_at, c.updated_at
+		SELECT b.id, c.id, c.access_key, c.policy, c.state, c.created_at, c.updated_at
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		LEFT JOIN %s.personal_credentials c ON c.bucket_id = b.id
@@ -156,7 +156,7 @@ func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID 
 		found = true
 		var dummyBucketID uuid.UUID
 		var credID *uuid.UUID
-		var accessKey, policy *string
+		var accessKey, policy, state *string
 		var createdAt, updatedAt *time.Time
 
 		err := rows.Scan(
@@ -164,6 +164,7 @@ func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID 
 			&credID,
 			&accessKey,
 			&policy,
+			&state,
 			&createdAt,
 			&updatedAt,
 		)
@@ -176,6 +177,7 @@ func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID 
 				ID:        *credID,
 				AccessKey: *accessKey,
 				Policy:    *policy,
+				State:     *state,
 				CreatedAt: *createdAt,
 				UpdatedAt: *updatedAt,
 			})
@@ -209,12 +211,19 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			SELECT pb.id
 			FROM %s.personal_buckets pb
 			JOIN %s.personal_workspaces w ON pb.workspace_id = w.id
-			WHERE pb.id = $2 AND w.owner_id = $3 AND pb.workspace_id = $4
+			WHERE pb.id = $2 AND w.owner_id = $3 AND pb.workspace_id = $4 AND pb.status = 'READY'
 		),
 		verified_cred AS (
 			SELECT id
 			FROM %s.personal_credentials
-			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
+			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket) AND state = 'READY'
+			FOR UPDATE
+		),
+		updated_cred AS (
+			UPDATE %s.personal_credentials
+			SET state = 'DELETING', updated_at = NOW()
+			WHERE id IN (SELECT id FROM verified_cred)
+			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, zone_id, job_topic, payload, owner_id, owner_type, status, completed_at,
@@ -222,8 +231,8 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			error_code, error_message, actor_user_id, payload_key_id
 		)
 		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20, $21
-		FROM verified_cred
-	`, r.storage, r.hierarchy, r.storage, r.storage)
+		FROM updated_cred
+	`, r.storage, r.hierarchy, r.storage, r.storage, r.storage)
 
 	// [COMMENT]: ZoneID truyền trực tiếp từ outbox đã được handler/service bind với workspace.
 	res, err := r.db.Exec(ctx, query,

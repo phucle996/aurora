@@ -1,4 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=../proto/job-orchestrator");
     // [COMMENT]: CI/containers must not silently depend on a host protoc version.
     // The vendored compiler makes the root contract generation reproducible.
     std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);

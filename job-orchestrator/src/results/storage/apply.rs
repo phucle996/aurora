@@ -11,6 +11,8 @@ pub async fn apply_storage_result(
     status: &str,
     error_code: Option<&str>,
     error_message: Option<&str>,
+    result_payload: &[u8],
+    result_payload_schema_version: u32,
 ) -> Result<Option<tokio_postgres::Row>, Box<dyn std::error::Error + Send + Sync>> {
     Logger::sys_info(
         "storage.result_apply",
@@ -18,22 +20,16 @@ pub async fn apply_storage_result(
     );
 
     match job_topic {
-        "storage.bucket.create" => {
-            // Ownership is derived only after this transaction commits. A Redis
-            // outage leaves ownership_published_at NULL for the recovery relay.
-            let tx = pg_client.transaction().await?;
-            let row_opt = bucket::resolve_bucket_creation_tx(
-                &tx,
-                job_uuid,
-                job_topic,
-                status,
-                error_code,
-                error_message,
-            )
-            .await?;
-            tx.commit().await?;
-            Ok(row_opt)
-        }
+        "storage.bucket.create" => bucket::resolve_bucket_creation(
+            pg_client,
+            job_uuid,
+            job_topic,
+            status,
+            error_code,
+            error_message,
+        )
+        .await
+        .map_err(Into::into),
         "storage.credential.create" => credential::resolve_credential_creation(
             pg_client,
             job_uuid,
@@ -61,29 +57,36 @@ pub async fn apply_storage_result(
             status,
             error_code,
             error_message,
+            result_payload,
+            result_payload_schema_version,
         )
         .await
         .map_err(Into::into),
-        "storage.bucket.delete" => {
-            // Delete captures owner/name/Zone on the outbox before the resource
-            // disappears; that row is the only ownership recovery source.
-            let tx = pg_client.transaction().await?;
-            let row_opt = bucket::resolve_bucket_deletion_tx(
-                &tx,
-                job_uuid,
-                job_topic,
-                status,
-                error_code,
-                error_message,
-            )
-            .await?;
-            tx.commit().await?;
-            Ok(row_opt)
-        }
-        // Access-session preparation has no business aggregate to mutate. The
-        // outbox row is only a durable command fence and is settled by the
-        // dedicated idempotent access-preparation lifecycle.
-        "storage.access.prepare" => access::resolve_access_prepare(
+        "storage.bucket.versioning" => bucket::resolve_bucket_versioning(
+            pg_client,
+            job_uuid,
+            job_topic,
+            status,
+            error_code,
+            error_message,
+            result_payload,
+            result_payload_schema_version,
+        )
+        .await
+        .map_err(Into::into),
+        "storage.bucket.lifecycle" => bucket::resolve_bucket_lifecycle(
+            pg_client,
+            job_uuid,
+            job_topic,
+            status,
+            error_code,
+            error_message,
+            result_payload,
+            result_payload_schema_version,
+        )
+        .await
+        .map_err(Into::into),
+        "storage.bucket.delete" => bucket::resolve_bucket_deletion(
             pg_client,
             job_uuid,
             job_topic,
@@ -93,6 +96,20 @@ pub async fn apply_storage_result(
         )
         .await
         .map_err(Into::into),
+        // Access-session preparation and commercial admission sync have no business aggregate
+        // to mutate. The outbox row is a durable command fence settled by the idempotent lifecycle.
+        "storage.access.prepare" | "storage.bucket.commercial_admission" => {
+            access::resolve_access_prepare(
+                pg_client,
+                job_uuid,
+                job_topic,
+                status,
+                error_code,
+                error_message,
+            )
+            .await
+            .map_err(Into::into)
+        }
 
         _ => {
             Logger::sys_warn(
@@ -103,7 +120,7 @@ pub async fn apply_storage_result(
                 ),
                 "",
             );
-            Ok(None)
+            Err(format!("unsupported Storage job_topic '{job_topic}'").into())
         }
     }
 }

@@ -3,6 +3,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The vendored compiler makes the root contract generation reproducible.
     std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);
     println!("cargo:rerun-if-changed=../proto/security/payload.proto");
+    println!("cargo:rerun-if-changed=../proto/dataplane");
+    println!("cargo:rerun-if-changed=../proto/cost-manager/engine");
     println!("cargo:rerun-if-changed=../proto/job-orchestrator/command.proto");
     println!("cargo:rerun-if-changed=../proto/managed_service.proto");
     println!("cargo:rerun-if-changed=../proto/controlplane/storage/v1/storage_admission.proto");

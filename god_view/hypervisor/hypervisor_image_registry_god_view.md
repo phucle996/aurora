@@ -544,12 +544,14 @@ sequenceDiagram
       error_code = NULL,
       error_message = NULL,
       updated_at = NOW()
-  WHERE id = $2;
+  WHERE id = $2 AND state = 'IMPORTING'
+  RETURNING id;
 
   UPDATE hypervisor.hypervisor_outbox_records
   SET status = 'SUCCEEDED',
       completed_at = NOW()
-  WHERE event_id = $3;
+  WHERE event_id = $3
+    AND EXISTS (SELECT 1 FROM updated_image);
   ```
 - **Khi Thất bại (`JOB_STATUS_FAILED`)**:
   ```sql
@@ -558,17 +560,27 @@ sequenceDiagram
       error_code = $1,
       error_message = $2,
       updated_at = NOW()
-  WHERE id = $3;
+  WHERE id = $3 AND state = 'IMPORTING'
+  RETURNING id;
 
   UPDATE hypervisor.hypervisor_outbox_records
   SET status = 'FAILED',
       completed_at = NOW()
-  WHERE event_id = $4;
+  WHERE event_id = $4
+    AND EXISTS (SELECT 1 FROM failed_image);
   ```
 - **Hậu quả bền vững (Durable Outcome)**:
   - Bản ghi `image_artifacts` đạt trạng thái `AVAILABLE`.
   - Số hiệu `provider_template_vmid` được lưu trữ vĩnh viễn.
   - Các workflow tạo máy ảo (`personal_vm_create`) có thể ngay lập tức phát hiện Image này trong Zone Catalog để phân bổ VM.
+
+`PROCESSING` chỉ chuyển trạng thái outbox; Controlplane đã ghi `IMPORTING` hoặc
+`DELETING` trước khi phát command nên JO không viết lại resource promise. Với
+`hypervisor.image.delete`, JO chỉ hard-delete row đang `DELETING` sau typed Zone
+success result, rồi mới settle outbox. Database trigger
+`trg_hypervisor_image_delete_requires_deleting` chặn mọi nhánh hard-delete khác.
+Delete failure khôi phục `DELETING -> AVAILABLE`; import failure chuyển
+`IMPORTING -> FAILED`.
 
 ---
 

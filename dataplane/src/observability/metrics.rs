@@ -34,7 +34,7 @@ static JOB_EXECUTION_LATENCY: OnceLock<Histogram<f64>> = OnceLock::new();
 static JOB_ATTEMPTS_COMPLETED: OnceLock<Counter<u64>> = OnceLock::new();
 static WATCHDOG_ACTIVE_LOCKS: OnceLock<Gauge<f64>> = OnceLock::new();
 static WATCHDOG_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
-static WATCHDOG_COMPLETION_QUEUE_DEPTH: OnceLock<Gauge<f64>> = OnceLock::new();
+static WATCHDOG_RECOVERY_QUEUE_DEPTH: OnceLock<Gauge<f64>> = OnceLock::new();
 static WORKER_SCALE_TARGET: OnceLock<Gauge<f64>> = OnceLock::new();
 static JOB_RUNTIME_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static JOB_RETRY_QUEUE_DEPTH: OnceLock<Gauge<f64>> = OnceLock::new();
@@ -363,7 +363,7 @@ impl WorkerControlMetrics {
     pub fn init_registry() {
         let _ = watchdog_active_locks();
         let _ = watchdog_events();
-        let _ = watchdog_completion_queue_depth();
+        let _ = watchdog_recovery_queue_depth();
         let _ = worker_scale_target();
         let _ = job_runtime_events();
         let _ = job_retry_queue_depth();
@@ -387,8 +387,8 @@ impl WorkerControlMetrics {
         );
     }
 
-    pub fn record_watchdog_completion_queue_depth(zone_id: &str, depth: usize) {
-        watchdog_completion_queue_depth().record(
+    pub fn record_watchdog_recovery_queue_depth(zone_id: &str, depth: usize) {
+        watchdog_recovery_queue_depth().record(
             depth as f64,
             &[KeyValue::new("zone_id", zone_id.to_string())],
         );
@@ -465,12 +465,12 @@ fn watchdog_events() -> &'static Counter<u64> {
     })
 }
 
-fn watchdog_completion_queue_depth() -> &'static Gauge<f64> {
-    WATCHDOG_COMPLETION_QUEUE_DEPTH.get_or_init(|| {
+fn watchdog_recovery_queue_depth() -> &'static Gauge<f64> {
+    WATCHDOG_RECOVERY_QUEUE_DEPTH.get_or_init(|| {
         global::meter("aurora-dataplane")
-            .f64_gauge("dataplane_watchdog_completion_queue_depth")
+            .f64_gauge("dataplane_watchdog_recovery_queue_depth")
             .with_description(
-                "Timeout completions retained while the Kafka result reporter is busy",
+                "Unknown-outcome command replays retained while the Kafka retry scheduler is busy",
             )
             .init()
     })

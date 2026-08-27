@@ -325,7 +325,7 @@ Phase 5 chịu trách nhiệm hoàn tất vòng đời của tác vụ phân tá
     WHERE event_id = $job_id
       AND status IN ('PENDING', 'PROCESSING');
     ```
-    - Chuyển `operational_status` sang `ERROR` và ghi nhận nhật ký lỗi.
+    - Giữ record consumer V1 và cấu hình paused; chỉ outbox thành FAILED. Không hard-delete resource từ provisioning failure. Lần apply thành công đầu tiên, kể cả revision COW sau đó, phải stage ownership RESOURCE_CREATED đúng một lần.
 - **Bảo đảm Idempotency**: Nếu kết quả gửi về nhiều lần (do Dataplane retry), câu lệnh SQL chỉ tác động khi bản ghi chưa ở trạng thái `SETTLED` (`RowsAffected == 0` $\to$ Bỏ qua an toàn).
 
 ```mermaid
@@ -442,7 +442,7 @@ sequenceDiagram
 - **Taxonomy Errors**: `controlplane/internal/mail/taxonomy/errors.go` (`ErrAlreadyExists`, `ErrTemplateNotFound`)
 - **SQL Repository & CTE Master**: `controlplane/internal/mail/repository/personal_consumer_repo_impl.go` (`Create`)
 - **X25519 Payload Protector**: `controlplane/internal/security/job_payload.go` (`Seal`)
-- **Protobuf Wire Schema**: `controlplane/internal/mail/transport/rpc/proto/` (`MailConsumerUpsertV1`, `MailStreamSourceV1`)
+- **Protobuf Wire Schema**: `controlplane/internal/mail/transport/proto/` (`MailConsumerUpsertV1`, `MailStreamSourceV1`)
 
 ### Phase 3 — Job Orchestrator CDC Outbox Dispatch
 - **Job Orchestrator Changefeed Worker**: `job-orchestrator/src/workers/outbox_listener.rs`
@@ -463,3 +463,12 @@ sequenceDiagram
 - **Audit Logger**: `controlplane/internal/audit/service/audit_logger.go`
 - **Notification Event Publisher**: `job-orchestrator/src/notifier/event_publisher.rs`
 - **Realtime Notification Gateway**: `notification-hub/src/gateway/ws_server.rs`
+
+## Resource-first failure boundary — 2026-08-27
+
+`results/mail/consumer.rs` retains a failed V1 create record; the new database
+delete trigger permits hard-delete only in deleting. Failed COW candidates may
+be discarded without deleting the resource. The first later successful apply
+stages billing ownership version 1 exactly once by (resource_id, source_version).
+No rollback, second resource-state column or product-specific generic outbox fields
+are introduced. Drain/Delete implementation lives in the same consumer file branch.

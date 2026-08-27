@@ -54,8 +54,8 @@ query `name` equals the id's physical name before sealing the command.
 | Store / transport | Operation | Invariant |
 |---|---|---|
 | Auth-State Redis session | ACR verification | Browser identity and workspace header are never upstream authority. |
-| `storage.personal_credentials` | Pre-command SELECT access keys | Access keys for owned bucket are placed in encrypted delete payload. |
-| `storage.personal_buckets` | Lock/ownership CTE then later delete | Must remain until successful physical deletion. |
+| `storage.personal_credentials` | `READY -> DELETING` | Child resources remain until Zone success; failure restores them to `READY`. |
+| `storage.personal_buckets` | `READY -> DELETING`, then hard-delete | Must remain until successful physical deletion; DB rejects hard-delete from another state. |
 | `storage.storage_outbox_records` | Insert `storage.bucket.delete` | Holds resource id, locked physical `resource_name`, Zone, owner and encrypted payload. The payload still contains client-supplied name. |
 | Zone command/result topics | Kafka | JO and Dataplane execute at least once. |
 | Ownership stream | Shared Redis stream | Derived `RESOURCE_DELETED` is published after terminal success from durable outbox metadata. |
@@ -93,7 +93,9 @@ After permission middleware, handler parses id and requires `name`. Service firs
 reads access keys using bucket id plus user id. It builds
 `BucketDeleteSync{Name: query_name, AccessKeys: owned_bucket_keys}` and sets
 outbox Zone/workspace from ACR context. Repository HPKE-seals payload before it
-locks the bucket owned by user. The CTE writes locked `bucket.name` into
+locks the `READY` bucket owned by user and rejects the command if any child is
+not `READY`. It transitions all child
+credentials to `DELETING`, then inserts outbox. The CTE writes locked `bucket.name` into
 outbox `resource_name`, but does not compare that locked name to ciphertext
 payload. It does not delete business rows here.
 
@@ -114,7 +116,7 @@ sequenceDiagram
     R->>PG: SELECT credentials through owner fence
     S->>R: Insert delete outbox
     R->>V: Seal BucketDeleteSync including query name
-    R->>PG: Lock owned bucket and insert outbox
+    R->>PG: Bucket/credentials -> DELETING and insert outbox
     alt ownership row exists
         PG-->>H: Command durable
         H-->>M: 200 deletion initiated
@@ -201,10 +203,10 @@ sequenceDiagram
   - `zone_id`: `<> 00000000-0000-0000-0000-000000000000`
 - **State Transition / Durable Effects**:
   - Khi `SUCCEEDED`:
-    - Physical deletion: Xóa dòng `storage.personal_buckets` (`id = locked.resource_id`), schema cascade tự động xóa sạch `storage.personal_credentials`.
+    - Physical deletion: Hard-delete only a `DELETING` bucket; the DB trigger enforces this and cascade removes already-`DELETING` credentials.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'SUCCEEDED'`, cập nhật `completed_at = NOW()`.
   - Khi `FAILED`:
-    - Khôi phục bucket: Cập nhật `storage.personal_buckets.status = 'READY'`.
+    - Khôi phục resource: Bucket `DELETING -> READY` và child credentials `DELETING -> READY` trước khi settle failure.
     - Outbox settlement: `storage.storage_outbox_records` chuyển trạng thái `status = 'FAILED'`, cập nhật `completed_at = NOW()`.
 - **Output Schema (`SettledOutboxRecord`)**:
   - `resource_id`: UUID (`bucket_id`)
@@ -350,6 +352,7 @@ sequenceDiagram
 | Bucket not empty | MinIO delete fails. JO retains Central bucket/credentials and marks operation failed. |
 | Bucket delete succeeds but user/policy cleanup fails | Dataplane still returns success, so Central rows are deleted while MinIO residual users/policies may remain. |
 | Result replay | Outbox status guard makes terminal settlement no-op. |
+| Bucket or any credential is not `READY` | Normal user delete is rejected without mutation; a separate reconciliation workflow must resolve the incomplete resource. |
 | Ownership stream unavailable | Completed outbox keeps `ownership_published_at` pending for recovery relay. It does not undo physical deletion. |
 
 ---
@@ -387,3 +390,11 @@ sequenceDiagram
 - **Cost Engine Settlement Worker**: `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - **Cost Engine Pricing Runtime & Lease**: `cost-manager/engine/src/engine/` (`pricing_runtime.rs`, `settlement.rs`, `lease.rs`)
 - **Billing PostgreSQL Tables**: `billing.resource_ownership_projection`, `billing.usage_charges`, `billing.usage_charge_lines`, `billing.wallets`
+
+## Resource completion revision — 2026-08-27
+
+Bucket deletion succeeds only after the bucket and every listed owned credential
+and policy have been removed. S3 NoSuchBucket is idempotent; cleanup errors are not
+ignored. An unknown infrastructure outcome retries the same command/attempt,
+instead of exhausting into FAILED and falsely restoring READY after partial deletion.
+The generic success receipt prevents repeating a completed deletion on replay.

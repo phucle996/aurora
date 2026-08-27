@@ -19,13 +19,10 @@ type PersonalInstanceListItem struct {
 	ID                   uuid.UUID
 	Code                 string
 	Name                 string
-	DesiredState         string
+	State                string
 	Generation           int64
 	ActiveRevisionID     *uuid.UUID
 	PendingRevisionID    *uuid.UUID
-	ObservedState        string
-	ObservedStateVersion int64
-	ObservedAt           *time.Time
 	MetadataVersion      int64
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
@@ -53,15 +50,11 @@ type PersonalInstanceDetail struct {
 	ID                    uuid.UUID
 	Code                  string
 	Name                  string
-	DesiredState          string
+	State                 string
 	Generation            int64
 	RevisionSequence      int64
 	ActiveRevisionID      *uuid.UUID
 	PendingRevisionID     *uuid.UUID
-	ObservedState         string
-	ObservedStateVersion  int64
-	ObservedOutput        json.RawMessage
-	ObservedAt            *time.Time
 	MetadataVersion       int64
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
@@ -200,7 +193,7 @@ type CreatePersonalInstanceResult struct {
 	ID                uuid.UUID
 	Code              string
 	Name              string
-	DesiredState      string
+	State             string
 	Generation        int64
 	RevisionSequence  int64
 	PendingRevisionID *uuid.UUID

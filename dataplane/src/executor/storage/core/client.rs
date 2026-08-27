@@ -61,9 +61,9 @@ impl MinioClient {
         Ok(())
     }
 
-    // [COMMENT]: Xóa bucket vật lý khỏi MinIO phục vụ cơ chế rollback khi tạo lỗi
+    // A replay must continue credential cleanup after the bucket was removed.
     pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
-        crate::observability::otel::OtelTracer::trace_result(
+        let result = crate::observability::otel::OtelTracer::trace_result(
             "S3 DeleteBucket",
             opentelemetry::trace::SpanKind::Client,
             vec![
@@ -72,6 +72,96 @@ impl MinioClient {
                 opentelemetry::KeyValue::new("rpc.method", "DeleteBucket"),
             ],
             self.s3_client.delete_bucket().bucket(bucket_name).send(),
+        )
+        .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) if error.as_service_error().is_some_and(|service| {
+                use aws_sdk_s3::error::ProvideErrorMetadata;
+                service.code() == Some("NoSuchBucket")
+            }) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// [COMMENT]: Thiết lập trạng thái Versioning của bucket (Enabled hoặc Suspended)
+    pub async fn put_bucket_versioning(
+        &self,
+        bucket_name: &str,
+        enabled: bool,
+    ) -> Result<(), aws_sdk_s3::Error> {
+        let status = if enabled {
+            aws_sdk_s3::types::BucketVersioningStatus::Enabled
+        } else {
+            aws_sdk_s3::types::BucketVersioningStatus::Suspended
+        };
+        let config = aws_sdk_s3::types::VersioningConfiguration::builder()
+            .status(status)
+            .build();
+
+        crate::observability::otel::OtelTracer::trace_result(
+            "S3 PutBucketVersioning",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                opentelemetry::KeyValue::new("rpc.service", "S3"),
+                opentelemetry::KeyValue::new("rpc.method", "PutBucketVersioning"),
+            ],
+            self.s3_client
+                .put_bucket_versioning()
+                .bucket(bucket_name)
+                .versioning_configuration(config)
+                .send(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// [COMMENT]: Thiết lập cấu hình Lifecycle Rules cho bucket
+    pub async fn put_bucket_lifecycle_configuration(
+        &self,
+        bucket_name: &str,
+        rules: Vec<aws_sdk_s3::types::LifecycleRule>,
+    ) -> Result<(), aws_sdk_s3::Error> {
+        if rules.is_empty() {
+            crate::observability::otel::OtelTracer::trace_result(
+                "S3 DeleteBucketLifecycle",
+                opentelemetry::trace::SpanKind::Client,
+                vec![
+                    opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                    opentelemetry::KeyValue::new("rpc.service", "S3"),
+                    opentelemetry::KeyValue::new("rpc.method", "DeleteBucketLifecycle"),
+                ],
+                self.s3_client
+                    .delete_bucket_lifecycle()
+                    .bucket(bucket_name)
+                    .send(),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let mut builder = aws_sdk_s3::types::BucketLifecycleConfiguration::builder();
+        for rule in rules {
+            builder = builder.rules(rule);
+        }
+        let config = builder
+            .build()
+            .expect("BucketLifecycleConfiguration builder is infallible when rules are provided");
+
+        crate::observability::otel::OtelTracer::trace_result(
+            "S3 PutBucketLifecycleConfiguration",
+            opentelemetry::trace::SpanKind::Client,
+            vec![
+                opentelemetry::KeyValue::new("rpc.system", "aws-api"),
+                opentelemetry::KeyValue::new("rpc.service", "S3"),
+                opentelemetry::KeyValue::new("rpc.method", "PutBucketLifecycleConfiguration"),
+            ],
+            self.s3_client
+                .put_bucket_lifecycle_configuration()
+                .bucket(bucket_name)
+                .lifecycle_configuration(config)
+                .send(),
         )
         .await?;
         Ok(())

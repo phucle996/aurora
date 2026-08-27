@@ -1,7 +1,12 @@
 use crate::config::Config;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
+
+#[cfg(test)]
+#[path = "../test/proxmox.rs"]
+pub(crate) mod tests;
 
 /// Cấu trúc node trả về từ Proxmox API `GET /api2/json/nodes`
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -42,6 +47,10 @@ struct ClusterVMResource {
     template: u8,
     #[serde(rename = "type", default)]
     resource_type: String,
+    #[serde(default)]
+    netin: u64,
+    #[serde(default)]
+    netout: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +59,8 @@ pub(crate) struct ProxmoxVm {
     pub(crate) name: String,
     pub(crate) node: String,
     pub(crate) is_template: bool,
+    pub(crate) network_in_bytes: u64,
+    pub(crate) network_out_bytes: u64,
 }
 
 pub(super) struct CloneTemplateRequest<'a> {
@@ -60,6 +71,16 @@ pub(super) struct CloneTemplateRequest<'a> {
     pub(super) provider_name: &'a str,
     pub(super) storage: &'a str,
     pub(super) pool: &'a str,
+}
+
+pub(super) struct CreateVmFromImportRequest<'a> {
+    pub(super) node: &'a str,
+    pub(super) vmid: u64,
+    pub(super) provider_name: &'a str,
+    pub(super) source_storage: &'a str,
+    pub(super) filename: &'a str,
+    pub(super) target_storage: &'a str,
+    pub(super) checksum_hex: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +95,8 @@ pub(crate) struct ProxmoxVmConfig {
     pub(crate) virtio0: Option<String>,
     #[serde(default)]
     pub(crate) sata0: Option<String>,
+    #[serde(flatten)]
+    pub(crate) additional: HashMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +104,27 @@ struct TaskStatus {
     status: String,
     #[serde(default)]
     exitstatus: String,
+    #[serde(default)]
+    endtime: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum DeleteTaskOutcome {
+    Running,
+    Succeeded(i64),
+    Failed,
+}
+
+#[derive(Deserialize)]
+struct DeleteTaskRecord {
+    upid: String,
+    node: String,
+    id: String,
+    #[serde(rename = "type")]
+    task_type: String,
+    user: String,
+    #[serde(default)]
+    tokenid: String,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +141,114 @@ pub struct ProxmoxClient {
 }
 
 impl ProxmoxClient {
+    // This is an operation-scoped recovery lookup, not an inventory reconciler.
+    // Bound the history scan and fail closed if its completeness is unknown.
+    pub(super) async fn delete_tasks(&self, node: &str, vmid: u64) -> Result<Vec<String>, String> {
+        let actor = self
+            .api_token
+            .strip_prefix("PVEAPIToken=")
+            .and_then(|value| value.split_once('=').map(|pair| pair.0))
+            .ok_or_else(|| "VM_DELETE_TASK_ACTOR_UNAVAILABLE".to_string())?;
+        let (user, token) = actor
+            .split_once('!')
+            .ok_or_else(|| "VM_DELETE_TASK_ACTOR_UNAVAILABLE".to_string())?;
+        let mut upids = Vec::new();
+        for page in 0..16 {
+            let request = self
+                .client
+                .get(format!(
+                    "{}/api2/json/nodes/{}/tasks",
+                    self.api_url.trim_end_matches('/'),
+                    urlencoding::encode(node)
+                ))
+                .header("Authorization", &self.api_token)
+                .query(&[
+                    ("vmid", vmid.to_string()),
+                    ("typefilter", "qmdestroy".into()),
+                    ("source", "all".into()),
+                    ("start", (page * 64).to_string()),
+                    ("limit", "64".into()),
+                ]);
+            let response = crate::observability::otel::OtelTracer::trace_http_request(
+                "GET proxmox.vm_delete_tasks",
+                vec![],
+                request,
+            )
+            .await
+            .map_err(|_| "VM_DELETE_TASK_HISTORY_UNAVAILABLE".to_string())?;
+            if !response.status().is_success() {
+                return Err("VM_DELETE_TASK_HISTORY_UNAVAILABLE".into());
+            }
+            let records = response
+                .json::<ProxmoxApiResponse<Vec<DeleteTaskRecord>>>()
+                .await
+                .map_err(|_| "VM_DELETE_TASK_HISTORY_INVALID".to_string())?
+                .data;
+            let count = records.len();
+            for record in records {
+                if record.node != node
+                    || record.id != vmid.to_string()
+                    || record.task_type != "qmdestroy"
+                {
+                    return Err("VM_DELETE_TASK_HISTORY_SCOPE_INVALID".into());
+                }
+                // Some API versions expose user!token directly; others split it.
+                if (record.user == actor && record.tokenid.is_empty())
+                    || (record.user == user && record.tokenid == token)
+                {
+                    if !upids.contains(&record.upid) {
+                        upids.push(record.upid);
+                    }
+                }
+            }
+            if count < 64 {
+                return Ok(upids);
+            }
+        }
+        Err("VM_DELETE_TASK_HISTORY_SCAN_LIMIT".into())
+    }
+
+    pub(super) async fn delete_task_outcome(
+        &self,
+        node: &str,
+        upid: &str,
+    ) -> Result<DeleteTaskOutcome, String> {
+        let request = self
+            .client
+            .get(format!(
+                "{}/api2/json/nodes/{}/tasks/{}/status",
+                self.api_url.trim_end_matches('/'),
+                urlencoding::encode(node),
+                urlencoding::encode(upid)
+            ))
+            .header("Authorization", &self.api_token);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "GET proxmox.vm_delete_task",
+            vec![],
+            request,
+        )
+        .await
+        .map_err(|_| "VM_DELETE_TASK_STATUS_UNAVAILABLE".to_string())?;
+        if !response.status().is_success() {
+            return Err("VM_DELETE_TASK_STATUS_UNAVAILABLE".into());
+        }
+        let task = response
+            .json::<ProxmoxApiResponse<TaskStatus>>()
+            .await
+            .map_err(|_| "VM_DELETE_TASK_STATUS_INVALID".to_string())?
+            .data;
+        match task.status.as_str() {
+            "running" => Ok(DeleteTaskOutcome::Running),
+            "stopped" if task.exitstatus == "OK" && task.endtime > 0 => {
+                Ok(DeleteTaskOutcome::Succeeded(task.endtime))
+            }
+            "stopped" if !task.exitstatus.is_empty() && task.exitstatus != "OK" => {
+                Ok(DeleteTaskOutcome::Failed)
+            }
+            _ => Err("VM_DELETE_TASK_STATUS_INVALID".into()),
+        }
+    }
+
     /// Khởi tạo client kết nối với cấu hình TLS thích hợp
     pub fn new(config: &Config) -> Result<Self, String> {
         let mut builder = reqwest::Client::builder()
@@ -198,6 +350,8 @@ impl ProxmoxClient {
                 name: item.name,
                 node: item.node,
                 is_template: item.template == 1,
+                network_in_bytes: item.netin,
+                network_out_bytes: item.netout,
             })
             .collect())
     }
@@ -385,6 +539,49 @@ impl ProxmoxClient {
         Ok(())
     }
 
+    pub async fn attach_data_disk(
+        &self,
+        node: &str,
+        vmid: u64,
+        disk_key: &str,
+        storage: &str,
+        size_gb: u64,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/api2/json/nodes/{}/qemu/{}/config",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node),
+            vmid
+        );
+        let form = [(disk_key, format!("{storage}:{size_gb}"))];
+        let request = self
+            .client
+            .put(&url)
+            .header("Authorization", &self.api_token)
+            .form(&form);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "PUT proxmox.vm_data_disk",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "PUT"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new(
+                    "url.template",
+                    "/api2/json/nodes/{node}/qemu/{vmid}/config",
+                ),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_VM_DATA_DISK_TRANSPORT_FAILED".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "attach Proxmox VM data disk returned HTTP {}",
+                response.status()
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn vm_status(&self, node: &str, vmid: u64) -> Result<String, String> {
         let url = format!(
             "{}/api2/json/nodes/{}/qemu/{}/status/current",
@@ -457,6 +654,44 @@ impl ProxmoxClient {
         Ok(response.data)
     }
 
+    pub async fn stop_vm(&self, node: &str, vmid: u64) -> Result<String, String> {
+        let url = format!(
+            "{}/api2/json/nodes/{}/qemu/{}/status/stop",
+            self.api_url.trim_end_matches('/'),
+            urlencoding::encode(node),
+            vmid
+        );
+        let request = self
+            .client
+            .post(&url)
+            .header("Authorization", &self.api_token);
+        let response = crate::observability::otel::OtelTracer::trace_http_request(
+            "POST proxmox.vm_stop",
+            vec![
+                opentelemetry::KeyValue::new("http.request.method", "POST"),
+                opentelemetry::KeyValue::new("server.address", "proxmox"),
+                opentelemetry::KeyValue::new(
+                    "url.template",
+                    "/api2/json/nodes/{node}/qemu/{vmid}/status/stop",
+                ),
+            ],
+            request,
+        )
+        .await
+        .map_err(|_| "PROXMOX_VM_STOP_TRANSPORT_FAILED".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "stop Proxmox VM returned HTTP {}",
+                response.status()
+            ));
+        }
+        response
+            .json::<ProxmoxApiResponse<String>>()
+            .await
+            .map(|response| response.data)
+            .map_err(|_| "PROXMOX_VM_STOP_RESPONSE_INVALID".to_string())
+    }
+
     pub async fn download_url_to_storage(
         &self,
         node: &str,
@@ -510,30 +745,24 @@ impl ProxmoxClient {
             .map_err(|_| "PROXMOX_IMAGE_DOWNLOAD_RESPONSE_INVALID".to_string())
     }
 
-    // Every provider fence remains explicit at the Proxmox boundary; hiding it
-    // in a shared request object would couple import and normal VM workflows.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_vm_from_import(
+    pub(super) async fn create_vm_from_import(
         &self,
-        node: &str,
-        vmid: u64,
-        provider_name: &str,
-        source_storage: &str,
-        filename: &str,
-        target_storage: &str,
-        checksum_hex: &str,
+        import: CreateVmFromImportRequest<'_>,
     ) -> Result<String, String> {
         let endpoint = format!(
             "{}/api2/json/nodes/{}/qemu",
             self.api_url.trim_end_matches('/'),
-            urlencoding::encode(node)
+            urlencoding::encode(import.node)
         );
-        let imported_volume = format!("{source_storage}:iso/{filename}");
-        let boot_volume = format!("{target_storage}:0,import-from={imported_volume}");
-        let description = format!("Managed by Aurora\\naurora-image-sha256={checksum_hex}");
+        let imported_volume = format!("{}:iso/{}", import.source_storage, import.filename);
+        let boot_volume = format!("{}:0,import-from={imported_volume}", import.target_storage);
+        let description = format!(
+            "Managed by Aurora\\naurora-image-sha256={}",
+            import.checksum_hex
+        );
         let form = [
-            ("vmid", vmid.to_string()),
-            ("name", provider_name.to_string()),
+            ("vmid", import.vmid.to_string()),
+            ("name", import.provider_name.to_string()),
             ("scsihw", "virtio-scsi-single".to_string()),
             ("scsi0", boot_volume),
             ("boot", "order=scsi0".to_string()),
@@ -624,7 +853,7 @@ impl ProxmoxClient {
             .header("Authorization", &self.api_token)
             .form(&form);
         let response = crate::observability::otel::OtelTracer::trace_http_request(
-            "DELETE proxmox.image_template",
+            "DELETE proxmox.vm",
             vec![
                 opentelemetry::KeyValue::new("http.request.method", "DELETE"),
                 opentelemetry::KeyValue::new("server.address", "proxmox"),
@@ -633,13 +862,13 @@ impl ProxmoxClient {
             request,
         )
         .await
-        .map_err(|_| "PROXMOX_IMAGE_DELETE_TRANSPORT_FAILED".to_string())?;
+        .map_err(|_| "PROXMOX_VM_DELETE_TRANSPORT_FAILED".to_string())?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(String::new());
         }
         if !response.status().is_success() {
             return Err(format!(
-                "delete Proxmox image template returned HTTP {}",
+                "delete Proxmox VM returned HTTP {}",
                 response.status()
             ));
         }
@@ -647,7 +876,7 @@ impl ProxmoxClient {
             .json::<ProxmoxApiResponse<String>>()
             .await
             .map(|response| response.data)
-            .map_err(|_| "PROXMOX_IMAGE_DELETE_RESPONSE_INVALID".to_string())
+            .map_err(|_| "PROXMOX_VM_DELETE_RESPONSE_INVALID".to_string())
     }
 
     pub async fn delete_storage_content(
@@ -698,7 +927,7 @@ impl ProxmoxClient {
             .map_err(|_| "PROXMOX_IMAGE_STAGING_DELETE_RESPONSE_INVALID".to_string())
     }
 
-    pub async fn wait_task(&self, node: &str, upid: &str) -> Result<(), String> {
+    pub async fn wait_task(&self, node: &str, upid: &str) -> Result<i64, String> {
         let deadline = tokio::time::Instant::now() + self.task_timeout;
         loop {
             if tokio::time::Instant::now() >= deadline {
@@ -738,7 +967,7 @@ impl ProxmoxClient {
                 .map_err(|_| "PROXMOX_TASK_POLL_RESPONSE_INVALID".to_string())?;
             if response.data.status == "stopped" {
                 if response.data.exitstatus == "OK" {
-                    return Ok(());
+                    return Ok(response.data.endtime);
                 }
                 return Err("Proxmox task stopped without successful completion".to_string());
             }

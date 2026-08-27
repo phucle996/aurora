@@ -108,13 +108,43 @@ message MailConsumerUpsertV1 {
   bytes zone_id = 16;
 }
 
+message MailConsumerDrainV1 {
+  uint32 schema_version = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  uint32 parallelism = 4;
+  uint32 timeout_seconds = 5;
+}
+message MailConsumerDrainedV1 {
+  uint32 schema_version = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  uint32 settled_slots = 4;
+}
+
+// Zone-local Consumer ownership journal. Entries have no lease TTL and are
+// unique per process incarnation, not keyed by a reusable slot fencing token.
+// Removing an entry requires confirmed broker settlement (or no broker start).
+message MailConsumerRuntimeGenerationV1 {
+  uint32 schema_version = 1;
+  string consumer_id = 2;
+  string generation_id = 3;
+  uint64 config_version = 4;
+  uint32 slot = 5;
+  uint64 fencing_token = 6;
+  string lease_owner_id = 7;
+  // 1=registered but no broker start, 2=broker may have work, 3=settled.
+  uint32 phase = 8;
+}
+
 message MailConsumerDeleteV1 {
   MailEventMetadataV1 metadata = 1;
   bytes consumer_id = 2;
   // [COMMENT]: Tombstone version phải lớn hơn mọi upsert version trước đó.
   uint64 config_version = 3;
   // [COMMENT]: DP ngừng poll, drain outstanding rồi đóng connection trong giới hạn này.
-  uint32 drain_timeout_seconds = 4;
+  reserved 4;
+  reserved "drain_timeout_seconds";
   // [COMMENT]: Sanitized operator reason; không chứa secret hoặc customer payload.
   string reason = 5;
 }

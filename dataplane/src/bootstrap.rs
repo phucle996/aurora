@@ -79,8 +79,9 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // max_workers sẽ được quản lý tĩnh qua biến môi trường nạp từ Config.
 
     // [COMMENT]: JMAP client + batcher được tạo đúng một lần cho toàn pod; cấu hình/auth sai làm bootstrap fail-fast.
-    let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone())
-        .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
+    let mail_runtime =
+        crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone(), kafka.clone())
+            .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
     let hypervisor_runtime =
         crate::executor::hypervisor::HypervisorRuntime::new(&cfg, zone_kv.clone())
             .map_err(|error| format!("initialize Hypervisor runtime failed: {error}"))?;

@@ -12,6 +12,7 @@ type PersonalCredential struct {
 	BucketID  uuid.UUID // ID của bucket cá nhân liên kết
 	AccessKey string    // Access Key của tài khoản MinIO
 	Policy    string    // Phân quyền chi tiết (JSON policy)
+	State     string
 	CreatedAt time.Time // Thời gian khởi tạo bản ghi
 	UpdatedAt time.Time // Thời gian cập nhật bản ghi
 }
@@ -22,6 +23,7 @@ type TenantCredential struct {
 	BucketID  uuid.UUID // ID của bucket doanh nghiệp liên kết
 	AccessKey string    // Access Key của tài khoản MinIO
 	Policy    string    // Phân quyền chi tiết (JSON policy)
+	State     string
 	CreatedAt time.Time // Thời gian khởi tạo bản ghi
 	UpdatedAt time.Time // Thời gian cập nhật bản ghi
 }
@@ -33,6 +35,7 @@ type CreatedPersonalCredential struct {
 	AccessKey string
 	SecretKey string // Plaintext Secret Key
 	Policy    string
+	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -63,6 +66,7 @@ type PersonalCredentialListItem struct {
 	ID        uuid.UUID
 	AccessKey string
 	Policy    string
+	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -74,6 +78,7 @@ type CreatedTenantCredential struct {
 	AccessKey string
 	SecretKey string // Plaintext Secret Key
 	Policy    string
+	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
