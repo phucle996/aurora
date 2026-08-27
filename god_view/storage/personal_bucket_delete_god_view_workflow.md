@@ -171,7 +171,7 @@ sequenceDiagram
     DP->>KR: Publish JobResult (job_id, status: SUCCEEDED)
     KR-->>JO: Consume JobResult
     JO->>PG: 1. Execute isolated Personal Delete CTE (status = 'SUCCEEDED')
-    
+
     rect rgb(255, 245, 240)
     Note over JO,Proj: Luồng chuyển giao sở hữu sang Billing (Fast-Path)
     JO->>Redis: 2. XADD ResourceOwnershipChangedV1 (RESOURCE_DELETED, owner_type: PERSONAL, version: 2)
@@ -309,7 +309,7 @@ sequenceDiagram
 
     DP->>Redis: StorageUsageReportV1 (chu kỳ sau khi xóa: window_start >= effective_to)
     Redis-->>Engine: XReadGroup (cost-engine-storage-metering-v1)
-    
+
     rect rgb(255, 245, 240)
     Note over Engine,Wallet: Chặn trừ tiền cước sau thời điểm xóa (Termination Guard)
     Engine->>Proj: 1. Resolve Owner: Match resource_id trong cửa sổ [window_start, window_end)

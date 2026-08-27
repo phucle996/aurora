@@ -183,4 +183,3 @@ func (c *redisL2Cache) GetOrLoad(ctx context.Context, key string, target interfa
 
 	return newVersion, nil
 }
-

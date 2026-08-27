@@ -24,18 +24,18 @@ type xssiResponseWriter struct {
 func (w *xssiResponseWriter) Write(b []byte) (int, error) {
 	// Lấy Content-Type hiện tại của Header phản hồi:
 	contentType := w.Header().Get("Content-Type")
-	
-	// Điều kiện kích hoạt: 
+
+	// Điều kiện kích hoạt:
 	// 1. Chưa ghi tiền tố lần nào trong phiên làm việc của request hiện tại.
 	// 2. Định dạng nội dung là ứng dụng JSON (application/json) nơi chứa dữ liệu nhạy cảm có nguy cơ bị XSSI.
 	if !w.wrotePrefix && strings.Contains(contentType, "application/json") {
 		w.wrotePrefix = true
-		// Ghi tiền tố chống XSSI chuẩn: ")]}',\n". 
-		// Tiền tố này khiến JS Parser trên trình duyệt ném ra lỗi cú pháp (Syntax Error) 
+		// Ghi tiền tố chống XSSI chuẩn: ")]}',\n".
+		// Tiền tố này khiến JS Parser trên trình duyệt ném ra lỗi cú pháp (Syntax Error)
 		// ngay lập tức nếu kẻ tấn công cố tình nhúng API qua thẻ <script src="...">.
 		_, _ = w.ResponseWriter.Write([]byte(")]}',\n"))
 	}
-	
+
 	// Tiếp tục ghi dữ liệu gốc từ API handler truyền xuống:
 	return w.ResponseWriter.Write(b)
 }
@@ -66,7 +66,7 @@ func AdminXSSI() gin.HandlerFunc {
 		// Thay thế Writer mặc định của Gin bằng xssiResponseWriter đã được bao bọc logic bảo mật:
 		w := &xssiResponseWriter{ResponseWriter: c.Writer}
 		c.Writer = w
-		
+
 		// Tiếp tục chuỗi middleware và handler xử lý tiếp theo trong pipeline:
 		c.Next()
 	}
