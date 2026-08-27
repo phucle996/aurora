@@ -152,12 +152,24 @@ fn decode_grant(headers: &HeaderMap, expected_zone: &str) -> Result<TransferGran
     let grant = TransferGrantV1::decode(bytes.as_slice()).map_err(|_| StatusCode::FORBIDDEN)?;
     if grant.schema_version != TRANSFER_TICKET_SCHEMA_VERSION
         || grant.zone_id != expected_zone
-        || !matches!(grant.method.as_str(), "PUT" | "GET")
+        || !matches!(grant.method.as_str(), "PUT" | "GET" | "POST" | "DELETE")
         || !grant.public_path.starts_with('/')
-        || grant.public_path.contains('?')
+        || grant.public_path.len() > 2048
+        || !is_safe_public_path(&grant.public_path)
         || grant.operation_id.is_empty()
     {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(grant)
 }
+
+fn is_safe_public_path(path: &str) -> bool {
+    !path.contains('\0')
+        && !path.contains('\r')
+        && !path.contains('\n')
+        && path.bytes().all(|b| b.is_ascii_graphic())
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/transfer_ticket.rs"]
+mod tests;

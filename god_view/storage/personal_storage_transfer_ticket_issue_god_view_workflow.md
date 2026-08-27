@@ -32,7 +32,7 @@ storage remains a separate no-op branch.
 | Field | Issue | Revoke |
 |---|---|---|
 | `capability` | Exactly `storage.object` | Exactly `storage.object` |
-| `operation` | `upload` or `download` | `revoke` |
+| `operation` | `upload`, `download`, `multipart_initiate`, `multipart_upload_part`, `multipart_complete`, `multipart_abort` | `revoke` |
 | `access_session_id` | Prepared session UUID | UUID that issued the ticket |
 | `resource.bucket_name` | Physical bucket | Same bucket |
 | `resource.object_key` | Non-empty safe object key | Same key for audit binding |
@@ -128,7 +128,7 @@ sequenceDiagram
     ZA->>KV: GET access session projection
     KV-->>ZA: Actor Zone bucket actions prefix expiry
     ZA->>AD: Require ALLOW for record resource id on issue
-    ZA->>ZA: Validate upload or download object scope
+    ZA->>ZA: Validate object scope and operation-specific constraints
     ZA->>ZA: Encode TransferGrantV1 protobuf bytes and base64url header
     ZA-->>ZE: OkResponse transfer grant header
     ZE->>ZC: Forward body and trusted grant
@@ -154,6 +154,13 @@ Storage-specific invariants are enforced here:
 - Upload requires `PutObject`, a positive size no greater than 5 GiB and an
   allowed printable content type.
 - Download requires `GetObject` and has no upload size constraint.
+- Multipart operations require `PutObject`; upload parts require a positive size
+  up to 5 GiB and part number `1..10000`. Upload IDs and optional download version
+  IDs are validated then percent-encoded as query values, not inserted raw.
+- The grant binds the final public method and path including query. Initiate and
+  complete use `POST`, part upload uses `PUT`, abort uses `DELETE`, and versioned
+  download uses `GET`. Zone Control preserves this binding in the ticket and
+  rejects non-printable or oversized public paths before KV creation.
 - Object keys cannot contain NUL, traversal segments, empty segments or leave
   the access record prefix.
 - Revoke requires the same actor, Zone and access-session identity and a UUID
