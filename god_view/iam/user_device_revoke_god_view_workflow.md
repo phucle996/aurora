@@ -195,13 +195,14 @@ The Shared Redis command is consumed asynchronously by every ACR replica in
 consumer group `acr-device-runtime-v1`. The stream is the durable bridge from
 the PostgreSQL commit to Auth-State Redis cleanup.
 
-1. `SharedRedisRouter` creates the group if needed and reads pending entries
-   with ID `0` before reading new entries with `>`.
+1. `SharedRedisRouter` creates the group if needed and uses a unique
+   `acr-device-runtime-{UUIDv7}` consumer per process. It reclaims abandoned
+   entries with `XAUTOCLAIM` (30-second idle threshold, persisted scan cursor)
+   before reading new entries with `>`.
 2. It processes at most 32 entries per read and blocks for up to five seconds
    when no fresh entry exists.
-3. A short `SET NX PX 10000` lock at
-   `iam:device:dispatch:revoke-stream:{entry_id}` prevents duplicate work when
-   replicas see the same pending entry.
+3. Consumer-group assignment owns fresh delivery; there is no extra dispatch
+   lock. Reconnect and stream-command failures back off with 250–500ms jitter.
 4. Missing payload or malformed protobuf is a poison message. ACR logs the
    contract failure and ACKs plus deletes the entry so one bad producer cannot
    stall the group.
@@ -212,20 +213,19 @@ the PostgreSQL commit to Auth-State Redis cleanup.
    `iam:user_access_index:{user_id}`, and deletes the device index.
 7. Auth-State Redis failure leaves the stream entry pending. A different ACR
    replica may retry it; no ACK is emitted for partial failure.
-8. Only after all target device IDs complete does ACR issue `XACK` and `XDEL`.
+8. Only after all target device IDs complete does ACR issue `XACK`. `XDEL`
+   follows only a positive ACK; a failed or zero ACK preserves the entry.
 
 ```mermaid
 sequenceDiagram
     participant Stream as Shared Redis Stream
     participant Router as ACR SharedRedisRouter
-    participant Fence as Shared Redis dispatch lock
     participant Revoke as ACR revoke_sessions_by_devices
     participant Auth as Auth-State Redis
     participant Alias as ACR session alias revoker
 
-    Router->>Stream: XREADGROUP pending ID 0
+    Router->>Stream: XAUTOCLAIM idle >= 30s with per-process consumer
     Router->>Stream: XREADGROUP new IDs > count 32 block 5s
-    Router->>Fence: SET NX revoke-stream entry ID 10s
     Router->>Revoke: Decode RevokeUserSessionsByDevicesRequest
     loop each client_device_id
         Revoke->>Auth: SMEMBERS iam:device_access_index:{device}
@@ -253,7 +253,7 @@ sequenceDiagram
 | `RevokeUserSessionsByDevicesRequest` | Protobuf | Runtime command payload |
 | `iam:device:revoke-requests` | Shared Redis Stream | Durable command bridge |
 | `acr-device-runtime-v1` | Shared Redis consumer group | ACR runtime worker ownership |
-| `iam:device:dispatch:revoke-stream:{id}` | Shared Redis | Ten-second duplicate-work fence |
+| `acr-device-runtime-{UUIDv7}` | Shared Redis consumer identity | Per-process ownership; idle PEL entries can be reclaimed |
 | `iam:device_access_index:{device}` | Auth-State Redis Set | Session keys for one device |
 | `iam:user_access_index:{user}` | Auth-State Redis Set | User session cleanup |
 | `iam:user_session:{zone}:{tenant}:{user}:{access_key}` | Auth-State Redis | Runtime credential, five-second grace on revoke |

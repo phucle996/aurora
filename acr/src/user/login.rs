@@ -384,6 +384,7 @@ pub async fn handle_mfa_verify(
         UserSessionIssueContext {
             session_mgr: session_mgr.as_ref(),
             token_mgr: token_mgr.as_ref(),
+            shared_redis: shared_redis.as_ref(),
             config,
         },
         ReleaseUserSessionCommand {
@@ -473,6 +474,7 @@ pub struct ReleaseUserSessionResult {
 pub struct UserSessionIssueContext<'a> {
     pub session_mgr: &'a SessionManager,
     pub token_mgr: &'a TokenManager,
+    pub shared_redis: &'a SharedRedisBus,
     pub config: &'a Config,
 }
 
@@ -514,6 +516,7 @@ pub async fn release_user_session(
     let UserSessionIssueContext {
         session_mgr,
         token_mgr,
+        shared_redis,
         config,
     } = context;
     let ReleaseUserSessionCommand {
@@ -577,18 +580,21 @@ pub async fn release_user_session(
     };
 
     if let Err(e) = session_mgr
-        .register_session(RegisterSessionCommand {
-            zone_id: claims
-                .zone_id
-                .as_deref()
-                .expect("validated user zone must be present"),
-            tenant_id: claims.tenant_id.as_deref().unwrap_or("platform"),
-            user_id,
-            access_key: &access_key,
-            access_secret_hash: &ash,
-            device_id,
-            client_proof_public_key,
-        })
+        .register_session(
+            RegisterSessionCommand {
+                zone_id: claims
+                    .zone_id
+                    .as_deref()
+                    .expect("validated user zone must be present"),
+                tenant_id: claims.tenant_id.as_deref().unwrap_or("platform"),
+                user_id,
+                access_key: &access_key,
+                access_secret_hash: &ash,
+                device_id,
+                client_proof_public_key,
+            },
+            shared_redis,
+        )
         .await
     {
         Logger::sys_error(
@@ -927,6 +933,7 @@ pub async fn handle_login(
         UserSessionIssueContext {
             session_mgr: session_mgr.as_ref(),
             token_mgr: token_mgr.as_ref(),
+            shared_redis: shared_redis.as_ref(),
             config,
         },
         ReleaseUserSessionCommand {

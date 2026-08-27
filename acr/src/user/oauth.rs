@@ -1411,6 +1411,7 @@ impl OAuthProviderService {
             UserSessionIssueContext {
                 session_mgr: workflow.session_mgr.as_ref(),
                 token_mgr: workflow.token_mgr.as_ref(),
+                shared_redis: workflow.shared_redis.as_ref(),
                 config: workflow.config,
             },
             ReleaseUserSessionCommand {

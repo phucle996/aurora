@@ -8,7 +8,6 @@ use crate::infra::redis::SessionManager;
 use crate::infra::shared_redis::SharedRedisBus;
 use crate::observability::logger::Logger;
 use prost::Message;
-use redis::streams::StreamReadReply;
 use redis::AsyncCommands;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,9 +22,6 @@ const HEARTBEAT_REDIS_KEY: &str = "iam:device_heartbeats";
 const HEARTBEAT_TEMP_KEY: &str = "iam:device_heartbeats_temp";
 const PRESENCE_CHANNEL: &str = "iam.device.bulk_touch_presence";
 const FLUSH_INTERVAL_SECS: u64 = 30;
-const EVICTION_OUTBOX_STREAM: &str = "iam:device:eviction-outbox";
-const EVICTION_OUTBOX_GROUP: &str = "acr-device-eviction-relay-v1";
-const EVICTION_OUTBOX_CONSUMER: &str = "acr-device-eviction-relay";
 
 /// [COMMENT]: Background worker định kỳ gom heartbeat từ Auth Redis và publish bulk sang Shared Redis Controlplane
 pub async fn start_presence_flush_worker(
@@ -142,182 +138,6 @@ pub async fn start_presence_flush_worker(
             }
         }
     });
-}
-
-// [COMMENT]: Relay Auth Redis outbox sang Shared Redis Stream. Source XADD được commit
-// atomically cùng session eviction; ACK chỉ sau khi target stream đã nhận payload.
-pub async fn start_eviction_outbox_relay(
-    auth_redis: Arc<RedisRuntimeClient>,
-    shared_redis: Arc<SharedRedisBus>,
-) -> Result<(), String> {
-    let mut connection = auth_redis
-        .get_multiplexed_tokio_connection()
-        .await
-        .map_err(|error| format!("open Auth Redis eviction outbox: {error}"))?;
-    let group_result: redis::RedisResult<()> = redis::cmd("XGROUP")
-        .arg("CREATE")
-        .arg(EVICTION_OUTBOX_STREAM)
-        .arg(EVICTION_OUTBOX_GROUP)
-        .arg("0")
-        .arg("MKSTREAM")
-        .query_async(&mut connection)
-        .await;
-    if let Err(error) = group_result {
-        if !error.to_string().contains("BUSYGROUP") {
-            return Err(format!("create Auth Redis eviction outbox group: {error}"));
-        }
-    }
-
-    tokio::spawn(async move {
-        loop {
-            let mut connection = match auth_redis.get_multiplexed_tokio_connection().await {
-                Ok(value) => value,
-                Err(error) => {
-                    Logger::sys_error(
-                        "device.eviction_relay",
-                        "Failed to connect Auth Redis outbox",
-                        &error.to_string(),
-                    );
-                    time::sleep(Duration::from_millis(500)).await;
-                    continue;
-                }
-            };
-
-            loop {
-                let pending: redis::RedisResult<StreamReadReply> = redis::cmd("XREADGROUP")
-                    .arg("GROUP")
-                    .arg(EVICTION_OUTBOX_GROUP)
-                    .arg(EVICTION_OUTBOX_CONSUMER)
-                    .arg("COUNT")
-                    .arg(32)
-                    .arg("STREAMS")
-                    .arg(EVICTION_OUTBOX_STREAM)
-                    .arg("0")
-                    .query_async(&mut connection)
-                    .await;
-                let pending = match pending {
-                    Ok(value) => value,
-                    Err(error) => {
-                        Logger::sys_error(
-                            "device.eviction_relay",
-                            "Failed to read pending Auth Redis outbox",
-                            &error.to_string(),
-                        );
-                        break;
-                    }
-                };
-                // [COMMENT]: Kiểm tra xem có entry pending thực sự nào trong key.ids không
-                // (tránh bug !pending.keys.is_empty() = true khi ids rỗng làm bỏ qua Block 5s gây busy spin-loop).
-                let has_pending = pending.keys.iter().any(|key| !key.ids.is_empty());
-                if has_pending {
-                    relay_eviction_entries(&shared_redis, &mut connection, pending).await;
-                    continue;
-                }
-
-                let fresh: redis::RedisResult<StreamReadReply> = redis::cmd("XREADGROUP")
-                    .arg("GROUP")
-                    .arg(EVICTION_OUTBOX_GROUP)
-                    .arg(EVICTION_OUTBOX_CONSUMER)
-                    .arg("COUNT")
-                    .arg(32)
-                    .arg("BLOCK")
-                    .arg(5_000)
-                    .arg("STREAMS")
-                    .arg(EVICTION_OUTBOX_STREAM)
-                    .arg(">")
-                    .query_async(&mut connection)
-                    .await;
-                match fresh {
-                    Ok(value) => {
-                        relay_eviction_entries(&shared_redis, &mut connection, value).await
-                    }
-                    Err(error) if error.is_timeout() => {}
-                    Err(error) => {
-                        Logger::sys_error(
-                            "device.eviction_relay",
-                            "Failed to read new Auth Redis outbox",
-                            &error.to_string(),
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    Ok(())
-}
-
-async fn relay_eviction_entries(
-    shared_redis: &Arc<SharedRedisBus>,
-    auth_connection: &mut crate::infra::redis::RedisConnection,
-    reply: StreamReadReply,
-) {
-    for key in reply.keys {
-        for entry in key.ids {
-            let lock_key = format!("iam:device:dispatch:eviction-outbox:{}", entry.id);
-            let acquired: bool = redis::cmd("SET")
-                .arg(&lock_key)
-                .arg("1")
-                .arg("NX")
-                .arg("PX")
-                .arg(10_000)
-                .query_async(auth_connection)
-                .await
-                .unwrap_or_default();
-            if !acquired {
-                time::sleep(Duration::from_millis(250)).await;
-                continue;
-            }
-
-            let payload = match entry
-                .map
-                .get("payload")
-                .and_then(|value| redis::from_redis_value::<Vec<u8>>(value).ok())
-            {
-                Some(value) => value,
-                None => {
-                    Logger::sys_error(
-                        "device.eviction_relay",
-                        "Dropping Auth Redis outbox entry without payload",
-                        &entry.id,
-                    );
-                    acknowledge_eviction_outbox(auth_connection, &entry.id).await;
-                    continue;
-                }
-            };
-
-            match shared_redis
-                .append_stream("iam:device:evicted-events", payload)
-                .await
-            {
-                Ok(_) => acknowledge_eviction_outbox(auth_connection, &entry.id).await,
-                Err(error) => Logger::sys_error(
-                    "device.eviction_relay",
-                    "Shared Redis append failed; Auth outbox remains pending",
-                    &error,
-                ),
-            }
-        }
-    }
-}
-
-async fn acknowledge_eviction_outbox(
-    connection: &mut crate::infra::redis::RedisConnection,
-    entry_id: &str,
-) {
-    let acked: redis::RedisResult<()> = redis::cmd("XACK")
-        .arg(EVICTION_OUTBOX_STREAM)
-        .arg(EVICTION_OUTBOX_GROUP)
-        .arg(entry_id)
-        .query_async(connection)
-        .await;
-    if acked.is_ok() {
-        let _: redis::RedisResult<()> = redis::cmd("XDEL")
-            .arg(EVICTION_OUTBOX_STREAM)
-            .arg(entry_id)
-            .query_async(connection)
-            .await;
-    }
 }
 
 /// [COMMENT]: Lấy danh sách các thiết bị đang active của user từ Auth Redis cho internal transport.

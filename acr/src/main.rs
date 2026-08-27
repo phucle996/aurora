@@ -169,19 +169,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shared_redis_bus.clone(),
     )
     .await;
-    if let Err(error) = crate::user::device::start_eviction_outbox_relay(
-        redis_client.clone(),
-        shared_redis_bus.clone(),
-    )
-    .await
-    {
-        Logger::sys_error(
-            "main.shared_redis",
-            "Failed to initialize durable device eviction relay",
-            &error,
-        );
-        std::process::exit(1);
-    }
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
         .parse()

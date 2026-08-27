@@ -7,7 +7,10 @@
 
 use crate::error::AcrError;
 use crate::infra::redis::SessionManager;
+use crate::infra::shared_redis::SharedRedisBus;
 use prost::Message;
+
+const EVICTED_DEVICES_STREAM: &str = "iam:device:evicted-events";
 
 /// [COMMENT]: UserAccessSession — Protobuf struct cho User session.
 /// Tương thích 100% với iamproto.UserAccessSession của Go controlplane.
@@ -79,6 +82,7 @@ impl SessionManager {
     pub async fn register_session(
         &self,
         command: RegisterSessionCommand<'_>,
+        shared_redis: &SharedRedisBus,
     ) -> Result<Vec<String>, AcrError> {
         let RegisterSessionCommand {
             zone_id,
@@ -228,17 +232,16 @@ impl SessionManager {
                 ))
             })?;
 
-        // Persist the outbox before destructive cleanup. Replays are safe and
-        // are preferable to silently losing a device eviction on a crash.
-        redis::cmd("XADD")
-            .arg("iam:device:eviction-outbox")
-            .arg("*")
-            .arg("payload")
-            .arg(notification_bytes)
-            .query_async::<_, String>(&mut conn)
+        // Shared Redis Stream is the only durable handoff to Controlplane.
+        // It is appended before the Auth Redis cleanup, so a failed append
+        // cannot silently erase a runtime eviction from the durable projection.
+        shared_redis
+            .append_stream(EVICTED_DEVICES_STREAM, notification_bytes)
             .await
             .map_err(|error| {
-                AcrError::RedisError(format!("Append device eviction outbox failed: {error}"))
+                AcrError::RedisError(format!(
+                    "Append device eviction stream event failed: {error}"
+                ))
             })?;
         for (key, tdid, _) in &to_evict {
             let _: () = redis::cmd("DEL")

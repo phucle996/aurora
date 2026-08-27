@@ -394,15 +394,18 @@ pub async fn handle_tenant_switch(
     };
 
     if let Err(error) = session_mgr
-        .register_session(RegisterSessionCommand {
-            zone_id: claims.zone_id.as_deref().unwrap_or("global"),
-            tenant_id: &tenant_id,
-            user_id: &claims.uid,
-            access_key: &access_key,
-            access_secret_hash: &source_session.ash,
-            device_id: &source_session.tdid,
-            client_proof_public_key: &source_session.client_proof_public_key,
-        })
+        .register_session(
+            RegisterSessionCommand {
+                zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+                tenant_id: &tenant_id,
+                user_id: &claims.uid,
+                access_key: &access_key,
+                access_secret_hash: &source_session.ash,
+                device_id: &source_session.tdid,
+                client_proof_public_key: &source_session.client_proof_public_key,
+            },
+            shared_redis.as_ref(),
+        )
         .await
     {
         Logger::sys_error(
@@ -597,15 +600,18 @@ pub async fn handle_personal_switch(
         }
     };
     if let Err(error) = session_mgr
-        .register_session(RegisterSessionCommand {
-            zone_id: claims.zone_id.as_deref().unwrap_or("global"),
-            tenant_id: "platform",
-            user_id: &claims.uid,
-            access_key: &access_key,
-            access_secret_hash: &source_session.ash,
-            device_id: &source_session.tdid,
-            client_proof_public_key: &source_session.client_proof_public_key,
-        })
+        .register_session(
+            RegisterSessionCommand {
+                zone_id: claims.zone_id.as_deref().unwrap_or("global"),
+                tenant_id: "platform",
+                user_id: &claims.uid,
+                access_key: &access_key,
+                access_secret_hash: &source_session.ash,
+                device_id: &source_session.tdid,
+                client_proof_public_key: &source_session.client_proof_public_key,
+            },
+            shared_redis.as_ref(),
+        )
         .await
     {
         Logger::sys_error(

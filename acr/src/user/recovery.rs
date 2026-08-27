@@ -476,6 +476,7 @@ pub async fn try_handle_recovery_session(
         UserSessionIssueContext {
             session_mgr: session_mgr.as_ref(),
             token_mgr: token_mgr.as_ref(),
+            shared_redis: shared_redis.as_ref(),
             config,
         },
         ReleaseUserSessionCommand {

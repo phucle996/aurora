@@ -143,8 +143,12 @@ fn tenant_switch_is_an_acr_local_control_route_not_a_downstream_owner_route() {
 
 #[test]
 fn tenant_creation_is_a_personal_only_neutral_workflow() {
-    assert!(is_personal_only_neutral_path("POST", "/api/v1/tenants"));
+    assert!(is_personal_only_neutral_path(
+        "POST",
+        "/api/v1/critical/tenants"
+    ));
     assert!(is_personal_only_neutral_path("GET", "/api/v1/tenants"));
+    assert!(!is_personal_only_neutral_path("POST", "/api/v1/tenants"));
     assert!(!is_personal_only_neutral_path(
         "POST",
         "/api/v1/tenants/other"
