@@ -36,7 +36,6 @@ type Config struct {
 	// [COMMENT]: AuthRedis là security-state/authz projection; không dùng làm cache business chung.
 	AuthRedis RedisCfg
 	Kafka     KafkaCfg
-	GRPC      GRPCCfg
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
 }
@@ -144,15 +143,6 @@ type KafkaCfg struct {
 	TopicPrefix          string
 }
 
-// GRPCCfg lưu thông số kết nối của gRPC Server và cấu hình TLS/mTLS.
-type GRPCCfg struct {
-	Port             string
-	PublicAddr       string
-	TLSCertPath      string
-	TLSKeyPath       string
-	ClientCACertPath string
-}
-
 // SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
 	Hierarchy      string
@@ -197,26 +187,6 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("KAFKA_SECURITY_PROTOCOL is invalid")
 	}
 	kafkaIAMVerificationTopic, err := requireEnv("KAFKA_IAM_VERIFICATION_TOPIC")
-	if err != nil {
-		return nil, err
-	}
-	grpcPort, err := requireEnv("GRPC_PORT")
-	if err != nil {
-		return nil, err
-	}
-	grpcPublicAddr, err := requireEnv("GRPC_PUBLIC_ADDR")
-	if err != nil {
-		return nil, err
-	}
-	grpcTLSCert, err := requireEnv("GRPC_TLS_CERT")
-	if err != nil {
-		return nil, err
-	}
-	grpcTLSKey, err := requireEnv("GRPC_TLS_KEY")
-	if err != nil {
-		return nil, err
-	}
-	grpcClientCA, err := requireEnv("GRPC_CLIENT_CA")
 	if err != nil {
 		return nil, err
 	}
@@ -301,13 +271,6 @@ func LoadConfig() (*Config, error) {
 			KeyPath:              getEnv("KAFKA_TLS_KEY", ""),
 			IAMVerificationTopic: kafkaIAMVerificationTopic,
 			TopicPrefix:          getEnv("KAFKA_TOPIC_PREFIX", "aurora"),
-		},
-		GRPC: GRPCCfg{
-			Port:             grpcPort,
-			PublicAddr:       grpcPublicAddr,
-			TLSCertPath:      grpcTLSCert,
-			TLSKeyPath:       grpcTLSKey,
-			ClientCACertPath: grpcClientCA,
 		},
 
 		OTel: OTelCfg{

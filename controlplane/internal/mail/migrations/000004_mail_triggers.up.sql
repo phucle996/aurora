@@ -9,9 +9,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_personal_mail_consumer_delete_state ON personal_mail_consumers;
 CREATE TRIGGER trg_personal_mail_consumer_delete_state
 BEFORE DELETE ON personal_mail_consumers FOR EACH ROW
 EXECUTE FUNCTION reject_mail_consumer_delete_unless_deleting();
+
+DROP TRIGGER IF EXISTS trg_tenant_mail_consumer_delete_state ON tenant_mail_consumers;
 CREATE TRIGGER trg_tenant_mail_consumer_delete_state
 BEFORE DELETE ON tenant_mail_consumers FOR EACH ROW
 EXECUTE FUNCTION reject_mail_consumer_delete_unless_deleting();

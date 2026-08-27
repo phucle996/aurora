@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package controlplane.hypervisor.admission.v1;
+
+option go_package = "controlplane/internal/hypervisor/transport/proto;hypervisorproto";
+
+// CommercialAdmissionChangedV1 exposes only the owner-scoped commercial
+// decision required by the hypervisor module.
+message CommercialAdmissionChangedV1 {
+  string event_id = 1;
+  string owner_id = 2;
+  string owner_type = 3;
+  int64 policy_version = 4;
+  string decision = 5;
+  string restriction_reason = 6;
+  string effective_at = 7;
+  string valid_until = 8;
+}

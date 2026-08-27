@@ -5,7 +5,7 @@ services:
   controlplane1:
     cpuset: "0-5"
     image: ${AURORA_CONTROLPANE_IMAGE:?AURORA_CONTROLPANE_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-controlplane-1
     init: true
     env_file:
@@ -42,7 +42,7 @@ services:
   controlplane2:
     cpuset: "0-5"
     image: ${AURORA_CONTROLPANE_IMAGE:?AURORA_CONTROLPANE_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-controlplane-2
     init: true
     env_file:
@@ -77,7 +77,7 @@ services:
   controlplane3:
     cpuset: "0-5"
     image: ${AURORA_CONTROLPANE_IMAGE:?AURORA_CONTROLPANE_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-controlplane-3
     init: true
     env_file:
@@ -209,7 +209,7 @@ services:
   cost-manager:
     cpuset: "0-5"
     image: ${AURORA_COST_MANAGER_IMAGE:?AURORA_COST_MANAGER_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-cost-manager
     ports:
       - "8084:8084" # REST API port
@@ -570,7 +570,7 @@ services:
   cloud-console:
     cpuset: "0-5"
     image: ${AURORA_CLOUD_CONSOLE_IMAGE:?AURORA_CLOUD_CONSOLE_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-cloud-console
     # The entrypoint validates these public URLs and writes runtime-config.js
     # before Next starts; a GHCR digest remains reusable across environments.
@@ -581,7 +581,7 @@ services:
   admin-ui-nginx:
     cpuset: "0-5"
     image: ${AURORA_ADMIN_UI_IMAGE:?AURORA_ADMIN_UI_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-admin-ui
     ports:
       - "5175:5173"
@@ -590,7 +590,7 @@ services:
   cost-console-nginx:
     cpuset: "0-5"
     image: ${AURORA_COST_CONSOLE_IMAGE:?AURORA_COST_CONSOLE_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-cost-console
     # Nginx writes runtime-config.js from this public URL before serving the
     # SPA, so Vite does not need an environment-specific build.
@@ -603,7 +603,7 @@ services:
   job-orchestrator:
     cpuset: "0-5"
     image: ${AURORA_JOB_ORCHESTRATOR_IMAGE:?AURORA_JOB_ORCHESTRATOR_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-job-orchestrator
     init: true
     volumes:
@@ -656,7 +656,7 @@ services:
   acr:
     cpuset: "0-5"
     image: ${AURORA_ACR_IMAGE:?AURORA_ACR_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-acr
     init: true
     # [COMMENT]: Mount chứng chỉ TLS để thiết lập kết nối mTLS bảo mật đến các node Controlplane
@@ -678,7 +678,7 @@ services:
   notification-service:
     cpuset: "0-5"
     image: ${AURORA_NOTIFICATION_SERVICE_IMAGE:?AURORA_NOTIFICATION_SERVICE_IMAGE_must_reference_a_GHCR_digest}
-    pull_policy: always
+    pull_policy: missing
     container_name: central-notification-service
     ports:
       - "8083:8083"

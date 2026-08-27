@@ -12,7 +12,8 @@ RUN cargo install --locked cargo-chef
 # Planner Stage: Phân tích file recipe.json của dự án
 # ----------------------------------------------------------------------------
 FROM chef AS planner
-COPY . .
+WORKDIR /workspace/notification-service
+COPY notification-service/ .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ----------------------------------------------------------------------------
@@ -23,10 +24,12 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=planner /workspace/recipe.json recipe.json
+WORKDIR /workspace/notification-service
+COPY --from=planner /workspace/notification-service/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-COPY . .
+COPY notification-service/ ./
+COPY proto/ /workspace/proto/
 RUN cargo build --release
 
 # ============================================================================
@@ -37,7 +40,7 @@ RUN cargo build --release
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 # [COMMENT]: Sao chép release binary notification-service sang runtime distroless
-COPY --from=builder /workspace/target/release/notification-service /usr/local/bin/notification-service
+COPY --from=builder /workspace/notification-service/target/release/notification-service /usr/local/bin/notification-service
 
 # [COMMENT]: Thiết lập phân quyền chạy dưới user nonroot (UID 65532:65532)
 USER 65532:65532

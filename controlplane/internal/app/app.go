@@ -8,7 +8,7 @@
 //   - Startup Ordering: Tuân thủ nghiêm ngặt thứ tự khởi động để tránh race condition
 //     hoặc thao tác trên tài nguyên chưa sẵn sàng:
 //       Security -> Observability -> Infra (PSQL / Redis / Kafka) -> Migrations
-//       -> HTTP Engine -> Modules -> gRPC -> Routes.
+//       -> HTTP Engine -> Modules -> Routes.
 //   - Single Cleanup Path: Toàn bộ đường dẫn lỗi bootstrap đều gọi app.Stop() trước khi trả về
 //     lỗi để đảm bảo không rò rỉ tài nguyên (Resource Leak).
 //
@@ -70,7 +70,6 @@ type App struct {
 	modules    *Modules
 	otel       *observability.OTel
 	httpServer *http.Server
-	grpc       *bootstrap.GRPC
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
 	authRds    *goredis.Client
@@ -246,17 +245,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Transport bootstrap: gRPC server.
-	// gRPC lỗi -> job-proxy không kết nối được vào controlplane -> abort.
-	// --------------------------------------------------------------------
-	g, err := bootstrap.InitGRPCServer(&cfg.GRPC, otelObs)
-	if err != nil {
-		app.Stop()
-		return nil, err
-	}
-	app.grpc = g
-
 	// Register tất cả HTTP routes sau khi modules đã wire xong hoàn toàn.
 	NewGlobalRoutes(engine, modules)
 
@@ -285,16 +273,8 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	return app, nil
 }
 
-// Start khởi chạy HTTP và gRPC server bất đồng bộ trên các Goroutine riêng biệt.
+// Start khởi chạy HTTP server bất đồng bộ trên Goroutine riêng biệt.
 func (a *App) Start() error {
-	if a.grpc != nil {
-		go func() {
-			if err := a.grpc.Start(); err != nil {
-				logger.SysError("app", fmt.Sprintf("gRPC server stopped: %v", err))
-			}
-		}()
-	}
-
 	go func() {
 		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.SysError("app", fmt.Sprintf("HTTP server stopped: %v", err))
@@ -330,10 +310,6 @@ func (a *App) Stop() {
 		if err := a.httpServer.Shutdown(httpCtx); err != nil {
 			logger.SysError("app", fmt.Sprintf("HTTP server shutdown error: %v", err))
 		}
-	}
-
-	if a.grpc != nil {
-		a.grpc.Stop()
 	}
 
 	if a.modules != nil {
