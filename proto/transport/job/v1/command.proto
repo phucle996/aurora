@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package aurora.transport.v1;
+
+import "security/job_payload/v1/protected_payload.proto";
+
+// Envelope nhị phân duy nhất cho command JO -> Dataplane.
+// Topic Kafka chịu trách nhiệm route Zone; target_zone_id vẫn được echo để
+// Dataplane fail-close nếu credential/topic bị cross-wire.
+message JobCommandV1 {
+  bytes job_id = 1;
+  uint32 job_version = 2;
+  uint32 attempt = 3;
+  string job_topic = 4;
+  string source_domain = 5;
+  string resource_id = 6;
+  uint32 payload_schema_version = 7;
+  // Serialized ProtectedPayloadV1. Plaintext is forbidden for V1 producers.
+  bytes payload = 8;
+  bytes trace_id = 9;
+  optional uint32 idle_seconds = 10;
+  optional uint64 reconcile_generation = 11;
+  string target_zone_id = 12;
+  uint32 transport_schema_version = 13;
+  // W3C context thuộc producer span thực tế; trace_id phía trên chỉ còn là
+  // correlation ID legacy và không đủ để tái tạo parent/sampling decision.
+  string traceparent = 14;
+  string tracestate = 15;
+  PayloadEncodingV1 payload_encoding = 16;
+  uint64 delivery_epoch = 17;
+  reserved 18 to 31;
+}

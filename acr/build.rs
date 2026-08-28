@@ -8,14 +8,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(false)
         .compile(
             &[
-                "../proto/acr/device.proto",
-                "../proto/iam_auth.proto",
-                "../proto/acr/zone.proto",
-                "../proto/acr/trinity.proto",
-                "../proto/acr/device_presence.proto",
-                "../proto/acr/user_activity.proto",
+                "../proto/iam/session/v1/session.proto",
+                "../proto/iam/authentication/v1/session_recovery.proto",
+                "../proto/iam/authentication/v1/login.proto",
+                "../proto/iam/authentication/v1/social_login.proto",
+                "../proto/iam/authentication/v1/social_link.proto",
+                "../proto/iam/authentication/v1/runtime_read_authorization.proto",
+                "../proto/iam/authentication/v1/role_projection.proto",
+                "../proto/iam/authentication/v1/mfa_setup.proto",
+                "../proto/hierarchy/zone_catalog/v1/zone_catalog.proto",
+                "../proto/iam/trinity/v1/token_verification.proto",
+                "../proto/iam/device_presence/v1/device_presence.proto",
+                "../proto/notification/activity/v1/user_activity.proto",
             ],
-            &["../proto/acr", "../proto"],
+            &["../proto"],
         )?;
     Ok(())
 }

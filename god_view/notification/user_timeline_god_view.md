@@ -99,7 +99,7 @@ flowchart LR
 
 ## Contract and implementation
 
-- `proto/notification-service/user_activity.proto`
+- `proto/notification/activity/v1/user_activity.proto`
 - `notification-service/src/contract/activity.rs`
 - `notification-service/src/inbound/activity_stream.rs`
 - `notification-service/src/infra/scylla/schema.rs`

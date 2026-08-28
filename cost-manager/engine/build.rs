@@ -6,14 +6,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     prost_build::compile_protos(
         &[
-            "../../proto/cost-manager/engine/storage_usage.proto",
-            "../../proto/cost-manager/engine/pricing_event.proto",
-            "../../proto/cost-manager/engine/storage_usage_report.proto",
-            "../../proto/cost-manager/engine/hypervisor_allocation_event.proto",
-            "../../proto/cost-manager/engine/hypervisor_network_usage_report.proto",
-            "../../proto/cost-manager/engine/mail_accepted_usage.proto",
+            "../../proto/billing/storage/usage/v1/usage.proto",
+            "../../proto/billing/pricing/v1/pricing_event.proto",
+            "../../proto/billing/storage/usage/v1/usage_report.proto",
+            "../../proto/billing/hypervisor/allocation/v1/allocation_event.proto",
+            "../../proto/billing/hypervisor/network_usage/v1/usage_report.proto",
+            "../../proto/billing/mail/accepted_usage/v1/accepted_usage.proto",
         ],
-        &["../../proto/cost-manager/engine"],
+        &["../../proto"],
     )?;
     Ok(())
 }

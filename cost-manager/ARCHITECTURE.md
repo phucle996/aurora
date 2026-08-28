@@ -77,7 +77,7 @@ Zone Public Edge -> Zone OTel -> Zone ClickHouse request journal
 ```
 
 The canonical input is
-[`StorageUsageReportV1`](../proto/cost-manager/engine/storage_usage_report.proto).
+[`StorageUsageReportV1`](../proto/billing/storage/usage/v1/usage_report.proto).
 Zone ClickHouse is local journal/aggregation state and does not choose a payer.
 JO validates size, window, identity, correction lineage and SHA-256 before a
 report reaches Redis. The Engine validates again, opens one pricing run for

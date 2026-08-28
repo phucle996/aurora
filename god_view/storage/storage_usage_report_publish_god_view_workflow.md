@@ -239,7 +239,7 @@ wallet/ledger lines in Billing PostgreSQL. Central ClickHouse is not involved.
 
 | Key or contract | Value |
 | --- | --- |
-| Protobuf | `proto/cost-manager/engine/storage_usage_report.proto` |
+| Protobuf | `proto/billing/storage/usage/v1/usage_report.proto` |
 | Usage kinds | `NETWORK_IN/BYTE`, `NETWORK_OUT/BYTE`, `STORAGE/BYTE_HOUR` |
 | Kafka topic | `{topic_prefix}.storage.usage.reports.v1` |
 | Kafka key | `zone_id` |
@@ -279,4 +279,4 @@ wallet/ledger lines in Billing PostgreSQL. Central ClickHouse is not involved.
 - `zone-control/src/storage_report_relay.rs` (independently restartable NATS outbox → Kafka relay and quarantine)
 - `zone-control/src/orchestrator.rs` (assignment, rebalance and lifecycle)
 - `job-orchestrator/src/storage_metering.rs` (Kafka to Shared Redis relay)
-- `proto/cost-manager/engine/storage_usage_report.proto`
+- `proto/billing/storage/usage/v1/usage_report.proto`

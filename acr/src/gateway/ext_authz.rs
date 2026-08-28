@@ -197,6 +197,31 @@ fn rewrite_owner_billing_path(path: &str, tenant_id: Option<&str>) -> Option<Str
     Some(format!("/api/v1/{scope}/billing{suffix}"))
 }
 
+// Workspace selection is untrusted when it arrives as a direct request header,
+// but trusted as a selector after ACR has read it from the session cookie. Envoy
+// applies headers_to_set before headers_to_remove, so the same header must never
+// be emitted in both collections for one authorization response.
+fn apply_workspace_header_boundary(
+    ok: &mut envoy_types::pb::envoy::service::auth::v3::OkHttpResponse,
+    workspace_id: Option<String>,
+) {
+    if let Some(workspace_id) = workspace_id.filter(|value| !value.is_empty()) {
+        ok.headers.push(
+            envoy_types::pb::envoy::config::core::v3::HeaderValueOption {
+                header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                    key: HEADER_X_WORKSPACE_ID.to_string(),
+                    value: workspace_id,
+                }),
+                append_action: envoy_types::pb::envoy::config::core::v3::header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                    as i32,
+                ..Default::default()
+            },
+        );
+    } else {
+        ok.headers_to_remove.push(HEADER_X_WORKSPACE_ID.to_string());
+    }
+}
+
 pub fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1418,10 +1443,6 @@ impl Authorization for ExtAuthzService {
                     "x-aurora-runtime-assertion".to_string(),
                     "x-aurora-runtime-signature".to_string(),
                     "x-aurora-runtime-key-id".to_string(),
-                    // Workspace selection comes only from the workspace_id
-                    // cookie below. Remove a direct browser header first so
-                    // an absent cookie cannot leave caller input upstream.
-                    HEADER_X_WORKSPACE_ID.to_string(),
                 ]);
 
                 if let Some(signed) = zone_control_signed_headers {
@@ -1532,9 +1553,6 @@ impl Authorization for ExtAuthzService {
                         let device_id =
                             extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID)
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                        let workspace_id =
-                            extract_cookie_value(&cookie_header, COOKIE_WORKSPACE_ID);
-
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, c.uid.clone()),
                             (HEADER_X_USER_NAME, c.sub.clone()),
@@ -1567,22 +1585,7 @@ impl Authorization for ExtAuthzService {
                             ok.headers.push(h);
                         }
 
-                        if let Some(ws_id) = workspace_id {
-                            let h = HeaderValueOption {
-                                header: Some(
-                                    envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                                        key: HEADER_X_WORKSPACE_ID.to_string(),
-                                        value: ws_id,
-                                    },
-                                ),
-                                // [SECURITY]: Workspace is part of the compiled
-                                // five-level authorization key, so it must have the
-                                // same overwrite boundary as identity headers.
-                                append_action: 2,
-                                ..Default::default()
-                            };
-                            ok.headers.push(h);
-                        }
+                        apply_workspace_header_boundary(ok, zone_control_workspace_id.clone());
                     }
                 }
 

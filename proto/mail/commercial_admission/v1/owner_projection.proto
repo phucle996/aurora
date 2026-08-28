@@ -1,0 +1,14 @@
+syntax = "proto3";
+package controlplane.mail.admission.v1;
+option go_package = "controlplane/internal/mail/transport/proto;mailproto";
+
+message CommercialAdmissionChangedV1 {
+  string event_id = 1;
+  string owner_id = 2;
+  string owner_type = 3;
+  int64 policy_version = 4;
+  string decision = 5;
+  string restriction_reason = 6;
+  string effective_at = 7;
+  string valid_until = 8;
+}

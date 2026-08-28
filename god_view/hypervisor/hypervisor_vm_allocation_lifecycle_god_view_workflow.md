@@ -153,6 +153,6 @@ prevents concurrent consumers from permanently losing a valid delete event.
 - `controlplane/internal/hypervisor/migrations/000002_hypervisor_tables.up.sql`
 - `job-orchestrator/src/results/hypervisor/vm.rs`
 - `job-orchestrator/src/outbox/hypervisor_allocation.rs`
-- `proto/cost-manager/engine/hypervisor_allocation_event.proto`
+- `proto/billing/hypervisor/allocation/v1/allocation_event.proto`
 - `cost-manager/engine/src/service/hypervisor/allocation_lifecycle.rs`
 - `cost-manager/api/migrations/000004_tables_settlement.up.sql`

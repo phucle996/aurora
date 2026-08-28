@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package aurora.transport.v1;
+
+message DeadLetterRecordV1 {
+  bytes event_id = 1;
+  string source_topic = 2;
+  int32 source_partition = 3;
+  int64 source_offset = 4;
+  string error_code = 5;
+  string error_message = 6;
+  bytes original_payload = 7;
+  int64 failed_at_unix_ms = 8;
+  uint32 schema_version = 9;
+}

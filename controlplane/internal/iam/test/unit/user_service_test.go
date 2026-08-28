@@ -95,7 +95,7 @@ func TestUserServiceDelegatesUserWorkflows(t *testing.T) {
 	svc := iamService.NewUserService(repo, nil, nil, sharedRedis, observability.NewNoopWorkflowRecorder())
 	ctx := context.Background()
 
-	if users, err := svc.ListUsers(ctx, iamEntity.ListUsers{CallerLevel: 1, Limit: 20}); err != nil || len(users) != 1 {
+	if users, err := svc.ListUsers(ctx, iamEntity.ListUsers{ActorUserID: userID, WorkspaceID: uuid.New(), ZoneID: uuid.New(), Limit: 20}); err != nil || len(users) != 1 {
 		t.Fatalf("list users: %#v, %v", users, err)
 	}
 	profile := &iamEntity.GetMyProfile{UserID: userID}

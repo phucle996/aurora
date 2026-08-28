@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package mail.runtime.v1;
+
+option go_package = "controlplane/internal/mail/transport/proto;mailproto";
+
+// Platform producers use protobuf while ordinary customer brokers may use the
+// separately validated fixed JSON envelope with the same bounded semantics.
+message MailDispatchEnvelopeV1 {
+  bytes event_id = 1;
+  uint32 schema_version = 2;
+  string to = 3;
+  map<string, string> parameter = 4;
+  int64 not_after_unix_ms = 5;
+}

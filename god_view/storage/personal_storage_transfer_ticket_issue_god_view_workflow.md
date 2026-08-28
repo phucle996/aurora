@@ -201,7 +201,7 @@ assertion.
 - `zone-control-edge-gateway/authorizer/src/authorization.rs`
 - `zone-control/src/transfer_ticket/app.rs`
 - `zone-control/src/transfer_ticket/store.rs`
-- `proto/zone/transfer_ticket.proto`
+- `proto/zone/transfer/v1/transfer_ticket.proto`
 - `zone-public-edge-gateway/authorizer/src/main.rs`
 
 ## Wallet admission rule

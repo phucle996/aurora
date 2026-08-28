@@ -11,13 +11,15 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type UserRepository struct {
-	db     *pgxpool.Pool
-	schema string
+	db              *pgxpool.Pool
+	schema          string
+	hierarchySchema string
 }
 
 func NewUserRepository(
@@ -25,54 +27,85 @@ func NewUserRepository(
 	db *pgxpool.Pool,
 ) iamRepoInterface.UserRepository {
 	return &UserRepository{
-		db:     db,
-		schema: cfg.SchemaSQL.IAM,
+		db:              db,
+		schema:          cfg.SchemaSQL.IAM,
+		hierarchySchema: cfg.SchemaSQL.Hierarchy,
 	}
 }
 
-// [COMMENT]: ListUsers lấy danh sách các user có level thấp hơn level hiện tại của caller (role_level số lớn hơn)
+// ListUsers keeps the selected workspace as a context-integrity fence for this
+// platform-global read. The route has already authorized the trusted caller
+// level; this repository compares target levels against that exact request gate
+// and does not resolve a different caller role from durable assignments.
 func (r *UserRepository) ListUsers(ctx context.Context, queryEntity iamEntity.ListUsers) ([]iamEntity.ListUsers, error) {
-	// [COMMENT]: JOIN user_role để lấy phân cấp, LEFT JOIN device hoạt động gần nhất theo last_seen_at
-	// để hiển thị IP thực tế và thời điểm hoạt động cuối cùng của user
 	sqlQuery := fmt.Sprintf(`
-		SELECT 
-			u.id, 
-			u.username, 
-			u.email, 
-			u.status, 
-			ur.role_level, 
-			ur.role_name, 
-			EXISTS (
-				SELECT 1 FROM %s.mfa_settings ms 
-				WHERE ms.user_id = u.id
-			) AS mfa_enabled,
-			(
-				SELECT COUNT(*) FROM %s.devices d 
-				WHERE d.user_id = u.id
-			) AS devices_count,
-			COALESCE(up.bio, '') AS bio,
-			COALESCE(up.fullname, '') AS fullname,
-			COALESCE(ld.last_seen_ip::text, '') AS last_seen_ip,
-			ld.last_seen_at,
-			u.created_at, 
-			u.updated_at
-		FROM %s.users u
-		JOIN %s.user_role ur ON u.id = ur.user_id 
-		                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
-		LEFT JOIN %s.user_profiles up ON u.id = up.user_id
-		LEFT JOIN LATERAL (
-			SELECT last_seen_ip, last_seen_at
-			FROM %s.devices
-			WHERE user_id = u.id AND revoked_at IS NULL
-			ORDER BY last_seen_at DESC NULLS LAST
-			LIMIT 1
-		) ld ON true
-		WHERE ur.role_level > $1
-		ORDER BY u.created_at DESC
-		LIMIT $2 OFFSET $3
-	`, r.schema, r.schema, r.schema, r.schema, r.schema, r.schema)
+		WITH selected_workspace AS MATERIALIZED (
+			SELECT workspace.id
+			FROM %s.personal_workspaces workspace
+			WHERE workspace.id = $2
+			  AND workspace.owner_id = $1
+			  AND workspace.zone_id = $3
+		),
+		targets AS MATERIALIZED (
+			SELECT
+				u.id,
+				u.username,
+				u.email,
+				u.status,
+				ur.role_level,
+				ur.role_name,
+				EXISTS (
+					SELECT 1 FROM %s.mfa_settings ms
+					WHERE ms.user_id = u.id
+				) AS mfa_enabled,
+				(
+					SELECT COUNT(*)::integer FROM %s.devices d
+					WHERE d.user_id = u.id
+				) AS devices_count,
+				COALESCE(up.bio, '') AS bio,
+				COALESCE(up.fullname, '') AS fullname,
+				COALESCE(ld.last_seen_ip::text, '') AS last_seen_ip,
+				ld.last_seen_at,
+				u.created_at,
+				u.updated_at
+			FROM %s.users u
+			JOIN %s.user_role ur ON u.id = ur.user_id
+			                        AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+			CROSS JOIN selected_workspace
+			LEFT JOIN %s.user_profiles up ON u.id = up.user_id
+			LEFT JOIN LATERAL (
+				SELECT last_seen_ip, last_seen_at
+				FROM %s.devices
+				WHERE user_id = u.id AND revoked_at IS NULL
+				ORDER BY last_seen_at DESC NULLS LAST
+				LIMIT 1
+			) ld ON true
+			WHERE ur.role_level > $4
+			ORDER BY u.created_at DESC
+			LIMIT $5 OFFSET $6
+		)
+		SELECT
+			EXISTS (SELECT 1 FROM selected_workspace) AS workspace_valid,
+			targets.id, targets.username, targets.email, targets.status,
+			targets.role_level, targets.role_name, targets.mfa_enabled,
+			targets.devices_count, targets.bio, targets.fullname,
+			targets.last_seen_ip, targets.last_seen_at,
+			targets.created_at, targets.updated_at
+		FROM (SELECT 1) anchor
+		LEFT JOIN targets ON TRUE
+		ORDER BY targets.created_at DESC NULLS LAST
+	`, r.hierarchySchema, r.schema, r.schema, r.schema, r.schema, r.schema, r.schema)
 
-	rows, err := r.db.Query(ctx, sqlQuery, queryEntity.CallerLevel, queryEntity.Limit, queryEntity.Offset)
+	rows, err := r.db.Query(
+		ctx,
+		sqlQuery,
+		queryEntity.ActorUserID,
+		queryEntity.WorkspaceID,
+		queryEntity.ZoneID,
+		queryEntity.CallerLevel,
+		queryEntity.Limit,
+		queryEntity.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -80,13 +113,53 @@ func (r *UserRepository) ListUsers(ctx context.Context, queryEntity iamEntity.Li
 
 	var users []iamEntity.ListUsers
 	for rows.Next() {
-		var u iamEntity.ListUsers
-		var level int32
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.RoleName, &u.MFAEnabled, &u.DevicesCount, &u.Bio, &u.Fullname, &u.LastSeenIP, &u.LastSeenAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		var workspaceValid bool
+		var id *uuid.UUID
+		var username, email, status, roleName, bio, fullname, lastSeenIP *string
+		var level, devicesCount *int32
+		var mfaEnabled *bool
+		var lastSeenAt, createdAt, updatedAt *time.Time
+		if err := rows.Scan(
+			&workspaceValid,
+			&id,
+			&username,
+			&email,
+			&status,
+			&level,
+			&roleName,
+			&mfaEnabled,
+			&devicesCount,
+			&bio,
+			&fullname,
+			&lastSeenIP,
+			&lastSeenAt,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
 			return nil, err
 		}
-		u.RoleLevel = level
-		users = append(users, u)
+		if !workspaceValid {
+			return nil, iamTaxonomy.ErrActionNotAllowed
+		}
+		if id == nil {
+			continue
+		}
+		users = append(users, iamEntity.ListUsers{
+			ID:           *id,
+			Username:     *username,
+			Email:        *email,
+			Status:       *status,
+			RoleLevel:    *level,
+			RoleName:     *roleName,
+			MFAEnabled:   *mfaEnabled,
+			DevicesCount: *devicesCount,
+			Bio:          *bio,
+			Fullname:     *fullname,
+			LastSeenIP:   *lastSeenIP,
+			LastSeenAt:   lastSeenAt,
+			CreatedAt:    *createdAt,
+			UpdatedAt:    *updatedAt,
+		})
 	}
 
 	if err := rows.Err(); err != nil {

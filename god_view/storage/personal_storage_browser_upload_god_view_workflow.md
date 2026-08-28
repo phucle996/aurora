@@ -184,4 +184,4 @@ sequenceDiagram
 - `zone-control-edge-gateway/authorizer/src/transfer_ticket.rs`
 - `zone-control/src/transfer_ticket/app.rs`
 - `acr/src/storage/control_assertion.rs`
-- `proto/zone/transfer_ticket.proto`
+- `proto/zone/transfer/v1/transfer_ticket.proto`

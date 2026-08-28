@@ -1,13 +1,11 @@
 # Aurora Proto Contracts — Platform Transport Registry
 
-> **Status:** `security/payload.proto`, `job-orchestrator/command.proto`, `zone/zone_metadata.proto`, `storage/storage_sizes.proto`, `managed_service.proto`, `zone_report.proto` and the
-> storage metering report are canonical root
-> sources. Mọi service phải generate binding từ registry này; không đặt `.proto`
+> **Status:** canonical workflow sources are declared in `registry.yaml`;
+> service-local copies are forbidden. Mọi service phải generate binding từ registry này; không đặt `.proto`
 > source trong subproject.
 >
-> This document is the canonical registry for the future inner Managed Service protobuf.
-> It prevents JO/Dataplane copies from independently choosing package, field number or
-> evolution policy.
+> This document describes the canonical source registry for Aurora protobuf contracts.
+> It prevents consumers from independently choosing package, field number or evolution policy.
 
 ## 0. Source layout and generated bindings
 
@@ -16,15 +14,17 @@ workflow owner, not a generated-language target:
 
 | Path | Source owner |
 | --- | --- |
-| `proto/security/payload.proto` | Security encryption payload contract |
-| `proto/job-orchestrator/command.proto` | JO -> Dataplane Kafka command contract |
-| `proto/zone/zone_metadata.proto` | Zone lifecycle and metadata contract |
-| `proto/storage/storage_sizes.proto` | Storage usage snapshots contract |
-| `proto/{managed_service,zone_report,iam_auth}.proto` | Cross-service contracts |
-| `proto/acr/` | ACR edge contracts |
-| `proto/controlplane/` | Controlplane-owned contracts |
-| `proto/dataplane/`, `proto/job-orchestrator/` | Zone durable transport owners |
-| `proto/notification-service/`, `proto/cost-manager/` | Their respective Central workflow owners |
+| `proto/security/job_payload/v1/protected_payload.proto` | Zone-bound job payload protection contract |
+| `proto/transport/job/v1/` | JO ↔ Dataplane Kafka command/result/DLQ contracts and Zone-local completion receipt |
+| `proto/hypervisor/{vm_lifecycle,image_lifecycle,vm_delete}/` | Hypervisor VM/image command-result contracts and Zone-only delete journal |
+| `proto/storage/{bucket_lifecycle,credential_lifecycle,access_session}/` | Storage workflow command/result and Zone access-capability contracts |
+| `proto/mail/{consumer_lifecycle,template_projection,runtime_projection,dispatch,consumer_drain}/` | Mail lifecycle/projection/dispatch contracts and Zone-only drain journal |
+| `proto/notification/{job,activity}/` | Durable job timeline and self-user activity stream contracts |
+| `proto/zone/{metadata,report,transfer}/` | Zone metadata, health-report and transfer-ticket workflow contracts |
+| `proto/storage/usage_projection/v1/bucket_sizes.proto` | Storage usage snapshot projection contract |
+| `proto/iam/authentication/v1/` | IAM request/reply contracts split by authentication workflow |
+| `proto/billing/` | Commercial admission, pricing, ownership and settlement contracts |
+| `proto/platform/zone/v1/` | Platform Zone projection consumed outside Hierarchy |
 
 Rust consumers compile these sources to Cargo `OUT_DIR`; generated Rust bindings
 are not committed. Generated Go `.pb.go` bindings remain in their import package,
@@ -35,7 +35,7 @@ but no `.proto` source is kept beside them. Moving a source file must preserve i
 
 | Concern | Decision |
 | --- | --- |
-| Canonical source path | `proto/security/payload.proto`, `proto/job-orchestrator/command.proto`, `proto/zone/zone_metadata.proto`, `proto/storage/storage_sizes.proto`, `proto/managed_service.proto`, `proto/zone_report.proto` |
+| Canonical source path | Workflow-versioned paths recorded in `proto/registry.yaml` |
 | Proto packages | `aurora.transport.v1`, `aurora.managedservice.v1`, `zone` |
 | Canonical owners | Job Orchestrator + Dataplane transport owners; Controlplane owns business field semantics |
 | Consumers | JO and Dataplane generate from the exact root source; Controlplane serializes/deserializes through the same generated contract binding |
@@ -46,15 +46,18 @@ The platform outer command is now canonical too:
 
 | Contract | Canonical source | Use |
 | --- | --- | --- |
-| `aurora.transport.v1.JobCommandV1` | `proto/job-orchestrator/command.proto` | JO → DP outer command envelope |
-| `aurora.zone.transfer.v1.TransferGrantV1` / `TransferTicketV1` | `proto/zone/transfer_ticket.proto` | Control Authorizer → Zone Control → Public Edge ticket workflow |
-| `aurora.storage.metering.v1.StorageUsageReportV1` | `proto/cost-manager/engine/storage_usage_report.proto` | Zone-local storage journal → Kafka → JO → Cost Engine settlement |
-| `billing.pricing.storage.v1.StoragePricingSnapshotCacheEntryV1` | `proto/cost-manager/api/billing/pricing/storage/v1/storage_pricing_snapshot.proto` | Storage-owned Cost API Redis L2 snapshot; binary value, not an event |
-| `costmanager.api.billing.pricing.hypervisor.v1.HypervisorPricingSnapshotCacheEntryV1` | `proto/cost-manager/api/billing/pricing/hypervisor/v1/hypervisor_pricing_snapshot.proto` | Module-owned Cost API L2 snapshot read by Controlplane pricing gates; binary value, not an event |
-| `costmanager.api.billing.pricing.mail.v1.MailPricingSnapshotCacheEntryV1` | `proto/cost-manager/api/billing/pricing/mail/v1/mail_pricing_snapshot.proto` | Module-owned Cost API L2 snapshot read by Controlplane pricing gates; binary value, not an event |
-| `aurora.transport.v1.ProtectedPayloadV1` | `proto/security/payload.proto` | Opaque CP outbox payload and byte-identical JO relay |
-| `zone.ZoneReport` | `proto/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
-| `job_lifecycle.JobExecutionResultProto` | `proto/job-orchestrator/job_result.proto` and Dataplane-compatible result contract | DP → JO outer result envelope |
+| `aurora.transport.v1.JobCommandV1` | `proto/transport/job/v1/command.proto` | JO → DP outer command envelope |
+| `hypervisor.VmCreateV1` / `VmDeleteV1` | `proto/hypervisor/vm_lifecycle/v1/vm_lifecycle.proto` | Hypervisor VM command/result lifecycle |
+| `hypervisor.ImageImportV1` / `ImageDeleteV1` | `proto/hypervisor/image_lifecycle/v1/image_lifecycle.proto` | Hypervisor image command/result lifecycle |
+| `hypervisor.VmDeleteJournalV1` | `proto/hypervisor/vm_delete/v1/zone_journal.proto` | Dataplane-only durable provider deletion evidence |
+| `aurora.zone.transfer.v1.TransferGrantV1` / `TransferTicketV1` | `proto/zone/transfer/v1/transfer_ticket.proto` | Control Authorizer → Zone Control → Public Edge ticket workflow |
+| `aurora.storage.metering.v1.StorageUsageReportV1` | `proto/billing/storage/usage/v1/usage_report.proto` | Zone-local storage journal → Kafka → JO → Cost Engine settlement |
+| `billing.pricing.storage.v1.StoragePricingSnapshotCacheEntryV1` | `proto/billing/pricing/storage/v1/storage_pricing_snapshot.proto` | Storage-owned Cost API Redis L2 snapshot; binary value, not an event |
+| `costmanager.api.billing.pricing.hypervisor.v1.HypervisorPricingSnapshotCacheEntryV1` | `proto/billing/pricing/hypervisor/v1/hypervisor_pricing_snapshot.proto` | Module-owned Cost API L2 snapshot read by Controlplane pricing gates; binary value, not an event |
+| `costmanager.api.billing.pricing.mail.v1.MailPricingSnapshotCacheEntryV1` | `proto/billing/pricing/mail/v1/mail_pricing_snapshot.proto` | Module-owned Cost API L2 snapshot read by Controlplane pricing gates; binary value, not an event |
+| `aurora.transport.v1.ProtectedPayloadV1` | `proto/security/job_payload/v1/protected_payload.proto` | Opaque CP outbox payload and byte-identical JO relay |
+| `zone.ZoneReport` | `proto/zone/report/v1/zone_report.proto` | Dataplane key readiness and Zone telemetry report consumed by JO |
+| `job_lifecycle.JobExecutionResultProto` | `proto/transport/job/v1/result.proto` | DP → JO outer result envelope |
 
 ## 1.1 Generic metering event envelope
 

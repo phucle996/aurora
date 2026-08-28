@@ -1,0 +1,27 @@
+syntax = "proto3";
+package iam.rpc;
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
+
+message RecoverUserSessionRequest {
+  string refresh_token = 1;
+  optional string requested_tenant_id = 2;
+}
+
+message RecoverUserSessionResponse {
+  bool credential_valid = 1;
+  bool context_authorized = 2;
+  string user_id = 3;
+  string username = 4;
+  string resolved_tenant_id = 5;
+  reserved 6;
+  reserved "role_id";
+  int32 role_level = 7;
+  string client_device_id = 8;
+  bool personal_fallback_authorized = 9;
+}
+
+message RevokeOpaqueRefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RevokeOpaqueRefreshTokenResponse {}

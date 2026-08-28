@@ -17,6 +17,7 @@ proof that the caller is signed in or authorized for a Zone.
 | Zone population | only cached physical Zones whose status is `active` or `draining` |
 | Virtual global Zone | never included for a user catalog |
 | Upstream HTTP | none |
+| Canonical protobuf | `proto/hierarchy/zone_catalog/v1/zone_catalog.proto` |
 
 The browser chooses a display code only. This call does not store a zone cookie,
 rewrite an owner path, inject trusted headers, validate a session, or grant a

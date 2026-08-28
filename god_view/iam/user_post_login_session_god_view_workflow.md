@@ -345,7 +345,7 @@ sequenceDiagram
 | Opaque recovery | `acr/src/user/recovery.rs` |
 | Logout/runtime revocation | `acr/src/user/revoke.rs`, `acr/src/billing/logout.rs` |
 | Runtime session/index store | `acr/src/infra/redis.rs` |
-| Recovery/revoke protobuf | `proto/iam_auth.proto` |
+| Recovery/revoke protobuf | `proto/iam/authentication/v1/session_recovery.proto` |
 | CP durable refresh service/repository | `controlplane/internal/iam/service/session_refresh_service.go`, `controlplane/internal/iam/repository/refresh_token_repo.go` |
 | CP transport handlers | `controlplane/internal/iam/transport/pubsub/handler/auth.go` |
 | Browser retry/context reset | `cloud-console/src/shared/api/http.ts` |

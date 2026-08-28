@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package trinity.rpc;
+
+message VerifyAdminTrinityTokenRequest {
+  string access_token = 1;
+  string access_key = 2;
+  string access_secret = 3;
+}
+
+message VerifyAdminTrinityTokenResponse {
+  bool valid = 1;
+  string admin_id = 2;
+}
+
+message VerifyUserTrinityTokenRequest {
+  string access_token = 1;
+  string access_key = 2;
+  string access_secret = 3;
+}
+
+message VerifyUserTrinityTokenResponse {
+  bool valid = 1;
+  string user_id = 2;
+}

@@ -253,7 +253,7 @@ sequenceDiagram
 | Responsibility | Source |
 |---|---|
 | ACR logout interception | `acr/src/user/revoke.rs`, `acr/src/gateway/ext_authz.rs` |
-| Shared Redis request/reply envelope | `acr/src/infra/shared_redis.rs`, `proto/iam_auth.proto` |
+| Shared Redis request/reply envelope | `acr/src/infra/shared_redis.rs`, `proto/iam/authentication/v1/session_recovery.proto` |
 | IAM Pub/Sub revoke handler | `controlplane/internal/iam/transport/pubsub/handler/auth.go` |
 | Refresh revoke service/repository | `controlplane/internal/iam/service/session_refresh_service.go`, `repository/refresh_token_repo.go` |
 | Runtime session and alias cleanup | `acr/src/user/session.rs`, `acr/src/billing/session.rs` |

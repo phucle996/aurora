@@ -390,7 +390,7 @@ sequenceDiagram
 | UI challenge/login/signing | [`cloud-console/src/features/auth/api.ts`](../../cloud-console/src/features/auth/api.ts), [`cloud-console/src/lib/security/deviceKey.ts`](../../cloud-console/src/lib/security/deviceKey.ts) |
 | Envoy/ACR interception | [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`acr/src/user/login.rs`](../../acr/src/user/login.rs) |
 | ACR proof/session/Vault | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs), [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
-| Shared contract | [`proto/iam_auth.proto`](../../proto/iam_auth.proto) |
+| Shared contract | [`proto/iam/authentication/v1/login.proto`](../../proto/iam/authentication/v1/login.proto) |
 | CP Redis handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | CP service | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
 | CP repository/device/refresh | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |

@@ -190,5 +190,5 @@ sequenceDiagram
 - Account identifier email and password never change. Social login never creates
   or links an account implicitly.
 - Sources: `acr/src/user/oauth.rs`, `acr/src/user/session_proof.rs`,
-  `proto/iam_auth.proto`, `controlplane/internal/iam/transport/pubsub/handler/auth.go`,
+  `proto/iam/authentication/v1/social_link.proto`, `controlplane/internal/iam/transport/pubsub/handler/auth.go`,
   `service/user_service.go`, `repository/user_repo.go`.

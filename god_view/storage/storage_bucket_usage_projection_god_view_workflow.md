@@ -171,4 +171,4 @@ sequenceDiagram
 - `zone-control/src/zone_storage.rs`
 - `job-orchestrator/src/storage_usage/worker.rs`
 - `job-orchestrator/src/storage_usage/store.rs`
-- `proto/storage/storage_sizes.proto`
+- `proto/storage/usage_projection/v1/bucket_sizes.proto`

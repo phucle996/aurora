@@ -18,6 +18,7 @@ has been registered.
 | Durable effect | IAM device `revoked_at` and device-bound refresh-token deletion |
 | Delivery | At-least-once; Controlplane CTE is idempotent |
 | Local ACR outbox | None |
+| Canonical protobuf | `proto/iam/device_presence/v1/device_presence.proto` |
 
 ## State and payload
 

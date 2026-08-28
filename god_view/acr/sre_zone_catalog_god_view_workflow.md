@@ -18,6 +18,7 @@ Zone, or make a Controlplane HTTP request.
 | Virtual entry | `{code:"global",name:"Global Zone"}` appended by the handler |
 | Response | local `200`, `application/json`, XSSI prefix, code/name entries only |
 | Upstream HTTP | none |
+| Canonical protobuf | `proto/hierarchy/zone_catalog/v1/zone_catalog.proto` |
 
 The handler matches a prefix, not an exact query-free path. Query values do not
 alter catalog construction and must not be used as a control signal.

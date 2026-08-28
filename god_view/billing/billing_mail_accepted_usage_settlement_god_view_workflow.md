@@ -128,7 +128,7 @@ being silently made free.
 
 ## Code map
 
-- `proto/cost-manager/engine/mail_accepted_usage.proto`
+- `proto/billing/mail/accepted_usage/v1/accepted_usage.proto`
 - `dataplane/src/executor/mail/metering/accepted_usage.rs`
 - `dataplane/src/executor/mail/processor/stream.rs`
 - `dataplane/src/executor/mail/runtime/{kafka,redis_stream,nats_jetstream,rabbitmq}.rs`

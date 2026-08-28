@@ -233,4 +233,4 @@ sequenceDiagram
 - Recovery plaintext exists only in the confirmation response and component
   memory. Login-time MFA verification is a different workflow.
 - Sources: `transport/http/handler/mfa_handler.go`, `service/mfa_service.go`,
-  `repository/mfa_repo.go`, `proto/iam_auth.proto`.
+  `repository/mfa_repo.go`, `proto/iam/authentication/v1/mfa_setup.proto`.

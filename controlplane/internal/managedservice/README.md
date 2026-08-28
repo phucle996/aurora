@@ -66,7 +66,7 @@ internal/managedservice/
     ├── http/
     │   ├── dto/           # Request-only JSON structs
     │   └── handler/        # Gin handlers và inline gin.H responses
-    └── proto/              # Generated binding from proto/managed_service.proto
+    └── proto/              # Generated binding from proto/managedservice/lifecycle/v1/managed_service.proto
 ```
 
 Các thư mục layer giữ cùng convention với IAM/Storage. Một file branch sở hữu

@@ -328,7 +328,7 @@ The browser, SDK and Zone authorizers never call Billing synchronously.
 ## Code map
 
 - `job-orchestrator/src/storage_metering.rs`
-- `proto/cost-manager/engine/storage_usage_report.proto`
+- `proto/billing/storage/usage/v1/usage_report.proto`
 - `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - `cost-manager/engine/src/service/storage/pending_activation_reconcile.rs`
 - `cost-manager/engine/src/engine/runtime.rs`

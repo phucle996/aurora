@@ -1,0 +1,511 @@
+version: 1
+
+# Every entry is a workflow-owned canonical source. Service-local and legacy
+# source paths are forbidden.
+contracts:
+  - source: iam/session/v1/session.proto
+    status: canonical
+    owner_workflow: iam.device_runtime_session_revoke
+    god_views:
+      - god_view/iam/user_device_revoke_god_view_workflow.md
+      - god_view/iam/device_session_capacity_eviction_god_view_workflow.md
+    producers: [controlplane, acr]
+    consumers: [acr, controlplane]
+    transports: [shared-redis-stream, grpc]
+
+  - source: iam/device_presence/v1/device_presence.proto
+    status: canonical
+    owner_workflow: iam.device_presence_projection
+    god_views:
+      - god_view/iam/device_presence_projection_god_view_workflow.md
+      - god_view/iam/device_session_capacity_eviction_god_view_workflow.md
+    producers: [acr]
+    consumers: [controlplane]
+    transports: [shared-redis-pubsub, shared-redis-stream]
+
+  - source: hierarchy/zone_catalog/v1/zone_catalog.proto
+    status: canonical
+    owner_workflow: hierarchy.zone_catalog_transport
+    god_views:
+      - god_view/acr/user_zone_catalog_god_view_workflow.md
+      - god_view/acr/sre_zone_catalog_god_view_workflow.md
+      - god_view/hierarchy/zone_list_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [acr, controlplane]
+    transports: [shared-redis-pubsub, grpc]
+
+  - source: security/job_payload/v1/protected_payload.proto
+    status: canonical
+    owner_workflow: platform.zone_bound_job_payload
+    god_views:
+      - god_view/managedservice/managed_service_lifecycle_god_view.md
+    producers: [controlplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka]
+
+  - source: transport/job/v1/command.proto
+    status: canonical
+    owner_workflow: platform.zone_job_command
+    god_views:
+      - god_view/managedservice/managed_service_lifecycle_god_view.md
+    producers: [job-orchestrator]
+    consumers: [dataplane]
+    transports: [kafka]
+
+  - source: transport/job/v1/dead_letter.proto
+    status: canonical
+    owner_workflow: platform.zone_job_quarantine
+    god_views:
+      - god_view/managedservice/managed_service_lifecycle_god_view.md
+    producers: [job-orchestrator, dataplane, zone-control]
+    consumers: [sre-tooling]
+    transports: [kafka]
+
+  - source: transport/job/v1/result.proto
+    status: canonical
+    owner_workflow: platform.zone_job_result
+    god_views:
+      - god_view/managedservice/managed_service_lifecycle_god_view.md
+    producers: [dataplane]
+    consumers: [job-orchestrator]
+    transports: [kafka]
+
+  - source: transport/job/v1/zone_completion_receipt.proto
+    status: canonical
+    owner_workflow: dataplane.zone_job_completion_receipt
+    god_views:
+      - god_view/managedservice/managed_service_lifecycle_god_view.md
+    producers: [dataplane]
+    consumers: [dataplane]
+    transports: [zone-kv]
+
+  - source: hypervisor/vm_lifecycle/v1/vm_lifecycle.proto
+    status: canonical
+    owner_workflow: hypervisor.vm_lifecycle
+    god_views:
+      - god_view/hypervisor/personal_vm_create_god_view.md
+      - god_view/hypervisor/personal_vm_delete_god_view_workflow.md
+    producers: [controlplane, dataplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka]
+
+  - source: hypervisor/image_lifecycle/v1/image_lifecycle.proto
+    status: canonical
+    owner_workflow: hypervisor.image_lifecycle
+    god_views:
+      - god_view/hypervisor/hypervisor_image_registry_god_view.md
+    producers: [controlplane, dataplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka]
+
+  - source: hypervisor/vm_delete/v1/zone_journal.proto
+    status: canonical
+    owner_workflow: hypervisor.personal_vm_delete
+    god_views:
+      - god_view/hypervisor/personal_vm_delete_god_view_workflow.md
+    producers: [dataplane]
+    consumers: [dataplane]
+    transports: [zone-kv]
+
+  - source: storage/bucket_lifecycle/v1/bucket_lifecycle.proto
+    status: canonical
+    owner_workflow: storage.bucket_lifecycle
+    god_views:
+      - god_view/storage/personal_bucket_create_god_view_workflow.md
+      - god_view/storage/personal_bucket_versioning_update_god_view_workflow.md
+      - god_view/storage/personal_bucket_lifecycle_update_god_view_workflow.md
+    producers: [controlplane, dataplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka]
+
+  - source: storage/credential_lifecycle/v1/credential_lifecycle.proto
+    status: canonical
+    owner_workflow: storage.credential_lifecycle
+    god_views:
+      - god_view/storage/personal_storage_credential_create_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka]
+
+  - source: storage/access_session/v1/access_session.proto
+    status: canonical
+    owner_workflow: storage.access_session_prepare
+    god_views:
+      - god_view/storage/personal_storage_access_session_prepare_god_view_workflow.md
+    producers: [controlplane, dataplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka, zone-kv]
+
+  - source: mail/consumer_lifecycle/v1/consumer_lifecycle.proto
+    status: canonical
+    owner_workflow: mail.consumer_lifecycle
+    god_views:
+      - god_view/mail/personal_mail_consumer_create_god_view_workflow.md
+      - god_view/mail/personal_mail_consumer_drain_god_view_workflow.md
+      - god_view/mail/personal_mail_consumer_delete_god_view_workflow.md
+    producers: [controlplane, dataplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka, zone-kv]
+
+  - source: mail/template_projection/v1/template_projection.proto
+    status: canonical
+    owner_workflow: mail.template_runtime_projection
+    god_views:
+      - god_view/mail/personal_mail_consumer_create_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka, zone-kv]
+
+  - source: mail/runtime_projection/v1/reconcile.proto
+    status: canonical
+    owner_workflow: mail.runtime_projection_reconcile
+    god_views:
+      - god_view/mail/personal_mail_consumer_runtime_read_god_view_workflow.md
+      - god_view/mail/tenant_mail_consumer_runtime_read_god_view_workflow.md
+    producers: [job-orchestrator]
+    consumers: [dataplane]
+    transports: [kafka, zone-kv]
+
+  - source: mail/dispatch/v1/dispatch.proto
+    status: canonical
+    owner_workflow: mail.dispatch
+    god_views:
+      - god_view/iam/user_registration_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [dataplane]
+    transports: [kafka]
+
+  - source: mail/consumer_drain/v1/zone_runtime_generation.proto
+    status: canonical
+    owner_workflow: mail.consumer_drain
+    god_views:
+      - god_view/mail/personal_mail_consumer_drain_god_view_workflow.md
+    producers: [dataplane]
+    consumers: [dataplane]
+    transports: [zone-kv]
+
+  - source: notification/job/v1/job_notification.proto
+    status: canonical
+    owner_workflow: notification.job_timeline
+    god_views:
+      - god_view/notification/user_timeline_god_view.md
+    producers: [job-orchestrator]
+    consumers: [notification-service]
+    transports: [shared-redis-stream]
+
+  - source: notification/activity/v1/user_activity.proto
+    status: canonical
+    owner_workflow: notification.user_activity_timeline
+    god_views:
+      - god_view/notification/user_timeline_god_view.md
+    producers: [acr, controlplane, cost-manager]
+    consumers: [notification-service]
+    transports: [shared-redis-stream]
+
+  - source: iam/trinity/v1/token_verification.proto
+    status: canonical
+    owner_workflow: iam.trinity_token_verification
+    god_views:
+      - god_view/notification/user_timeline_god_view.md
+    producers: [acr, notification-service]
+    consumers: [controlplane]
+    transports: [shared-redis-request-reply]
+
+  - source: hypervisor/commercial_admission/v1/owner_projection.proto
+    status: canonical
+    owner_workflow: hypervisor.commercial_admission_projection
+    god_views:
+      - god_view/hypervisor/personal_vm_commercial_admission_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [shared-redis-stream]
+
+  - source: mail/commercial_admission/v1/owner_projection.proto
+    status: canonical
+    owner_workflow: mail.commercial_admission_projection
+    god_views:
+      - god_view/mail/personal_mail_consumer_commercial_admission_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [shared-redis-stream]
+
+  - source: storage/commercial_admission/v1/owner_projection.proto
+    status: canonical
+    owner_workflow: storage.commercial_admission_projection
+    god_views:
+      - god_view/storage/storage_commercial_admission_projection_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [shared-redis-stream]
+
+  - source: storage/commercial_admission/v1/zone_projection.proto
+    status: canonical
+    owner_workflow: storage.commercial_admission_zone_relay
+    god_views:
+      - god_view/storage/storage_commercial_admission_zone_relay_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [zone-control, dataplane]
+    transports: [kafka, zone-kv]
+  - source: billing/admission/v1/commercial_admission.proto
+    status: canonical
+    owner_workflow: billing.commercial_admission
+    god_views:
+      - god_view/hypervisor/personal_vm_commercial_admission_god_view_workflow.md
+      - god_view/storage/storage_commercial_admission_projection_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [shared-redis-stream]
+
+  - source: billing/hypervisor/resource_plan/v1/resource_plan.proto
+    status: canonical
+    owner_workflow: billing.hypervisor_resource_plan
+    god_views:
+      - god_view/hypervisor/personal_vm_create_god_view.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [shared-redis-stream, redis-cache]
+
+  - source: billing/ownership/v1/cost_projection.proto
+    status: canonical
+    owner_workflow: billing.resource_ownership_projection
+    god_views:
+      - god_view/storage/personal_bucket_create_god_view_workflow.md
+    producers: [job-orchestrator]
+    consumers: [cost-manager]
+    transports: [shared-redis-stream]
+
+  - source: billing/pricing/hypervisor/v1/hypervisor_pricing_snapshot.proto
+    status: canonical
+    owner_workflow: billing.hypervisor_pricing_snapshot
+    god_views:
+      - god_view/hypervisor/personal_vm_create_god_view.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [redis-cache]
+
+  - source: billing/pricing/mail/v1/mail_pricing_snapshot.proto
+    status: canonical
+    owner_workflow: billing.mail_pricing_snapshot
+    god_views:
+      - god_view/mail/personal_mail_consumer_commercial_admission_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [controlplane]
+    transports: [redis-cache]
+
+  - source: billing/pricing/storage/v1/storage_pricing_snapshot.proto
+    status: canonical
+    owner_workflow: billing.storage_pricing_snapshot
+    god_views:
+      - god_view/billing/billing_storage_usage_settlement_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [cost-manager, controlplane]
+    transports: [redis-cache]
+
+  - source: billing/pricing/v1/pricing_schedule.proto
+    status: canonical
+    owner_workflow: billing.pricing_schedule
+    god_views:
+      - god_view/billing/billing_storage_usage_settlement_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [cost-manager]
+    transports: [postgresql]
+
+  - source: platform/zone/v1/zone.proto
+    status: canonical
+    owner_workflow: hierarchy.zone_catalog
+    god_views:
+      - god_view/hierarchy/zone_list_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [cost-manager]
+    transports: [grpc]
+
+  - source: billing/hypervisor/allocation/v1/allocation_event.proto
+    status: canonical
+    owner_workflow: billing.hypervisor_allocation_lifecycle
+    god_views:
+      - god_view/hypervisor/hypervisor_vm_allocation_lifecycle_god_view_workflow.md
+    producers: [job-orchestrator]
+    consumers: [cost-manager]
+    transports: [shared-redis-stream]
+
+  - source: billing/hypervisor/network_usage/v1/usage_report.proto
+    status: canonical
+    owner_workflow: billing.hypervisor_network_usage_settlement
+    god_views:
+      - god_view/billing/billing_hypervisor_network_usage_settlement_god_view_workflow.md
+    producers: [dataplane]
+    consumers: [job-orchestrator, cost-manager]
+    transports: [kafka, shared-redis-stream]
+
+  - source: billing/mail/accepted_usage/v1/accepted_usage.proto
+    status: canonical
+    owner_workflow: billing.mail_accepted_usage_settlement
+    god_views:
+      - god_view/billing/billing_mail_accepted_usage_settlement_god_view_workflow.md
+    producers: [dataplane]
+    consumers: [job-orchestrator, cost-manager]
+    transports: [kafka, shared-redis-stream]
+
+  - source: billing/pricing/v1/pricing_event.proto
+    status: canonical
+    owner_workflow: billing.pricing_projection
+    god_views:
+      - god_view/billing/billing_storage_usage_settlement_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [cost-manager]
+    transports: [nats]
+
+  - source: billing/storage/usage/v1/usage.proto
+    status: canonical
+    owner_workflow: billing.storage_usage_projection
+    god_views:
+      - god_view/billing/billing_storage_usage_settlement_god_view_workflow.md
+    producers: [cost-manager]
+    consumers: [cost-manager]
+    transports: [internal]
+
+  - source: billing/storage/usage/v1/usage_report.proto
+    status: canonical
+    owner_workflow: billing.storage_usage_settlement
+    god_views:
+      - god_view/storage/storage_usage_report_publish_god_view_workflow.md
+      - god_view/billing/billing_storage_usage_settlement_god_view_workflow.md
+    producers: [zone-control]
+    consumers: [job-orchestrator, cost-manager]
+    transports: [kafka, shared-redis-stream]
+  - source: iam/authentication/v1/session_recovery.proto
+    status: canonical
+    owner_workflow: iam.session_recovery
+    god_views:
+      - god_view/iam/user_post_login_session_god_view_workflow.md
+      - god_view/iam/user_logout_god_view_workflow.md
+    producers: [acr]
+    consumers: [controlplane]
+    transports: [shared-redis-request-reply]
+
+  - source: iam/authentication/v1/login.proto
+    status: canonical
+    owner_workflow: iam.username_login
+    god_views:
+      - god_view/iam/username_login_god_view_workflow.md
+    producers: [acr]
+    consumers: [controlplane]
+    transports: [shared-redis-request-reply]
+
+  - source: iam/authentication/v1/social_login.proto
+    status: canonical
+    owner_workflow: iam.social_login
+    god_views:
+      - god_view/iam/social_login_god_view_workflow.md
+    producers: [acr]
+    consumers: [controlplane]
+    transports: [shared-redis-request-reply]
+
+  - source: iam/authentication/v1/social_link.proto
+    status: canonical
+    owner_workflow: iam.user_social_link
+    god_views:
+      - god_view/iam/user_social_link_god_view_workflow.md
+    producers: [acr]
+    consumers: [controlplane]
+    transports: [shared-redis-request-reply]
+
+  - source: iam/authentication/v1/runtime_read_authorization.proto
+    status: canonical
+    owner_workflow: iam.runtime_read_authorization
+    god_views:
+      - god_view/mail/personal_mail_consumer_runtime_read_god_view_workflow.md
+      - god_view/mail/tenant_mail_consumer_runtime_read_god_view_workflow.md
+    producers: [acr]
+    consumers: [controlplane]
+    transports: [shared-redis-request-reply]
+
+  - source: iam/authentication/v1/role_projection.proto
+    status: canonical
+    owner_workflow: iam.role_projection
+    god_views:
+      - god_view/iam/username_login_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [acr]
+    transports: [auth-state-redis]
+
+  - source: iam/authentication/v1/mfa_setup.proto
+    status: canonical
+    owner_workflow: iam.mfa_enrollment
+    god_views:
+      - god_view/iam/user_mfa_enrollment_god_view_workflow.md
+    producers: [controlplane]
+    consumers: [controlplane]
+    transports: [auth-state-redis]
+
+  - source: iam/wallet_provision/v1/personal_wallet.proto
+    status: canonical
+    owner_workflow: iam.personal_wallet_provision
+    god_views:
+      - god_view/iam/account_verification_god_view_workflow.md
+      - god_view/billing/billing_personal_wallet_summary_god_view.md
+    producers: [controlplane]
+    consumers: [cost-manager]
+    transports: [shared-redis-stream]
+
+  - source: iam/wallet_provision/v1/tenant_wallet.proto
+    status: canonical
+    owner_workflow: hierarchy.tenant_wallet_provision
+    god_views:
+      - god_view/billing/billing_personal_wallet_summary_god_view.md
+    producers: [controlplane]
+    consumers: [cost-manager]
+    transports: [shared-redis-stream]
+  - source: billing/ownership/v1/resource_ownership_event.proto
+    status: canonical
+    owner_workflow: billing.resource_ownership_projection
+    god_views:
+      - god_view/storage/personal_bucket_create_god_view_workflow.md
+      - god_view/hypervisor/hypervisor_vm_allocation_lifecycle_god_view_workflow.md
+    producers: [job-orchestrator]
+    consumers: [cost-manager]
+    transports: [shared-redis-stream]
+  - source: managedservice/lifecycle/v1/managed_service.proto
+    status: canonical
+    owner_workflow: managedservice.lifecycle
+    god_views:
+      - god_view/managedservice/managed_service_lifecycle_god_view.md
+    producers: [controlplane, dataplane]
+    consumers: [job-orchestrator, dataplane]
+    transports: [postgres-outbox, kafka]
+  - source: storage/usage_projection/v1/bucket_sizes.proto
+    status: canonical
+    owner_workflow: storage.bucket_usage_projection
+    god_views:
+      - god_view/storage/storage_bucket_usage_projection_god_view_workflow.md
+    producers: [zone-control]
+    consumers: [job-orchestrator]
+    transports: [kafka]
+
+  - source: zone/transfer/v1/transfer_ticket.proto
+    status: canonical
+    owner_workflow: storage.transfer_ticket_issue
+    god_views:
+      - god_view/storage/personal_storage_transfer_ticket_issue_god_view_workflow.md
+    producers: [zone-control-authorizer, zone-control]
+    consumers: [zone-control, zone-public-edge-authorizer]
+    transports: [trusted-header, zone-kv]
+
+  - source: zone/metadata/v1/zone_metadata.proto
+    status: canonical
+    owner_workflow: zone.metadata_propagation
+    god_views:
+      - god_view/zone_runtime/zone_metadata_propagation_god_view_workflow.md
+      - god_view/zone_runtime/zone_metadata_repair_god_view_workflow.md
+    producers: [job-orchestrator, zone-control]
+    consumers: [job-orchestrator, zone-control]
+    transports: [kafka]
+
+  - source: zone/report/v1/zone_report.proto
+    status: canonical
+    owner_workflow: zone.health_report_writeback
+    god_views:
+      - god_view/zone_runtime/zone_health_report_writeback_god_view_workflow.md
+    producers: [zone-control]
+    consumers: [job-orchestrator]
+    transports: [kafka]

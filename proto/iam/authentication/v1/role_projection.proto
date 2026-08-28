@@ -1,0 +1,7 @@
+syntax = "proto3";
+package iam.rpc;
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
+
+message RoleEntry {
+  repeated string permissions = 1;
+}

@@ -403,7 +403,7 @@ sequenceDiagram
 | Console OAuth start/callback handling | [`cloud-console/src/features/auth/api.ts`](../../cloud-console/src/features/auth/api.ts), [`cloud-console/src/app/signin/signin-form.tsx`](../../cloud-console/src/app/signin/signin-form.tsx), [`cloud-console/src/app/signin/page.tsx`](../../cloud-console/src/app/signin/page.tsx) |
 | ACR OAuth state/provider verification/session | [`acr/src/user/oauth.rs`](../../acr/src/user/oauth.rs), [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs) |
 | ACR proof/session/Vault | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs), [`acr/src/user/session.rs`](../../acr/src/user/session.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
-| Shared binary contract | [`proto/iam_auth.proto`](../../proto/iam_auth.proto) |
+| Shared binary contract | [`proto/iam/authentication/v1/social_login.proto`](../../proto/iam/authentication/v1/social_login.proto) |
 | CP Redis handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | CP service/domain | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go), [`controlplane/internal/iam/domain/entity/auth.go`](../../controlplane/internal/iam/domain/entity/auth.go) |
 | CP repository/durable identity | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |

@@ -30,7 +30,7 @@ contract admin riêng và không được suy diễn thành customer owner branc
 | Delivery | At-least-once; ordering chỉ theo `instance_id`; external fence là `instance_id + operation_id + generation` |
 | Customer completion | Durable Controlplane operation/API và một Notification timeline row; không dùng NATS runtime hay apply ACK |
 | Telemetry | Zone OTel → VictoriaMetrics/VictoriaLogs → generic `zone-runtime-stream` → Zone Public Edge; read-only, eventual; Managed Service adapter first |
-| Canonical inner protobuf | `proto/managed_service.proto` được freeze ở P00 và generate từ root này tại P01 |
+| Canonical inner protobuf | `proto/managedservice/lifecycle/v1/managed_service.proto` được freeze ở P00 và generate từ root này tại P01 |
 | Related SoT | [Central–Zone transport](../../architecture/CENTRAL_ZONE_TRANSPORT.md), [Notification timeline](../notification/user_timeline_god_view.md), [Dataplane telemetry](../../dataplane/TELEMETRY.md), [Zone Public Edge](../../architecture/ZONE_EDGE.md) |
 
 ## 1. Scope và boundary không được vượt qua

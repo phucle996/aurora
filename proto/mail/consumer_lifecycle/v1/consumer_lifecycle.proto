@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package mail.runtime.v1;
+
+option go_package = "controlplane/internal/mail/transport/proto;mailproto";
+
+enum MailConsumerDesiredState {
+  MAIL_CONSUMER_DESIRED_STATE_UNSPECIFIED = 0;
+  MAIL_CONSUMER_DESIRED_STATE_PAUSED = 1;
+  MAIL_CONSUMER_DESIRED_STATE_ENABLED = 2;
+}
+
+message MailEventMetadataV1 {
+  bytes event_id = 1;
+  uint32 schema_version = 2;
+  int64 occurred_at_unix_ms = 3;
+  string traceparent = 4;
+  string producer = 5;
+}
+
+enum MailStreamType {
+  MAIL_STREAM_TYPE_UNSPECIFIED = 0;
+  MAIL_STREAM_TYPE_KAFKA = 1;
+  MAIL_STREAM_TYPE_REDIS_STREAM = 2;
+  MAIL_STREAM_TYPE_NATS_JETSTREAM = 3;
+  MAIL_STREAM_TYPE_RABBITMQ = 4;
+}
+
+message MailStreamSourceV1 {
+  MailStreamType stream_type = 1;
+  uint32 payload_schema_version = 2;
+  bytes broker_resource_id = 3;
+  bytes payload = 4;
+}
+
+message KafkaStreamPayloadV1 {
+  bytes source_config_envelope = 1;
+  string topic = 2;
+  string consumer_group = 3;
+}
+
+message RedisStreamPayloadV1 {
+  bytes source_config_envelope = 1;
+  string stream_key = 4;
+  string consumer_group = 5;
+}
+
+message NatsJetStreamPayloadV1 {
+  bytes source_config_envelope = 1;
+  string stream_name = 6;
+  string durable_name = 7;
+}
+
+message RabbitMqPayloadV1 {
+  bytes source_config_envelope = 1;
+  string queue_name = 8;
+  string consumer_tag_prefix = 9;
+}
+
+message MailConsumerUpsertV1 {
+  MailEventMetadataV1 metadata = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  MailStreamSourceV1 stream = 4;
+  reserved 5;
+  string template_id = 6;
+  uint64 template_version = 7;
+  string sender_profile_id = 8;
+  uint64 sender_version = 9;
+  MailConsumerDesiredState desired_state = 10;
+  uint32 parallelism = 11;
+  bytes config_sha256 = 12;
+  bytes owner_id = 13;
+  string owner_type = 14;
+  bytes workspace_id = 15;
+  bytes zone_id = 16;
+}
+
+message MailConsumerDrainV1 {
+  uint32 schema_version = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  uint32 parallelism = 4;
+  uint32 timeout_seconds = 5;
+}
+
+message MailConsumerDrainedV1 {
+  uint32 schema_version = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  uint32 settled_slots = 4;
+}
+
+message MailConsumerDeleteV1 {
+  MailEventMetadataV1 metadata = 1;
+  bytes consumer_id = 2;
+  uint64 config_version = 3;
+  reserved 4;
+  reserved "drain_timeout_seconds";
+  string reason = 5;
+}

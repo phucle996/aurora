@@ -133,7 +133,7 @@ settles after suspension and may increase its durable debt.
 
 ## Code map
 
-- `proto/cost-manager/engine/hypervisor_network_usage_report.proto`
+- `proto/billing/hypervisor/network_usage/v1/usage_report.proto`
 - `dataplane/src/executor/hypervisor/network_metering.rs`
 - `job-orchestrator/src/hypervisor_metering.rs`
 - `cost-manager/engine/src/service/hypervisor/network_usage_settlement.rs`

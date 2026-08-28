@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package mail.runtime.v1;
+
+import "mail/consumer_lifecycle/v1/consumer_lifecycle.proto";
+
+option go_package = "controlplane/internal/mail/transport/proto;mailproto";
+
+message MailProjectionReconcileCompletedV1 {
+  MailEventMetadataV1 metadata = 1;
+  uint64 reconcile_generation = 2;
+  int64 completed_at_unix_ms = 3;
+}

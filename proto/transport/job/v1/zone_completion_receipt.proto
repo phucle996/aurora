@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package job_lifecycle;
+
+// Zone-local durable execution receipt. No product routing or resource state.
+// Retained without TTL until terminal acknowledgement and replay retirement
+// are enforced. A duplicate must not reapply a completed mutation merely
+// because publishing/committing its result failed.
+message JobCompletionReceiptV1 {
+  uint32 schema_version = 1;
+  bytes command_sha256 = 2;
+  uint32 attempt = 3;
+  string message = 4;
+  bytes result_payload = 5;
+  uint32 result_payload_schema_version = 6;
+  // Receipt schema 2 stores both terminal outcomes. Schema 1 was success-only.
+  string result_status = 7;
+  optional string error_code = 8;
+}

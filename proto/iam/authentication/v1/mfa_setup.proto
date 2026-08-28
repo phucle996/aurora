@@ -1,0 +1,12 @@
+syntax = "proto3";
+package iam.rpc;
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
+
+message MfaSetupPending {
+  string setup_id = 1;
+  string user_id = 2;
+  string setting_id = 3;
+  string secret_ciphertext = 4;
+  string secret_key_id = 5;
+  uint32 schema_version = 6;
+}

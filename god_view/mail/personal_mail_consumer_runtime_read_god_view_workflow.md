@@ -104,7 +104,7 @@ read không tạo sự kiện tính tiền Storage.
 | Zone verify | `zone-public-edge-gateway/authorizer/src/runtime_read.rs` |
 | Zone route | `zone-public-edge-gateway/envoy.yaml` |
 | Runtime service | `zone-runtime-stream/src/{http,contract,mail,source,stream}.rs` |
-| Registration contract | `proto/controlplane/mail/mail_runtime.proto` |
+| Registration contract | `proto/mail/consumer_lifecycle/v1/consumer_lifecycle.proto` |
 | Zone projection | `dataplane/src/executor/mail/{projection,runtime/configuration}.rs` |
 | Telemetry | `dataplane/src/executor/mail/supervisor/consumer_telemetry.rs` |
 | Production chassis | `k8s/zone-public-edge-gateway.yaml`, `k8s/zone-runtime-stream.yaml` |

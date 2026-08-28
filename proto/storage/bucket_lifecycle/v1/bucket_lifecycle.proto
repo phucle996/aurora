@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package storage;
+
+option go_package = "controlplane/internal/storage/transport/proto;storageproto";
+
+// Cấu hình đồng bộ hóa Bucket vật lý từ Controlplane sang Dataplane
+message BucketCreateSync {
+  string name = 1;
+  string access_key = 2;
+  string secret_key = 3;
+  string policy = 4;
+  bool encrypt_enabled = 5;
+  bool versioning_enabled = 6;
+  bool object_locking_enabled = 7;
+  bool replication_enabled = 8;
+  int64 retention_days = 9;
+  bool legal_hold_enabled = 10;
+  string tags = 11;
+  int64 quota_bytes = 12;
+}
+
+message BucketResizeSync {
+  string bucket_id = 1;
+  string name = 2;
+  int64 current_quota_bytes = 3;
+  int64 requested_quota_bytes = 4;
+}
+
+message BucketDeleteSync {
+  string name = 1;
+  repeated string access_keys = 2;
+}
+
+message BucketVersioningSync {
+  string bucket_id = 1;
+  string name = 2;
+  bool versioning_enabled = 3;
+}
+
+message LifecycleRuleSync {
+  string id = 1;
+  bool enabled = 2;
+  string prefix = 3;
+  int32 expiration_days = 4;
+  int32 noncurrent_version_expiration_days = 5;
+  int32 abort_incomplete_multipart_upload_days = 6;
+}
+
+message BucketLifecycleSync {
+  string bucket_id = 1;
+  string name = 2;
+  repeated LifecycleRuleSync rules = 3;
+}
+
+// Dataplane emits these typed settlement payloads only after the matching
+// MinIO mutation returns success. JO promotes these actual values into Central
+// SoT; the generic outbox never stores Storage-specific target columns.
+message BucketQuotaAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  int64 actual_quota_bytes = 3;
+}
+
+message BucketVersioningAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  bool actual_versioning_enabled = 3;
+}
+
+message BucketLifecycleAppliedV1 {
+  uint32 schema_version = 1;
+  string bucket_id = 2;
+  repeated LifecycleRuleSync actual_rules = 3;
+}

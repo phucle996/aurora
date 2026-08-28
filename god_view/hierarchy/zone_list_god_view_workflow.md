@@ -8,6 +8,8 @@ Returns the current SRE inventory of Zones. It is an admin read workflow; it nei
 |---|---|---|---|
 | SRE admin | `GET /admin/hierarchy/zones` | verified SRE edge session | `hierarchy.zones` |
 
+Canonical request/reply protobuf: `proto/hierarchy/zone_catalog/v1/zone_catalog.proto`.
+
 ## Phase 1 — Client → Envoy → ACR
 
 | Client input | Use |

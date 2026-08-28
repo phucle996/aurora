@@ -113,7 +113,7 @@ retrying.
 - cloud-console/src/app/(console)/storage/[id]/components/ObjectsTab.tsx
 - zone-public-edge-gateway/envoy.yaml
 - zone-public-edge-gateway/authorizer/src/main.rs
-- proto/zone/transfer_ticket.proto
+- proto/zone/transfer/v1/transfer_ticket.proto
 
 Public Authorizer also reads `AURORA_ZONE_ADMISSION/{resource_id}` before it
 CASes the ticket to `Consuming`. Missing, expired or suspended admission is a

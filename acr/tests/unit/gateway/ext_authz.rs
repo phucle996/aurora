@@ -1,9 +1,47 @@
 use super::{
-    authority_matches_origin, is_acr_local_owner_control_path, is_billing_alias_path,
-    is_internal_owner_billing_path, is_internal_owner_path, is_internal_render_context_path,
-    is_personal_only_neutral_path, rewrite_neutral_owner_path, rewrite_owner_billing_path,
-    rewrite_render_context_path,
+    apply_workspace_header_boundary, authority_matches_origin, is_acr_local_owner_control_path,
+    is_billing_alias_path, is_internal_owner_billing_path, is_internal_owner_path,
+    is_internal_render_context_path, is_personal_only_neutral_path, rewrite_neutral_owner_path,
+    rewrite_owner_billing_path, rewrite_render_context_path,
 };
+
+#[test]
+fn workspace_cookie_is_forwarded_without_a_later_envoy_removal() {
+    let mut ok = envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default();
+
+    apply_workspace_header_boundary(
+        &mut ok,
+        Some("03d01948-d58c-467e-968b-9e052217967d".to_string()),
+    );
+
+    assert!(!ok
+        .headers_to_remove
+        .iter()
+        .any(|header| header == "x-workspace-id"));
+    let workspace = ok
+        .headers
+        .iter()
+        .filter_map(|option| option.header.as_ref())
+        .find(|header| header.key == "x-workspace-id")
+        .expect("trusted workspace header must be set for upstream");
+    assert_eq!(workspace.value, "03d01948-d58c-467e-968b-9e052217967d");
+}
+
+#[test]
+fn absent_workspace_cookie_removes_any_client_workspace_header() {
+    let mut ok = envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default();
+
+    apply_workspace_header_boundary(&mut ok, None);
+
+    assert!(ok
+        .headers_to_remove
+        .iter()
+        .any(|header| header == "x-workspace-id"));
+    assert!(ok.headers.iter().all(|option| option
+        .header
+        .as_ref()
+        .is_none_or(|header| header.key != "x-workspace-id")));
+}
 
 #[test]
 fn billing_surface_selects_session_by_console_authority() {

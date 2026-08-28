@@ -11,6 +11,7 @@ import { UserFilters } from "./UserFilters";
 import { UserTable } from "./UserTable";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
+import { useWorkspace } from "@/context/WorkspaceContext";
 
 const getExtendedUserData = (u: PlatformUserItem) => {
   const mfaEnabled = u.mfa_enabled ?? false;
@@ -57,6 +58,8 @@ const getAvatarColors = (name: string) => {
 
 export function UserDirectoryScreen() {
   const scope = useConsoleQueryScope();
+  const { activeWorkspaceID, loading: workspaceLoading } = useWorkspace();
+  const workspaceReady = !workspaceLoading && Boolean(activeWorkspaceID);
 
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState("");
@@ -83,6 +86,7 @@ export function UserDirectoryScreen() {
   } = useQuery<PlatformUserItem[]>({
     queryKey: [...scope, "iam", "users"],
     queryFn: () => listUsers(),
+    enabled: workspaceReady,
   });
 
   // [COMMENT]: Mutation cập nhật trạng thái hoạt động của User và update local cache

@@ -24,6 +24,7 @@ and current-device CTE checks pass.
 | Durable owner | IAM PostgreSQL device row and refresh-token rows |
 | Runtime cleanup | Shared Redis Stream consumed by ACR replicas |
 | Commit boundary | PostgreSQL CTE commit precedes Shared Redis `XADD`; runtime cleanup is at-least-once. |
+| Canonical protobuf | `proto/iam/session/v1/session.proto` |
 
 ## REST input contract
 

@@ -1,0 +1,15 @@
+syntax = "proto3";
+package iam.rpc;
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
+
+message RuntimeReadAuthorizationRequestV1 {
+  bytes actor_user_id = 1;
+  string actor_username = 2;
+  bytes tenant_id = 3;
+  bytes workspace_id = 4;
+  string permission = 5;
+}
+
+message RuntimeReadAuthorizationResponseV1 {
+  bool allowed = 1;
+}

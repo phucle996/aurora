@@ -14,7 +14,7 @@ RUN apt-get update && \
 
 COPY cost-manager/engine/Cargo.toml cost-manager/engine/Cargo.lock* ./
 COPY cost-manager/engine/build.rs* ./
-COPY proto/cost-manager/engine/ /app/proto/cost-manager/engine/
+COPY proto/billing/ /app/proto/billing/
 
 # [COMMENT]: Tạo src giả lập để Cargo compile cached dependencies trước
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release

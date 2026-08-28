@@ -15,6 +15,7 @@ from the durable device session-capacity eviction workflow.
 | Durable sink | IAM PostgreSQL device `last_seen_*` columns |
 | Fan-out fence | `SET NX iam:device:dispatch:presence:{event_id}` for two minutes |
 | Authorization use | Never |
+| Canonical protobuf | `proto/iam/device_presence/v1/device_presence.proto` |
 
 ## Payload boundary
 

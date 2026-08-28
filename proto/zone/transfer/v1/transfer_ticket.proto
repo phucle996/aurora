@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package aurora.zone.transfer.v1;
+
+message TransferGrantV1 {
+  uint32 schema_version = 1;
+  string capability = 2;
+  string actor_id = 3;
+  string zone_id = 4;
+  string resource_id = 5;
+  string workspace_id = 6;
+  string operation_id = 7;
+  string method = 8;
+  string public_path = 9;
+  optional uint64 content_length = 10;
+  optional string content_type = 11;
+  bool one_time = 12;
+}
+
+enum TransferTicketState {
+  TRANSFER_TICKET_STATE_UNSPECIFIED = 0;
+  TRANSFER_TICKET_STATE_ISSUED = 1;
+  TRANSFER_TICKET_STATE_CONSUMING = 2;
+  TRANSFER_TICKET_STATE_REVOKED = 3;
+}
+
+message TransferTicketV1 {
+  uint32 schema_version = 1;
+  string ticket_id = 2;
+  string secret_sha256 = 3;
+  string capability = 4;
+  string actor_id = 5;
+  string zone_id = 6;
+  string resource_id = 7;
+  string workspace_id = 8;
+  string operation_id = 9;
+  string method = 10;
+  string public_path = 11;
+  optional uint64 content_length = 12;
+  optional string content_type = 13;
+  uint64 issued_at_unix_seconds = 14;
+  uint64 expires_at_unix_seconds = 15;
+  bool one_time = 16;
+  TransferTicketState state = 17;
+}

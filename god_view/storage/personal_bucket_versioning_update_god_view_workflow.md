@@ -396,7 +396,7 @@ sequenceDiagram
 ## Code map
 
 - **God View SoT**: `god_view/storage/personal_bucket_versioning_update_god_view_workflow.md`
-- **Protobuf Contract**: `proto/dataplane/storage_job.proto` (`BucketVersioningSync`)
+- **Protobuf Contract**: `proto/storage/bucket_lifecycle/v1/bucket_lifecycle.proto` (`BucketVersioningSync`)
 - **Controlplane Route**: `controlplane/internal/storage/route.go`
 - **Controlplane Handler**: `controlplane/internal/storage/transport/http/handler/personal_bucket_handler.go` (`UpdateVersioning`)
 - **Controlplane Service**: `controlplane/internal/storage/service/personal_bucket_service.go` (`UpdateBucketVersioning`)

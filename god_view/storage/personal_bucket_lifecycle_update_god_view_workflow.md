@@ -446,7 +446,7 @@ sequenceDiagram
 ## Code map
 
 - **God View SoT**: `god_view/storage/personal_bucket_lifecycle_update_god_view_workflow.md`
-- **Protobuf Contract**: `proto/dataplane/storage_job.proto` (`BucketLifecycleSync`, `LifecycleRuleSync`)
+- **Protobuf Contract**: `proto/storage/bucket_lifecycle/v1/bucket_lifecycle.proto` (`BucketLifecycleSync`, `LifecycleRuleSync`)
 - **Controlplane Route**: `controlplane/internal/storage/route.go`
 - **Controlplane Handler**: `controlplane/internal/storage/transport/http/handler/personal_bucket_handler.go` (`UpdateLifecycle`, `GetLifecycle`)
 - **Controlplane Service**: `controlplane/internal/storage/service/personal_bucket_service.go` (`UpdateBucketLifecycle`, `GetBucketLifecycle`)

@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package mail.runtime.v1;
+
+// Zone-local Consumer ownership journal. Entries have no lease TTL and are
+// unique per process incarnation, not keyed by a reusable slot fencing token.
+// Removing an entry requires confirmed broker settlement (or no broker start).
+message MailConsumerRuntimeGenerationV1 {
+  uint32 schema_version = 1;
+  string consumer_id = 2;
+  string generation_id = 3;
+  uint64 config_version = 4;
+  uint32 slot = 5;
+  uint64 fencing_token = 6;
+  string lease_owner_id = 7;
+  // 1=registered but no broker start, 2=broker may have work, 3=settled.
+  uint32 phase = 8;
+}

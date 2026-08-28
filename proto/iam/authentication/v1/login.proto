@@ -1,0 +1,67 @@
+syntax = "proto3";
+package iam.rpc;
+option go_package = "controlplane/internal/iam/transport/proto;iamproto";
+
+message VerifyUserCredentialsRequest {
+  string username = 1;
+  string password = 2;
+  string client_device_id = 3;
+  string device_name = 4;
+  string device_type = 5;
+  string public_key = 6;
+  string signature = 7;
+  bool trust_device = 8;
+  string client_ip = 9;
+  string user_agent = 10;
+  string tenant_domain = 11;
+}
+
+message VerifyUserCredentialsResponse {
+  bool valid = 1;
+  string user_id = 2;
+  reserved 3;
+  reserved "role_id";
+  int32 level = 4;
+  string tenant_id = 5;
+  string client_device_id = 6;
+  string refresh_token = 7;
+  string error_message = 8;
+  string username = 9;
+  string client_proof_public_key = 10;
+  int64 refresh_token_expires_at = 11;
+  bool mfa_required = 12;
+  string mfa_setting_id = 13;
+}
+
+message VerifyMfaChallengeRequest {
+  string operation_id = 1;
+  string user_id = 2;
+  string username = 3;
+  string tenant_domain = 4;
+  string method = 5;
+  string code = 6;
+  string client_device_id = 7;
+  string device_name = 8;
+  string device_type = 9;
+  string public_key = 10;
+  bool trust_device = 11;
+  string client_ip = 12;
+  string user_agent = 13;
+  string mfa_setting_id = 14;
+}
+
+message VerifyMfaChallengeResponse {
+  bool valid = 1;
+  string user_id = 2;
+  reserved 3;
+  reserved "role_id";
+  int32 level = 4;
+  string tenant_id = 5;
+  string client_device_id = 6;
+  string refresh_token = 7;
+  string error_message = 8;
+  string username = 9;
+  string client_proof_public_key = 10;
+  int64 refresh_token_expires_at = 11;
+  string tenant_code = 12;
+}

@@ -41,7 +41,19 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
+	actorUserID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
 	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
@@ -54,11 +66,18 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 	}
 
 	users, err := h.userSvc.ListUsers(ctx, iamEntity.ListUsers{
+		ActorUserID: actorUserID,
+		WorkspaceID: workspaceID,
+		ZoneID:      zoneID,
 		CallerLevel: callerLevel,
 		Limit:       limit,
 		Offset:      offset,
 	})
 	if err != nil {
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			apires.RespondForbidden(c, "workspace context is not valid")
+			return
+		}
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal error occurred")
 		return

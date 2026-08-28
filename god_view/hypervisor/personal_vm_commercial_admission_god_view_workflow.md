@@ -69,4 +69,4 @@ commercial-admission read that could race the mutation.
 | Business validation | `controlplane/internal/hypervisor/service/commercial_admission_projection_service.go` |
 | Monotonic projection | `controlplane/internal/hypervisor/repository/commercial_admission_projection_repo.go` |
 | Flat command/projection | `controlplane/internal/hypervisor/domain/entity/commercial_admission_projection.go` |
-| Minimal wire contract | `proto/cost-manager/api/billing/admission/v1/commercial_admission.proto` |
+| Minimal wire contract | `proto/billing/admission/v1/commercial_admission.proto` |
