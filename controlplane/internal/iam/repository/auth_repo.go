@@ -11,13 +11,11 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	iamproto "controlplane/internal/iam/transport/proto"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/protobuf/proto"
 )
 
 type AuthRepository struct {
@@ -81,7 +79,7 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 		ID:           id,
 		Username:     uname,
 		Email:        email,
-		PasswordHash: &passwordHash,
+		PasswordHash: passwordHash,
 		Status:       iamEntity.UserStatus(status),
 		Level:        roleLevel,
 	}
@@ -104,17 +102,19 @@ func (r *AuthRepository) LoginUserTenant(
 			u.password_hash,
 			u.status,
 			t.id::text   AS tenant_id,
-			mr.role_level
+			t.code       AS tenant_code,
+			revision.role_level
 		FROM %s.users u
 		JOIN %s.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
 		JOIN %s.tenants t             ON t.id = tm.tenant_id AND t.status='active'
 		JOIN %s.tenant_domains td     ON td.tenant_id = t.id AND lower(td.domain) = lower($2)
 		JOIN %s.membership_role mr            ON mr.membership_id=tm.id
 		                                    AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
+		JOIN %s.tenant_role_revisions revision ON revision.id=mr.tenant_role_revision_id
 		WHERE u.username = $1
-		ORDER BY mr.role_level ASC
+		ORDER BY revision.role_level ASC
 		LIMIT 1
-	`, r.schema, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.schema)
+	`, r.schema, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.schema, r.schema)
 
 	var (
 		id           uuid.UUID
@@ -123,6 +123,7 @@ func (r *AuthRepository) LoginUserTenant(
 		passwordHash string
 		status       string
 		tenantID     string
+		tenantCode   string
 		roleLevel    int32
 	)
 	if err := r.db.QueryRow(ctx, query, username, tenantDomain).Scan(
@@ -132,6 +133,7 @@ func (r *AuthRepository) LoginUserTenant(
 		&passwordHash,
 		&status,
 		&tenantID,
+		&tenantCode,
 		&roleLevel,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -144,16 +146,17 @@ func (r *AuthRepository) LoginUserTenant(
 		ID:           id,
 		Username:     uname,
 		Email:        email,
-		PasswordHash: &passwordHash,
+		PasswordHash: passwordHash,
 		Status:       iamEntity.UserStatus(status),
 		TenantID:     &tenantID,
+		TenantCode:   &tenantCode,
 		Level:        roleLevel,
 	}
 
 	return loginUser, nil
 }
 
-func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
+func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, record *iamEntity.RegisterAccount) error {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("iam repo: begin register tx: %w", err)
@@ -179,14 +182,14 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	if _, err := tx.Exec(
 		ctx,
 		userQuery,
-		user.ID,
-		user.Username,
-		user.Email,
-		user.Phone,
-		user.PasswordHash,
-		string(user.Status),
-		user.CreatedAt,
-		user.UpdatedAt,
+		record.ID,
+		record.Username,
+		record.Email,
+		record.Phone,
+		record.PasswordHash,
+		string(record.Status),
+		record.CreatedAt,
+		record.UpdatedAt,
 	); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -217,14 +220,14 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	if _, err := tx.Exec(
 		ctx,
 		profileQuery,
-		profile.UserID,
-		profile.Fullname,
-		profile.AvatarURL,
-		profile.Bio,
-		profile.Locale,
-		profile.Timezone,
-		profile.CreatedAt,
-		profile.UpdatedAt,
+		record.ID,
+		record.Fullname,
+		nil,
+		nil,
+		record.Locale,
+		record.Timezone,
+		record.CreatedAt,
+		record.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("iam repo: insert user profile: %w", err)
 	}
@@ -232,20 +235,7 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("iam repo: commit register tx: %w", err)
 	}
-
 	return nil
-}
-
-func (r *AuthRepository) IsUserActive(ctx context.Context, userID uuid.UUID) (bool, error) {
-	var active bool
-	query := fmt.Sprintf(`SELECT status = 'active' FROM %s.users WHERE id = $1`, r.schema)
-	if err := r.db.QueryRow(ctx, query, userID).Scan(&active); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, iamTaxonomy.ErrUserNotFound
-		}
-		return false, fmt.Errorf("iam repo: read user activation state: %w", err)
-	}
-	return active, nil
 }
 
 // ActivateUser commits account activation and per-active-Zone personal workspace
@@ -283,65 +273,28 @@ func (r *AuthRepository) ActivateUser(
 		return fmt.Errorf("user status is %s, cannot activate", status)
 	}
 	// [COMMENT]: Retry của active user cũng tải role chuẩn và INSERT ON CONFLICT để self-heal dữ liệu legacy thiếu role.
-	queryRolePerms := fmt.Sprintf(`
-		SELECT r.id, r.name, r.role_level, r.version,
-		       COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
-		FROM %s.platform_roles r
-		LEFT JOIN %s.platform_role_permissions rp ON rp.role_id = r.id
-		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
-		WHERE r.code = $1
-	`, r.schema, r.schema, r.schema)
-
-	rows, err := tx.Query(ctx, queryRolePerms, activation.RoleCode)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
+	queryRole := fmt.Sprintf(`
+		SELECT id, name, role_level, version
+		FROM %s.platform_roles
+		WHERE code = $1
+	`, r.schema)
 
 	var roleID uuid.UUID
 	var roleName string
 	var roleLevel int
 	var roleVersion int64
-	var perms []string
-	roleFound := false
-
-	for rows.Next() {
-		roleFound = true
-		var mod, obj, beh string
-		if err := rows.Scan(&roleID, &roleName, &roleLevel, &roleVersion, &mod, &obj, &beh); err != nil {
-			return fmt.Errorf("iam repo: scan role permission row: %w", err)
+	if err := tx.QueryRow(ctx, queryRole, activation.RoleCode).Scan(&roleID, &roleName, &roleLevel, &roleVersion); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return iamTaxonomy.ErrRoleNotFound
 		}
-		if mod != "" && obj != "" && beh != "" {
-			// [COMMENT]: Ghép thành key 5 cấp định dạng: <username>:<workspace_id>:<module>:<object>:<behavior>
-			// WorkspaceID sử dụng nil UUID ("00000000-0000-0000-0000-000000000000") đại diện cho platform scope
-			permKey := fmt.Sprintf("%s:00000000-0000-0000-0000-000000000000:%s:%s:%s", username, mod, obj, beh)
-			perms = append(perms, permKey)
-		}
+		return fmt.Errorf("iam repo: query platform role: %w", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	// [COMMENT]: Nếu không tìm thấy thông tin role nào từ câu query JOIN ở trên
-	if !roleFound {
-		return iamTaxonomy.ErrRoleNotFound
-	}
-
-	// [COMMENT]: 3. Serialize danh sách permissions thành Protobuf binary byte array
-	roleEntry := &iamproto.RoleEntry{
-		Permissions: perms,
-	}
-	binaryBytes, err := proto.Marshal(roleEntry)
-	if err != nil {
-		return fmt.Errorf("iam repo: marshal role entry: %w", err)
-	}
-
-	// [COMMENT]: 4. Chèn mapping user_role mới vào database
+	// [COMMENT]: 3. Chèn mapping user_role mới vào database
 	queryInsertRole := fmt.Sprintf(`
 		INSERT INTO %s.user_role (
-			id, user_id, username, workspace_id, role_id, role_name, role_level, role_version, list_perm, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+			id, user_id, username, workspace_id, role_id, role_name, role_level, role_version, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
 		ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING
 	`, r.schema)
 
@@ -354,7 +307,6 @@ func (r *AuthRepository) ActivateUser(
 		roleName,
 		roleLevel,
 		roleVersion,
-		binaryBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("iam repo: insert user role assignment: %w", err)
@@ -466,8 +418,7 @@ func (r *AuthRepository) VerifyExternalIdentity(
 	}
 
 	var userID uuid.UUID
-	var username, email, status string
-	var userPasswordHash *string
+	var username, email, userPasswordHash, status string
 	if identityFound {
 		userID = identity.UserID
 		if err := tx.QueryRow(ctx, fmt.Sprintf(`

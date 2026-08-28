@@ -17,9 +17,9 @@ func TestRBACBinaryPermissionEvaluation(t *testing.T) {
 
 	expectedKey := []byte("root:*:iam:users:read")
 
-	// [COMMENT]: Kiểm tra việc tìm kiếm key 5 cấp tĩnh trong chuỗi binary list_perm
+	// [COMMENT]: Kiểm tra key 5 cấp sau khi runtime compile immutable revision.
 	if !bytes.Contains(listPerm, expectedKey) {
-		t.Errorf("binary list_perm missing expected key %q", expectedKey)
+		t.Errorf("compiled role entry missing expected key %q", expectedKey)
 	} else {
 		t.Logf("PASS: Successfully matched 5-level binary permission key %q", expectedKey)
 	}

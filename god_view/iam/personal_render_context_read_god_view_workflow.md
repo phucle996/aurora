@@ -17,9 +17,10 @@ chọn personal owner context rồi rewrite internal `/personal` route.
 Direct `/personal/**` browser paths are denied. A concrete tenant session is a
 different tenant workflow, not a fallback result here.
 
-**Implementation gap:** the current personal route has no
-`middleware.Authorize`; handler/repository load compiled assignment but do not
-enforce required middleware permission/level. This docs refactor changes no code.
+The route intentionally does not add a second generic `middleware.Authorize`:
+this workflow returns the caller's capability projection itself. The repository
+still rechecks the active durable assignment and compiles its current role
+mappings JIT; missing or stale authority fails closed.
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -43,20 +44,20 @@ sequenceDiagram
     end
 ```
 
-## Phase 2 — Controlplane reads personal compiled authority
+## Phase 2 — Controlplane reads personal authority and compiles its projection JIT
 
 ```mermaid
 sequenceDiagram
     participant R as Gin router
-    participant H as RenderContextHandler
-    participant S as RenderContextService
-    participant Repo as RenderContextRepository
+    participant H as PersonalRenderContextHandler
+    participant S as PersonalRenderContextService
+    participant Repo as PersonalRbacRepository
     participant DB as PostgreSQL
     R->>H: Internal personal context route
     H->>S: GetPersonalRenderContext verified user
-    S->>Repo: Load personal compiled assignment
-    Repo->>DB: Read active user_role
-    DB-->>Repo: Five-part permission entries
+    S->>Repo: Load personal authority
+    Repo->>DB: Read active user_role plus current role mappings
+    Repo->>Repo: Compile deterministic five-part permission entries
     Repo-->>S: Personal permissions
     S->>S: Sort capabilities and navigation
     S-->>H: Personal context
@@ -73,6 +74,5 @@ sequenceDiagram
 
 | Key / record | Purpose |
 |---|---|
-| L1 `user_role:{user_id}` | Sensitive in-process personal compiled `RoleEntry` |
-| PostgreSQL `user_role` | Durable personal authorization SoT |
-
+| L1 `user_role:{user_id}` | Sensitive in-process JIT-compiled personal `RoleEntry` |
+| PostgreSQL `user_role` + role mappings | Durable personal authorization SoT |

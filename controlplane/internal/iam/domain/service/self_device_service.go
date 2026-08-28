@@ -13,11 +13,8 @@ type SelfDeviceService interface {
 	// [COMMENT]: ListMyDevices lấy danh sách thiết bị của user cá nhân
 	ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error)
 
-	// [COMMENT]: RegisterLoginDevice đăng ký thiết bị đăng nhập
+	// [COMMENT]: RegisterLoginDevice đăng ký hoặc cập nhật thiết bị đăng nhập (Atomic CTE Upsert)
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
-
-	// [COMMENT]: ResolveDeviceIDByKey trả về client_device_id của thiết bị khớp với user và khóa công khai
-	ResolveDeviceIDByKey(ctx context.Context, userID uuid.UUID, devicePublicKey string) (*uuid.UUID, error)
 
 	// [COMMENT]: RevokeMyDevice thu hồi 1 thiết bị cụ thể và xóa runtime session trực tiếp trên Auth Redis
 	RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID uuid.UUID, currentDeviceID uuid.UUID) error

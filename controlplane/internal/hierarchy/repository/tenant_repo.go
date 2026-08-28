@@ -38,47 +38,13 @@ func NewTenantRepoImpl(cfg *config.Config, db *pgxpool.Pool) hierarchyRepoInterf
 }
 
 func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.CreateTenant) (*hierarchyEntity.CreateTenant, error) {
-	// [COMMENT]: Permission catalog and the compiled RoleEntry must be read from
-	// one snapshot. A concurrent catalog change is handled by a later explicit
-	// role-version workflow, never by silently mixing two permission sets.
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	// [COMMENT]: Tenant, root revision, normalized permissions, owner assignment
+	// and Cost outbox record settle in one PostgreSQL transaction.
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("tenant repo: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-
-	rows, err := tx.Query(ctx, fmt.Sprintf(`
-		SELECT module, object, behavior
-		FROM %s.permissions
-		ORDER BY module, object, behavior
-	`, r.iamSchema))
-	if err != nil {
-		return nil, fmt.Errorf("tenant repo: read permission catalog: %w", err)
-	}
-	defer rows.Close()
-
-	permissions := make([]string, 0, 64)
-	for rows.Next() {
-		var module, object, behavior string
-		if err := rows.Scan(&module, &object, &behavior); err != nil {
-			return nil, fmt.Errorf("tenant repo: scan permission catalog: %w", err)
-		}
-		permissions = append(permissions, fmt.Sprintf(
-			"%s:00000000-0000-0000-0000-000000000000:%s:%s:%s",
-			in.ID.String(), module, object, behavior,
-		))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("tenant repo: iterate permission catalog: %w", err)
-	}
-	rows.Close()
-	if len(permissions) == 0 {
-		return nil, hierarchyTaxonomy.ErrPreconditionFailed
-	}
-	binaryData, err := proto.MarshalOptions{Deterministic: true}.Marshal(&iamproto.RoleEntry{Permissions: permissions})
-	if err != nil {
-		return nil, fmt.Errorf("tenant repo: marshal tenant root role entry: %w", err)
-	}
 
 	// Shared Redis is only a bounded relay after commit; the outbox row is the durability
 	// boundary if either the producer or any downstream consumer is unavailable.
@@ -96,7 +62,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 		return nil, fmt.Errorf("tenant repo: marshal tenant wallet provision event: %w", err)
 	}
 
-	// [COMMENT]: Tenant, owner membership, normalized root definition, compiled
+	// [COMMENT]: Tenant, owner membership, normalized root definition, pinned
 	// assignment and the Cost outbox command cross schemas but share one PostgreSQL commit.
 	query := fmt.Sprintf(`
 		WITH tenant_inserted AS (
@@ -105,7 +71,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 			RETURNING id, code, name, status, created_at, updated_at
 		), domain_inserted AS (
 			INSERT INTO %s.tenant_domains (id, tenant_id, domain, is_primary, created_at)
-			SELECT $14, id, $15, true, $5 FROM tenant_inserted
+			SELECT $13, id, $14, true, $5 FROM tenant_inserted
 			RETURNING id
 		), membership_inserted AS (
 			INSERT INTO %s.tenant_memberships
@@ -114,37 +80,44 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 			RETURNING id
 		), role_inserted AS (
 			INSERT INTO %s.tenant_roles
-				(id, tenant_id, code, name, description, role_level, version, created_by, created_at, updated_at)
-			SELECT $8, id, 'tenant_root', 'Tenant Root', 'Highest authority inside this tenant', 3, 1, $6, $5, $5
+				(id, tenant_id, code, current_version, created_by, created_at, updated_at)
+			SELECT $8, id, 'tenant_root', 1, $6, $5, $5
 			FROM tenant_inserted
-			RETURNING id
+			RETURNING id, tenant_id
+		), revision_inserted AS (
+			INSERT INTO %s.tenant_role_revisions
+				(id, tenant_role_id, tenant_id, version, name, description, role_level, created_by, created_at)
+			SELECT gen_random_uuid(), id, tenant_id, 1, 'Tenant Root',
+			       'Highest authority inside this tenant', 3, $6, $5
+			FROM role_inserted
+			RETURNING id, tenant_role_id
 		), role_permissions_inserted AS (
-			INSERT INTO %s.tenant_role_permissions (tenant_role_id, permission_id, created_at)
-			SELECT role_inserted.id, permissions.id, $5
-			FROM role_inserted CROSS JOIN %s.permissions
+			INSERT INTO %s.tenant_role_revision_permissions (tenant_role_revision_id, permission_id, created_at)
+			SELECT revision_inserted.id, permissions.id, $5
+			FROM revision_inserted CROSS JOIN %s.permissions
 			RETURNING permission_id
 		), assignment_inserted AS (
 			INSERT INTO %s.membership_role
-				(id, membership_id, tenant_role_id, workspace_id, role_name, role_level, role_version, list_perm, created_at, updated_at)
-			SELECT $9, membership_inserted.id, role_inserted.id,
+				(id, membership_id, tenant_role_id, tenant_role_revision_id, workspace_id, created_at, updated_at)
+			SELECT $9, membership_inserted.id, role_inserted.id, revision_inserted.id,
 			       '00000000-0000-0000-0000-000000000000'::uuid,
-			       'Tenant Root', 3, 1, $10, $5, $5
-			FROM membership_inserted CROSS JOIN role_inserted
+			       $5, $5
+			FROM membership_inserted CROSS JOIN role_inserted CROSS JOIN revision_inserted
 			WHERE EXISTS (SELECT 1 FROM role_permissions_inserted)
 			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.cost_outbox_records
 				(event_id, event_type, aggregate_type, aggregate_id, aggregate_version,
 				 owner_id, owner_type, actor_user_id, payload, occurred_at)
-			SELECT $11, '%s', 'TENANT', tenant_inserted.id, 1,
-			       tenant_inserted.id, 'TENANT', $6, $12, $13
+			SELECT $10, '%s', 'TENANT', tenant_inserted.id, 1,
+			       tenant_inserted.id, 'TENANT', $6, $11, $12
 			FROM tenant_inserted CROSS JOIN assignment_inserted
 			RETURNING event_id
 		)
 		SELECT tenant_inserted.id, tenant_inserted.code, tenant_inserted.name,
 		       tenant_inserted.status, tenant_inserted.created_at, tenant_inserted.updated_at
 		FROM tenant_inserted CROSS JOIN domain_inserted CROSS JOIN outbox_inserted
-	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema, tenantWalletProvisionRequestedEventType)
+	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema, tenantWalletProvisionRequestedEventType)
 
 	out := &hierarchyEntity.CreateTenant{
 		OwnerID:           in.OwnerID,
@@ -156,7 +129,7 @@ func (r *TenantRepoImpl) CreateTenant(ctx context.Context, in *hierarchyEntity.C
 	}
 	err = tx.QueryRow(ctx, query,
 		in.ID, in.Code, in.Name, string(in.Status), in.CreatedAt, in.OwnerID,
-		in.OwnerMembershipID, in.TenantRootRoleID, in.MembershipRoleID, binaryData,
+		in.OwnerMembershipID, in.TenantRootRoleID, in.MembershipRoleID,
 		eventID, eventPayload, occurredAt, in.DomainID, in.PrimaryDomain,
 	).Scan(&out.ID, &out.Code, &out.Name, &out.Status, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
@@ -241,15 +214,16 @@ func (r *TenantRepoImpl) MarkTenantWalletProvisionDead(ctx context.Context, id i
 
 func (r *TenantRepoImpl) ListTenantsForUser(ctx context.Context, userID uuid.UUID) ([]hierarchyEntity.TenantCatalogItem, error) {
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
-		SELECT t.id, t.code, t.name, d.domain, COALESCE(mr.role_name, ''), COALESCE(mr.role_level, 99)
+		SELECT t.id, t.code, t.name, d.domain, COALESCE(revision.name, ''), COALESCE(revision.role_level, 99)
 		FROM %s.tenant_memberships m
 		JOIN %s.tenants t ON t.id = m.tenant_id AND t.status = 'active'
 		JOIN %s.tenant_domains d ON d.tenant_id = t.id AND d.is_primary = true
 		LEFT JOIN %s.membership_role mr ON mr.membership_id = m.id
 			AND mr.workspace_id = '00000000-0000-0000-0000-000000000000'::uuid
+		LEFT JOIN %s.tenant_role_revisions revision ON revision.id=mr.tenant_role_revision_id
 		WHERE m.user_id = $1 AND m.status = 'active'
 		ORDER BY lower(t.name), t.id
-	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema), userID)
+	`, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema), userID)
 	if err != nil {
 		return nil, fmt.Errorf("tenant repo: list user tenant catalog: %w", err)
 	}

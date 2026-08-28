@@ -27,8 +27,8 @@ internal/iam/
 │   ├── auth_repo.go     # Lookup identity/login transaction
 │   ├── refresh_token_repo.go # Durable user/device credential + recovery authority snapshot
 │   ├── mfa_repo.go      # Thao tác bảng mfa_settings, mfa_recovery_codes (Replay prevention)
-│   ├── rbac_platform_repo.go # platform_roles + user_role compiled grants
-│   ├── rbac_tenant_repo.go   # tenant_roles + membership_role compiled grants
+│   ├── personal_rbac_repo.go # platform_roles + user_role compiled grants
+│   ├── tenant_rbac_repo.go   # tenant_roles + membership_role compiled grants
 │   ├── render_context_repo.go # L1-only personal/tenant permission projections
 │   └── user_repo.go     # Thao tác thông tin user profiles & status
 ├── route.go             # Đăng ký HTTP Gin Routes & Middleware Authorization
@@ -83,7 +83,7 @@ Module IAM bao gồm 7 phân vùng nghiệp vụ chính chạy xuyên suốt qua
 3. **User Management (`user`)**:
    * Quản lý đăng ký tài khoản, xác thực Email token, trạng thái tài khoản (`pending-active`, `active`, `suspended`, `disabled`), cập nhật Profile, và chống tái sử dụng lịch sử mật khẩu (`password_history`).
 4. **RBAC & Authorization (`rbac`)**:
-   * Quản lý danh mục quyền tĩnh 3 cấp (`<module>:<object>:<behavior>`), biên dịch danh sách quyền tĩnh thành dạng nhị phân Protobuf (`list_perm`), phân định phạm vi Platform/Tenant/Workspace, và kiểm soát rào cản phân cấp quản trị (`role_level` hierarchy fence).
+   * Quản lý danh mục quyền tĩnh 3 cấp (`<module>:<object>:<behavior>`), pin tenant assignment vào immutable role revision rồi biên dịch runtime projection trực tiếp từ revision mapping, phân định phạm vi Platform/Tenant/Workspace, và kiểm soát rào cản phân cấp quản trị (`role_level` hierarchy fence).
 5. **Device-Bound Auth (`device`)**:
    * Đăng ký thiết bị đăng nhập, lưu trữ Khóa công khai Ed25519 & Fingerprint, theo dõi `client_device_id`, và thu hồi thiết bị đáng ngờ.
 6. **External Identity & SSO (`external_identity`)**:
@@ -139,9 +139,10 @@ không sinh personal/tenant variant.
 
 * `permissions` là catalog ba bậc không có ownership.
 * `platform_roles`/`platform_role_permissions` và
-  `tenant_roles`/`tenant_role_permissions` là hai branch ownership riêng.
-* `user_role` và `membership_role` chỉ giữ compiled Protobuf permission key năm
-  bậc cùng role version/hash.
+  `tenant_roles`/`tenant_role_revisions`/`tenant_role_revision_permissions` là
+  hai branch ownership riêng.
+* `membership_role` pin immutable tenant revision và compiled Protobuf
+  permission key năm bậc; thay đổi role head không tự rewrite assignment.
 * `000006_iam_seeds.up.sql` chỉ dành cho clean install từ con số 0, không dùng
   `ON CONFLICT` để merge state cũ và không seed tenant role.
 * Thay đổi cần reconcile dữ liệu đã tồn tại phải dùng forward migration

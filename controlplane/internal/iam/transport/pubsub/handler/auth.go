@@ -419,6 +419,15 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		return
 	}
 
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "OAuth browser"
+	}
+	deviceType := strings.TrimSpace(req.DeviceType)
+	if deviceType == "" {
+		deviceType = "unknown"
+	}
+
 	// [COMMENT]: Xây dựng ExternalLoginRequest chuẩn hóa từ thông tin xác thực danh tính
 	loginReq := iamEntity.ExternalLoginRequest{
 		OperationID: operationID,
@@ -430,14 +439,14 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 			DisplayName:     req.DisplayName,
 			AvatarURL:       optionalString(req.AvatarUrl),
 		},
-		DevicePublicKey: req.PublicKey,
+		DevicePublicKey: strings.TrimSpace(req.PublicKey),
 		TrustDevice:     req.TrustDevice,
-		DeviceName:      req.DeviceName,
-		DeviceType:      req.DeviceType,
+		DeviceName:      deviceName,
+		DeviceType:      deviceType,
 		ClientDeviceID:  clientDeviceID,
 		ZoneCode:        req.ZoneCode,
-		RemoteIP:        req.ClientIp,
-		UserAgent:       req.UserAgent,
+		RemoteIP:        strings.TrimSpace(req.ClientIp),
+		UserAgent:       strings.TrimSpace(req.UserAgent),
 	}
 	// [COMMENT]: Gọi AuthService để xác thực danh tính bên ngoài và thiết lập phiên đăng nhập
 	res, err := h.authService.VerifyExternalIdentity(ctx, loginReq)
@@ -580,17 +589,27 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		}
 	}
 
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "unknown device"
+	}
+	deviceType := strings.TrimSpace(req.DeviceType)
+	if deviceType == "" {
+		deviceType = "unknown"
+	}
+
 	// [COMMENT]: Xây dựng LoginRequest chuẩn hóa gửi xuống domain layer
 	loginReq := iamEntity.LoginRequest{
-		Username:        req.Username,
+		Username:        strings.TrimSpace(req.Username),
 		Password:        req.Password,
-		DevicePublicKey: req.PublicKey,
+		DevicePublicKey: strings.TrimSpace(req.PublicKey),
 		TrustDevice:     req.TrustDevice,
-		DeviceName:      req.DeviceName,
+		DeviceName:      deviceName,
+		DeviceType:      deviceType,
 		ClientDeviceID:  clientDeviceID,
-		TenantDomain:    req.TenantDomain,
-		RemoteIP:        req.ClientIp,
-		UserAgent:       req.UserAgent,
+		TenantDomain:    strings.ToLower(strings.TrimSpace(req.TenantDomain)),
+		RemoteIP:        strings.TrimSpace(req.ClientIp),
+		UserAgent:       strings.TrimSpace(req.UserAgent),
 	}
 
 	// [COMMENT]: Gọi AuthService để xác thực thông tin đăng nhập người dùng
@@ -717,6 +736,15 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 			return
 		}
 	}
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = "unknown device"
+	}
+	deviceType := strings.TrimSpace(req.DeviceType)
+	if deviceType == "" {
+		deviceType = "unknown"
+	}
+
 	// [COMMENT]: Gọi AuthService thực hiện xác minh mã MFA (TOTP / Recovery Code) và thiết lập session
 	result, err := h.authService.VerifyMfaLogin(ctx, iamEntity.MFALoginRequest{
 		UserID:          userID,
@@ -727,8 +755,8 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 		Code:            strings.TrimSpace(req.Code),
 		DevicePublicKey: strings.TrimSpace(req.PublicKey),
 		TrustDevice:     req.TrustDevice,
-		DeviceName:      strings.TrimSpace(req.DeviceName),
-		DeviceType:      strings.TrimSpace(req.DeviceType),
+		DeviceName:      deviceName,
+		DeviceType:      deviceType,
 		ClientDeviceID:  clientDeviceID,
 		RemoteIP:        strings.TrimSpace(req.ClientIp),
 		UserAgent:       strings.TrimSpace(req.UserAgent),

@@ -8,9 +8,9 @@ import (
 )
 
 func TestBootstrapPersonalWalletProvisionMigrationEmitsCanonicalIAMCommands(t *testing.T) {
-	sql, err := migrations.Files.ReadFile("000009_bootstrap_personal_wallet_provision.up.sql")
+	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
 	if err != nil {
-		t.Fatalf("read bootstrap personal wallet provision migration: %v", err)
+		t.Fatalf("read IAM bootstrap seed migration: %v", err)
 	}
 
 	source := string(sql)
@@ -48,7 +48,6 @@ func TestBootstrapPersonalWalletProvisionMigrationEmitsCanonicalIAMCommands(t *t
 		"'USD'",
 		"JOIN users AS user_account",
 		"user_account.status = 'active'",
-		"ON CONFLICT (event_id) DO NOTHING",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("bootstrap wallet migration must contain %q", required)
@@ -63,23 +62,6 @@ func TestBootstrapPersonalWalletProvisionMigrationEmitsCanonicalIAMCommands(t *t
 	} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("IAM bootstrap migration must not contain Cost-owned mutation %q", forbidden)
-		}
-	}
-}
-
-func TestBootstrapPersonalWalletProvisionMigrationRequiresAllCanonicalIdentities(t *testing.T) {
-	sql, err := migrations.Files.ReadFile("000009_bootstrap_personal_wallet_provision.up.sql")
-	if err != nil {
-		t.Fatalf("read bootstrap personal wallet provision migration: %v", err)
-	}
-
-	source := string(sql)
-	for _, required := range []string{
-		"IF active_bootstrap_count <> 5 THEN",
-		"RAISE EXCEPTION 'IAM bootstrap wallet provision requires five active canonical identities",
-	} {
-		if !strings.Contains(source, required) {
-			t.Fatalf("bootstrap wallet migration must fail closed with %q", required)
 		}
 	}
 }

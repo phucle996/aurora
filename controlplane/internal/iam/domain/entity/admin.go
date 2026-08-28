@@ -9,9 +9,7 @@ import (
 type AdminDevice struct {
 	ID                   uuid.UUID
 	DeviceName           string
-	DeviceType           *string
-	OSName               *string
-	BrowserName          *string
+	DeviceType           string
 	PublicKey            string
 	PublicKeyFingerprint string
 	ClientDeviceID       *string

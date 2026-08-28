@@ -21,9 +21,7 @@ type Device struct {
 	ID                   uuid.UUID
 	UserID               uuid.UUID
 	DeviceName           string
-	DeviceType           *string
-	OSName               *string
-	BrowserName          *string
+	DeviceType           string
 	PublicKey            string
 	PublicKeyFingerprint string
 	ClientDeviceID       *uuid.UUID

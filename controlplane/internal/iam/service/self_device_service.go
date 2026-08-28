@@ -169,21 +169,20 @@ func (s *SelfDeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 	return &iamEntity.DeviceListResult{Devices: items, Total: int64(len(items))}, nil
 }
 
-// [COMMENT]: RegisterLoginDevice đăng ký thiết bị mới đăng nhập, khởi tạo UUID v7 cho thiết bị
+// [COMMENT]: RegisterLoginDevice đăng ký thiết bị mới đăng nhập hoặc cập nhật thiết bị hiện có (Atomic CTE Upsert)
 func (s *SelfDeviceService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return nil, fmt.Errorf("iam device service: generate device uuid v7: %w", err)
+	if device.ID == uuid.Nil {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return nil, fmt.Errorf("iam device service: generate device uuid v7: %w", err)
+		}
+		device.ID = id
 	}
-	device.ID = id
+	if device.PublicKeyFingerprint == "" && device.PublicKey != "" {
+		fp := sha256.Sum256([]byte(device.PublicKey))
+		device.PublicKeyFingerprint = hex.EncodeToString(fp[:])
+	}
 	return s.deviceRepo.UpsertLoginDevice(ctx, device)
-}
-
-// [COMMENT]: ResolveDeviceIDByKey trả về ID thiết bị khớp với fingerprint của khóa công khai
-func (s *SelfDeviceService) ResolveDeviceIDByKey(ctx context.Context, userID uuid.UUID, devicePublicKey string) (*uuid.UUID, error) {
-	fp := sha256.Sum256([]byte(devicePublicKey))
-	fingerprint := hex.EncodeToString(fp[:])
-	return s.deviceRepo.ResolveDeviceIDByFingerprint(ctx, userID, fingerprint)
 }
 
 func (s *SelfDeviceService) RevokeMyDevice(
@@ -226,7 +225,7 @@ func (s *SelfDeviceService) RevokeMyDevice(
 	// [COMMENT]: Thu hồi trực tiếp các session thuộc clientDeviceID trên Auth Redis
 	deviceIndexKey := "iam:device_access_index:{" + clientDeviceID.String() + "}"
 	userIndexKey := "iam:user_access_index:{" + userID.String() + "}"
-	_ = s.authRedis.Eval(ctx, `
+	if err := s.authRedis.Eval(ctx, `
 		local dev_key = KEYS[1]
 		local user_key = KEYS[2]
 		local sessions = redis.call('SMEMBERS', dev_key)
@@ -241,7 +240,9 @@ func (s *SelfDeviceService) RevokeMyDevice(
 		end
 		redis.call('DEL', dev_key)
 		return #sessions
-	`, []string{deviceIndexKey, userIndexKey}).Err()
+	`, []string{deviceIndexKey, userIndexKey}).Err(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -279,7 +280,7 @@ func (s *SelfDeviceService) LogoutOtherDevices(
 	userIndexKey := "iam:user_access_index:{" + userID.String() + "}"
 	for _, devID := range revokeResult.RevokedDeviceIDs {
 		deviceIndexKey := "iam:device_access_index:{" + devID.String() + "}"
-		_ = s.authRedis.Eval(ctx, `
+		if err := s.authRedis.Eval(ctx, `
 			local dev_key = KEYS[1]
 			local user_key = KEYS[2]
 			local sessions = redis.call('SMEMBERS', dev_key)
@@ -294,7 +295,9 @@ func (s *SelfDeviceService) LogoutOtherDevices(
 			end
 			redis.call('DEL', dev_key)
 			return #sessions
-		`, []string{deviceIndexKey, userIndexKey}).Err()
+		`, []string{deviceIndexKey, userIndexKey}).Err(); err != nil {
+			return 0, err
+		}
 	}
 
 	return revokeResult.Affected, nil

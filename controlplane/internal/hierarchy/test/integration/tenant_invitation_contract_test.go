@@ -19,11 +19,14 @@ func TestTenantInvitationBaselineKeepsOwnershipAndOneTimeGuards(t *testing.T) {
 	for _, required := range []string{
 		"create table if not exists platform_roles",
 		"create table if not exists tenant_roles",
+		"create table if not exists tenant_role_revisions",
+		"create table if not exists tenant_role_revision_permissions",
 		"create table if not exists membership_role",
 		"create table if not exists tenant_invitations",
 		"unique (tenant_id, target_user_id)",
 		"octet_length(token_hash) = 32",
 		"inviter_user_id <> target_user_id",
+		"tenant_role_revision_id uuid not null",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("missing tenant RBAC invariant %q", required)

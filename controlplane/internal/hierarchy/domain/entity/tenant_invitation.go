@@ -7,22 +7,23 @@ import (
 )
 
 type CreateTenantInvitation struct {
-	ID               uuid.UUID
-	TenantID         uuid.UUID
-	InviterUserID    uuid.UUID
-	TargetIdentifier string
-	TargetByEmail    bool
-	TargetUserID     uuid.UUID
-	TenantRoleID     uuid.UUID
-	WorkspaceID      uuid.UUID
-	RoleCode         string
-	RoleName         string
-	RoleLevel        int
-	RoleVersion      int64
-	Token            string
-	TokenHash        []byte
-	ExpiresAt        time.Time
-	CreatedAt        time.Time
+	ID                   uuid.UUID
+	TenantID             uuid.UUID
+	InviterUserID        uuid.UUID
+	TargetIdentifier     string
+	TargetByEmail        bool
+	TargetUserID         uuid.UUID
+	TenantRoleID         uuid.UUID
+	TenantRoleRevisionID uuid.UUID
+	WorkspaceID          uuid.UUID
+	RoleCode             string
+	RoleName             string
+	RoleLevel            int
+	RoleVersion          int64
+	Token                string
+	TokenHash            []byte
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
 }
 
 type PreviewTenantInvitation struct {

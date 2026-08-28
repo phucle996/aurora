@@ -20,12 +20,12 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 	if strings.Contains(strings.ToUpper(source), "ON CONFLICT") {
 		t.Fatal("zero-state baseline must not merge or patch pre-existing data")
 	}
-	if strings.Count(source, "iam_seed_role_entry(array_agg(") != 2 {
-		t.Fatal("global and workspace assignments must both compile from normalized mappings")
+	if strings.Contains(source, "iam_seed_role_entry") {
+		t.Fatal("000006 must not embed static protobuf compilers, role entries are compiled JIT")
 	}
-	if !strings.Contains(source, "u.username || ':00000000-0000-0000-0000-000000000000:'") ||
-		!strings.Contains(source, "user_account.username || ':' || workspace.id::text || ':'") {
-		t.Fatal("every seeded user_role assignment must carry the full five-level identity/workspace prefix")
+	if !strings.Contains(source, "'00000000-0000-0000-0000-000000000000'::uuid") ||
+		!strings.Contains(source, "hierarchy.personal_workspaces") {
+		t.Fatal("seeded user_role assignments must bind platform scope and personal workspace")
 	}
 	for _, roleCode := range []string{
 		"platform_root", "platform_admin", "billing_admin", "platform_support_operator", "platform_user",
@@ -123,26 +123,6 @@ func TestPlatformUserCanManagePersonalWorkspaces(t *testing.T) {
 	}
 }
 
-func TestPlatformUserWorkspaceGrantMigrationRefreshesCompiledRoles(t *testing.T) {
-	sql, err := migrations.Files.ReadFile("000008_platform_user_workspace_permissions.up.sql")
-	if err != nil {
-		t.Fatalf("read platform user workspace grant migration: %v", err)
-	}
-
-	source := string(sql)
-	for _, required := range []string{
-		"INSERT INTO platform_role_permissions",
-		"WHERE role.code = 'platform_user'",
-		"WITH compiled AS",
-		"UPDATE user_role AS assignment",
-		"iam_workspace_role_entry",
-	} {
-		if !strings.Contains(source, required) {
-			t.Fatalf("workspace grant migration must contain %q", required)
-		}
-	}
-}
-
 func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
 	sql, err := migrations.Files.ReadFile("000002_iam_tables.up.sql")
 	if err != nil {
@@ -154,6 +134,62 @@ func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
 	if !strings.Contains(migration, "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_role_platform") ||
 		!strings.Contains(migration, "WHERE workspace_id = '00000000-0000-0000-0000-000000000000'") {
 		t.Fatal("IAM tables migration must enforce one nil-workspace platform role per user")
+	}
+}
+
+func TestIAMCleanBaselineKeepsPinnedTenantGrantsAndNoRemovedDeviceOutbox(t *testing.T) {
+	tablesSQL, err := migrations.Files.ReadFile("000002_iam_tables.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM tables migration: %v", err)
+	}
+	indexesSQL, err := migrations.Files.ReadFile("000003_iam_indexes.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM indexes migration: %v", err)
+	}
+	triggersSQL, err := migrations.Files.ReadFile("000005_iam_triggers.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM triggers migration: %v", err)
+	}
+
+	tables := string(tablesSQL)
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS tenant_role_revisions",
+		"CREATE TABLE IF NOT EXISTS tenant_role_revision_permissions",
+		"tenant_role_revision_id uuid NOT NULL",
+		"current_version bigint NOT NULL",
+	} {
+		if !strings.Contains(tables, required) {
+			t.Fatalf("clean tenant RBAC baseline is missing %q", required)
+		}
+	}
+	for _, sectionName := range []string{"membership_role", "tenant_invitations"} {
+		_, section, found := strings.Cut(tables, "CREATE TABLE IF NOT EXISTS "+sectionName)
+		if !found {
+			t.Fatalf("missing %s table", sectionName)
+		}
+		section, _, _ = strings.Cut(section, ");")
+		for _, forbidden := range []string{"list_perm bytea", "permission_hash bytea", "role_name varchar", "role_level integer", "role_version bigint"} {
+			if strings.Contains(section, forbidden) {
+				t.Fatalf("%s must not duplicate immutable revision field %q", sectionName, forbidden)
+			}
+		}
+		if !strings.Contains(section, "tenant_role_revision_id uuid NOT NULL") {
+			t.Fatalf("%s must pin one immutable revision", sectionName)
+		}
+	}
+	if !strings.Contains(string(triggersSQL), "trg_tenant_role_revisions_immutable") ||
+		!strings.Contains(string(triggersSQL), "trg_tenant_role_revision_permissions_immutable") {
+		t.Fatal("tenant role revision tables must be protected by immutable triggers")
+	}
+
+	for name, source := range map[string]string{
+		"tables":   tables,
+		"indexes":  string(indexesSQL),
+		"triggers": string(triggersSQL),
+	} {
+		if strings.Contains(source, "device_runtime_revoke_outbox_records") {
+			t.Fatalf("clean %s baseline references removed device runtime outbox", name)
+		}
 	}
 }
 

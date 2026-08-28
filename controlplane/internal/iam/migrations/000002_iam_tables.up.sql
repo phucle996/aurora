@@ -60,9 +60,7 @@ CREATE TABLE IF NOT EXISTS devices (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_name varchar(255) NOT NULL,
-    device_type varchar(64) NULL,
-    os_name varchar(128) NULL,
-    browser_name varchar(128) NULL,
+    device_type varchar(64) NOT NULL DEFAULT 'unknown',
     public_key text NOT NULL,
     public_key_fingerprint varchar(255) NOT NULL,
     risk_flags jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -92,15 +90,13 @@ CREATE TABLE IF NOT EXISTS external_identities (
     avatar_url varchar(2048) NULL,
     last_login_at timestamptz NULL,
     linked_at timestamptz NOT NULL DEFAULT now(),
-    revoked_at timestamptz NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT external_identities_provider_subject_uk UNIQUE (provider, provider_subject)
 );
 
-COMMENT ON TABLE external_identities IS 'Verified external login identities.';
-ALTER TABLE external_identities ADD COLUMN IF NOT EXISTS linked_at timestamptz NOT NULL DEFAULT now();
-COMMENT ON COLUMN external_identities.linked_at IS 'Most recent successful explicit link time. Re-linking a previously revoked provider advances this timestamp.';
+COMMENT ON TABLE external_identities IS 'Live verified external login identities. Unlink hard-deletes the binding; account timeline retains user-visible history.';
+COMMENT ON COLUMN external_identities.linked_at IS 'Most recent successful explicit link time for the current live binding.';
 
 -- [COMMENT]: Bảng cài đặt MFA bảo mật của người dùng (Mỗi người dùng có tối đa 1 bản ghi cấu hình)
 CREATE TABLE IF NOT EXISTS mfa_settings (
@@ -190,33 +186,47 @@ CREATE TABLE IF NOT EXISTS platform_role_permissions (
     PRIMARY KEY (role_id, permission_id)
 );
 
--- [COMMENT]: A tenant role is an immutable V1 definition owned by exactly one
--- tenant. Permission rows stay normalized at three levels; only assignments
--- below contain the compiled five-level Protobuf projection.
+-- [COMMENT]: tenant_roles is the stable identity/head. Editable fields and
+-- permissions live in immutable revisions; current_version only selects the
+-- revision used for new grants and never rewrites an existing assignment.
 CREATE TABLE IF NOT EXISTS tenant_roles (
     id uuid PRIMARY KEY,
     tenant_id uuid NOT NULL REFERENCES hierarchy.tenants(id) ON DELETE CASCADE,
     code varchar(100) NOT NULL,
-    name varchar(255) NOT NULL,
-    description text NULL,
-    role_level integer NOT NULL,
-    version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
+    current_version bigint NOT NULL DEFAULT 1 CHECK (current_version > 0),
     created_by uuid NOT NULL REFERENCES users(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT tenant_roles_role_level_check CHECK (role_level >= 3),
     CONSTRAINT tenant_roles_code_format CHECK (code ~ '^[a-z0-9_]+$'),
-    CONSTRAINT tenant_roles_tenant_code_uk UNIQUE (tenant_id, code)
+    CONSTRAINT tenant_roles_tenant_code_uk UNIQUE (tenant_id, code),
+    CONSTRAINT tenant_roles_id_tenant_uk UNIQUE (id, tenant_id)
 );
 
-CREATE TABLE IF NOT EXISTS tenant_role_permissions (
-    tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS tenant_role_revisions (
+    id uuid PRIMARY KEY,
+    tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE RESTRICT,
+    tenant_id uuid NOT NULL,
+    version bigint NOT NULL CHECK (version > 0),
+    name varchar(255) NOT NULL,
+    description text NULL,
+    role_level integer NOT NULL,
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT tenant_role_revisions_role_level_check CHECK (role_level >= 3),
+    CONSTRAINT tenant_role_revisions_role_version_uk UNIQUE (tenant_role_id, version),
+    CONSTRAINT tenant_role_revisions_id_role_uk UNIQUE (id, tenant_role_id),
+    CONSTRAINT tenant_role_revisions_role_tenant_fk
+        FOREIGN KEY (tenant_role_id, tenant_id) REFERENCES tenant_roles(id, tenant_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tenant_role_revision_permissions (
+    tenant_role_revision_id uuid NOT NULL REFERENCES tenant_role_revisions(id) ON DELETE RESTRICT,
     permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE RESTRICT,
     created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_role_id, permission_id)
+    PRIMARY KEY (tenant_role_revision_id, permission_id)
 );
 
--- [COMMENT]: Bảng gán vai trò người dùng theo workspace/platform kèm danh sách binary permissions đã biên dịch
+-- [COMMENT]: Bảng gán vai trò người dùng theo workspace/platform
 CREATE TABLE IF NOT EXISTS user_role (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -226,51 +236,44 @@ CREATE TABLE IF NOT EXISTS user_role (
     role_name varchar(255) NOT NULL,
     role_level integer NOT NULL,
     role_version bigint NOT NULL DEFAULT 1 CHECK (role_version > 0),
-    list_perm bytea NOT NULL,
-    permission_hash bytea GENERATED ALWAYS AS (digest(list_perm, 'sha256')) STORED,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT user_role_permission_hash_size CHECK (octet_length(permission_hash) = 32),
     CONSTRAINT unique_user_workspace_role UNIQUE (user_id, workspace_id, role_id)
 );
 
--- [COMMENT]: Durable tenant authorization binding. list_perm is a serialized
--- iam.rpc.RoleEntry whose keys already contain tenant/workspace context.
+-- [COMMENT]: Durable tenant authorization binding. The immutable revision is
+-- the sole permission Source of Truth; runtime authorization compiles that
+-- exact revision and never trusts a duplicated permission blob.
 CREATE TABLE IF NOT EXISTS membership_role (
     id uuid PRIMARY KEY,
     membership_id uuid NOT NULL REFERENCES hierarchy.tenant_memberships(id) ON DELETE CASCADE,
     tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE RESTRICT,
+    tenant_role_revision_id uuid NOT NULL,
     workspace_id uuid NOT NULL,
-    role_name varchar(255) NOT NULL,
-    role_level integer NOT NULL,
-    role_version bigint NOT NULL CHECK (role_version > 0),
-    list_perm bytea NOT NULL,
-    permission_hash bytea GENERATED ALWAYS AS (digest(list_perm, 'sha256')) STORED,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT membership_role_permission_hash_size CHECK (octet_length(permission_hash) = 32),
-    CONSTRAINT membership_role_scope_uk UNIQUE (membership_id, workspace_id)
+    CONSTRAINT membership_role_scope_uk UNIQUE (membership_id, workspace_id),
+    CONSTRAINT membership_role_revision_fk FOREIGN KEY (tenant_role_revision_id, tenant_role_id)
+        REFERENCES tenant_role_revisions(id, tenant_role_id) ON DELETE RESTRICT
 );
 
--- [COMMENT]: Invitation stores only the token hash and the exact compiled grant
--- pinned at creation. Successful join hard-deletes this one-time record.
+-- [COMMENT]: Invitation stores only the token hash and exact immutable role
+-- revision pinned at creation. Successful join hard-deletes this record.
 CREATE TABLE IF NOT EXISTS tenant_invitations (
     id uuid PRIMARY KEY,
     tenant_id uuid NOT NULL REFERENCES hierarchy.tenants(id) ON DELETE CASCADE,
     inviter_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     target_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     tenant_role_id uuid NOT NULL REFERENCES tenant_roles(id) ON DELETE RESTRICT,
+    tenant_role_revision_id uuid NOT NULL,
     workspace_id uuid NOT NULL,
-    role_version bigint NOT NULL CHECK (role_version > 0),
-    role_level integer NOT NULL,
-    list_perm bytea NOT NULL,
-    permission_hash bytea GENERATED ALWAYS AS (digest(list_perm, 'sha256')) STORED,
     token_hash bytea NOT NULL,
     expires_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT tenant_invitations_permission_hash_size CHECK (octet_length(permission_hash) = 32),
     CONSTRAINT tenant_invitations_token_hash_size CHECK (octet_length(token_hash) = 32),
     CONSTRAINT tenant_invitations_distinct_actor CHECK (inviter_user_id <> target_user_id),
+    CONSTRAINT tenant_invitations_revision_fk FOREIGN KEY (tenant_role_revision_id, tenant_role_id)
+        REFERENCES tenant_role_revisions(id, tenant_role_id) ON DELETE RESTRICT,
     CONSTRAINT tenant_invitations_token_hash_uk UNIQUE (token_hash),
     CONSTRAINT tenant_invitations_target_uk UNIQUE (tenant_id, target_user_id)
 );
@@ -278,7 +281,7 @@ CREATE TABLE IF NOT EXISTS tenant_invitations (
 -- Index phục vụ query cực nhanh ở read-path không cần JOIN.
 CREATE INDEX IF NOT EXISTS idx_user_role_lookup ON user_role (user_id, workspace_id);
 CREATE INDEX IF NOT EXISTS idx_membership_role_lookup ON membership_role (membership_id, workspace_id);
-CREATE INDEX IF NOT EXISTS idx_tenant_roles_tenant_level ON tenant_roles (tenant_id, role_level, id);
+CREATE INDEX IF NOT EXISTS idx_tenant_role_revisions_tenant_level ON tenant_role_revisions (tenant_id, role_level, tenant_role_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_invitations_expiry ON tenant_invitations (expires_at, id);
 CREATE INDEX IF NOT EXISTS idx_tenant_invitations_target ON tenant_invitations (target_user_id, expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_role_platform
@@ -290,8 +293,6 @@ CREATE TABLE IF NOT EXISTS admin_devices (
     id uuid PRIMARY KEY,
     device_name varchar(128) NULL,
     device_type varchar(32) NULL,
-    os_name varchar(64) NULL,
-    browser_name varchar(64) NULL,
     public_key text NOT NULL,
     public_key_fingerprint varchar(128) NOT NULL,
     quarantined_at timestamptz NULL,

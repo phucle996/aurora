@@ -19,7 +19,7 @@ revoked link is cleanly unusable and no longer occupies the target's slot.
 |---|---|
 | `tenant_invitations.id` | invitation must belong to verified tenant |
 | `tenant_memberships` + `membership_role` | durable actor status and hierarchy recheck |
-| `tenant_role_permissions` | durable delete permission recheck |
+| `tenant_role_revision_permissions` | durable delete permission recheck from the actor's pinned revision |
 
 ## Phase 1 — Client → Envoy → ACR
 

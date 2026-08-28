@@ -147,6 +147,14 @@ export function tenantConsoleNavigation(checkPermission: PermissionCheck): Navig
       permission: { key: "tenant:workspaces", action: "list" },
     },
     {
+      id: "rbac",
+      label: "Access Control",
+      path: "/tenant/rbac",
+      icon: Lock,
+      breadcrumb: ["Tenant Console", "Access Control"],
+      permission: { key: "iam:role", action: "read" },
+    },
+    {
       id: "compute",
       label: "Virtual Machines",
       path: "/tenant/compute",

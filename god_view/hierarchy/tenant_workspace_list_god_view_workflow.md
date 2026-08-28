@@ -19,8 +19,8 @@ No request payload or client workspace/tenant/actor header selects the result.
 
 | Record / key | Owner | Meaning |
 |---|---|---|
-| `iam.membership_role` | PostgreSQL/IAM cache loader | verified actor's compiled Tenant permissions |
-| `membership_role:{user_id}:{tenant_id}` | cache namespace | rebuildable projection, never browser input |
+| `iam.membership_role` | PostgreSQL/IAM durable loader | verified actor's pinned revision binding |
+| `membership_role:{user_id}:{tenant_id}` | zero-TTL loader namespace | compiled from PostgreSQL, never browser input |
 | `hierarchy.tenant_workspaces` | PostgreSQL | list is always constrained by `tenant_id` |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -63,7 +63,7 @@ sequenceDiagram
     participant M as Authorize middleware
     participant H as WorkspaceTenantHandler
     participant S as TenantWorkspaceService
-    participant C as Membership role cache loader
+    participant C as Durable membership role loader
     participant P as TenantWorkspaceRepository
     participant PG as PostgreSQL
 
@@ -80,7 +80,7 @@ sequenceDiagram
 
 The service converts only `:hierarchy:workspace:read` entries into an allowlist.
 A nil-workspace grant means all tenant workspaces; otherwise PostgreSQL receives
-only the parsed UUID allowlist. Cache/load failure is fail-closed at the
+only the parsed UUID allowlist. Durable load failure is fail-closed at the
 authorization or service boundary; database failure is `500`.
 
 ## Active-workspace authorization

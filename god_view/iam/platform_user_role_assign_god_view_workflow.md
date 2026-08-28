@@ -1,8 +1,9 @@
 # Platform User Role Assign — God View
 
 Workflow này thay platform global assignment của một target user bằng role được
-actor quản lý. Assignment được compile thành deterministic five-part
-permissions, rồi authorization state của target bị fenced sau durable commit.
+actor quản lý. Assignment lưu normalized role metadata; deterministic five-part
+permissions được compile JIT khi authorization load, rồi authorization state của
+target bị fenced sau durable commit.
 
 ## API scope and contract
 
@@ -31,7 +32,7 @@ sequenceDiagram
     E->>CP: Forward POST
 ```
 
-## Phase 2 — Controlplane compiles and persists one assignment
+## Phase 2 — Controlplane persists one normalized assignment
 
 ```mermaid
 sequenceDiagram
@@ -45,10 +46,9 @@ sequenceDiagram
     H->>H: Parse target and role UUIDs
     H->>S: AssignUserRole caller level
     S->>Repo: Assignment transaction
-    Repo->>DB: Read target username selected role and catalog mappings
-    Repo->>Repo: Compile username:nil-workspace:permission keys
+    Repo->>DB: Read target username and selected role metadata
     Repo->>DB: Recheck hierarchy then replace global user_role
-    DB-->>Repo: Commit one compiled assignment
+    DB-->>Repo: Commit one normalized assignment
     Repo-->>S: Durable success
 ```
 
@@ -81,7 +81,6 @@ assignment and Auth-State generation is still the correctness boundary.
 | Record / key | Rule |
 |---|---|
 | `user_role` with nil workspace UUID | One global platform assignment for target user |
-| `RoleEntry.list_perm` | Deterministically encoded `username:workspace:module:object:behavior` keys |
+| Personal authorization projection | JIT deterministic `username:workspace:module:object:behavior` keys from current role mappings |
 | `authz:billing:{user_id}:generation` | Auth-State Redis stale-write fence, TTL one day |
 | `authz.invalidate.billing` | Shared Redis best-effort L1 invalidation fanout |
-

@@ -130,18 +130,18 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 		return
 	}
 
-	user := iamEntity.User{
+	cmd := iamEntity.RegisterAccount{
 		Username: username,
 		Email:    email,
 		Phone:    phone,
-	}
-	profile := iamEntity.UserProfile{
+		Password: password,
 		Fullname: fullname,
 		Locale:   localeStr,
 		Timezone: timezoneStr,
 	}
 
-	if err := h.authSvc.RegisterAccount(ctx, user, profile, password); err != nil {
+	registration, err := h.authSvc.RegisterAccount(ctx, &cmd)
+	if err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "register validation failed")
@@ -156,6 +156,9 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 			apires.RespondInternalError(c, "Internal server error")
 			return
 		}
+	}
+	if !registration.VerificationDispatched {
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrAuthenticationUnavailable, "verification dispatch unavailable after identity commit")
 	}
 
 	logger.HandlerInfo(c, op, "account registered")

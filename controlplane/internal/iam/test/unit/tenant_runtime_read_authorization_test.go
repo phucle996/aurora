@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
-	iamRepository "controlplane/internal/iam/repository"
 	iamService "controlplane/internal/iam/service"
 	"controlplane/internal/iam/transport/proto"
 	iamPubsubHandler "controlplane/internal/iam/transport/pubsub/handler"
@@ -40,12 +39,8 @@ func TestTenantRuntimeReadAuthorizationUsesOnlyMembershipRole(t *testing.T) {
 		t.Fatal("Tenant authorization must not load Personal platform authority")
 		return nil, nil
 	})
-	personal := iamService.NewPersonalRuntimeReadAuthorizationService(
-		iamRepository.NewPersonalRuntimeReadAuthorizationRepository(personalRegistry),
-	)
-	tenant := iamService.NewTenantRuntimeReadAuthorizationService(
-		iamRepository.NewTenantRuntimeReadAuthorizationRepository(registry),
-	)
+	personal := iamService.NewPersonalRuntimeReadAuthorizationService(personalRegistry)
+	tenant := iamService.NewTenantRuntimeReadAuthorizationService(registry)
 	handler, err := iamPubsubHandler.NewRuntimeReadAuthorizationRedisHandler(client, personal, tenant)
 	if err != nil {
 		t.Fatalf("create Tenant runtime-read handler: %v", err)

@@ -11,7 +11,7 @@ existing user and one pinned Tenant role. It does not send email.
 | Internal target | `POST /api/v1/tenant/critical/hierarchy/tenant-invitations` |
 | Authority | tenant `hierarchy:tenant-invitation:create`, strictly stronger than selected role |
 | Critical boundary | ACR session proof bound to exact method, public path, raw body, timestamp, and one-time challenge |
-| Durable SoT | `hierarchy.tenant_invitations` |
+| Durable SoT | `iam.tenant_invitations` |
 
 Payload is `{identifier, tenant_role_id}`. `identifier` is one active account's
 canonical username or email; the role must belong to the current tenant.
@@ -21,8 +21,12 @@ canonical username or email; the role must belong to the current tenant.
 | Key / record | Meaning |
 |---|---|
 | `iam:session_proof:critical:{access_key}:{challenge_id}` | ACR one-time proof nonce, TTL 60 seconds |
-| `hierarchy.tenant_invitations.token_hash` | SHA-256 of a random 32-byte base64url token; plaintext never persists |
-| `hierarchy.tenant_invitations.list_perm` | deterministic compiled RoleEntry frozen for this invitation |
+| `iam.tenant_invitations.token_hash` | SHA-256 of a random 32-byte base64url token; plaintext never persists |
+| `iam.tenant_invitations.tenant_role_revision_id` | immutable current revision selected while the role head is locked |
+| `iam.tenant_role_revision_permissions` | sole immutable permission SoT for the pinned invitation revision |
+
+The invitation row does not copy role name, level, version, or permissions;
+preview, revoke and join derive all of them from the pinned immutable revision.
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -79,7 +83,7 @@ sequenceDiagram
     H->>S: Allocate invitation ID token expiry and role scope
     S->>P: Create invitation command
     P->>PG: Lock active tenant inviter target and selected role
-    P->>PG: Compile pinned five-level permission entry
+    P->>PG: Verify a non-empty immutable permission mapping
     P->>PG: Delete expired duplicate then insert token hash row
     P->>PG: Commit
     PG-->>H: invitation metadata and plaintext token once
@@ -87,7 +91,7 @@ sequenceDiagram
 ```
 
 The repository requires an active target, active tenant, active inviter,
-create permission, strict numeric hierarchy, a non-empty compiled role, and no
+create permission, strict numeric hierarchy, a non-empty revision, and no
 existing active membership/invitation. Duplicate active invitation/member is
 `409`; missing tenant, role, or target is `404`; an unauthorized or hierarchy
 failure is `403`. The response is the only plaintext-token boundary.

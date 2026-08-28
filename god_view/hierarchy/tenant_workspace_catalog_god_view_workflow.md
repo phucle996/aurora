@@ -22,7 +22,7 @@ workspace allowlist before the repository query.
 | Record / key | Rule |
 |---|---|
 | verified `x-tenant-id` and `x-zone-id` | only ACR chooses Tenant and Zone scope |
-| `membership_role:{user_id}:{tenant_id}` | compiled grant source; cache miss reloads or fails closed |
+| `membership_role:{user_id}:{tenant_id}` | zero-TTL loader compiles the pinned immutable revision or fails closed |
 | `tenant_workspaces` | query filters both tenant and Zone, then wildcard/UUID allowlist |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -58,7 +58,7 @@ CORS/rate/session/CSRF/context denial is local and has no upstream forward.
 sequenceDiagram
     participant H as WorkspaceTenantHandler
     participant S as TenantWorkspaceService
-    participant C as Membership role cache loader
+    participant C as Durable membership role loader
     participant P as TenantWorkspaceRepository
     participant PG as PostgreSQL
 
@@ -72,7 +72,7 @@ sequenceDiagram
 ```
 
 The missing route middleware is deliberate only for the selector bootstrap
-cycle; it does not authorize unfiltered access. If the membership-role cache
-cannot load or decode, the implementation returns `500` today rather than
+cycle; it does not authorize unfiltered access. If the membership-role loader
+cannot read or compile, the implementation returns `500` today rather than
 leaking rows. A later hardening change may normalize that fail-closed result to
 `403`, but must not broaden the query.

@@ -1,5 +1,9 @@
 # Tenant Render Context Read — God View
 
+`membership_role.tenant_role_revision_id` alone pins runtime role metadata and authority.
+Every read compiles that immutable revision from normalized permission mappings;
+it never joins `tenant_roles.current_version` or trusts a duplicated grant blob.
+
 Workflow này trả tenant composition root và capability presentation của một
 concrete tenant session. Tenant membership là authority source duy nhất;
 personal assignment không bao giờ fallback vào workflow này.
@@ -55,8 +59,8 @@ sequenceDiagram
     participant DB as PostgreSQL
     R->>H: Internal tenant context route
     H->>S: GetTenantRenderContext verified user and tenant
-    S->>Repo: Load tenant compiled assignment
-    Repo->>DB: Read active membership_role
+    S->>Repo: Load tenant pinned assignment with zero cache TTL
+    Repo->>DB: Read active membership_role and immutable revision permissions
     DB-->>Repo: Five-part tenant permission entries
     Repo-->>S: Tenant permissions
     S->>S: Sort capabilities and navigation
@@ -68,12 +72,11 @@ sequenceDiagram
 |---|---|
 | Success | `200 {"kind":"tenant","tenant_id":"<verified UUID>","navigation":[...],"capabilities":{...}}` |
 | Missing/stale membership | `403`; never personal fallback |
-| Cache/PostgreSQL failure | `503`; never empty-context success |
+| PostgreSQL/compile failure | `503`; never empty-context success |
 
 ## Key contract
 
 | Key / record | Purpose |
 |---|---|
-| L1 `membership_role:{user_id}:{tenant_id}` | Sensitive in-process tenant `RoleEntry` |
-| PostgreSQL `tenant_memberships` and `membership_role` | Durable tenant authorization SoT |
-
+| `membership_role:{user_id}:{tenant_id}` loader | zero-TTL singleflight; never a surviving authority cache hit |
+| PostgreSQL `tenant_memberships`, revision binding and revision mappings | Durable tenant authorization SoT; assignment has no copied name/level/version |

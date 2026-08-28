@@ -2,7 +2,7 @@
 
 Workflow này là **Source of Truth (SoT) duy nhất** quản lý toàn bộ vòng đời kích hoạt tài khoản người dùng cá nhân (Personal Account Verification) trong hệ thống Aurora:
 - Chuyển đổi trạng thái tài khoản từ `pending-active` sang `active`.
-- Tự động gán vai trò nền tảng mặc định `platform_user` (kèm danh sách quyền 5 phần nhị phân Protobuf).
+- Tự động gán vai trò nền tảng mặc định `platform_user`; quyền 5 phần được compile JIT từ role mapping khi authorization load assignment.
 - Khởi tạo tự động không gian làm việc cá nhân (`personal_workspaces`) cho tất cả các Active Zones hiện hành.
 - Xuất sự kiện bất biến `PersonalWalletProvisionRequestedV1` qua cơ chế Transactional Outbox sang Cost Manager để tự động khởi tạo Ví tiền cá nhân (`billing.wallets` trạng thái `PENDING_ACTIVATION`, `0 USD`).
 
@@ -28,9 +28,9 @@ Hệ thống Gateway/ACR thực thi ranh giới bảo mật vùng biên, không 
 
 | Khóa / Bảng / Stream | Vị trí lưu trữ | Thao tác (Operation) | Chủ sở hữu & Ràng buộc bất biến (Owner & Invariant) |
 |---|---|---|---|
-| `iam:ott:account_verify:{user_id}:{event_id}` | Security Redis | `GET` (kiểm tra hash) & `EVAL` (compare-and-delete) | Lưu mã SHA-256 OTT; chỉ xóa sau khi DB commit thành công. |
+| `iam:ott:account_verify:{user_id}:{event_id}` | Security Redis | `GET` (kiểm tra hash) | Lưu mã SHA-256 OTT; key được giữ nguyên và tự hết hạn theo TTL 15 phút để retry idempotent. |
 | `iam.users` | PostgreSQL (IAM) | `UPDATE status = 'active'` | Ranh giới thẩm quyền tài khoản (`pending-active` $\to$ `active`). |
-| `iam.platform_roles` / `iam.user_role` | PostgreSQL (IAM) | `INSERT ON CONFLICT DO NOTHING` | Cấp role `platform_user` mặc định kèm binary Protobuf quyền hạn. |
+| `iam.platform_roles` / `iam.user_role` | PostgreSQL (IAM) | `INSERT ON CONFLICT DO NOTHING` | Cấp assignment `platform_user` chuẩn hóa; permission catalog được compile JIT khi authorization đọc assignment. |
 | `hierarchy.zones` | PostgreSQL | `SELECT id FOR SHARE` | Khóa chia sẻ danh sách Zone đang hoạt động để seed Workspace. |
 | `hierarchy.personal_workspaces` | PostgreSQL | `INSERT ON CONFLICT (owner_id, code) DO NOTHING` | Khởi tạo 1 workspace cá nhân cho mỗi active Zone (`personal-{zone_id}`). |
 | `iam.lifecycle_fact_outbox_records` | PostgreSQL (IAM) | `INSERT (event_id, status='PENDING')` | Lưu trữ sự kiện Outbox bền vững trước khi stream sang Billing. |
@@ -110,20 +110,17 @@ sequenceDiagram
 
 ---
 
-## 🔐 Phase 2 — IAM Proof Verification & Active State Pre-check
+## 🔐 Phase 2 — IAM Token Gatekeeper
 
 ### 1. Phase 2 Input Contract
 - **Input tiếp nhận**: Request từ Envoy tới `AuthHandler.VerifyAccount` với Context Timeout 5 giây.
 - **Validated Parameters**: `user_id` (UUID), `event_id` (UUID), `token` (string 32–256 ký tự).
 
 ### 2. Phase 2 Processing & Output Contract
-- **Bước 1 — Pre-check Active State**: Đọc trạng thái tài khoản từ `iam.users`.
-  - Nếu User không tồn tại $\to$ Trả về `400 Bad Request ("User not found")`.
-  - Nếu User đã ở trạng thái `active` $\to$ Bỏ qua bước kiểm tra Redis OTT, chuyển thẳng sang Phase 3 (Idempotent self-heal).
-- **Bước 2 — Xác minh SHA-256 trong Security Redis**: Đọc key `iam:ott:account_verify:{user_id}:{event_id}`.
+- **Bước 1 — Xác minh SHA-256 trong Security Redis (Redis Gatekeeper)**: Đọc key `iam:ott:account_verify:{user_id}:{event_id}`.
   - Nếu Key không tồn tại, hết hạn, hoặc `SHA-256(token)` không khớp $\to$ Trả về `400 Bad Request ("Token has expired or is invalid")`.
-  - Nếu Token khớp $\to$ Giữ nguyên Token trong Redis và chuyển sang Phase 3.
-- **Security Invariant**: **Tuyệt đối không xóa token trước khi DB commit**. Token chỉ được dọn dẹp sau khi Transaction ở Phase 3 hoàn tất để bảo đảm khả năng thử lại nếu có sự cố mạng.
+  - Nếu Token khớp $\to$ Giữ nguyên Token trong Redis (để token tự hết hạn theo TTL 15 phút, hỗ trợ idempotent retry an toàn) và chuyển sang Phase 3.
+- **Security Invariant**: Redis đóng vai trò gatekeeper tuyệt đối. Token không bị xóa sớm để loại bỏ race condition giữa các request đồng thời từ phía user.
 
 ```mermaid
 sequenceDiagram
@@ -132,8 +129,6 @@ sequenceDiagram
     participant Gin as Gin Router & Middleware
     participant H as AuthHandler.VerifyAccount
     participant S as AuthService.VerifyAccount
-    participant Repo as AuthRepository
-    participant DB as PostgreSQL (iam.users)
     participant OTT as OneTimeTokenService
     participant SecRedis as Security Redis
 
@@ -146,32 +141,16 @@ sequenceDiagram
 
     H->>S: VerifyAccount(ctx, user_id, event_id, token)
 
-    Note over S,DB: Bước 1: Kiểm tra trạng thái tài khoản hiện tại
-    S->>Repo: IsUserActive(ctx, user_id)
-    Repo->>DB: Đọc trạng thái từ iam.users
-    alt User không tồn tại
-        DB-->>Repo: pgx.ErrNoRows
-        Repo-->>S: ErrUserNotFound
-        S-->>H: 400 Bad Request ("User not found")
-    else User đã Active từ trước (Concurrent winner / Replay)
-        DB-->>Repo: active = true
-        Repo-->>S: active = true
-        Note over S: Bỏ qua kiểm tra Redis OTT, tiếp tục bước Idempotent Self-Heal
-    else User đang ở trạng thái 'pending-active'
-        DB-->>Repo: active = false
-        Repo-->>S: active = false
-
-        Note over S,SecRedis: Bước 2: Xác minh chữ ký SHA-256 của Token trong Redis
-        S->>OTT: Validate(ctx, "account_verify", user_id, event_id, token)
-        OTT->>SecRedis: GET iam:ott:account_verify:{user_id}:{event_id}
-        alt Key không tồn tại, hết hạn, hoặc SHA-256 không khớp
-            SecRedis-->>OTT: Nil / Mismatched Hash
-            OTT-->>S: valid = false
-            S-->>H: 400 Bad Request ("Token has expired or is invalid")
-        else Token hợp lệ
-            SecRedis-->>OTT: Hash khớp (valid = true)
-            OTT-->>S: valid = true (GIỮ NGUYÊN TOKEN TRONG REDIS CHO ĐẾN KHI COMMIT DB)
-        end
+    Note over S,SecRedis: Xác minh chữ ký SHA-256 của Token trong Redis Gatekeeper
+    S->>OTT: Validate(ctx, "account_verify", user_id, event_id, token)
+    OTT->>SecRedis: GET iam:ott:account_verify:{user_id}:{event_id}
+    alt Key không tồn tại, hết hạn, hoặc SHA-256 không khớp
+        SecRedis-->>OTT: Nil / Mismatched Hash
+        OTT-->>S: valid = false
+        S-->>H: 400 Bad Request ("Token has expired or is invalid")
+    else Token hợp lệ
+        SecRedis-->>OTT: Hash khớp (valid = true)
+        OTT-->>S: valid = true (GIỮ NGUYÊN TOKEN TRONG REDIS THEO TTL 15 PHÚT)
     end
 
     S-->>H: Tiếp tục tiến trình kích hoạt tại Phase 3
@@ -194,7 +173,7 @@ sequenceDiagram
 
 ### 2. Phase 3 Processing & Single Transaction Execution
 - **Khóa User (`FOR UPDATE`)**: Khóa dòng user trong `iam.users` để ngăn chặn race condition khi người dùng nhấn kích hoạt nhiều lần đồng thời.
-- **Cấp Quyền Nền tảng**: Đọc quyền của `platform_user`, đóng gói thành binary Protobuf `RoleEntry` (định dạng 5 phần `<username>:00000000-0000-0000-0000-000000000000:<mod>:<obj>:<beh>`) và chèn vào `iam.user_role` (`ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING`).
+- **Cấp Quyền Nền tảng**: Đọc metadata của `platform_user` và chèn assignment chuẩn hóa vào `iam.user_role` (`ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING`). Permission catalog không được snapshot trong assignment; personal authorization compile deterministic five-part `RoleEntry` JIT khi load.
 - **Thực thi CTE Nguyên tử**:
   1. Cập nhật `iam.users.status = 'active'` cho các user đang ở trạng thái `pending-active`.
   2. Khóa chia sẻ (`FOR SHARE`) danh mục các Zone đang hoạt động từ bảng `hierarchy.zones`.
@@ -202,7 +181,6 @@ sequenceDiagram
   4. Chèn sự kiện vào bảng Outbox `iam.lifecycle_fact_outbox_records` với `event_id` cố định sinh theo thuật toán SHA-1 UUID (`ON CONFLICT (event_id) DO NOTHING`).
 - **Failsafe Rollback**: Nếu không tìm thấy Zone nào đang active (`activeZoneCount == 0`), toàn bộ Transaction bị `ROLLBACK` và trả về `503 Service Unavailable`.
 - **Post-Commit Non-blocking Signal**: Gọi `r.lifecycleFactNotifier.Notify()` để đánh thức worker phát Outbox.
-- **Best-Effort Token Cleanup**: Chạy Lua script so khớp và xóa token trong Security Redis. Nếu Redis lỗi, transaction DB đã commit vẫn thành công.
 
 ### 3. Phase 3 REST Output Contract
 
@@ -220,8 +198,6 @@ sequenceDiagram
     participant Repo as AuthRepository
     participant DB as PostgreSQL Transaction
     participant Relay as LifecycleFactRelay
-    participant OTT as OneTimeTokenService
-    participant SecRedis as Security Redis
 
     Note over S,DB: Mở Transaction PostgreSQL duy nhất (tx.Begin)
     S->>Repo: ActivateUser(ctx, activation, bootstrapWorkspaces)
@@ -233,7 +209,7 @@ sequenceDiagram
         Repo-->>S: Rollback Transaction & Return Error
     end
 
-    Repo->>DB: 2. Query quyền & Chèn iam.user_role (Role Level, Protobuf Permissions)<br/>ON CONFLICT DO NOTHING
+    Repo->>DB: 2. Query platform role metadata & chèn normalized iam.user_role<br/>ON CONFLICT DO NOTHING
 
     Repo->>DB: 3. Chạy CTE: Cập nhật status active, khóa zones FOR SHARE,<br/>seed personal_workspaces, chèn outbox record
 
@@ -247,14 +223,8 @@ sequenceDiagram
     Note over S,Relay: Đánh thức Worker ngầm bất đồng bộ
     S->>Relay: 5. lifecycleFactNotifier.Notify() (Gửi tín hiệu không block)
 
-    Note over S,SecRedis: Dọn dẹp Token an toàn (Best-effort Cleanup)
-    alt Không phải nhánh Active Retry
-        S->>OTT: 6. Consume(ctx, "account_verify", user_id, event_id, token)
-        OTT->>SecRedis: Lua Script: Compare SHA-256 and Delete
-    end
-
-    S-->>H: 7. Trả về nil (Thành công hoàn tất)
-    H-->>Envoy: 8. HTTP 200 OK ({"message": "account activated successfully"})
+    S-->>H: 6. Trả về nil (Thành công hoàn tất)
+    H-->>Envoy: 7. HTTP 200 OK ({"message": "account activated successfully"})
 ```
 
 ---
@@ -384,11 +354,11 @@ sequenceDiagram
 | Tình huống ngoại lệ (Failure Condition) | Hành vi thực tế của hệ thống (Actual System Behavior) | Cơ chế phục hồi (Recovery Mechanism) |
 |---|---|---|
 | **User mở link sai, token bị sửa đổi** | Security Redis so khớp SHA-256 thất bại $\to$ Trả về `400 Bad Request ("Token has expired or is invalid")`. | Người dùng phải yêu cầu gửi lại email kích hoạt mới từ trang đăng nhập. |
-| **Token đã được sử dụng trước đó** | Security Redis không tìm thấy key (đã bị xóa sau khi commit) $\to$ Trả về `400 Bad Request`. | Nếu tài khoản đã active, request tiếp theo sẽ được xử lý idempotent thành công `200 OK`. |
+| **Token được gửi lại trong TTL sau khi đã kích hoạt** | Security Redis vẫn xác nhận token; PostgreSQL khóa user và chạy nhánh idempotent self-heal, trả `200 OK`. | Không tạo trùng assignment, workspace hoặc outbox. Sau TTL, token cũ trả `400`; user đã active tiếp tục đăng nhập bình thường. |
 | **Người dùng bấm kích hoạt đồng thời ở 2 tab** | PostgreSQL dùng `SELECT ... FOR UPDATE` trên dòng user. Request đầu tiên kích hoạt thành công; request thứ hai thấy user đã `active` $\to$ Chạy nhánh idempotent self-heal và trả về `200 OK`. | Cả 2 tab đều nhận thông báo thành công, không tạo trùng dữ liệu hay lỗi 500. |
 | **Không có Zone nào Active trong hạ tầng** | Transaction phát hiện `activeZoneCount == 0` $\to$ Tự động `ROLLBACK` và trả về `503 Service Unavailable ("Bootstrap zone unavailable")`. | Token trong Security Redis vẫn được giữ nguyên để người dùng thử lại sau khi Zone phục hồi. |
 | **Sập cơ sở dữ liệu IAM trong lúc kích hoạt** | Transaction bị hủy bỏ (`ROLLBACK`). Token trong Security Redis **chưa bị xóa**. | Người dùng có thể nhấn thử lại ngay khi cơ sở dữ liệu kết nối trở lại. |
-| **Lỗi xóa Token trong Redis sau khi DB đã commit** | Lỗi xóa token trong Redis được catch và bỏ qua (`best-effort cleanup`). Response vẫn trả về `200 OK`. | Không ảnh hưởng đến người dùng; token trong Redis sẽ tự động tiêu hủy khi hết hạn TTL. |
+| **Token còn tồn tại sau khi DB commit** | Đây là hành vi mong đợi; workflow không có bước consume/cleanup token. | Redis tự động tiêu hủy key khi TTL 15 phút hết hạn. |
 | **Mạng Shared Redis bị ngắt khi phát Outbox** | Lệnh `XADD` hoặc `WAITAOF` thất bại $\to$ Bản ghi trong `iam.lifecycle_fact_outbox_records` giữ nguyên trạng thái `PENDING`. | `LifecycleFactRelay` chạy ngầm sẽ tự động quét và phát bù lại sự kiện khi Redis online. |
 | **Gói tin Stream bị lỗi định dạng (Poison Event)** | Kích thước $> 64\text{KB}$ hoặc giải mã Protobuf thất bại $\to$ Chuyển thẳng sang DLQ `billing:wallet:personal:provision-dlq` kèm lý do `"invalid_contract"`. | Gửi `XACK` + `XDEL` để loại bỏ khỏi stream chính, tránh làm nghẽn các event hợp lệ phía sau. |
 | **Cơ sở dữ liệu Cost Manager bị khóa hoặc quá tải** | Transaction tạo ví thất bại $\to$ Không gửi `XACK`. Tăng biến đếm `delivery-attempts`. | Message được giữ trong hàng đợi Pending; worker khác sẽ tự động claim lại sau 30 giây. |
@@ -404,16 +374,15 @@ sequenceDiagram
 - **ACR ExtAuthz Filter**: `acr/src/gateway/ext_authz.rs`
 - **ACR Pre-auth Rate Limiter**: `acr/src/gateway/ratelimit.rs`
 
-### Phase 2 — IAM Proof Verification & Active Pre-check
+### Phase 2 — IAM Token Gatekeeper
 - **HTTP Route Mapping**: `controlplane/internal/iam/route.go` (`POST /api/v1/auth/verify`)
 - **HTTP Handler**: `controlplane/internal/iam/transport/http/handler/auth_handler.go` (`VerifyAccount`)
 - **IAM Domain Service**: `controlplane/internal/iam/service/auth_service.go` (`VerifyAccount`)
-- **One-Time Token (OTT) Service**: `controlplane/internal/iam/service/one_time_token_service.go` (`Validate`, `Consume`)
-- **IAM SQL Repository**: `controlplane/internal/iam/repository/auth_repo.go` (`IsUserActive`)
+- **One-Time Token (OTT) Service**: `controlplane/internal/iam/service/one_time_token_service.go` (`Validate`)
 
 ### Phase 3 — Atomic Activation & Personal Workspace Seeding
 - **SQL Transaction & CTEs**: `controlplane/internal/iam/repository/auth_repo.go` (`ActivateUser`)
-- **Protobuf Definitions**: `controlplane/internal/iam/transport/proto/` (`RoleEntry`, `PersonalWalletProvisionRequestedV1`)
+- **Protobuf Definitions**: `controlplane/internal/iam/transport/proto/` (`PersonalWalletProvisionRequestedV1`)
 
 ### Phase 4 — Lifecycle Fact Outbox Relay & Redis Stream
 - **Outbox Background Relay Worker**: `controlplane/internal/iam/service/lifecycle_fact_relay.go` (`Start`, `run`, `drain`, `publish`)

@@ -41,3 +41,11 @@ type CreateTenantRoleRequest struct {
 	RoleLevel     int      `json:"role_level" binding:"required,min=4,max=99"`
 	PermissionIDs []string `json:"permission_ids" binding:"required"`
 }
+
+type CreateTenantRoleRevisionRequest struct {
+	ExpectedVersion int64    `json:"expected_version" binding:"required,min=1"`
+	Name            string   `json:"name" binding:"required"`
+	Description     string   `json:"description"`
+	RoleLevel       int      `json:"role_level" binding:"required,min=4,max=99"`
+	PermissionIDs   []string `json:"permission_ids" binding:"required"`
+}

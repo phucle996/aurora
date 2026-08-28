@@ -22,8 +22,8 @@ Payload is only `{token}` where token is exactly 32 decoded random bytes.
 | `iam:session_proof:critical:{access_key}:{challenge_id}` | ACR | consumed once before Controlplane |
 | `tenant_invitations.token_hash` | PostgreSQL | locks the one-time invitation |
 | `tenant_memberships` | PostgreSQL | active non-owner membership created once |
-| `iam.membership_role` | PostgreSQL | pinned invitation role/version/list permission snapshot |
-| `membership_role:{user_id}:{tenant_id}` | local/fanout cache | invalidated after commit; missed fanout is bounded stale deny |
+| `iam.membership_role` | PostgreSQL | only the invitation's immutable revision ID is pinned; no copied role metadata or permission blob |
+| `iam.tenant_role_revision_permissions` | PostgreSQL | immutable permission SoT compiled by every runtime authority read |
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -88,15 +88,16 @@ sequenceDiagram
 
 No intermediate state is valid: a membership cannot exist without its role and
 the token cannot be consumed without the membership. Missing/expired/mismatched
-links return `404`; already-member returns `409`; a now-invalid inviter or
+links and invitations whose revision is no longer current return `404`;
+already-member returns `409`; a now-invalid inviter or
 role hierarchy returns `403`; concurrent settlement conflict returns `409`.
 
-## Phase 3 — Permission cache convergence
+## Phase 3 — Local projection cleanup
 
 ```mermaid
 sequenceDiagram
     participant S as TenantInvitationService
-    participant L1 as Local role cache
+    participant L1 as Legacy local role projection
     participant F as Cache fanout
 
     S->>L1: Delete membership role key after commit
@@ -106,5 +107,7 @@ sequenceDiagram
     end
 ```
 
-Authority is already durable at Phase 2. A missed invalidation can only cause a
-temporary stale deny until cache expiry/reload; it cannot grant extra authority.
+Authority is already durable at Phase 2. The `membership_role` loader has zero
+TTL and compiles the pinned revision from PostgreSQL on every authorization
+read, so this fanout is rolling-upgrade cleanup and is not a security settlement
+boundary. Missing fanout cannot preserve old tenant authority on updated pods.

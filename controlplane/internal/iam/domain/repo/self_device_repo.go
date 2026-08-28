@@ -16,9 +16,6 @@ type SelfDeviceRepository interface {
 	// [COMMENT]: ListDevicesByUserID lấy danh sách thiết bị của một user cá nhân dưới dạng DevicePresence gọn nhẹ
 	ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.DevicePresence, error)
 
-	// [COMMENT]: ResolveDeviceIDByFingerprint lấy client_device_id của thiết bị dựa trên fingerprint của public key
-	ResolveDeviceIDByFingerprint(ctx context.Context, userID uuid.UUID, fingerprint string) (*uuid.UUID, error)
-
 	// [COMMENT]: RevokeSelfDevice thu hồi 1 thiết bị cụ thể và xóa refresh token liên quan
 	RevokeSelfDevice(ctx context.Context, command iamEntity.DeviceRuntimeRevokeDevice) (iamEntity.DeviceRuntimeRevokeResult, error)
 

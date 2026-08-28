@@ -29,14 +29,14 @@ func (r *deviceWorkflowRecorderSpy) ObserveWorkflow(_ context.Context, result ob
 }
 
 type selfDeviceRepositoryStub struct {
-	oneResult     iamEntity.DeviceRuntimeRevokeResult
-	otherResult   iamEntity.DeviceRuntimeRevokeOthersResult
-	err           error
-	lastOne       iamEntity.DeviceRuntimeRevokeDevice
-	lastOthers    iamEntity.DeviceRuntimeRevokeOthers
-	updates       []iamEntity.DevicePresenceUpdate
-	evictionUser  uuid.UUID
-	evictionIDs   []uuid.UUID
+	oneResult    iamEntity.DeviceRuntimeRevokeResult
+	otherResult  iamEntity.DeviceRuntimeRevokeOthersResult
+	err          error
+	lastOne      iamEntity.DeviceRuntimeRevokeDevice
+	lastOthers   iamEntity.DeviceRuntimeRevokeOthers
+	updates      []iamEntity.DevicePresenceUpdate
+	evictionUser uuid.UUID
+	evictionIDs  []uuid.UUID
 }
 
 func (r *selfDeviceRepositoryStub) UpsertLoginDevice(_ context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
@@ -44,10 +44,6 @@ func (r *selfDeviceRepositoryStub) UpsertLoginDevice(_ context.Context, device i
 }
 
 func (r *selfDeviceRepositoryStub) ListDevicesByUserID(context.Context, uuid.UUID, int, int) ([]iamEntity.DevicePresence, error) {
-	return nil, r.err
-}
-
-func (r *selfDeviceRepositoryStub) ResolveDeviceIDByFingerprint(context.Context, uuid.UUID, string) (*uuid.UUID, error) {
 	return nil, r.err
 }
 
@@ -130,6 +126,38 @@ func TestSelfDeviceServiceReturnsRawRevokeRepositoryFailure(t *testing.T) {
 	}
 	if metrics.callCount != 1 || metrics.result != observability.ResultFailure || metrics.reason != observability.ReasonInternal {
 		t.Fatalf("unexpected failed workflow observation: calls=%d result=%s reason=%s", metrics.callCount, metrics.result, metrics.reason)
+	}
+}
+
+func TestSelfDeviceServiceReturnsRuntimeEvictionFailure(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	authRedis := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+	redisServer.Close()
+	defer authRedis.Close()
+
+	repo := &selfDeviceRepositoryStub{
+		oneResult: iamEntity.DeviceRuntimeRevokeResult{TargetExists: true},
+		otherResult: iamEntity.DeviceRuntimeRevokeOthersResult{
+			Affected:         1,
+			RevokedDeviceIDs: []uuid.UUID{uuid.New()},
+		},
+	}
+	metrics := &deviceWorkflowRecorderSpy{}
+	service := iamService.NewSelfDeviceService(repo, nil, nil, authRedis, metrics)
+
+	if err := service.RevokeMyDevice(context.Background(), uuid.New(), uuid.New(), uuid.New()); err == nil {
+		t.Fatal("expected single-device runtime eviction error")
+	}
+	if metrics.callCount != 1 || metrics.result != observability.ResultFailure || metrics.reason != observability.ReasonInternal {
+		t.Fatalf("unexpected runtime-failure observation: calls=%d result=%s reason=%s", metrics.callCount, metrics.result, metrics.reason)
+	}
+
+	metrics.callCount = 0
+	if affected, err := service.LogoutOtherDevices(context.Background(), uuid.New(), uuid.New()); err == nil || affected != 0 {
+		t.Fatalf("expected logout-others runtime eviction error, affected=%d err=%v", affected, err)
+	}
+	if metrics.callCount != 1 || metrics.result != observability.ResultFailure || metrics.reason != observability.ReasonInternal {
+		t.Fatalf("unexpected logout-others failure observation: calls=%d result=%s reason=%s", metrics.callCount, metrics.result, metrics.reason)
 	}
 }
 

@@ -29,19 +29,19 @@ type IAMModule struct {
 	otel       *observability.OTel
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
-	AuthHandler           *iamHandler.AuthHandler
-	UserHandler           *iamHandler.UserHandler
-	SelfDeviceHandler     *iamHandler.SelfDeviceHandler     // [COMMENT]: Handler nhánh self
-	PersonalDeviceHandler *iamHandler.PersonalDeviceHandler // [COMMENT]: Handler nhánh personal
-	RbacPlatformHandler   *iamHandler.RbacPlatformHandler   // [COMMENT]: Handler cho các tác vụ platform-scoped RBAC
-	RbacTenantHandler     *iamHandler.RbacTenantHandler     // [COMMENT]: Handler cho các tác vụ tenant-scoped RBAC
-	RenderContextHandler  *iamHandler.RenderContextHandler
-	MfaHandler            *iamHandler.MfaHandler // [COMMENT]: Handler phục vụ tra cứu thông tin MFA platform audit
+	AuthHandler                  *iamHandler.AuthHandler
+	UserHandler                  *iamHandler.UserHandler
+	SelfDeviceHandler            *iamHandler.SelfDeviceHandler     // [COMMENT]: Handler nhánh self
+	PersonalDeviceHandler        *iamHandler.PersonalDeviceHandler // [COMMENT]: Handler nhánh personal
+	PersonalRbacHandler          *iamHandler.PersonalRbacHandler   // [COMMENT]: Handler cho các tác vụ personal-scoped RBAC
+	TenantRbacHandler            *iamHandler.TenantRbacHandler     // [COMMENT]: Handler cho các tác vụ tenant-scoped RBAC
+	PersonalRenderContextHandler *iamHandler.PersonalRenderContextHandler
+	TenantRenderContextHandler   *iamHandler.TenantRenderContextHandler
+	MfaHandler                   *iamHandler.MfaHandler // [COMMENT]: Handler phục vụ tra cứu thông tin MFA platform audit
 
 	// Core Services & Sync Engines
-	RbacPlatformRepository               iamRepoInterface.RbacPlatformRepository // [COMMENT]: Repo quản lý platform role
-	RbacTenantRepository                 iamRepoInterface.RbacTenantRepository   // [COMMENT]: Repo quản lý tenant role
-	RenderContextRepository              iamRepoInterface.RenderContextRepository
+	PersonalRbacRepository               iamRepoInterface.PersonalRbacRepository   // [COMMENT]: Repo quản lý platform / personal role
+	TenantRbacRepository                 iamRepoInterface.TenantRbacRepository     // [COMMENT]: Repo quản lý tenant role
 	SelfDeviceRepository                 iamRepoInterface.SelfDeviceRepository     // [COMMENT]: Repo thiết bị của verified self user
 	PersonalDeviceRepository             iamRepoInterface.PersonalDeviceRepository // [COMMENT]: Repo nhánh personal quản lý thiết bị platform
 	AuthService                          iamSvcInterface.AuthService
@@ -146,20 +146,17 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct refresh token repository")
 	}
 
-	// [COMMENT]: Khởi tạo các repository platform/tenant RBAC sớm phục vụ DI
-	rbacPlatformRepo := iamRepoImpl.NewRbacPlatformRepository(cfg, db)
-	if rbacPlatformRepo == nil {
-		return nil, errors.New("iam module: failed to construct RBAC platform repository")
+	// [COMMENT]: Khởi tạo các repository personal/tenant RBAC sớm phục vụ DI
+	personalRbacRepo := iamRepoImpl.NewPersonalRbacRepository(cfg, db)
+	if personalRbacRepo == nil {
+		return nil, errors.New("iam module: failed to construct personal RBAC repository")
 	}
 
-	rbacTenantRepo := iamRepoImpl.NewRbacTenantRepository(cfg, db)
-	if rbacTenantRepo == nil {
-		return nil, errors.New("iam module: failed to construct RBAC tenant repository")
+	tenantRbacRepo := iamRepoImpl.NewTenantRbacRepository(cfg, db)
+	if tenantRbacRepo == nil {
+		return nil, errors.New("iam module: failed to construct tenant RBAC repository")
 	}
-	renderContextRepo := iamRepoImpl.NewRenderContextRepository(cacheEngine)
-	if renderContextRepo == nil {
-		return nil, errors.New("iam module: failed to construct render context repository")
-	}
+
 	billingAuthorizationRedisHandler, err := iamPubsubHandler.NewBillingAuthorizationRedisHandler(
 		rds,
 		authRedis,
@@ -168,10 +165,8 @@ func NewModule(
 	if err != nil {
 		return nil, err
 	}
-	personalRuntimeReadAuthorizationRepo := iamRepoImpl.NewPersonalRuntimeReadAuthorizationRepository(cacheEngine)
-	personalRuntimeReadAuthorizationSvc := iamSvcImpl.NewPersonalRuntimeReadAuthorizationService(personalRuntimeReadAuthorizationRepo)
-	tenantRuntimeReadAuthorizationRepo := iamRepoImpl.NewTenantRuntimeReadAuthorizationRepository(cacheEngine)
-	tenantRuntimeReadAuthorizationSvc := iamSvcImpl.NewTenantRuntimeReadAuthorizationService(tenantRuntimeReadAuthorizationRepo)
+	personalRuntimeReadAuthorizationSvc := iamSvcImpl.NewPersonalRuntimeReadAuthorizationService(cacheEngine)
+	tenantRuntimeReadAuthorizationSvc := iamSvcImpl.NewTenantRuntimeReadAuthorizationService(cacheEngine)
 	runtimeReadAuthorizationRedisHandler, err := iamPubsubHandler.NewRuntimeReadAuthorizationRedisHandler(
 		rds,
 		personalRuntimeReadAuthorizationSvc,
@@ -272,7 +267,6 @@ func NewModule(
 		authRepo, refreshSvc, selfDeviceSvc,
 		cacheEngine, oneTimeTokenSvc, verificationPublisher,
 		lifecycleFactRelay, mfaSvc,
-		nil,
 		workflowMetrics,
 	)
 	if authSvc == nil {
@@ -306,48 +300,56 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP user handler")
 	}
 
-	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ platform/tenant RBAC
-	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(
-		rbacPlatformRepo,
+	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ personal/tenant RBAC
+	personalRbacSvc := iamSvcImpl.NewPersonalRbacService(
+		personalRbacRepo,
 		cacheEngine,
 		authRedis,
 		rds,
 		workflowMetrics,
 	)
-	if rbacPlatformSvc == nil {
-		return nil, errors.New("iam module: failed to construct RBAC platform service")
+	if personalRbacSvc == nil {
+		return nil, errors.New("iam module: failed to construct personal RBAC service")
 	}
 
-	rbacTenantSvc := iamSvcImpl.NewRbacTenantService(rbacTenantRepo, workflowMetrics)
-	if rbacTenantSvc == nil {
-		return nil, errors.New("iam module: failed to construct RBAC tenant service")
+	tenantRbacSvc := iamSvcImpl.NewTenantRbacService(tenantRbacRepo, workflowMetrics)
+	if tenantRbacSvc == nil {
+		return nil, errors.New("iam module: failed to construct tenant RBAC service")
 	}
-	renderContextSvc := iamSvcImpl.NewRenderContextService(renderContextRepo, workflowMetrics)
-	if renderContextSvc == nil {
-		return nil, errors.New("iam module: failed to construct render context service")
+	personalRenderContextSvc := iamSvcImpl.NewPersonalRenderContextService(cacheEngine, workflowMetrics)
+	if personalRenderContextSvc == nil {
+		return nil, errors.New("iam module: failed to construct personal render context service")
 	}
-	tenantAccessRedisHandler, err := iamPubsubHandler.NewTenantAccessRedisHandler(rds, rbacTenantSvc)
+	tenantRenderContextSvc := iamSvcImpl.NewTenantRenderContextService(cacheEngine, workflowMetrics)
+	if tenantRenderContextSvc == nil {
+		return nil, errors.New("iam module: failed to construct tenant render context service")
+	}
+	tenantAccessRedisHandler, err := iamPubsubHandler.NewTenantAccessRedisHandler(rds, tenantRbacSvc)
 	if err != nil {
 		return nil, fmt.Errorf("iam module: failed to initialize tenant access Redis handler: %w", err)
 	}
-	personalAccessRedisHandler, err := iamPubsubHandler.NewPersonalAccessRedisHandler(rds, rbacPlatformSvc)
+	personalAccessRedisHandler, err := iamPubsubHandler.NewPersonalAccessRedisHandler(rds, personalRbacSvc)
 	if err != nil {
 		return nil, fmt.Errorf("iam module: failed to initialize personal access Redis handler: %w", err)
 	}
 
-	// [COMMENT]: Khởi tạo các HTTP handlers phục vụ định tuyến API platform/tenant RBAC
-	rbacPlatformHandler := iamHandler.NewRbacPlatformHandler(rbacPlatformSvc)
-	if rbacPlatformHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP RBAC platform handler")
+	// [COMMENT]: Khởi tạo các HTTP handlers phục vụ định tuyến API personal/tenant RBAC
+	personalRbacHandler := iamHandler.NewPersonalRbacHandler(personalRbacSvc)
+	if personalRbacHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP personal RBAC handler")
 	}
 
-	rbacTenantHandler := iamHandler.NewRbacTenantHandler(rbacTenantSvc)
-	if rbacTenantHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP RBAC tenant handler")
+	tenantRbacHandler := iamHandler.NewTenantRbacHandler(tenantRbacSvc)
+	if tenantRbacHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP tenant RBAC handler")
 	}
-	renderContextHandler := iamHandler.NewRenderContextHandler(renderContextSvc)
-	if renderContextHandler == nil {
-		return nil, errors.New("iam module: failed to initialize render context handler")
+	personalRenderContextHandler := iamHandler.NewPersonalRenderContextHandler(personalRenderContextSvc)
+	if personalRenderContextHandler == nil {
+		return nil, errors.New("iam module: failed to initialize personal render context handler")
+	}
+	tenantRenderContextHandler := iamHandler.NewTenantRenderContextHandler(tenantRenderContextSvc)
+	if tenantRenderContextHandler == nil {
+		return nil, errors.New("iam module: failed to initialize tenant render context handler")
 	}
 
 	// ------------------------------------------------------------------------
@@ -369,13 +371,13 @@ func NewModule(
 		UserHandler:                          userHandler,
 		SelfDeviceHandler:                    selfDeviceHandler,
 		PersonalDeviceHandler:                personalDeviceHandler,
-		RbacPlatformHandler:                  rbacPlatformHandler,
-		RbacTenantHandler:                    rbacTenantHandler,
-		RenderContextHandler:                 renderContextHandler,
+		PersonalRbacHandler:                  personalRbacHandler,
+		TenantRbacHandler:                    tenantRbacHandler,
+		PersonalRenderContextHandler:         personalRenderContextHandler,
+		TenantRenderContextHandler:           tenantRenderContextHandler,
 		MfaHandler:                           mfaHandler,
-		RbacPlatformRepository:               rbacPlatformRepo,
-		RbacTenantRepository:                 rbacTenantRepo,
-		RenderContextRepository:              renderContextRepo,
+		PersonalRbacRepository:               personalRbacRepo,
+		TenantRbacRepository:                 tenantRbacRepo,
 		SelfDeviceRepository:                 selfDeviceRepo,
 		PersonalDeviceRepository:             personalDeviceRepo,
 		selfDeviceSvcImpl:                    selfDeviceSvc,

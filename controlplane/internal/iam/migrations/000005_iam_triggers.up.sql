@@ -43,12 +43,6 @@ BEFORE UPDATE ON lifecycle_fact_outbox_records
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
-DROP TRIGGER IF EXISTS trg_device_runtime_revoke_outbox_records_updated_at ON device_runtime_revoke_outbox_records;
-CREATE TRIGGER trg_device_runtime_revoke_outbox_records_updated_at
-BEFORE UPDATE ON device_runtime_revoke_outbox_records
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
 DROP TRIGGER IF EXISTS trg_permissions_updated_at ON permissions;
 CREATE TRIGGER trg_permissions_updated_at
 BEFORE UPDATE ON permissions
@@ -72,5 +66,17 @@ CREATE TRIGGER trg_membership_role_updated_at
 BEFORE UPDATE ON membership_role
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tenant_role_revisions_immutable ON tenant_role_revisions;
+CREATE TRIGGER trg_tenant_role_revisions_immutable
+BEFORE UPDATE OR DELETE ON tenant_role_revisions
+FOR EACH ROW
+EXECUTE FUNCTION reject_tenant_role_revision_mutation();
+
+DROP TRIGGER IF EXISTS trg_tenant_role_revision_permissions_immutable ON tenant_role_revision_permissions;
+CREATE TRIGGER trg_tenant_role_revision_permissions_immutable
+BEFORE UPDATE OR DELETE ON tenant_role_revision_permissions
+FOR EACH ROW
+EXECUTE FUNCTION reject_tenant_role_revision_mutation();
 
 -- [COMMENT]: Account activation không tạo workspace/zone trong trigger; hierarchy được provision qua workflow explicit sau login.

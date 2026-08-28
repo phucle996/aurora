@@ -55,6 +55,27 @@ export type TenantRole = {
 	description: string;
 	role_level: number;
 	version: number;
+	assignments_count: number;
+	outdated_assignments_count: number;
+	permissions_count: number;
+	created_at: string;
+};
+
+export type TenantPermission = {
+	id: string;
+	module: string;
+	object: string;
+	behavior: string;
+	description: string;
+};
+
+export type TenantRoleDetails = TenantRole & { permissions: TenantPermission[] };
+
+export type TenantRoleInput = {
+	name: string;
+	description: string;
+	role_level: number;
+	permission_ids: string[];
 };
 
 export type TenantInvitation = {
@@ -62,6 +83,7 @@ export type TenantInvitation = {
 	tenant_role_id: string;
 	role_code: string;
 	role_name: string;
+	role_version: number;
 	expires_at: string;
 	join_link: string;
 };
@@ -74,6 +96,7 @@ export type TenantInvitationPreview = {
 	role_code: string;
 	role_name: string;
 	role_level: number;
+	role_version: number;
 	expires_at: string;
 };
 
@@ -90,6 +113,37 @@ export type JoinedTenant = {
 export async function listTenantRoles(signal?: AbortSignal): Promise<TenantRole[]> {
 	const response = await fetchJSON<{ data?: { roles?: TenantRole[] } }>("/api/v1/iam/rbac/role", { signal });
 	return Array.isArray(response.data?.roles) ? response.data.roles : [];
+}
+
+export async function listTenantPermissions(signal?: AbortSignal): Promise<TenantPermission[]> {
+	const response = await fetchJSON<{ data?: { permissions?: TenantPermission[] } }>("/api/v1/iam/rbac/permissions", { signal });
+	return Array.isArray(response.data?.permissions) ? response.data.permissions : [];
+}
+
+export async function getTenantRole(roleID: string, signal?: AbortSignal): Promise<TenantRoleDetails> {
+	const response = await fetchJSON<{ data?: { role?: TenantRoleDetails } }>(`/api/v1/iam/rbac/role/${encodeURIComponent(roleID)}`, { signal });
+	if (!response.data?.role) throw new Error("The tenant role response is invalid.");
+	return response.data.role;
+}
+
+export async function createTenantRole(code: string, input: TenantRoleInput): Promise<void> {
+	await criticalFetchJSON("/api/v1/critical/iam/rbac/role", { method: "POST", body: { code, ...input } });
+}
+
+export async function createTenantRoleRevision(roleID: string, expectedVersion: number, input: TenantRoleInput): Promise<void> {
+	await criticalFetchJSON(`/api/v1/critical/iam/rbac/role/${encodeURIComponent(roleID)}`, {
+		method: "PUT",
+		body: { expected_version: expectedVersion, ...input },
+	});
+}
+
+export async function upgradeTenantRoleAssignments(roleID: string): Promise<{ version: number; updated_assignments_count: number }> {
+	const response = await criticalFetchJSON<{ data?: { version: number; updated_assignments_count: number } }>(
+		`/api/v1/critical/iam/rbac/role/${encodeURIComponent(roleID)}/assignments/upgrade`,
+		{ method: "POST" },
+	);
+	if (!response.data) throw new Error("The rollout response is invalid.");
+	return response.data;
 }
 
 export async function createTenantInvitation(identifier: string, tenantRoleID: string): Promise<TenantInvitation> {

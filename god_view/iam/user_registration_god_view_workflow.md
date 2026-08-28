@@ -156,8 +156,9 @@ sequenceDiagram
 ## Phase 3 — Issue verification intent and mail dispatch
 
 Mail is a recovery-capable delivery side effect, not registration authority. A
-post-commit OTT/Kafka failure is logged and still returns `201`; the account
-remains pending and correct-password login owns resend under cooldown.
+post-commit OTT/Kafka failure is returned to the HTTP handler as a non-fatal
+dispatch result; the handler logs the sanitized warning and still returns `201`.
+The account remains pending and correct-password login owns resend under cooldown.
 
 ### IAM processing and transport output
 
@@ -182,6 +183,7 @@ remains pending and correct-password login owns resend under cooldown.
 ```mermaid
 sequenceDiagram
     participant S as IAM AuthService
+    participant H as AuthHandler
     participant R as Security Redis
     participant K as Kafka
     participant M as Mail runtime
@@ -189,7 +191,8 @@ sequenceDiagram
 
     S->>R: Store hashed OTT with TTL and replication gate
     alt OTT or publish unavailable
-        S->>S: Log sanitized delivery failure
+        S-->>H: Durable success plus dispatch=false
+        H->>H: Log sanitized delivery warning
         Note over S: Pending identity remains and registration response is 201
     else dispatch ready
         S->>K: Publish verification envelope keyed by event_id

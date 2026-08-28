@@ -38,6 +38,22 @@ type UpdateUserStatus struct {
 	Status       string
 }
 
+// UserProfile đại diện cho thông tin hồ sơ người dùng trong bảng user_profiles.
+type UserProfile struct {
+	UserID       uuid.UUID
+	Username     string
+	AccountEmail string
+	Phone        *string
+	Fullname     string
+	Address      *string
+	AvatarURL    *string
+	Bio          *string
+	Locale       string
+	Timezone     string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 // GetMyProfile is the flat contract for reading the current user's profile.
 type GetMyProfile struct {
 	UserID       uuid.UUID

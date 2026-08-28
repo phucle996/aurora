@@ -12,6 +12,18 @@ BEGIN
 END;
 $$;
 
+-- Tenant role revisions are append-only authority facts. Role edits create a
+-- new revision and only advance tenant_roles.current_version.
+CREATE OR REPLACE FUNCTION reject_tenant_role_revision_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'tenant role revisions are immutable'
+        USING ERRCODE = '55000';
+END;
+$$;
+
 -- 2) Stored procedure cleanup_expired_refresh_tokens
 CREATE OR REPLACE PROCEDURE cleanup_expired_refresh_tokens()
 LANGUAGE plpgsql

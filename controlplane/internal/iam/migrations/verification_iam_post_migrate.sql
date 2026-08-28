@@ -6,7 +6,8 @@ SELECT object_name, to_regclass(object_name) IS NOT NULL AS present
 FROM unnest(ARRAY[
     'users', 'user_profiles', 'devices', 'refresh_tokens',
     'external_identities', 'mfa_settings', 'mfa_recovery_codes',
-    'permissions', 'platform_roles', 'tenant_roles', 'user_role',
+    'permissions', 'platform_roles', 'tenant_roles', 'tenant_role_revisions',
+    'tenant_role_revision_permissions', 'user_role',
     'membership_role', 'tenant_invitations', 'lifecycle_fact_outbox_records'
 ]) AS object_name
 ORDER BY object_name;

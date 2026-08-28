@@ -31,7 +31,7 @@ export function JoinTenantInvitationScreen({ token }: { token: string }) {
 		<Card>
 			<CardHeader>
 				<CardTitle>{preview ? `Join ${preview.tenant_name}` : "Tenant invitation"}</CardTitle>
-				<CardDescription>{error || (preview ? `${preview.inviter_name} invited you as ${preview.role_name}.` : "Checking this invitation…")}</CardDescription>
+				<CardDescription>{error || (preview ? `${preview.inviter_name} invited you as ${preview.role_name} r${preview.role_version}.` : "Checking this invitation…")}</CardDescription>
 			</CardHeader>
 			{preview && <CardContent className="space-y-4">
 				<div className="rounded-md border p-4 text-sm">

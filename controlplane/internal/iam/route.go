@@ -103,7 +103,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// This is an internal owner route selected by ACR after session
 	// verification. Direct client access is denied at the edge.
 	router.GET("/api/v1/personal/iam/context/read",
-		module.RenderContextHandler.GetPersonalRenderContext,
+		module.PersonalRenderContextHandler.GetPersonalRenderContext,
 	)
 	// [COMMENT]: Lấy danh sách users hệ thống (yêu cầu quyền iam:users:read và level 2)
 	router.GET("/api/v1/personal/iam/users",
@@ -128,7 +128,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// [COMMENT]: Lấy thông tin vai trò của một user cụ thể (yêu cầu quyền iam:users:read và level 2) thông qua platform handler
 	router.GET("/api/v1/personal/iam/users/:id/roles",
 		middleware.Authorize("iam:users:read", module.L1Registry, "2"),
-		module.RbacPlatformHandler.GetUserRolesPlatform,
+		module.PersonalRbacHandler.GetUserRolesPlatform,
 	)
 
 	router.GET("/api/v1/personal/iam/users/:id/auth-methods",
@@ -145,47 +145,47 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// [COMMENT]: Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:read và level 2) thông qua platform handler
 	router.GET("/api/v1/personal/iam/rbac/role",
 		middleware.Authorize("iam:role:read", module.L1Registry, "2"),
-		module.RbacPlatformHandler.ListRolesPlatform,
+		module.PersonalRbacHandler.ListRolesPlatform,
 	)
 
 	// [COMMENT]: Lấy chi tiết một vai trò platform dạng cây bậc 3 (yêu cầu quyền iam:role:read và level 2)
 	router.GET("/api/v1/personal/iam/rbac/role/:role_id",
 		middleware.Authorize("iam:role:read", module.L1Registry, "2"),
-		module.RbacPlatformHandler.GetRoleDetailsPlatform,
+		module.PersonalRbacHandler.GetRoleDetailsPlatform,
 	)
 
 	// [COMMENT]: Tạo vai trò hệ thống mới (yêu cầu quyền iam:role:write và level 2) thông qua platform handler
 	router.POST("/api/v1/personal/critical/iam/rbac/role",
 		middleware.RequireSessionProof(),
 		middleware.Authorize("iam:role:write", module.L1Registry, "2"),
-		module.RbacPlatformHandler.CreateRole,
+		module.PersonalRbacHandler.CreateRole,
 	)
 
 	// [COMMENT]: Xóa vai trò hệ thống (yêu cầu quyền iam:role:delete và level 2) thông qua platform handler
 	router.DELETE("/api/v1/personal/critical/iam/rbac/role/:role_id",
 		middleware.RequireSessionProof(),
 		middleware.Authorize("iam:role:delete", module.L1Registry, "2"),
-		module.RbacPlatformHandler.DeleteRolePlatform,
+		module.PersonalRbacHandler.DeleteRolePlatform,
 	)
 
 	// [COMMENT]: Cập nhật vai trò hệ thống (yêu cầu quyền iam:role:write và level 2) thông qua platform handler
 	router.PUT("/api/v1/personal/critical/iam/rbac/role/:role_id",
 		middleware.RequireSessionProof(),
 		middleware.Authorize("iam:role:write", module.L1Registry, "2"),
-		module.RbacPlatformHandler.UpdateRolePlatform,
+		module.PersonalRbacHandler.UpdateRolePlatform,
 	)
 
 	// [COMMENT]: Lấy danh sách toàn bộ các permissions hệ thống (yêu cầu quyền iam:permissions:read và level 2) thông qua platform handler
 	router.GET("/api/v1/personal/iam/rbac/permissions",
 		middleware.Authorize("iam:permissions:read", module.L1Registry, "2"),
-		module.RbacPlatformHandler.ListPermissions,
+		module.PersonalRbacHandler.ListPermissions,
 	)
 
 	// [COMMENT]: Gán vai trò cho User hệ thống thông qua platform handler
 	router.POST("/api/v1/personal/critical/iam/rbac/user-role",
 		middleware.RequireSessionProof(),
 		middleware.Authorize("iam:role:assign", module.L1Registry, "2"),
-		module.RbacPlatformHandler.AssignUserRole,
+		module.PersonalRbacHandler.AssignUserRole,
 	)
 
 	// [COMMENT]: Lấy danh sách thiết bị của một user cụ thể (yêu cầu quyền iam:device:read và level 2) thông qua platform handler
@@ -200,12 +200,16 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// Tenant context is mandatory here; the workflow cannot fall back to a
 	// platform assignment when membership is absent or stale.
 	router.GET("/api/v1/tenant/iam/context/read",
-		module.RenderContextHandler.GetTenantRenderContext,
+		module.TenantRenderContextHandler.GetTenantRenderContext,
 	)
 	// [COMMENT]: Lấy toàn bộ danh sách tenant-scoped roles (yêu cầu quyền iam:role:read và level *) thông qua tenant handler
 	router.GET("/api/v1/tenant/iam/rbac/role",
 		middleware.Authorize("iam:role:read", module.L1Registry, "*"),
-		module.RbacTenantHandler.ListRolesTenant,
+		module.TenantRbacHandler.ListRolesTenant,
+	)
+	router.GET("/api/v1/tenant/iam/rbac/role/:role_id",
+		middleware.Authorize("iam:role:read", module.L1Registry, "*"),
+		module.TenantRbacHandler.GetTenantRole,
 	)
 
 	// [COMMENT]: Role definitions decide future tenant grants. The route is
@@ -214,12 +218,22 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.POST("/api/v1/tenant/critical/iam/rbac/role",
 		middleware.RequireSessionProof(),
 		middleware.Authorize("iam:role:write", module.L1Registry, "*"),
-		module.RbacTenantHandler.CreateTenantRole,
+		module.TenantRbacHandler.CreateTenantRole,
+	)
+	router.PUT("/api/v1/tenant/critical/iam/rbac/role/:role_id",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("iam:role:write", module.L1Registry, "*"),
+		module.TenantRbacHandler.CreateTenantRoleRevision,
+	)
+	router.POST("/api/v1/tenant/critical/iam/rbac/role/:role_id/assignments/upgrade",
+		middleware.RequireSessionProof(),
+		middleware.Authorize("iam:role:assign", module.L1Registry, "*"),
+		module.TenantRbacHandler.UpgradeTenantRoleAssignments,
 	)
 
 	// [COMMENT]: Lấy danh sách permissions khả dụng cho Tenant (yêu cầu quyền iam:permissions:read và level *) thông qua platform handler
 	router.GET("/api/v1/tenant/iam/rbac/permissions",
 		middleware.Authorize("iam:permissions:read", module.L1Registry, "*"),
-		module.RbacPlatformHandler.ListPermissions,
+		module.PersonalRbacHandler.ListPermissions,
 	)
 }

@@ -9,7 +9,8 @@ import (
 )
 
 type AuthService interface {
-	RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) error
+	// [COMMENT]: RegisterAccount tiếp nhận command đăng ký tài khoản, băm mật khẩu, tạo user/profile và gửi mail xác thực
+	RegisterAccount(ctx context.Context, cmd *iamEntity.RegisterAccount) (*iamEntity.RegisterAccountResult, error)
 
 	// [COMMENT]: VerifyAccount thực hiện kiểm tra token kích hoạt tài khoản
 	// và tiến hành active trạng thái của user kèm theo gán role mặc định.

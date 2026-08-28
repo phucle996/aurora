@@ -26,7 +26,7 @@ const (
 // tenant membership can never be reused as personal authority.
 type PersonalAccessRedisHandler struct {
 	sharedRedis *goredis.Client
-	service     iamSvcInterface.RbacPlatformService
+	service     iamSvcInterface.PersonalRbacService
 	cancel      context.CancelFunc
 	pubsub      *goredis.PubSub
 	loopWG      sync.WaitGroup
@@ -34,7 +34,7 @@ type PersonalAccessRedisHandler struct {
 	slots       chan struct{}
 }
 
-func NewPersonalAccessRedisHandler(sharedRedis *goredis.Client, service iamSvcInterface.RbacPlatformService) (*PersonalAccessRedisHandler, error) {
+func NewPersonalAccessRedisHandler(sharedRedis *goredis.Client, service iamSvcInterface.PersonalRbacService) (*PersonalAccessRedisHandler, error) {
 	if sharedRedis == nil || service == nil {
 		return nil, errors.New("personal access Redis handler requires Shared Redis and platform RBAC service")
 	}

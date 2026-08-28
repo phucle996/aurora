@@ -28,7 +28,7 @@ var tenantAccessDomainPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,253}[a
 
 type TenantAccessRedisHandler struct {
 	sharedRedis *goredis.Client
-	service     iamSvcInterface.RbacTenantService
+	service     iamSvcInterface.TenantRbacService
 
 	cancel context.CancelFunc
 	pubsub *goredis.PubSub
@@ -37,7 +37,7 @@ type TenantAccessRedisHandler struct {
 	slots  chan struct{}
 }
 
-func NewTenantAccessRedisHandler(sharedRedis *goredis.Client, service iamSvcInterface.RbacTenantService) (*TenantAccessRedisHandler, error) {
+func NewTenantAccessRedisHandler(sharedRedis *goredis.Client, service iamSvcInterface.TenantRbacService) (*TenantAccessRedisHandler, error) {
 	if sharedRedis == nil || service == nil {
 		return nil, errors.New("tenant access Redis handler requires Shared Redis and tenant RBAC service")
 	}

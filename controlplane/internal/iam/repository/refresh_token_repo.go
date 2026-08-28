@@ -81,11 +81,11 @@ func (r *RefreshTokenRepository) IssueDeviceRefreshToken(ctx context.Context, in
 
 	var deviceValid, inserted bool
 	if err := r.db.QueryRow(ctx, query,
-		in.ID, 
-		in.UserID, 
-		in.DeviceID, 
-		in.TokenHash, 
-		in.IssuedAt, 
+		in.ID,
+		in.UserID,
+		in.DeviceID,
+		in.TokenHash,
+		in.IssuedAt,
 		in.ExpiresAt,
 	).Scan(&deviceValid, &inserted); err != nil {
 		return fmt.Errorf("refresh token repo: issue device credential: %w", err)
@@ -122,7 +122,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			  AND token.expires_at > $3
 		),
 		platform_authority AS MATERIALIZED (
-			SELECT assignment.role_level
+			SELECT revision.role_level
 			FROM credential
 			JOIN %s.user_role assignment ON assignment.user_id = credential.user_id 
 			                            AND assignment.workspace_id = '00000000-0000-0000-0000-000000000000'
@@ -143,9 +143,10 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			                                     AND assignment.workspace_id = '00000000-0000-0000-0000-000000000000'
 			JOIN %s.tenant_roles role             ON role.id = assignment.tenant_role_id 
 			                                     AND role.tenant_id = membership.tenant_id 
-			                                     AND role.version = assignment.role_version
+			JOIN %s.tenant_role_revisions revision ON revision.id = assignment.tenant_role_revision_id
+			                                     AND revision.tenant_role_id = role.id
 			WHERE $2::uuid IS NOT NULL
-			ORDER BY assignment.role_level ASC, assignment.tenant_role_id ASC
+			ORDER BY revision.role_level ASC, assignment.tenant_role_id ASC
 			LIMIT 1
 		)
 		SELECT 
@@ -171,7 +172,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 				0
 			)
 	`, r.schema.IAM, r.schema.IAM, r.schema.IAM, r.schema.IAM, r.schema.IAM,
-		r.schema.Hierarchy, r.schema.Hierarchy, r.schema.IAM, r.schema.IAM)
+		r.schema.Hierarchy, r.schema.Hierarchy, r.schema.IAM, r.schema.IAM, r.schema.IAM)
 
 	out := &iamEntity.RecoverUserSession{
 		TokenHash:         in.TokenHash,

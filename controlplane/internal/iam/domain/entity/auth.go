@@ -34,6 +34,30 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
+// [COMMENT]: RegisterAccount là thực thể nghiệp vụ duy nhất mang dữ liệu cho toàn bộ workflow đăng ký tài khoản
+type RegisterAccount struct {
+	ID           uuid.UUID
+	Username     string
+	Email        string
+	Phone        *string
+	Password     string
+	PasswordHash string
+	Status       UserStatus
+	Fullname     string
+	Locale       string
+	Timezone     string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// RegisterAccountResult reports the recoverable post-commit dispatch state.
+// Identity creation remains successful even when the verification transport is
+// temporarily unavailable; the handler owns the warning log and still returns
+// the durable 201 result.
+type RegisterAccountResult struct {
+	VerificationDispatched bool
+}
+
 // AccountActivation is the IAM-owned durable activation command. It deliberately
 // excludes workspace placement, which has its own workflow command below.
 type AccountActivation struct {
@@ -41,6 +65,15 @@ type AccountActivation struct {
 	RoleCode              string
 	LifecycleEventID      uuid.UUID
 	LifecycleEventPayload []byte
+}
+
+// AccountVerificationDispatch là dữ liệu nghiệp vụ tối thiểu để yêu cầu gửi mail xác minh.
+// Domain không biết topic, Kafka, Protobuf, Zone, consumer hay template runtime.
+type AccountVerificationDispatch struct {
+	EventID   uuid.UUID
+	Recipient string
+	Parameter map[string]string
+	ExpiresAt time.Time
 }
 
 // BootstrapPersonalWorkspaces is the activation-owned template used to seed one
@@ -66,11 +99,12 @@ type LoginUser struct {
 	ID           uuid.UUID
 	Username     string
 	Email        string
-	PasswordHash *string
+	PasswordHash string
 	Status       UserStatus
 	// [COMMENT]: TenantID và TenantCode phục vụ flow login username@tenant_domain.
 	// Rỗng/nil nếu login global.
-	TenantID *string
+	TenantID   *string
+	TenantCode *string
 	// [COMMENT]: Effective level được resolve từ assignment hiện hành; role UUID
 	// là metadata RBAC và không được đưa vào Trinity.
 	Level int32
@@ -82,8 +116,9 @@ type LoginRequest struct {
 	DevicePublicKey string
 	TrustDevice     bool
 	DeviceName      string
+	DeviceType      string
 	ClientDeviceID  uuid.UUID
-	// [COMMENT]: TenantDomain được ACR tách từ username@tenant_domain trước khi gọi gRPC sang CP.
+	// [COMMENT]: TenantDomain được ACR tách từ username@tenant_domain trước khi gọi sang CP.
 	// Rỗng = đăng nhập global (platform scope), có giá trị = lấy tenant context qua JOIN tenant_domains.
 	TenantDomain string
 	RemoteIP     string

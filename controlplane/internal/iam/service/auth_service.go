@@ -3,9 +3,7 @@ package iamSvcImpl
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,7 +17,6 @@ import (
 	"controlplane/internal/observability"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/logger"
 
 	iamproto "controlplane/internal/iam/transport/proto"
 
@@ -27,138 +24,106 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// [COMMENT]: Bỏ hằng số mặc định để ưu tiên nhận locale & timezone trực tiếp từ client
-
+// [COMMENT]: AuthService thực thi các nghiệp vụ xác thực đăng nhập, đăng ký, MFA và phục hồi tài khoản
 type AuthService struct {
 	repo                  iamRepoInterface.AuthRepository
-	refreshSvc            iamSvcInterface.SessionRefreshService
-	deviceSvc             iamSvcInterface.SelfDeviceService // [COMMENT]: Sử dụng SelfDeviceService cho verified login user
-	registry              *cacheengine.CacheRegistry
-	ott                   iamSvcInterface.OneTimeTokenService
+	sessionRefreshSvc     iamSvcInterface.SessionRefreshService
+	selfDeviceSvc         iamSvcInterface.SelfDeviceService
+	cacheEngine           *cacheengine.CacheRegistry
+	oneTimeTokenSvc       iamSvcInterface.OneTimeTokenService
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher
 	lifecycleFactNotifier iamSvcInterface.LifecycleFactNotifier
 	mfaSvc                iamSvcInterface.MfaService
-	acrClient             iamproto.SessionServiceClient
 	metrics               observability.WorkflowRecorder
 }
 
+// [COMMENT]: NewAuthService khởi tạo thể hiện mới của AuthService
 func NewAuthService(
 	repo iamRepoInterface.AuthRepository,
-	refreshSvc iamSvcInterface.SessionRefreshService,
-	deviceSvc iamSvcInterface.SelfDeviceService,
-	registry *cacheengine.CacheRegistry,
-	ott iamSvcInterface.OneTimeTokenService,
+	sessionRefreshSvc iamSvcInterface.SessionRefreshService,
+	selfDeviceSvc iamSvcInterface.SelfDeviceService,
+	cacheEngine *cacheengine.CacheRegistry,
+	oneTimeTokenSvc iamSvcInterface.OneTimeTokenService,
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher,
 	lifecycleFactNotifier iamSvcInterface.LifecycleFactNotifier,
 	mfaSvc iamSvcInterface.MfaService,
-	acrClient iamproto.SessionServiceClient,
 	metrics observability.WorkflowRecorder,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
 		repo:                  repo,
-		refreshSvc:            refreshSvc,
-		deviceSvc:             deviceSvc,
-		registry:              registry,
-		ott:                   ott,
+		sessionRefreshSvc:     sessionRefreshSvc,
+		selfDeviceSvc:         selfDeviceSvc,
+		cacheEngine:           cacheEngine,
+		oneTimeTokenSvc:       oneTimeTokenSvc,
 		verificationPublisher: verificationPublisher,
 		lifecycleFactNotifier: lifecycleFactNotifier,
 		mfaSvc:                mfaSvc,
-		acrClient:             acrClient,
 		metrics:               metrics,
 	}
 }
 
-func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) (err error) {
+func (s *AuthService) RegisterAccount(ctx context.Context, account *iamEntity.RegisterAccount) (registration *iamEntity.RegisterAccountResult, err error) {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
 	// Đo lường thời gian băm mật khẩu để SRE theo dõi mức sử dụng CPU (CPU-bound).
-	passwordHash, hashErr := security.HashPassword(password)
+	passwordHash, hashErr := security.HashPassword(account.Password)
 	if hashErr != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, hashErr, "internal")
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, hashErr, "internal")
 	}
 
 	now := time.Now().UTC()
 	userID, idErr := uuid.NewV7()
 	if idErr != nil {
-		return fmt.Errorf("%w: failed to generate user ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, idErr)
+		return nil, fmt.Errorf("%w: failed to generate user ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, idErr)
 	}
 
-	user.ID = userID
-	user.PasswordHash = passwordHash
-	user.Status = iamEntity.UserStatusPendingActive
-	user.CreatedAt = now
-	user.UpdatedAt = now
-
-	profile.UserID = userID
-	profile.AvatarURL = nil
-	profile.Bio = nil
-	// [COMMENT]: Lưu trực tiếp thông tin Locale và Timezone từ client gửi lên mà không áp đặt default locale cứng ở tầng domain service
-	profile.CreatedAt = now
-	profile.UpdatedAt = now
+	account.ID = userID
+	account.PasswordHash = passwordHash
+	account.Status = iamEntity.UserStatusPendingActive
+	account.CreatedAt = now
+	account.UpdatedAt = now
 
 	// Thực hiện ghi dữ liệu xuống database và đo lường latency của transaction (I/O-bound).
-	insertErr := s.repo.CreateRegisteredUser(ctx, user, profile)
+	insertErr := s.repo.CreateRegisteredUser(ctx, account)
 	if insertErr != nil {
 		// DB unique violation được map về domain duplicate; PostgreSQL unique index vẫn là SoT duy nhất.
 		if errors.Is(insertErr, iamTaxonomy.ErrUserAlreadyExist) {
-
 			result, reason = observability.ResultRejected, observability.ReasonAlreadyExists
-			return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, insertErr, "already_exists")
+			return nil, apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, insertErr, "already_exists")
 		}
-		return insertErr
+		return nil, insertErr
 	}
 
-	// [COMMENT]: Mail xác minh là best-effort sau identity commit; resend khi login là recovery path nếu broker gián đoạn.
+	// [COMMENT]: Mail xác minh là side effect phục hồi được sau identity commit;
+	// pending login sẽ phát lại dưới cooldown nếu OTT hoặc broker tạm thời lỗi.
 	publishCtx, publishCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	publishErr := s.publishAccountVerification(publishCtx, user.ID, user.Username, user.Email)
+	publishErr := s.publishAccountVerification(publishCtx, account.ID, account.Username, account.Email)
 	publishCancel()
-	if publishErr != nil {
-		// User/profile are already durable. Returning an error here would invite a
-		// duplicate registration request although pending login can issue a fresh
-		// verification dispatch through its own cooldown-controlled recovery path.
-		logger.SysErrorCtx(ctx, "iam.auth.register.verification_dispatch", "verification dispatch unavailable after identity commit")
-	}
 	result, reason = observability.ResultSuccess, observability.ReasonNone
-	return nil
+	return &iamEntity.RegisterAccountResult{VerificationDispatched: publishErr == nil}, nil
 }
 
-// [COMMENT]: VerifyAccount kiểm tra tính hợp lệ của mã kích hoạt (OTT) thông qua OneTimeTokenService,
-// sau đó tiến hành kích hoạt tài khoản và gán role mặc định 'platform_user' cho người dùng.
+// [COMMENT]: VerifyAccount kiểm tra tính hợp lệ của mã kích hoạt thông qua OneTimeTokenService trong Security Redis,
+// sau đó tiến hành kích hoạt tài khoản, cấp role mặc định và seed personal workspaces cho tất cả active zones.
 func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UUID, token string) error {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
 
-	// [COMMENT]: HTTP retry sau commit phải idempotent ngay cả khi Redis token đã được consume hoặc hết TTL.
-	active, stateErr := s.repo.IsUserActive(ctx, userID)
-	if stateErr != nil {
-		return stateErr
+	// [COMMENT]: 1. Redis Gatekeeper: Xác thực token trong Security Redis.
+	// Không xóa token sau khi xác thực để token tự hết hạn theo TTL (15 phút), hỗ trợ retry idempotent an toàn.
+	valid, err := s.oneTimeTokenSvc.Validate(ctx, "account_verify", userID, eventID, token)
+	if err != nil {
+		return err
 	}
-	if !active {
-		// [COMMENT]: Validate trước nhưng chỉ consume sau DB commit; DB lỗi không được làm mất token retry.
-		valid, err := s.ott.Validate(ctx, "account_verify", userID, eventID, token)
-		if err != nil {
-			// [COMMENT]: Request khác có thể commit + consume giữa IsUserActive và Validate.
-			// Re-read DB; chỉ bỏ lỗi OTT khi durable activation đã thắng race.
-			activeAfterRace, stateErr := s.repo.IsUserActive(ctx, userID)
-			if stateErr != nil {
-				return stateErr
-			}
-			if !activeAfterRace {
-				return err
-			}
-			active = true
-		}
-		if !valid && !active {
-			result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
-			return iamTaxonomy.ErrTokenExpired
-		}
+	if !valid {
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
+		return iamTaxonomy.ErrTokenExpired
 	}
 
-	// [COMMENT]: IAM starts the Cost-owned wallet-provision workflow only after
-	// account activation commits. Cost owns the resulting wallet state.
+	// [COMMENT]: 2. IAM khởi tạo command tạo ví cá nhân sang Cost Manager
 	lifecycleEventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("billing.personal_wallet.provision.requested:"+userID.String()))
 	event := &iamproto.PersonalWalletProvisionRequestedV1{
 		EventId:       lifecycleEventID[:],
@@ -189,20 +154,14 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 		UpdatedAt:   now,
 	}
 
-	// [COMMENT]: Repository commits activation, role, per-active-Zone workspace
-	// bootstrap, and the Cost wallet-provision command in one PostgreSQL transaction.
+	// [COMMENT]: 3. Repository commit kích hoạt user, gán role platform, seed workspace cá nhân
+	// trên từng active Zone và outbox command tạo ví trong 1 PostgreSQL transaction duy nhất (CTE nguyên tử).
 	if err := s.repo.ActivateUser(ctx, activation, bootstrapWorkspaces); err != nil {
 		return err
 	}
-	// [COMMENT]: Chỉ wake sau commit; channel đầy hoặc pod crash không làm mất event vì fallback vẫn quét durable outbox.
+
+	// [COMMENT]: 4. Đánh thức worker phát Outbox ngầm bất đồng bộ (Non-blocking signal)
 	s.lifecycleFactNotifier.Notify()
-	// [COMMENT]: Concurrent verify có cùng deterministic event; chỉ một request xóa token, cả hai đều idempotent.
-	if !active {
-		// [COMMENT]: Consume sau commit chỉ là cleanup; Redis outage không được biến activation đã commit thành HTTP 500.
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-		defer cancel()
-		_, _ = s.ott.Consume(cleanupCtx, "account_verify", userID, eventID, token)
-	}
 
 	result, reason = observability.ResultSuccess, observability.ReasonNone
 	return nil
@@ -214,7 +173,7 @@ func (s *AuthService) publishAccountVerification(ctx context.Context, userID uui
 	if eventErr != nil {
 		return fmt.Errorf("generate verification event ID: %w", eventErr)
 	}
-	verificationToken, expiresAt, issueErr := s.ott.Issue(ctx, "account_verify", userID, eventID)
+	verificationToken, expiresAt, issueErr := s.oneTimeTokenSvc.Issue(ctx, "account_verify", userID, eventID)
 	if issueErr != nil {
 		return fmt.Errorf("issue verification token: %w", issueErr)
 	}
@@ -240,7 +199,7 @@ func (s *AuthService) publishAccountVerification(ctx context.Context, userID uui
 
 // [COMMENT]: VerifyUserCredentials thực hiện xác thực thông tin đăng nhập (username, password),
 // kiểm tra trạng thái tài khoản, định danh/upsert thiết bị và sinh Opaque Refresh Token (nếu được yêu cầu).
-// Phương thức này được gọi qua gRPC từ Gateway/ACR để CP đóng vai trò Data Plane (SoT).
+// Phương thức này được gọi qua Shared L2 Redis Pub/Sub (iam.auth.verify_credentials) từ ACR để CP đóng vai trò Data Plane (SoT).
 func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (res *iamEntity.VerifyUserCredentialsResult, err error) {
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
@@ -249,7 +208,6 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	// [COMMENT]: 1. Truy xuất thông tin người dùng từ cơ sở dữ liệu (Single Source of Truth)
 	// Nếu TenantDomain có giá trị (login qua username@tenant_domain), dùng query JOIN tenant_domains.
 	// Nếu không có (login global), dùng query thường.
-	now := time.Now()
 	var (
 		user       *iamEntity.LoginUser
 		loadErr    error
@@ -262,6 +220,9 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		if user != nil {
 			if user.TenantID != nil {
 				tenantID = *user.TenantID
+			}
+			if user.TenantCode != nil {
+				tenantCode = *user.TenantCode
 			}
 		}
 	} else {
@@ -277,18 +238,10 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}
 
 	// [COMMENT]: 2. Xác thực mật khẩu sử dụng thư viện băm bảo mật
-	if user.PasswordHash == nil {
-		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, "unauthenticated")
-	}
-	verified, verifyErr := security.VerifyPassword(*user.PasswordHash, req.Password)
-	if verifyErr != nil {
+	verified, verifyErr := security.VerifyPassword(user.PasswordHash, req.Password)
+	if verifyErr != nil || !verified {
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, verifyErr, "unauthenticated")
-	}
-	if !verified {
-		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, "unauthenticated")
 	}
 
 	// [COMMENT]: 3. Kiểm tra trạng thái tài khoản của người dùng
@@ -296,7 +249,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	case iamEntity.UserStatusPendingActive:
 		// [COMMENT]: Password đã đúng; nhánh pending tự sở hữu cooldown và direct broker resend.
 		cooldownKey := "iam:account_verify:resend_cooldown:" + user.ID.String()
-		acquired, cooldownErr := s.registry.L2.Client().SetNX(ctx, cooldownKey, "1", time.Minute).Result()
+		acquired, cooldownErr := s.cacheEngine.L2.Client().SetNX(ctx, cooldownKey, "1", time.Minute).Result()
 		if cooldownErr != nil {
 			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, cooldownErr, "cache_unavailable")
 		}
@@ -305,7 +258,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 			if publishErr != nil {
 				// [COMMENT]: Publish chưa thành công thì nhả cooldown best-effort để lần login sau có thể recovery ngay.
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
-				_ = s.registry.L2.Client().Del(cleanupCtx, cooldownKey).Err()
+				_ = s.cacheEngine.L2.Client().Del(cleanupCtx, cooldownKey).Err()
 				cleanupCancel()
 				return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, publishErr, "unavailable")
 			}
@@ -357,39 +310,23 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		}, nil
 	}
 
-	// [COMMENT]: 4. Phân giải/Tìm kiếm thiết bị đang hoạt động tương thích
-	matchedClientDeviceID, err := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
-
-	var clientDeviceID uuid.UUID
-	if err == nil && matchedClientDeviceID != nil && *matchedClientDeviceID != uuid.Nil {
-		clientDeviceID = *matchedClientDeviceID
-	} else {
-		newDeviceID, _ := uuid.NewV7()
-		clientDeviceID = newDeviceID
+	// [COMMENT]: 4. Đăng ký / Cập nhật thiết bị vào cơ sở dữ liệu (Atomic CTE Upsert)
+	var clientDeviceIDPtr *uuid.UUID
+	if req.ClientDeviceID != uuid.Nil {
+		clientDeviceIDPtr = &req.ClientDeviceID
 	}
-
-	deviceName := req.DeviceName
-	if strings.TrimSpace(deviceName) == "" {
-		deviceName = "unknown device"
-	}
-	deviceType := "browser"
-	fp := sha256.Sum256([]byte(req.DevicePublicKey))
-	fingerprint := hex.EncodeToString(fp[:])
 
 	loginDevice := iamEntity.Device{
-		UserID:               user.ID,
-		DeviceName:           deviceName,
-		DeviceType:           &deviceType,
-		PublicKey:            req.DevicePublicKey,
-		PublicKeyFingerprint: fingerprint,
-		ClientDeviceID:       &clientDeviceID,
-		LastSeenIP:           cleanOptionalString(&req.RemoteIP),
-		LastSeenUserAgent:    cleanOptionalString(&req.UserAgent),
-		UpdatedAt:            now.UTC(),
+		UserID:            user.ID,
+		DeviceName:        req.DeviceName,
+		DeviceType:        req.DeviceType,
+		PublicKey:         req.DevicePublicKey,
+		ClientDeviceID:    clientDeviceIDPtr,
+		LastSeenIP:        cleanOptionalString(&req.RemoteIP),
+		LastSeenUserAgent: cleanOptionalString(&req.UserAgent),
 	}
 
-	// [COMMENT]: Đăng ký/Cập nhật thiết bị vào cơ sở dữ liệu
-	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
+	trackedDevice, deviceErr := s.selfDeviceSvc.RegisterLoginDevice(ctx, loginDevice)
 	if deviceErr != nil {
 		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
 	}
@@ -398,13 +335,17 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, "unauthenticated")
 	}
 	trackedDeviceID := trackedDevice.ID
+	clientDeviceID := uuid.Nil
+	if trackedDevice.ClientDeviceID != nil {
+		clientDeviceID = *trackedDevice.ClientDeviceID
+	}
 
 	// [COMMENT]: 5. Sinh Refresh Token nếu thiết bị được đánh dấu tin cậy (Trust Device)
 	var rawRefresh string
 	var refreshExpiresAt time.Time
 	if req.TrustDevice {
 		var refreshErr error
-		rawRefresh, refreshExpiresAt, refreshErr = s.refreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
+		rawRefresh, refreshExpiresAt, refreshErr = s.sessionRefreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}
@@ -444,14 +385,20 @@ func (s *AuthService) VerifyMfaLogin(
 		return nil, iamTaxonomy.ErrMFAChallengeInvalid
 	}
 	var (
-		user     *iamEntity.LoginUser
-		loadErr  error
-		tenantID string
+		user       *iamEntity.LoginUser
+		loadErr    error
+		tenantID   string
+		tenantCode string
 	)
 	if strings.TrimSpace(req.TenantDomain) != "" {
 		user, loadErr = s.repo.LoginUserTenant(ctx, req.Username, req.TenantDomain)
-		if user != nil && user.TenantID != nil {
-			tenantID = *user.TenantID
+		if user != nil {
+			if user.TenantID != nil {
+				tenantID = *user.TenantID
+			}
+			if user.TenantCode != nil {
+				tenantCode = *user.TenantCode
+			}
 		}
 	} else {
 		user, loadErr = s.repo.LoginUserGlobal(ctx, req.Username)
@@ -472,44 +419,34 @@ func (s *AuthService) VerifyMfaLogin(
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, iamTaxonomy.ErrMFAChallengeInvalid
 	}
-	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, canonicalPublicKey)
-	clientDeviceID := req.ClientDeviceID
-	if matchedClientDeviceID != nil && *matchedClientDeviceID != uuid.Nil {
-		clientDeviceID = *matchedClientDeviceID
+	var clientDeviceIDPtr *uuid.UUID
+	if req.ClientDeviceID != uuid.Nil {
+		clientDeviceIDPtr = &req.ClientDeviceID
 	}
-	if clientDeviceID == uuid.Nil {
-		clientDeviceID, _ = uuid.NewV7()
-	}
-	deviceName := strings.TrimSpace(req.DeviceName)
-	if deviceName == "" {
-		deviceName = "unknown device"
-	}
-	deviceType := strings.TrimSpace(req.DeviceType)
-	if deviceType == "" {
-		deviceType = "browser"
-	}
-	fp := sha256.Sum256([]byte(canonicalPublicKey))
+
 	loginDevice := iamEntity.Device{
-		UserID:               user.ID,
-		DeviceName:           deviceName,
-		DeviceType:           &deviceType,
-		PublicKey:            canonicalPublicKey,
-		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
-		ClientDeviceID:       &clientDeviceID,
-		LastSeenIP:           cleanOptionalString(&req.RemoteIP),
-		LastSeenUserAgent:    cleanOptionalString(&req.UserAgent),
-		UpdatedAt:            time.Now().UTC(),
+		UserID:            user.ID,
+		DeviceName:        req.DeviceName,
+		DeviceType:        req.DeviceType,
+		PublicKey:         canonicalPublicKey,
+		ClientDeviceID:    clientDeviceIDPtr,
+		LastSeenIP:        cleanOptionalString(&req.RemoteIP),
+		LastSeenUserAgent: cleanOptionalString(&req.UserAgent),
 	}
-	trackedDevice, err := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
+	trackedDevice, err := s.selfDeviceSvc.RegisterLoginDevice(ctx, loginDevice)
 	if err != nil || trackedDevice == nil || trackedDevice.ID == uuid.Nil || trackedDevice.RevokedAt != nil {
 		return nil, fmt.Errorf("%w: register mfa login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
 	trackedDeviceID := trackedDevice.ID
+	clientDeviceID := uuid.Nil
+	if trackedDevice.ClientDeviceID != nil {
+		clientDeviceID = *trackedDevice.ClientDeviceID
+	}
 
 	var rawRefresh string
 	var refreshExpiresAt time.Time
 	if req.TrustDevice {
-		rawRefresh, refreshExpiresAt, err = s.refreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
+		rawRefresh, refreshExpiresAt, err = s.sessionRefreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
 		if err != nil {
 			return nil, err
 		}
@@ -525,7 +462,7 @@ func (s *AuthService) VerifyMfaLogin(
 		RefreshTokenExpiresAt: refreshExpiresAt,
 		Username:              user.Username,
 		ClientProofPublicKey:  trackedDevice.PublicKey,
-		TenantCode:            req.TenantDomain,
+		TenantCode:            tenantCode,
 	}, nil
 }
 
@@ -585,7 +522,7 @@ func (s *AuthService) VerifyExternalIdentity(
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, iamTaxonomy.ErrInvalidCredentials
 	}
-	if user.PasswordHash == nil || strings.TrimSpace(*user.PasswordHash) == "" {
+	if strings.TrimSpace(user.PasswordHash) == "" {
 		// OAuth is only another credential for an existing password-backed
 		// account; the callback must never open an onboarding path.
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
@@ -608,38 +545,20 @@ func (s *AuthService) VerifyExternalIdentity(
 		}, nil
 	}
 
-	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
-	clientDeviceID := req.ClientDeviceID
-	if matchedClientDeviceID != nil && *matchedClientDeviceID != uuid.Nil {
-		clientDeviceID = *matchedClientDeviceID
+	var clientDeviceIDPtr *uuid.UUID
+	if req.ClientDeviceID != uuid.Nil {
+		clientDeviceIDPtr = &req.ClientDeviceID
 	}
-	if clientDeviceID == uuid.Nil {
-		clientDeviceID, _ = uuid.NewV7()
-	}
-
-	deviceName := strings.TrimSpace(req.DeviceName)
-	if deviceName == "" {
-		deviceName = "OAuth browser"
-	}
-	deviceType := strings.TrimSpace(req.DeviceType)
-	if deviceType == "" {
-		deviceType = "browser"
-	}
-	fp := sha256.Sum256([]byte(req.DevicePublicKey))
-	remoteIP := req.RemoteIP
-	userAgent := req.UserAgent
 	loginDevice := iamEntity.Device{
-		UserID:               user.ID,
-		DeviceName:           deviceName,
-		DeviceType:           &deviceType,
-		PublicKey:            req.DevicePublicKey,
-		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
-		ClientDeviceID:       &clientDeviceID,
-		LastSeenIP:           cleanOptionalString(&remoteIP),
-		LastSeenUserAgent:    cleanOptionalString(&userAgent),
-		UpdatedAt:            time.Now().UTC(),
+		UserID:            user.ID,
+		DeviceName:        req.DeviceName,
+		DeviceType:        req.DeviceType,
+		PublicKey:         req.DevicePublicKey,
+		ClientDeviceID:    clientDeviceIDPtr,
+		LastSeenIP:        cleanOptionalString(&req.RemoteIP),
+		LastSeenUserAgent: cleanOptionalString(&req.UserAgent),
 	}
-	trackedDevice, err := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
+	trackedDevice, err := s.selfDeviceSvc.RegisterLoginDevice(ctx, loginDevice)
 	if err != nil {
 		return nil, fmt.Errorf("%w: register external login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
@@ -648,11 +567,15 @@ func (s *AuthService) VerifyExternalIdentity(
 		return nil, iamTaxonomy.ErrInvalidCredentials
 	}
 	trackedDeviceID := trackedDevice.ID
+	clientDeviceID := uuid.Nil
+	if trackedDevice.ClientDeviceID != nil {
+		clientDeviceID = *trackedDevice.ClientDeviceID
+	}
 
 	var rawRefresh string
 	var refreshExpiresAt time.Time
 	if req.TrustDevice {
-		rawRefresh, refreshExpiresAt, err = s.refreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
+		rawRefresh, refreshExpiresAt, err = s.sessionRefreshSvc.IssueDeviceRefreshToken(ctx, user.ID, trackedDeviceID)
 		if err != nil {
 			return nil, err
 		}

@@ -1,8 +1,8 @@
 # Platform Role Update — God View
 
 Workflow này thay name, description và permission set của một platform role,
-recompile toàn bộ affected `user_role`, rồi invalidate authorization state sau
-durable commit.
+đồng bộ role metadata trên affected `user_role`, rồi invalidate authorization
+state sau durable commit. Permission projection được compile JIT ở lần load kế tiếp.
 
 ## API scope and contract
 
@@ -29,7 +29,7 @@ sequenceDiagram
     E->>CP: Forward PUT
 ```
 
-## Phase 2 — Controlplane commits role and recompiled assignments
+## Phase 2 — Controlplane commits role and assignment metadata
 
 ```mermaid
 sequenceDiagram
@@ -45,7 +45,7 @@ sequenceDiagram
     S->>Repo: Repeatable-read transaction
     Repo->>DB: Lock target and validate hierarchy subset and catalog IDs
     Repo->>DB: Update role version and mappings
-    Repo->>DB: Recompile every affected user_role entry
+    Repo->>DB: Sync role name and version on every affected user_role
     DB-->>Repo: Commit and affected user IDs
     Repo-->>S: Durable success
 ```
@@ -75,4 +75,3 @@ Shared Redis fanout is only best-effort replica L1 invalidation.
 | Invalid ID/body or invalid permission selection | `400` |
 | Role absent | `404` |
 | Permission subset or hierarchy denied | `403` |
-

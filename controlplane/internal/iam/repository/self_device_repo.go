@@ -2,7 +2,6 @@ package iamRepoImpl
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -11,7 +10,6 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,80 +24,110 @@ func NewSelfDeviceRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterf
 	return &SelfDeviceRepository{db: db, schema: cfg.SchemaSQL.IAM}
 }
 
-// [COMMENT]: UpsertLoginDevice lưu mới hoặc cập nhật thông tin thiết bị khi user đăng nhập thành công
+// [COMMENT]: UpsertLoginDevice lưu mới hoặc cập nhật thông tin thiết bị khi user đăng nhập (Atomic CTE Upsert)
 func (r *SelfDeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
-	// [COMMENT]: Thực hiện UPSERT trên bảng devices dựa trên unique constraint (user_id, client_device_id)
 	query := fmt.Sprintf(`
-		INSERT INTO %s.devices (
-			id,
-			user_id,
-			device_name,
-			device_type,
-			os_name,
-			browser_name,
-			public_key,
-			public_key_fingerprint,
-			client_device_id,
-			last_seen_ip,
-			last_seen_user_agent,
-			last_seen_at,
-			created_at,
-			updated_at
+		WITH existing AS (
+			SELECT id, client_device_id
+			FROM %s.devices
+			WHERE user_id = $1
+			  AND public_key_fingerprint = $2
+			  AND revoked_at IS NULL
+			LIMIT 1
+			FOR UPDATE
+		),
+		updated AS (
+			UPDATE %s.devices d
+			SET device_name          = $3,
+			    device_type          = $4,
+			    last_seen_ip         = $5,
+			    last_seen_user_agent = $6,
+			    last_seen_at         = NOW(),
+			    updated_at           = NOW()
+			FROM existing e
+			WHERE d.id = e.id
+			RETURNING
+				d.id,
+				d.user_id,
+				d.device_name,
+				d.device_type,
+				d.public_key,
+				d.public_key_fingerprint,
+				d.client_device_id,
+				d.risk_flags,
+				d.revoked_at,
+				d.last_seen_ip::text,
+				d.last_seen_user_agent,
+				d.last_seen_at,
+				d.created_at,
+				d.updated_at
+		),
+		inserted AS (
+			INSERT INTO %s.devices (
+				id,
+				user_id,
+				device_name,
+				device_type,
+				public_key,
+				public_key_fingerprint,
+				client_device_id,
+				last_seen_ip,
+				last_seen_user_agent,
+				last_seen_at,
+				created_at,
+				updated_at
+			)
+			SELECT
+				$7,
+				$1,
+				$3,
+				$4,
+				$8,
+				$2,
+				COALESCE($9, $7),
+				$5,
+				$6,
+				NOW(),
+				NOW(),
+				NOW()
+			WHERE NOT EXISTS (SELECT 1 FROM existing)
+			RETURNING
+				id,
+				user_id,
+				device_name,
+				device_type,
+				public_key,
+				public_key_fingerprint,
+				client_device_id,
+				risk_flags,
+				revoked_at,
+				last_seen_ip::text,
+				last_seen_user_agent,
+				last_seen_at,
+				created_at,
+				updated_at
 		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $12
-		)
-		ON CONFLICT (user_id, client_device_id)
-		WHERE client_device_id IS NOT NULL
-		DO UPDATE SET
-			device_name          = EXCLUDED.device_name,
-			device_type          = EXCLUDED.device_type,
-			os_name              = EXCLUDED.os_name,
-			browser_name         = EXCLUDED.browser_name,
-			last_seen_ip         = EXCLUDED.last_seen_ip,
-			last_seen_user_agent = EXCLUDED.last_seen_user_agent,
-			last_seen_at         = EXCLUDED.last_seen_at,
-			updated_at           = EXCLUDED.updated_at
-		RETURNING 
-			id,
-			user_id,
-			device_name,
-			device_type,
-			os_name,
-			browser_name,
-			public_key,
-			public_key_fingerprint,
-			client_device_id,
-			risk_flags,
-			revoked_at,
-			last_seen_ip::text,
-			last_seen_user_agent,
-			last_seen_at,
-			created_at,
-			updated_at
-	`, r.schema)
+		SELECT * FROM updated
+		UNION ALL
+		SELECT * FROM inserted;
+	`, r.schema, r.schema, r.schema)
 
 	var entity iamEntity.Device
 	if err := r.db.QueryRow(ctx, query,
-		device.ID,
 		device.UserID,
+		device.PublicKeyFingerprint,
 		device.DeviceName,
 		device.DeviceType,
-		device.OSName,
-		device.BrowserName,
-		device.PublicKey,
-		device.PublicKeyFingerprint,
-		device.ClientDeviceID,
 		device.LastSeenIP,
 		device.LastSeenUserAgent,
-		device.UpdatedAt,
+		device.ID,
+		device.PublicKey,
+		device.ClientDeviceID,
 	).Scan(
 		&entity.ID,
 		&entity.UserID,
 		&entity.DeviceName,
 		&entity.DeviceType,
-		&entity.OSName,
-		&entity.BrowserName,
 		&entity.PublicKey,
 		&entity.PublicKeyFingerprint,
 		&entity.ClientDeviceID,
@@ -164,28 +192,6 @@ func (r *SelfDeviceRepository) ListDevicesByUserID(ctx context.Context, userID u
 	return items, nil
 }
 
-// [COMMENT]: ResolveDeviceIDByFingerprint trả về client_device_id của thiết bị khớp với user và fingerprint
-func (r *SelfDeviceRepository) ResolveDeviceIDByFingerprint(ctx context.Context, userID uuid.UUID, fingerprint string) (*uuid.UUID, error) {
-	// [COMMENT]: Truy vấn client_device_id chưa bị thu hồi dựa trên khóa công khai fingerprint
-	query := fmt.Sprintf(`
-		SELECT client_device_id
-		FROM %s.devices
-		WHERE user_id = $1 
-		  AND public_key_fingerprint = $2 
-		  AND revoked_at IS NULL
-		LIMIT 1
-	`, r.schema)
-
-	var clientDeviceID *uuid.UUID
-	if err := r.db.QueryRow(ctx, query, userID, fingerprint).Scan(&clientDeviceID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("iam repo: resolve device ID: %w", err)
-	}
-	return clientDeviceID, nil
-}
-
 // [COMMENT]: RevokeSelfDevice thực hiện thu hồi một thiết bị cụ thể của user trong 1 CTE nguyên tử:
 // 1. target_device: Khóa và kiểm tra thiết bị mục tiêu có tồn tại và thuộc sở hữu của user.
 // 2. revoked_device: Cập nhật revoked_at nếu thiết bị chưa thu hồi và không trùng thiết bị hiện tại đang gọi.
@@ -243,8 +249,10 @@ func (r *SelfDeviceRepository) RevokeSelfDevice(
 
 // [COMMENT]: RevokeOtherSelfDevices thu hồi tất cả các thiết bị khác ngoại trừ thiết bị hiện tại của user trong 1 CTE nguyên tử:
 // 1. target_devices: Khóa tất cả các thiết bị khác thiết bị hiện tại (client_device_id <> $2).
-// 2. revoked_devices: Cập nhật revoked_at cho các thiết bị chưa bị thu hồi và trả về client_device_id.
+// 2. revoked_devices: Cập nhật revoked_at cho các thiết bị chưa bị thu hồi.
 // 3. deleted_tokens: Xóa toàn bộ refresh tokens thuộc các thiết bị bị thu hồi.
+// Kết quả trả toàn bộ target client_device_id, kể cả target đã revoked, để retry
+// có thể hoàn tất Auth Redis cleanup sau một lần durable commit thành công.
 func (r *SelfDeviceRepository) RevokeOtherSelfDevices(
 	ctx context.Context,
 	command iamEntity.DeviceRuntimeRevokeOthers,
@@ -276,10 +284,9 @@ func (r *SelfDeviceRepository) RevokeOtherSelfDevices(
 			  AND device_id IN (SELECT id FROM revoked_devices)
 			RETURNING id
 		)
-		SELECT 
-			COALESCE(ARRAY_AGG(client_device_id ORDER BY client_device_id), '{}')::uuid[],
+		SELECT
+			COALESCE((SELECT ARRAY_AGG(client_device_id ORDER BY client_device_id) FROM target_devices), '{}')::uuid[],
 			(SELECT COUNT(*) FROM target_devices)
-		FROM revoked_devices
 	`, r.schema, r.schema, r.schema)
 
 	var result iamEntity.DeviceRuntimeRevokeOthersResult

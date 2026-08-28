@@ -1,6 +1,6 @@
 # Tenant Role Create — God View
 
-Workflow này tạo một tenant-owned role definition. Role quyết định future
+Workflow này tạo một tenant-owned role head và immutable revision `r1`. Role quyết định future
 membership grants nên mutation là critical; hierarchy và selected permissions
 phải được recheck trong cùng durable statement.
 
@@ -12,7 +12,7 @@ phải được recheck trong cùng durable statement.
 | Request headers | Trinity cookies and `x-session-proof-challenge-id`, `x-session-proof-timestamp`, `x-session-proof-signature` |
 | Payload | `code`, `name`, optional `description`, `role_level` 4–99, 1–256 unique `permission_ids` UUIDs |
 | ACR route action | Verify session proof, then rewrite to `/api/v1/tenant/critical/iam/rbac/role`, overwrite `:path`, set `x-original-path`, inject verified identity/tenant and `x-session-proof-verified: true` |
-| Authorization | `RequireSessionProof` then `Authorize("iam:role:write", L1Registry, "*")` over verified `membership_role`; repository rechecks active membership, hierarchy and permission ownership |
+| Authorization | `RequireSessionProof` then `Authorize("iam:role:write", L1Registry, "*")`; the zero-TTL membership loader and repository both read the actor's pinned immutable revision |
 
 `tenant_root` is reserved; code must match `[a-z0-9_]{2,100}`. Browser may not
 call the internal route directly or supply owner/role headers.
@@ -53,14 +53,14 @@ sequenceDiagram
 
     R->>P: Require ACR proof marker
     P->>M: Proof accepted
-    M->>M: Load membership_role and check iam:role:write
+    M->>M: Compile durable pinned revision and check iam:role:write
     M->>H: Authorized request
     H->>H: Validate code level and permission UUID set
     H->>S: CreateTenantRole
-    S->>S: Generate UUIDv7 version 1 timestamp
+    S->>S: Generate role UUIDv7 and revision UUIDv7
     S->>Repo: Create role transaction
     Repo->>DB: Recheck tenant actor hierarchy and permission IDs
-    DB-->>Repo: Insert role and mappings atomically
+    DB-->>Repo: Insert stable head, r1 and revision mappings atomically
     Repo-->>H: Created role
     H-->>R: 201 role JSON
 ```
@@ -78,8 +78,8 @@ sequenceDiagram
 
 | Record | Rule |
 |---|---|
-| `tenant_roles` | Exactly one `tenant_id`, immutable creation version `1` |
-| `tenant_role_permissions` | Maps only validated catalog permission IDs in same transaction |
-| L1 `membership_role:{user_id}:{tenant_id}` | Middleware cache; durable repository remains final hierarchy authority |
+| `tenant_roles` | Stable tenant-owned identity; `current_version=1` selects the revision for future grants |
+| `tenant_role_revisions` | Immutable name, description and level snapshot for `r1` |
+| `tenant_role_revision_permissions` | Immutable validated permission set belonging to `r1` |
+| `membership_role:{user_id}:{tenant_id}` loader | zero-TTL middleware read; PostgreSQL revision mapping is the authority SoT |
 | `iam:session_proof:critical:{access_key}:{challenge_id}` | Auth-State Redis one-time nonce, TTL 60 seconds |
-

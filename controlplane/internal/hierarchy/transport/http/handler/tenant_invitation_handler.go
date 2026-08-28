@@ -97,6 +97,7 @@ func (h *TenantInvitationHandler) CreateTenantInvitation(c *gin.Context) {
 		"tenant_role_id": out.TenantRoleID,
 		"role_code":      out.RoleCode,
 		"role_name":      out.RoleName,
+		"role_version":   out.RoleVersion,
 		"expires_at":     out.ExpiresAt,
 		// [COMMENT]: This is the only response containing the bearer token; only
 		// its SHA-256 digest crosses the durable PostgreSQL boundary.
@@ -142,6 +143,7 @@ func (h *TenantInvitationHandler) PreviewTenantInvitation(c *gin.Context) {
 		"role_code":    out.RoleCode,
 		"role_name":    out.RoleName,
 		"role_level":   out.RoleLevel,
+		"role_version": out.RoleVersion,
 		"expires_at":   out.ExpiresAt,
 	}, "tenant invitation")
 }

@@ -1,11 +1,11 @@
 DROP TABLE IF EXISTS lifecycle_fact_outbox_records;
-DROP TABLE IF EXISTS device_runtime_revoke_outbox_records;
 DROP TABLE IF EXISTS external_identities;
 DROP TABLE IF EXISTS admin_devices;
 DROP TABLE IF EXISTS tenant_invitations;
 DROP TABLE IF EXISTS membership_role;
 DROP TABLE IF EXISTS user_role;
-DROP TABLE IF EXISTS tenant_role_permissions;
+DROP TABLE IF EXISTS tenant_role_revision_permissions;
+DROP TABLE IF EXISTS tenant_role_revisions;
 DROP TABLE IF EXISTS tenant_roles;
 DROP TABLE IF EXISTS platform_role_permissions;
 DROP TABLE IF EXISTS platform_roles;

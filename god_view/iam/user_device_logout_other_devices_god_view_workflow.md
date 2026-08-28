@@ -13,12 +13,12 @@ and immediately evicts their runtime sessions directly on Auth Redis.
 
 | Property | Contract |
 |---|---|
-| Public method/path | `POST /api/v1/me/iam/device/delete-others` |
+| Public method/path | `POST /api/v1/me/critical/iam/device/delete-others` |
 | Owner branch | `/me`, self-user only |
 | Target set | All devices owned by verified `x-user-id` whose canonical ID differs from verified `x-client-device-id` |
 | Current-device source | ACR cookie-derived `x-client-device-id`; never from request JSON |
 | Permission middleware | None. `/me` is self-user and repository ownership is mandatory. |
-| Session proof | Normal session verification only in current route table |
+| Session proof | Required. ACR verifies and consumes proof bound to the exact critical `/me` method/path and empty body; Controlplane requires the verified marker. |
 | Path rewrite | None. `/me` path is forwarded unchanged. |
 | Durable owner | IAM PostgreSQL `devices`, `refresh_tokens` |
 | Runtime eviction | Direct Auth Redis Lua eviction executed by Controlplane `SelfDeviceService` |
@@ -37,7 +37,7 @@ and immediately evicts their runtime sessions directly on Auth Redis.
 | `x-user-id` | ACR output | Client copy removed and overwritten from verified session |
 | `x-client-device-id` | ACR output | Client copy removed and overwritten from cookie/generation |
 | `x-workspace-id` | ACR | Removed and not consumed by this self workflow |
-| Raw proof headers | ACR | Removed; no critical proof is required here |
+| Raw proof headers | ACR | Verified against the one-time challenge and removed; only the trusted proof marker and verified challenge ID reach Controlplane |
 
 ### Body and query
 
@@ -71,7 +71,7 @@ Success is a common `200` JSON envelope:
 | Durable target-set revoke and runtime eviction succeeded | `200` | `data.revoked_sessions` equals selected target count |
 | Invalid/missing handler context | `401` | Common unauthorized envelope |
 | Invalid argument | `400` | Common bad-request envelope |
-| PostgreSQL or unexpected service failure | `500` | Common internal-error envelope |
+| PostgreSQL, Auth Redis, or unexpected service failure | `500` | Common internal-error envelope |
 | ACR admission failure | Local `401`, `403`, `429`, or `503` | No CP request |
 
 When there are no other devices, PostgreSQL returns an empty target set and the
@@ -87,12 +87,13 @@ to revoke an arbitrary list or another user's devices.
 1. Envoy sends method/path/cookies/headers in `CheckRequest`.
 2. ACR performs CORS and rate-limit checks, then verifies JWT, access key, and
    access-secret hash through Auth-State Redis.
-3. ACR performs normal session last-seen/rotation logic. This route is not in
-   the session-proof challenge set.
-4. ACR removes caller identity, workspace, proof, and trusted-marker headers.
+3. ACR performs normal session last-seen/rotation logic, then verifies and
+   atomically consumes the critical Ed25519 session-proof challenge.
+4. ACR removes caller identity, workspace, raw proof, and trusted-marker headers.
 5. ACR overwrites `x-user-id`, `x-user-level`, `x-tenant-id`, `x-zone-id`, and
-   `x-client-device-id`, and injects `x-session-proof-verified=false`.
-6. ACR preserves `POST /api/v1/me/iam/device/delete-others` exactly and sends
+   `x-client-device-id`, and injects `x-session-proof-verified=true` plus the
+   verified challenge ID.
+6. ACR preserves `POST /api/v1/me/critical/iam/device/delete-others` exactly and sends
    an empty body upstream. It does not issue `x-original-path`.
 
 ```mermaid
@@ -107,7 +108,7 @@ sequenceDiagram
     participant Auth as Auth-State Redis
     participant CP as Controlplane HTTP
 
-    Browser->>Envoy: POST /api/v1/me/iam/device/delete-others
+    Browser->>Envoy: POST /api/v1/me/critical/iam/device/delete-others plus proof
     Envoy->>ACR: CheckRequest with cookies and empty body
     ACR->>Limit: Apply user route limit
     ACR->>Verify: Verify current Trinity session
@@ -130,8 +131,8 @@ sequenceDiagram
 | Remove | `x-session-proof-signature`, `x-session-proof-timestamp`, `x-session-proof-challenge-id`, `x-session-proof-verified` |
 | Remove | `x-workspace-id` direct input |
 | Overwrite | `x-user-id`, `x-user-name`, `x-user-level`, `x-tenant-id`, `x-zone-id`, `x-client-device-id` |
-| Inject | `x-session-proof-verified: false` |
-| Preserve | `:method POST`, `:path /api/v1/me/iam/device/delete-others`, empty body |
+| Inject | `x-session-proof-verified: true`, verified `x-session-proof-challenge-id` |
+| Preserve | `:method POST`, `:path /api/v1/me/critical/iam/device/delete-others`, empty body |
 
 ## Phase 2 — Controlplane computes, durably revokes target set & evicts Auth Redis sessions
 
@@ -147,8 +148,9 @@ from the browser.
    canonical current ID with
    `COALESCE(client_device_id, id) <> current_device_id`.
 5. The same statement locks the target set, sets `revoked_at` for active rows,
-   deletes refresh tokens for the newly revoked rows, and returns the list of
-   revoked `client_device_id`s along with the total affected count.
+   deletes refresh tokens for the newly revoked rows, and returns every selected
+   `client_device_id` along with the target count. Returning already-revoked
+   targets makes a retry able to finish a prior failed Auth Redis cleanup.
 6. If the target set is empty, the service performs no Redis calls and returns zero.
 7. For each revoked `client_device_id`, `SelfDeviceService` executes an inline Lua script
    directly on `authRedis` to evict active runtime sessions:
@@ -156,7 +158,7 @@ from the browser.
    - Deletes each session key, removes it from `iam:user_access_index:{userID}`, and deletes associated session aliases.
    - Deletes the device access index `iam:device_access_index:{clientDeviceID}`.
 8. The service records one `iam.device.logout_other_devices` workflow
-   observation and returns any repository error unchanged to the HTTP handler.
+   observation and returns repository or Auth Redis errors unchanged to the HTTP handler.
 9. The handler returns `200 OK` with `data.revoked_sessions`.
 
 ```mermaid
@@ -223,4 +225,3 @@ sequenceDiagram
 | CTE repository | `controlplane/internal/iam/repository/self_device_repo.go` |
 | Redis session/index state | `acr/src/user/session.rs` |
 | Console client | `cloud-console/src/features/iam/devices-api.ts` |
-

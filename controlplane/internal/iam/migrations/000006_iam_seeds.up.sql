@@ -1,56 +1,6 @@
 -- IAM baseline seed. This file describes the complete initial IAM state from
 -- zero; it is not an incremental production data patch.
 
--- [COMMENT]: These two migration-local functions encode protobuf wire type 2
--- so every seeded assignment is compiled from the same normalized catalog.
--- Hard-coded binary blobs would silently become stale when the baseline adds a
--- permission.
-CREATE FUNCTION iam_seed_varint(input_value bigint)
-RETURNS bytea
-LANGUAGE plpgsql
-IMMUTABLE
-STRICT
-AS $$
-DECLARE
-    remaining bigint := input_value;
-    current_byte integer;
-    encoded bytea := ''::bytea;
-BEGIN
-    IF remaining = 0 THEN
-        RETURN decode('00', 'hex');
-    END IF;
-    WHILE remaining > 0 LOOP
-        current_byte := (remaining & 127)::integer;
-        remaining := remaining >> 7;
-        IF remaining > 0 THEN
-            current_byte := current_byte | 128;
-        END IF;
-        encoded := encoded || decode(lpad(to_hex(current_byte), 2, '0'), 'hex');
-    END LOOP;
-    RETURN encoded;
-END;
-$$;
-
-CREATE FUNCTION iam_seed_role_entry(permission_keys text[])
-RETURNS bytea
-LANGUAGE plpgsql
-IMMUTABLE
-AS $$
-DECLARE
-    permission_key text;
-    permission_bytes bytea;
-    encoded bytea := ''::bytea;
-BEGIN
-    FOREACH permission_key IN ARRAY COALESCE(permission_keys, ARRAY[]::text[]) LOOP
-        permission_bytes := convert_to(permission_key, 'UTF8');
-        encoded := encoded || decode('0a', 'hex')
-                  || iam_seed_varint(octet_length(permission_bytes))
-                  || permission_bytes;
-    END LOOP;
-    RETURN encoded;
-END;
-$$;
-
 -- 1. Canonical bootstrap identities. Password is ChangeMe123! for local/dev
 -- only and must be replaced before a non-development deployment.
 INSERT INTO users (id, username, email, password_hash, status)
@@ -161,8 +111,7 @@ WHERE
         ))
     ));
 
--- 4. Compile global five-level assignments from normalized mappings. The
--- partial unique index guarantees one effective platform role per user.
+-- 4. Assign global platform roles to bootstrap identities.
 WITH bootstrap_assignment(username, role_code) AS (
     VALUES
         ('root', 'platform_root'),
@@ -170,27 +119,15 @@ WITH bootstrap_assignment(username, role_code) AS (
         ('support_operator', 'platform_support_operator'),
         ('audit_viewer', 'platform_support_operator'),
         ('billing_admin', 'billing_admin')
-), compiled AS (
-    SELECT u.id AS user_id, u.username, role.id AS role_id, role.name AS role_name,
-           role.role_level, role.version,
-           iam_seed_role_entry(array_agg(
-               u.username || ':00000000-0000-0000-0000-000000000000:'
-               || permission.module || ':' || permission.object || ':' || permission.behavior
-               ORDER BY permission.module, permission.object, permission.behavior
-           )) AS list_perm
-    FROM bootstrap_assignment seed
-    JOIN users u ON u.username=seed.username
-    JOIN platform_roles role ON role.code=seed.role_code
-    JOIN platform_role_permissions mapping ON mapping.role_id=role.id
-    JOIN permissions permission ON permission.id=mapping.permission_id
-    GROUP BY u.id, u.username, role.id, role.name, role.role_level, role.version
 )
 INSERT INTO user_role
-    (id, user_id, username, workspace_id, role_id, role_name, role_level, role_version, list_perm)
-SELECT gen_random_uuid(), user_id, username,
+    (id, user_id, username, workspace_id, role_id, role_name, role_level, role_version)
+SELECT gen_random_uuid(), u.id, u.username,
        '00000000-0000-0000-0000-000000000000'::uuid,
-       role_id, role_name, role_level, version, list_perm
-FROM compiled;
+       role.id, role.name, role.role_level, role.version
+FROM bootstrap_assignment seed
+JOIN users u ON u.username=seed.username
+JOIN platform_roles role ON role.code=seed.role_code;
 
 -- 5. Canonical development Zone and one personal workspace per bootstrap user.
 INSERT INTO hierarchy.zones (id, code, name, location, status)
@@ -211,27 +148,77 @@ SELECT gen_random_uuid(), 'Default Workspace', 'default-' || lower(username),
 FROM users
 WHERE status='active';
 
-WITH compiled AS (
-    SELECT workspace.id AS workspace_id, user_account.id AS user_id, user_account.username,
-           role.id AS role_id, role.name AS role_name, role.role_level, role.version,
-           iam_seed_role_entry(array_agg(
-               user_account.username || ':' || workspace.id::text || ':'
-               || permission.module || ':' || permission.object || ':' || permission.behavior
-               ORDER BY permission.module, permission.object, permission.behavior
-           )) AS list_perm
-    FROM hierarchy.personal_workspaces workspace
-    JOIN users user_account ON user_account.id=workspace.owner_id AND user_account.status='active'
-    JOIN platform_roles role ON role.code='platform_user'
-    JOIN platform_role_permissions mapping ON mapping.role_id=role.id
-    JOIN permissions permission ON permission.id=mapping.permission_id
-    GROUP BY workspace.id, user_account.id, user_account.username,
-             role.id, role.name, role.role_level, role.version
-)
 INSERT INTO user_role
-    (id, user_id, username, workspace_id, role_id, role_name, role_level, role_version, list_perm)
-SELECT gen_random_uuid(), user_id, username, workspace_id, role_id, role_name,
-       role_level, version, list_perm
-FROM compiled;
+    (id, user_id, username, workspace_id, role_id, role_name, role_level, role_version)
+SELECT gen_random_uuid(), user_account.id, user_account.username, workspace.id,
+       role.id, role.name, role.role_level, role.version
+FROM hierarchy.personal_workspaces workspace
+JOIN users user_account ON user_account.id=workspace.owner_id AND user_account.status='active'
+JOIN platform_roles role ON role.code='platform_user';
 
-DROP FUNCTION iam_seed_role_entry(text[]);
-DROP FUNCTION iam_seed_varint(bigint);
+-- 6. Provision Cost-owned personal wallets for the five canonical IAM bootstrap
+-- identities through the same durable lifecycle boundary used by account verification.
+CREATE FUNCTION iam_bootstrap_personal_wallet_payload(
+    input_event_id UUID,
+    input_owner_id UUID,
+    input_occurred_at TEXT
+)
+RETURNS BYTEA
+LANGUAGE sql
+IMMUTABLE
+STRICT
+AS $$
+    SELECT decode('0a10', 'hex') || uuid_send(input_event_id)
+        || decode('1001', 'hex')
+        || decode('1a10', 'hex') || uuid_send(input_owner_id)
+        || decode('2208', 'hex') || convert_to('PERSONAL', 'UTF8')
+        || decode('2a03', 'hex') || convert_to('USD', 'UTF8')
+        || decode('3214', 'hex') || convert_to(input_occurred_at, 'UTF8');
+$$;
+
+WITH bootstrap_wallet(owner_id, event_id) AS (
+    VALUES
+        ('00000000-0000-0000-0000-000000000001'::uuid, '59002562-bee4-5f1a-aa66-6a0a9e0efcfa'::uuid),
+        ('00000000-0000-0000-0000-000000000002'::uuid, 'cb70c09c-dfee-5a92-b224-85eaf583117e'::uuid),
+        ('00000000-0000-0000-0000-000000000003'::uuid, '5d112cc7-128d-5598-a6c6-376e9c73642f'::uuid),
+        ('00000000-0000-0000-0000-000000000004'::uuid, '66191a81-8a5a-590d-a961-5fa0716c7fbc'::uuid),
+        ('00000000-0000-0000-0000-000000000005'::uuid, '81b33b0c-65a1-538f-9b36-62eeb548b471'::uuid)
+), eligible_command AS MATERIALIZED (
+    SELECT bootstrap.owner_id,
+           bootstrap.event_id,
+           '2026-08-28T00:00:00Z'::text AS occurred_at
+    FROM bootstrap_wallet AS bootstrap
+    JOIN users AS user_account ON user_account.id = bootstrap.owner_id
+    WHERE user_account.status = 'active'
+)
+INSERT INTO lifecycle_fact_outbox_records (
+    event_id,
+    event_type,
+    schema_version,
+    aggregate_type,
+    aggregate_id,
+    aggregate_version,
+    owner_id,
+    owner_type,
+    actor_user_id,
+    payload,
+    occurred_at
+)
+SELECT command.event_id,
+       'billing.personal_wallet.provision.requested.v1',
+       1,
+       'IAM_USER',
+       command.owner_id,
+       1,
+       command.owner_id,
+       'PERSONAL',
+       command.owner_id,
+       iam_bootstrap_personal_wallet_payload(
+           command.event_id,
+           command.owner_id,
+           command.occurred_at
+       ),
+       command.occurred_at::timestamptz
+FROM eligible_command AS command;
+
+DROP FUNCTION iam_bootstrap_personal_wallet_payload(UUID, UUID, TEXT);

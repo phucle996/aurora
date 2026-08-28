@@ -9,12 +9,10 @@ import (
 	hierarchyEntity "controlplane/internal/hierarchy/domain/entity"
 	hierarchyRepoInterface "controlplane/internal/hierarchy/domain/repo"
 	hierarchyTaxonomy "controlplane/internal/hierarchy/taxonomy"
-	iamproto "controlplane/internal/iam/transport/proto"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/protobuf/proto"
 )
 
 type TenantInvitationRepoImpl struct {
@@ -28,7 +26,7 @@ func NewTenantInvitationRepository(cfg *config.Config, db *pgxpool.Pool) hierarc
 }
 
 func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, in *hierarchyEntity.CreateTenantInvitation) (*hierarchyEntity.CreateTenantInvitation, error) {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("tenant invitation repo: begin create transaction: %w", err)
 	}
@@ -41,35 +39,37 @@ func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, i
 		WITH tenant_state AS MATERIALIZED (
 			SELECT id FROM %s.tenants WHERE id=$1 AND status='active'
 		), actor AS MATERIALIZED (
-			SELECT mr.role_level
+			SELECT actor_revision.role_level
 			FROM %s.tenant_memberships tm
 			JOIN %s.membership_role mr
 			  ON mr.membership_id=tm.id
 			 AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
-			JOIN %s.tenant_role_permissions trp ON trp.tenant_role_id=mr.tenant_role_id
+			JOIN %s.tenant_role_revisions actor_revision ON actor_revision.id=mr.tenant_role_revision_id
+			JOIN %s.tenant_role_revision_permissions trp ON trp.tenant_role_revision_id=mr.tenant_role_revision_id
 			JOIN %s.permissions permission
 			  ON permission.id=trp.permission_id
 			 AND permission.module='hierarchy'
 			 AND permission.object='tenant-invitation'
 			 AND permission.behavior='create'
 			WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.status='active'
-			FOR KEY SHARE OF tm, mr
+			FOR UPDATE OF tm, mr
 		), target_user AS MATERIALIZED (
 			SELECT id FROM %s.users
 			WHERE status='active'
 			  AND (($4 AND lower(email)=lower($3)) OR (NOT $4 AND lower(username)=lower($3)))
 			LIMIT 1
-			FOR KEY SHARE
+			FOR UPDATE
 		), selected_role AS MATERIALIZED (
-			SELECT id, code, name, role_level, version
-			FROM %s.tenant_roles
-			WHERE id=$5 AND tenant_id=$1
-			FOR KEY SHARE
+			SELECT role.id, role.code, revision.id AS revision_id, revision.name, revision.role_level, revision.version
+			FROM %s.tenant_roles role
+			JOIN %s.tenant_role_revisions revision ON revision.tenant_role_id=role.id AND revision.version=role.current_version
+			WHERE role.id=$5 AND role.tenant_id=$1
+			FOR UPDATE OF role
 		), role_permissions AS MATERIALIZED (
 			SELECT permission.module, permission.object, permission.behavior
-			FROM %s.tenant_role_permissions mapping
+			FROM %s.tenant_role_revision_permissions mapping
 			JOIN %s.permissions permission ON permission.id=mapping.permission_id
-			WHERE mapping.tenant_role_id=$5
+			WHERE mapping.tenant_role_revision_id=(SELECT revision_id FROM selected_role)
 			ORDER BY permission.module, permission.object, permission.behavior
 		)
 		SELECT EXISTS(SELECT 1 FROM tenant_state), EXISTS(SELECT 1 FROM actor),
@@ -81,44 +81,43 @@ func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, i
 		       ),
 		       COALESCE((SELECT id FROM target_user), '00000000-0000-0000-0000-000000000000'::uuid),
 		       COALESCE((SELECT code FROM selected_role), ''),
+		       COALESCE((SELECT revision_id FROM selected_role), '00000000-0000-0000-0000-000000000000'::uuid),
 		       COALESCE((SELECT name FROM selected_role), ''),
 		       COALESCE((SELECT role_level FROM selected_role), 0),
 		       COALESCE((SELECT version FROM selected_role), 0),
 		       COALESCE(role_permissions.module, ''), COALESCE(role_permissions.object, ''),
 		       COALESCE(role_permissions.behavior, '')
 		FROM (SELECT 1) sentinel LEFT JOIN role_permissions ON true
-	`, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema)
-
-	rows, err := tx.Query(ctx, queryRole, in.TenantID, in.InviterUserID, in.TargetIdentifier, in.TargetByEmail, in.TenantRoleID)
-	if err != nil {
-		return nil, fmt.Errorf("tenant invitation repo: resolve create grant: %w", err)
-	}
-	defer rows.Close()
+	`, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema)
 
 	var tenantExists, actorAuthorized, targetExists, roleExists, hierarchyOK, alreadyMember bool
-	permissions := make([]string, 0, 32)
+	permissionCount := 0
 	out := &hierarchyEntity.CreateTenantInvitation{
 		ID: in.ID, TenantID: in.TenantID, InviterUserID: in.InviterUserID,
 		TargetIdentifier: in.TargetIdentifier, TargetByEmail: in.TargetByEmail,
 		TenantRoleID: in.TenantRoleID, WorkspaceID: in.WorkspaceID,
 		Token: in.Token, TokenHash: in.TokenHash, ExpiresAt: in.ExpiresAt, CreatedAt: in.CreatedAt,
 	}
+	rows, err := tx.Query(ctx, queryRole, in.TenantID, in.InviterUserID, in.TargetIdentifier, in.TargetByEmail, in.TenantRoleID)
+	if err != nil {
+		return nil, fmt.Errorf("tenant invitation repo: resolve create grant: %w", err)
+	}
 	for rows.Next() {
 		var module, object, behavior string
 		if err := rows.Scan(
 			&tenantExists, &actorAuthorized, &targetExists, &roleExists, &hierarchyOK, &alreadyMember,
-			&out.TargetUserID, &out.RoleCode, &out.RoleName, &out.RoleLevel, &out.RoleVersion,
+			&out.TargetUserID, &out.RoleCode, &out.TenantRoleRevisionID, &out.RoleName, &out.RoleLevel, &out.RoleVersion,
 			&module, &object, &behavior,
 		); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("tenant invitation repo: scan create grant: %w", err)
 		}
 		if module != "" && object != "" && behavior != "" {
-			permissions = append(permissions, fmt.Sprintf(
-				"%s:%s:%s:%s:%s", in.TenantID, in.WorkspaceID, module, object, behavior,
-			))
+			permissionCount++
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("tenant invitation repo: iterate create grant: %w", err)
 	}
 	rows.Close()
@@ -131,22 +130,19 @@ func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, i
 	if alreadyMember {
 		return nil, hierarchyTaxonomy.ErrAlreadyExists
 	}
-	if len(permissions) == 0 {
+	if permissionCount == 0 {
 		return nil, hierarchyTaxonomy.ErrPreconditionFailed
 	}
 
-	compiled, err := proto.MarshalOptions{Deterministic: true}.Marshal(&iamproto.RoleEntry{Permissions: permissions})
-	if err != nil {
-		return nil, fmt.Errorf("tenant invitation repo: marshal compiled grant: %w", err)
-	}
 	queryInsert := fmt.Sprintf(`
 		WITH actor AS MATERIALIZED (
-			SELECT mr.role_level
+			SELECT actor_revision.role_level
 			FROM %s.tenant_memberships tm
 			JOIN %s.membership_role mr
 			  ON mr.membership_id=tm.id
 			 AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
-			JOIN %s.tenant_role_permissions trp ON trp.tenant_role_id=mr.tenant_role_id
+			JOIN %s.tenant_role_revisions actor_revision ON actor_revision.id=mr.tenant_role_revision_id
+			JOIN %s.tenant_role_revision_permissions trp ON trp.tenant_role_revision_id=mr.tenant_role_revision_id
 			JOIN %s.permissions permission
 			  ON permission.id=trp.permission_id
 			 AND permission.module='hierarchy'
@@ -155,23 +151,25 @@ func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, i
 			WHERE tm.tenant_id=$2 AND tm.user_id=$3 AND tm.status='active'
 			LIMIT 1
 		), selected_role AS MATERIALIZED (
-			SELECT id, role_level, version FROM %s.tenant_roles
-			WHERE id=$5 AND tenant_id=$2
+			SELECT role.id, revision.id AS revision_id, revision.role_level, revision.version
+			FROM %s.tenant_roles role
+			JOIN %s.tenant_role_revisions revision ON revision.tenant_role_id=role.id AND revision.version=role.current_version
+			WHERE role.id=$5 AND role.tenant_id=$2
 		), target_user AS MATERIALIZED (
 			SELECT id FROM %s.users
 			WHERE id=$4 AND status='active'
 			FOR KEY SHARE
 		), expired_deleted AS (
 			DELETE FROM %s.tenant_invitations
-			WHERE tenant_id=$2 AND target_user_id=$4 AND expires_at <= $10
+			WHERE tenant_id=$2 AND target_user_id=$4 AND expires_at <= $8
 			RETURNING id
 		), expired_delete_fence AS MATERIALIZED (
 			SELECT count(*) AS deleted_count FROM expired_deleted
 		), inserted AS (
 			INSERT INTO %s.tenant_invitations
-				(id, tenant_id, inviter_user_id, target_user_id, tenant_role_id, workspace_id,
-				 role_version, role_level, list_perm, token_hash, expires_at, created_at)
-			SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $11, $12, $10
+				(id, tenant_id, inviter_user_id, target_user_id, tenant_role_id, tenant_role_revision_id,
+				 workspace_id, token_hash, expires_at, created_at)
+			SELECT $1, $2, $3, $4, $5, selected_role.revision_id, $6, $9, $10, $8
 			FROM actor CROSS JOIN selected_role CROSS JOIN target_user CROSS JOIN expired_delete_fence
 			WHERE actor.role_level < selected_role.role_level
 			  AND selected_role.version=$7
@@ -181,11 +179,11 @@ func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, i
 			RETURNING id
 		)
 		SELECT EXISTS(SELECT 1 FROM inserted)
-	`, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema)
+	`, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema)
 	var inserted bool
 	err = tx.QueryRow(ctx, queryInsert,
 		in.ID, in.TenantID, in.InviterUserID, out.TargetUserID, in.TenantRoleID, in.WorkspaceID,
-		out.RoleVersion, out.RoleLevel, compiled, in.CreatedAt, in.TokenHash, in.ExpiresAt,
+		out.RoleVersion, in.CreatedAt, in.TokenHash, in.ExpiresAt,
 	).Scan(&inserted)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -206,18 +204,18 @@ func (r *TenantInvitationRepoImpl) CreateTenantInvitation(ctx context.Context, i
 func (r *TenantInvitationRepoImpl) PreviewTenantInvitation(ctx context.Context, in *hierarchyEntity.PreviewTenantInvitation) (*hierarchyEntity.PreviewTenantInvitation, error) {
 	query := fmt.Sprintf(`
 		SELECT invitation.tenant_id, tenant.code, tenant.name,
-		       COALESCE(profile.fullname, inviter.username), role.code, role.name,
-		       role.role_level, role.version, invitation.expires_at
+		       COALESCE(profile.fullname, inviter.username), role.code, revision.name,
+		       revision.role_level, revision.version, invitation.expires_at
 		FROM %s.tenant_invitations invitation
 		JOIN %s.tenants tenant ON tenant.id=invitation.tenant_id AND tenant.status='active'
-		JOIN %s.tenant_roles role
-		  ON role.id=invitation.tenant_role_id
-		 AND role.tenant_id=invitation.tenant_id
-		 AND role.version=invitation.role_version
+		JOIN %s.tenant_roles role ON role.id=invitation.tenant_role_id AND role.tenant_id=invitation.tenant_id
+		JOIN %s.tenant_role_revisions revision
+		  ON revision.id=invitation.tenant_role_revision_id AND revision.tenant_role_id=role.id
+		 AND role.current_version=revision.version
 		JOIN %s.users inviter ON inviter.id=invitation.inviter_user_id AND inviter.status='active'
 		LEFT JOIN %s.user_profiles profile ON profile.user_id=inviter.id
 		WHERE invitation.token_hash=$1 AND invitation.target_user_id=$2 AND invitation.expires_at>now()
-	`, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema)
+	`, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema)
 	out := &hierarchyEntity.PreviewTenantInvitation{UserID: in.UserID, TokenHash: in.TokenHash}
 	if err := r.db.QueryRow(ctx, query, in.TokenHash, in.UserID).Scan(
 		&out.TenantID, &out.TenantCode, &out.TenantName, &out.InviterName,
@@ -234,17 +232,20 @@ func (r *TenantInvitationRepoImpl) PreviewTenantInvitation(ctx context.Context, 
 func (r *TenantInvitationRepoImpl) RevokeTenantInvitation(ctx context.Context, in *hierarchyEntity.RevokeTenantInvitation) (*hierarchyEntity.RevokeTenantInvitation, error) {
 	query := fmt.Sprintf(`
 		WITH invitation AS MATERIALIZED (
-			SELECT id, target_user_id, tenant_role_id, role_level
-			FROM %s.tenant_invitations
-			WHERE id=$1 AND tenant_id=$2
-			FOR UPDATE
+			SELECT invitation.id, invitation.target_user_id, invitation.tenant_role_id,
+			       revision.role_level
+			FROM %s.tenant_invitations invitation
+			JOIN %s.tenant_role_revisions revision ON revision.id=invitation.tenant_role_revision_id
+			WHERE invitation.id=$1 AND invitation.tenant_id=$2
+			FOR UPDATE OF invitation
 		), actor AS MATERIALIZED (
-			SELECT mr.role_level
+			SELECT actor_revision.role_level
 			FROM %s.tenant_memberships tm
 			JOIN %s.membership_role mr
 			  ON mr.membership_id=tm.id
 			 AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
-			JOIN %s.tenant_role_permissions mapping ON mapping.tenant_role_id=mr.tenant_role_id
+			JOIN %s.tenant_role_revisions actor_revision ON actor_revision.id=mr.tenant_role_revision_id
+			JOIN %s.tenant_role_revision_permissions mapping ON mapping.tenant_role_revision_id=mr.tenant_role_revision_id
 			JOIN %s.permissions permission
 			  ON permission.id=mapping.permission_id
 			 AND permission.module='hierarchy'
@@ -263,7 +264,7 @@ func (r *TenantInvitationRepoImpl) RevokeTenantInvitation(ctx context.Context, i
 		       EXISTS(SELECT 1 FROM deleted),
 		       COALESCE((SELECT target_user_id FROM deleted), '00000000-0000-0000-0000-000000000000'::uuid),
 		       COALESCE((SELECT tenant_role_id FROM deleted), '00000000-0000-0000-0000-000000000000'::uuid)
-	`, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema)
+	`, r.iamSchema, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema)
 	var invitationExists, actorAuthorized, hierarchyOK, deleted bool
 	out := &hierarchyEntity.RevokeTenantInvitation{ID: in.ID, TenantID: in.TenantID, ActorUserID: in.ActorUserID}
 	if err := r.db.QueryRow(ctx, query, in.ID, in.TenantID, in.ActorUserID).Scan(
@@ -286,13 +287,15 @@ func (r *TenantInvitationRepoImpl) RevokeTenantInvitation(ctx context.Context, i
 func (r *TenantInvitationRepoImpl) JoinTenantInvitation(ctx context.Context, in *hierarchyEntity.JoinTenantInvitation) (*hierarchyEntity.JoinTenantInvitation, error) {
 	query := fmt.Sprintf(`
 		WITH invitation AS MATERIALIZED (
-			SELECT invitation.*, role.code AS role_code, role.name AS role_name,
+			SELECT invitation.*, role.code AS role_code, revision.name AS role_name,
+			       revision.role_level, revision.version AS role_version,
 			       tenant.code AS tenant_code, tenant.name AS tenant_name,
 			       tenant.status='active' AS tenant_active,
-			       role.version=invitation.role_version AS role_current
+			       role.current_version=revision.version AS role_current
 			FROM %s.tenant_invitations invitation
 			JOIN %s.tenants tenant ON tenant.id=invitation.tenant_id
 			JOIN %s.tenant_roles role ON role.id=invitation.tenant_role_id AND role.tenant_id=invitation.tenant_id
+			JOIN %s.tenant_role_revisions revision ON revision.id=invitation.tenant_role_revision_id AND revision.tenant_role_id=role.id
 			JOIN %s.users target_user
 			  ON target_user.id=invitation.target_user_id
 			 AND target_user.id=$2
@@ -300,7 +303,7 @@ func (r *TenantInvitationRepoImpl) JoinTenantInvitation(ctx context.Context, in 
 			WHERE invitation.token_hash=$1
 			FOR UPDATE OF invitation
 		), inviter AS MATERIALIZED (
-			SELECT mr.role_level
+			SELECT inviter_revision.role_level
 			FROM invitation
 			JOIN %s.tenant_memberships tm
 			  ON tm.tenant_id=invitation.tenant_id
@@ -309,13 +312,14 @@ func (r *TenantInvitationRepoImpl) JoinTenantInvitation(ctx context.Context, in 
 			JOIN %s.membership_role mr
 			  ON mr.membership_id=tm.id
 			 AND mr.workspace_id='00000000-0000-0000-0000-000000000000'
-			JOIN %s.tenant_role_permissions mapping ON mapping.tenant_role_id=mr.tenant_role_id
+			JOIN %s.tenant_role_revisions inviter_revision ON inviter_revision.id=mr.tenant_role_revision_id
+			JOIN %s.tenant_role_revision_permissions mapping ON mapping.tenant_role_revision_id=mr.tenant_role_revision_id
 			JOIN %s.permissions permission
 			  ON permission.id=mapping.permission_id
 			 AND permission.module='hierarchy'
 			 AND permission.object='tenant-invitation'
 			 AND permission.behavior='create'
-			WHERE mr.role_level < invitation.role_level
+			WHERE inviter_revision.role_level < invitation.role_level
 			LIMIT 1
 		), existing_membership AS MATERIALIZED (
 			SELECT tm.id FROM invitation
@@ -334,11 +338,9 @@ func (r *TenantInvitationRepoImpl) JoinTenantInvitation(ctx context.Context, in 
 			RETURNING id
 		), assignment_inserted AS (
 			INSERT INTO %s.membership_role
-				(id, membership_id, tenant_role_id, workspace_id, role_name, role_level,
-				 role_version, list_perm, created_at, updated_at)
-			SELECT $4, membership_inserted.id, invitation.tenant_role_id,
-			       invitation.workspace_id, invitation.role_name, invitation.role_level,
-			       invitation.role_version, invitation.list_perm, now(), now()
+				(id, membership_id, tenant_role_id, tenant_role_revision_id, workspace_id, created_at, updated_at)
+			SELECT $4, membership_inserted.id, invitation.tenant_role_id, invitation.tenant_role_revision_id,
+			       invitation.workspace_id, now(), now()
 			FROM membership_inserted CROSS JOIN invitation
 			RETURNING id
 		), invitation_deleted AS (
@@ -358,7 +360,7 @@ func (r *TenantInvitationRepoImpl) JoinTenantInvitation(ctx context.Context, in 
 		       COALESCE((SELECT role_code FROM invitation), ''),
 		       COALESCE((SELECT role_name FROM invitation), ''),
 		       COALESCE((SELECT role_level FROM invitation), 0)
-	`, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema)
+	`, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema, r.iamSchema, r.iamSchema, r.iamSchema, r.iamSchema, r.hierarchySchema, r.hierarchySchema, r.iamSchema, r.iamSchema)
 
 	var invitationExists, invitationValid, inviterAuthorized, alreadyMember, assigned, consumed bool
 	out := &hierarchyEntity.JoinTenantInvitation{

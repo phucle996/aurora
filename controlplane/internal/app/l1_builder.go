@@ -65,7 +65,7 @@ func RegisterL1Loaders(
 		}
 
 		// [COMMENT]: Lấy raw binary permissions từ DB thông qua platform repository theo userID
-		binaryData, err := modules.IAM.RbacPlatformRepository.GetUserRolePermissions(ctx, userID)
+		binaryData, err := modules.IAM.PersonalRbacRepository.GetUserRolePermissions(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("user_role loader: load user role permissions by userID: %w", err)
 		}
@@ -82,9 +82,11 @@ func RegisterL1Loaders(
 		return &roleEntry, nil
 	})
 
-	// [COMMENT]: Tenant authorization is bound to the current user membership,
-	// never to a role id carried in a session header.
-	cacheengine.Register(registry, "membership_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+	// [COMMENT]: Tenant authorization is bound to the current durable membership
+	// revision, never to a role id carried in a session header. TTL zero keeps
+	// singleflight loader semantics but prevents an L1 hit from surviving a
+	// permission revocation.
+	cacheengine.Register(registry, "membership_role", 0, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
 		parts := strings.SplitN(param, ":", 2) // <user_id>:<tenant_id>
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("membership_role loader: invalid param format %q, expected <user_id>:<tenant_id>", param)
@@ -99,8 +101,8 @@ func RegisterL1Loaders(
 			return nil, fmt.Errorf("membership_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
 		}
 
-		// [COMMENT]: Lấy raw binary permissions của tenant từ DB thông qua tenant repository theo tenantID và roleID
-		binaryData, err := modules.IAM.RbacTenantRepository.GetUserTenantRolePermissions(ctx, userID, tenantID)
+		// The repository compiles the immutable pinned revision directly from DB.
+		binaryData, err := modules.IAM.TenantRbacRepository.GetUserTenantRolePermissions(ctx, userID, tenantID)
 		if err != nil {
 			return nil, fmt.Errorf("membership_role loader: load tenant role permissions: %w", err)
 		}

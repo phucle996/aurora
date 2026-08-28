@@ -38,7 +38,7 @@ trusted.
 | `hierarchy.tenants` | PostgreSQL | tenant aggregate; global `code` uniqueness |
 | `hierarchy.tenant_domains` | PostgreSQL | exactly one primary domain created with the tenant |
 | `hierarchy.tenant_memberships` | PostgreSQL | active ownership membership for creator |
-| `iam.tenant_roles` + `iam.membership_role` | PostgreSQL | tenant-root role and compiled creator authority |
+| `iam.tenant_roles`, immutable revision mapping, `iam.membership_role` | PostgreSQL | tenant-root definition and creator's pinned revision authority |
 | `cost_outbox_records` | PostgreSQL | `billing.tenant_wallet.provision.requested.v1` recovery boundary owned by Hierarchy |
 
 ## Phase 1 — Client → Envoy → ACR
@@ -101,9 +101,9 @@ sequenceDiagram
     H->>S: CreateTenant owner command
     S->>S: Allocate tenant membership role and domain UUIDv7 values
     S->>P: Persist aggregate command
-    P->>PG: Begin repeatable-read transaction
-    P->>PG: Read permission catalog and compile tenant-root RoleEntry
-    P->>PG: Insert tenant domain ownership membership role assignment and outbox
+    P->>PG: Begin transaction
+    P->>PG: Insert tenant root revision and normalized complete permission mapping
+    P->>PG: Insert tenant domain ownership pinned assignment and outbox
     P->>PG: Commit
     PG-->>H: tenant record
     H-->>R: 201 tenant data

@@ -11,7 +11,7 @@ vào workflow này.
 | Browser API | `GET /api/v1/iam/rbac/permissions` |
 | Payload | None |
 | ACR | With verified concrete tenant session, rewrite to `/api/v1/tenant/iam/rbac/permissions`, overwrite `:path`, set `x-original-path`, inject trusted identity and tenant headers |
-| Authorization | `Authorize("iam:permissions:read", L1Registry, "*")` loads `membership_role`; repository rechecks durable tenant caller guard |
+| Authorization | `Authorize("iam:permissions:read", L1Registry, "*")` invokes the zero-TTL durable membership loader; repository rechecks the tenant caller guard |
 
 Direct tenant internal paths are denied. A personal session belongs to a separate
 personal catalog workflow, never fallback authority.
@@ -43,7 +43,7 @@ sequenceDiagram
     participant S as RbacPlatformService
     participant Repo as RbacPlatformRepository
     participant DB as PostgreSQL
-    M->>M: Load membership_role and check iam:permissions:read
+    M->>M: Compile pinned revision and check iam:permissions:read
     M->>H: Authorized tenant request
     H->>S: ListPermissions verified caller
     S->>Repo: Read tenant-visible catalog
@@ -58,4 +58,3 @@ sequenceDiagram
 | Authorized | `200 {"permissions":[...]}` |
 | Missing tenant membership permission | `403` |
 | Dependency failure | `500` |
-

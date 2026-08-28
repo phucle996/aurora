@@ -31,13 +31,11 @@ CREATE INDEX IF NOT EXISTS devices_user_active_seen_idx
     WHERE revoked_at IS NULL;
 
 -- External Identities Indexes
-CREATE UNIQUE INDEX IF NOT EXISTS external_identities_active_user_provider_uk
-    ON external_identities (user_id, provider)
-    WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS external_identities_user_provider_uk
+    ON external_identities (user_id, provider);
 
 CREATE INDEX IF NOT EXISTS external_identities_user_idx
-    ON external_identities (user_id)
-    WHERE revoked_at IS NULL;
+    ON external_identities (user_id);
 
 CREATE INDEX IF NOT EXISTS external_identities_email_idx
     ON external_identities (provider_email);
@@ -61,13 +59,6 @@ CREATE INDEX IF NOT EXISTS idx_lifecycle_fact_outbox_published_cleanup
     ON lifecycle_fact_outbox_records (published_at, id)
     WHERE status = 'PUBLISHED' AND published_at IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_device_runtime_revoke_outbox_claim
-    ON device_runtime_revoke_outbox_records (available_at, id)
-    WHERE status IN ('PENDING', 'PUBLISHING');
-
-CREATE INDEX IF NOT EXISTS idx_device_runtime_revoke_outbox_user_audit
-    ON device_runtime_revoke_outbox_records (user_id, created_at DESC);
-
 -- Permissions & Roles Indexes
 CREATE INDEX IF NOT EXISTS permissions_module_idx ON permissions(module);
 CREATE INDEX IF NOT EXISTS permissions_object_idx ON permissions(object);
@@ -77,7 +68,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS platform_roles_code_uidx ON platform_roles(cod
 CREATE UNIQUE INDEX IF NOT EXISTS platform_roles_name_uidx ON platform_roles(name);
 
 CREATE INDEX IF NOT EXISTS platform_role_permissions_permission_id_idx ON platform_role_permissions(permission_id);
-CREATE INDEX IF NOT EXISTS tenant_role_permissions_permission_id_idx ON tenant_role_permissions(permission_id);
+CREATE INDEX IF NOT EXISTS tenant_role_revision_permissions_permission_id_idx ON tenant_role_revision_permissions(permission_id);
 
 -- Admin Devices Indexes
 CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint) WHERE revoked_at IS NULL;

@@ -19,24 +19,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func (s *OneTimeTokenService) Validate(ctx context.Context, purpose string, userID, eventID uuid.UUID, plainToken string) (bool, error) {
-	purpose = strings.TrimSpace(purpose)
-	plainToken = strings.TrimSpace(plainToken)
-	if purpose == "" || userID == uuid.Nil || eventID == uuid.Nil || plainToken == "" {
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
-	}
-	storedHash, err := s.cacheEngine.L2.Client().Get(ctx, oneTimeTokenKey(purpose, userID, eventID)).Result()
-	if errors.Is(err, redis.Nil) {
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
-	}
-	if err != nil {
-		// [COMMENT]: Redis outage là dependency failure, không được giả dạng token hết hạn do người dùng.
-		return false, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "cache_unavailable")
-	}
-	expectedHash := security.HashTokenSHA256(plainToken)
-	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(expectedHash)) == 1, nil
-}
-
 type OneTimeTokenService struct {
 	cfg         *config.Config
 	cacheEngine *cacheengine.CacheRegistry
@@ -46,9 +28,23 @@ func NewOneTimeTokenService(cfg *config.Config, cacheEngine *cacheengine.CacheRe
 	return &OneTimeTokenService{cfg: cfg, cacheEngine: cacheEngine}
 }
 
-func oneTimeTokenKey(purpose string, userID, eventID uuid.UUID) string {
-	// [COMMENT]: event_id tách từng email, nên mail đến đảo thứ tự không vô hiệu hóa link còn TTL.
-	return fmt.Sprintf("iam:ott:%s:%s:%s", strings.TrimSpace(purpose), userID.String(), eventID.String())
+func (s *OneTimeTokenService) Validate(ctx context.Context, purpose string, userID, eventID uuid.UUID, plainToken string) (bool, error) {
+	purpose = strings.TrimSpace(purpose)
+	plainToken = strings.TrimSpace(plainToken)
+	if purpose == "" || userID == uuid.Nil || eventID == uuid.Nil || plainToken == "" {
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
+	}
+	key := "iam:ott:" + purpose + ":" + userID.String() + ":" + eventID.String()
+	storedHash, err := s.cacheEngine.L2.Client().Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
+	}
+	if err != nil {
+		// [COMMENT]: Redis outage là dependency failure, không được giả dạng token hết hạn do người dùng.
+		return false, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "cache_unavailable")
+	}
+	expectedHash := security.HashTokenSHA256(plainToken)
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(expectedHash)) == 1, nil
 }
 
 func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID, eventID uuid.UUID) (string, time.Time, error) {
@@ -65,7 +61,7 @@ func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID,
 		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, err, "dependency_error")
 	}
 	tokenHash := security.HashTokenSHA256(rawToken)
-	key := oneTimeTokenKey(purpose, userID, eventID)
+	key := "iam:ott:" + purpose + ":" + userID.String() + ":" + eventID.String()
 
 	// [COMMENT]: Redis WAIT chỉ bảo đảm các write trước đó trên cùng client connection.
 	// Giữ dedicated connection cho cả SET và WAIT để pool không làm ACK nhầm replication offset.
@@ -117,7 +113,7 @@ func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userI
 	}
 
 	tokenHash := security.HashTokenSHA256(plainToken)
-	key := oneTimeTokenKey(purpose, userID, eventID)
+	key := "iam:ott:" + purpose + ":" + userID.String() + ":" + eventID.String()
 
 	resVal, err := s.cacheEngine.Exec.Execute(ctx, consumeOneTimeTokenScript, []string{key}, tokenHash)
 	if err != nil {

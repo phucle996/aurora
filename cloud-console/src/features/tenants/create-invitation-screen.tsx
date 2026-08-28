@@ -73,7 +73,7 @@ export function CreateTenantInvitationScreen() {
 					<div className="space-y-2">
 						<Label htmlFor="tenant-invite-role">Tenant role</Label>
 						<NativeSelect id="tenant-invite-role" value={roleID} onChange={(event) => setRoleID(event.target.value)} disabled={loading || submitting}>
-							{roles.map((role) => <option key={role.id} value={role.id}>{role.name} (level {role.role_level})</option>)}
+							{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · r{role.version} · level {role.role_level}</option>)}
 						</NativeSelect>
 					</div>
 					<Button type="submit" disabled={loading || submitting || !identifier.trim() || !roleID}><Send />{submitting ? "Creating…" : "Create invitation"}</Button>
