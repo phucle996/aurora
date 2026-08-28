@@ -1060,7 +1060,7 @@ impl OAuthProviderService {
         .and_then(|value| Uuid::parse_str(&value).ok())
         .filter(|value| !value.is_nil())
         .map(|value| value.to_string())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+        .unwrap_or_else(|| Uuid::now_v7().to_string());
         let state = OAuthState {
             flow: "login".to_string(),
             provider: provider.to_string(),

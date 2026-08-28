@@ -10,7 +10,6 @@ import (
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/proto"
 
@@ -57,15 +56,19 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 	`, r.schema, r.schema)
 
 	var (
-		userModel iamModel.User
-		roleLevel int32
+		id           uuid.UUID
+		uname        string
+		email        string
+		passwordHash string
+		status       string
+		roleLevel    int32
 	)
 	if err := r.db.QueryRow(ctx, query, username).Scan(
-		&userModel.ID,
-		&userModel.Username,
-		&userModel.Email,
-		&userModel.PasswordHash,
-		&userModel.Status,
+		&id,
+		&uname,
+		&email,
+		&passwordHash,
+		&status,
 		&roleLevel,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -74,13 +77,12 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 		return nil, fmt.Errorf("iam repo: get login user by username: %w", err)
 	}
 
-	passwordHash := userModel.PasswordHash
 	loginUser := &iamEntity.LoginUser{
-		ID:           userModel.ID,
-		Username:     userModel.Username,
-		Email:        userModel.Email,
+		ID:           id,
+		Username:     uname,
+		Email:        email,
 		PasswordHash: &passwordHash,
-		Status:       iamEntity.UserStatus(userModel.Status),
+		Status:       iamEntity.UserStatus(status),
 		Level:        roleLevel,
 	}
 
@@ -115,16 +117,20 @@ func (r *AuthRepository) LoginUserTenant(
 	`, r.schema, r.hierarchySchema, r.hierarchySchema, r.hierarchySchema, r.schema)
 
 	var (
-		userModel iamModel.User
-		tenantID  string
-		roleLevel int32
+		id           uuid.UUID
+		uname        string
+		email        string
+		passwordHash string
+		status       string
+		tenantID     string
+		roleLevel    int32
 	)
 	if err := r.db.QueryRow(ctx, query, username, tenantDomain).Scan(
-		&userModel.ID,
-		&userModel.Username,
-		&userModel.Email,
-		&userModel.PasswordHash,
-		&userModel.Status,
+		&id,
+		&uname,
+		&email,
+		&passwordHash,
+		&status,
 		&tenantID,
 		&roleLevel,
 	); err != nil {
@@ -134,13 +140,12 @@ func (r *AuthRepository) LoginUserTenant(
 		return nil, fmt.Errorf("iam repo: login user by username and tenant domain: %w", err)
 	}
 
-	passwordHash := userModel.PasswordHash
 	loginUser := &iamEntity.LoginUser{
-		ID:           userModel.ID,
-		Username:     userModel.Username,
-		Email:        userModel.Email,
+		ID:           id,
+		Username:     uname,
+		Email:        email,
 		PasswordHash: &passwordHash,
-		Status:       iamEntity.UserStatus(userModel.Status),
+		Status:       iamEntity.UserStatus(status),
 		TenantID:     &tenantID,
 		Level:        roleLevel,
 	}
@@ -154,8 +159,6 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 		return fmt.Errorf("iam repo: begin register tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-
-	userModel := iamModel.UserEntityToModel(user)
 
 	userQuery := fmt.Sprintf(`
 		INSERT INTO %s.users (
@@ -176,14 +179,14 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	if _, err := tx.Exec(
 		ctx,
 		userQuery,
-		userModel.ID,
-		userModel.Username,
-		userModel.Email,
-		userModel.Phone,
-		userModel.PasswordHash,
-		userModel.Status,
-		userModel.CreatedAt,
-		userModel.UpdatedAt,
+		user.ID,
+		user.Username,
+		user.Email,
+		user.Phone,
+		user.PasswordHash,
+		string(user.Status),
+		user.CreatedAt,
+		user.UpdatedAt,
 	); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -194,8 +197,6 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 		}
 		return fmt.Errorf("iam repo: insert user: %w", err)
 	}
-
-	profileModel := iamModel.UserProfileEntityToModel(profile)
 
 	profileQuery := fmt.Sprintf(`
 		INSERT INTO %s.user_profiles (
@@ -216,14 +217,14 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	if _, err := tx.Exec(
 		ctx,
 		profileQuery,
-		profileModel.UserID,
-		profileModel.Fullname,
-		profileModel.AvatarURL,
-		profileModel.Bio,
-		profileModel.Locale,
-		profileModel.Timezone,
-		profileModel.CreatedAt,
-		profileModel.UpdatedAt,
+		profile.UserID,
+		profile.Fullname,
+		profile.AvatarURL,
+		profile.Bio,
+		profile.Locale,
+		profile.Timezone,
+		profile.CreatedAt,
+		profile.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("iam repo: insert user profile: %w", err)
 	}

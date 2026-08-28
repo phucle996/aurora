@@ -19,9 +19,6 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	if m.lifecycleFactRelay != nil {
 		m.lifecycleFactRelay.Start()
 	}
-	if m.deviceRuntimeRevokeRelay != nil {
-		m.deviceRuntimeRevokeRelay.Start()
-	}
 	// [COMMENT]: Cost authz miss stays inside Central through Shared Redis; the resolved projection is fenced in Auth Redis.
 	if m.billingAuthorizationRedisHandler != nil {
 		if err := m.billingAuthorizationRedisHandler.Start(); err != nil {
@@ -88,9 +85,6 @@ func (m *IAMModule) Stop() {
 	}
 	if m.personalAccessRedisHandler != nil {
 		m.personalAccessRedisHandler.Stop()
-	}
-	if m.deviceRuntimeRevokeRelay != nil {
-		m.deviceRuntimeRevokeRelay.Stop()
 	}
 	if m.lifecycleFactRelay != nil {
 		m.lifecycleFactRelay.Stop()

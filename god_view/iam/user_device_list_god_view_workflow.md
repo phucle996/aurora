@@ -48,7 +48,7 @@ best-effort online state. Online state never grants or denies access.
 | `offset` | `0` | Parsed by the handler and passed to PostgreSQL. |
 
 Malformed numeric values currently become Go's zero value because parse errors
-are ignored by `DeviceSelfHandler`. This is a known validation gap, not a reason
+are ignored by `SelfDeviceHandler`. This is a known validation gap, not a reason
 to invent a different contract in a refactor.
 
 ### Request payload
@@ -154,23 +154,30 @@ current-device values through the workflow context getters.
 
 1. `ContextInjector` parses `x-user-id`, `x-client-device-id`, and other trusted
    headers into Gin context. It rejects malformed or missing required context.
-2. `DeviceSelfHandler.ListMyDevices` creates operation
+2. `SelfDeviceHandler.ListMyDevices` creates operation
    `iam.device.list_my_devices` with a five-second timeout.
 3. The handler reads user ID and current device ID, parses `limit` and `offset`,
-   and calls `DeviceSelfService.ListMyDevices`.
+   and calls `SelfDeviceService.ListMyDevices`.
 4. The service starts two independent branches:
-   - `DeviceSelfRepository.ListDevicesByUserID` reads durable rows from
+   - `SelfDeviceRepository.ListDevicesByUserID` reads durable rows from
      PostgreSQL, ordered by `last_seen_at DESC NULLS LAST, created_at DESC`.
    - A Shared Redis request asks one ACR replica for active sessions. The
      request uses a fresh UUID and a two-second child timeout.
 5. PostgreSQL returns rows using canonical ID
-   `COALESCE(client_device_id, id::text)`, device name, last-seen IP, user agent,
+   `COALESCE(client_device_id, id)`, device name, last-seen IP, user agent,
    timestamp, and `revoked_at`.
 6. The service maps the ACR reply by `client_device_id`, sets `IsOnline` and
    replaces `LastSeenAt` only when the runtime reply contains a timestamp.
 7. Shared Redis timeout, no subscriber, malformed reply, or ACR runtime failure
    is soft: all devices remain visible with `is_online=false` where no match is
    present. PostgreSQL failure is hard and fails the request.
+8. The service records one `iam.device.list_my_devices` workflow observation.
+   A successful durable list remains `success/none` when only the advisory
+   runtime branch fails. A PostgreSQL timeout/cancellation or other repository
+   failure is recorded as a workflow failure.
+9. Hard repository errors are returned unchanged. The HTTP handler owns
+   logging and the sanitized `500` response for errors outside its known IAM
+   taxonomy.
 
 ### Shared Redis active-session request contract
 
@@ -182,7 +189,7 @@ current-device values through the workflow context getters.
 | Request field | `user_id` as UUID string |
 | Reply | `GetActiveDevicesResponse.active_devices[]` with `client_device_id` and Unix `last_seen_at` |
 | Fan-out fence | Each ACR replica uses `SET NX PX 30000` at `iam:acr:dispatch:{channel}:{request_id}`; one winner reads Auth-State Redis. |
-| Timeout | Two seconds in `DeviceSelfService` |
+| Timeout | Two seconds in `SelfDeviceService` |
 | Security | Online result is decoration only and cannot authorize a target device. |
 
 ```mermaid
@@ -191,9 +198,9 @@ sequenceDiagram
     participant Router as Gin /me route
     participant Inject as ContextInjector
     participant Getter as context_getter
-    participant Handler as DeviceSelfHandler
-    participant Service as DeviceSelfService
-    participant Repo as DeviceSelfRepository
+    participant Handler as SelfDeviceHandler
+    participant Service as SelfDeviceService
+    participant Repo as SelfDeviceRepository
     participant PG as IAM PostgreSQL
     participant Shared as Shared Redis PubSub
     participant ACRRouter as ACR SharedRedisRouter
@@ -229,13 +236,13 @@ sequenceDiagram
 
 ## Phase 3 — Presentation and HTTP response
 
-`DeviceSelfHandler` derives a display status from durable revocation and the
+`SelfDeviceHandler` derives a display status from durable revocation and the
 soft runtime flag. It does not call another service after the service returns.
 
 ```mermaid
 sequenceDiagram
-    participant Service as DeviceSelfService
-    participant Handler as DeviceSelfHandler
+    participant Service as SelfDeviceService
+    participant Handler as SelfDeviceHandler
     participant Envoy as Envoy
     participant Browser as Cloud Console
 
@@ -322,11 +329,15 @@ authenticated session.
   soft offline state; the next list request can query again.
 - The five-second handler budget is independent from the two-second runtime
   snapshot budget. A slow PostgreSQL query still fails the whole list.
+- Soft runtime visibility failure does not turn the workflow metric into a
+  failure after the durable list succeeds.
+- The service preserves hard repository errors; the HTTP handler is the error
+  presentation and sanitization boundary.
 - Do not log access secrets, JWTs, raw cookies, or full session keys.
 
 ## Current implementation discrepancy
 
-`DevicePlatformService` has a separate presence gap documented in the platform
+`PersonalDeviceService` has a separate presence gap documented in the platform
 God View. This self workflow does query ACR and can populate online state, but
 the result remains best effort and should not be treated as a durable heartbeat.
 
@@ -336,9 +347,9 @@ the result remains best effort and should not be treated as a durable heartbeat.
 |---|---|
 | Route | `controlplane/internal/iam/route.go` |
 | Context injection | `controlplane/internal/http/middleware/context_injector.go` |
-| HTTP handler | `controlplane/internal/iam/transport/http/handler/device_self_handler.go` |
-| Self service | `controlplane/internal/iam/service/device_self_service.go` |
-| PostgreSQL repository | `controlplane/internal/iam/repository/device_self_repo.go` |
+| HTTP handler | `controlplane/internal/iam/transport/http/handler/self_device_handler.go` |
+| Self service | `controlplane/internal/iam/service/self_device_service.go` |
+| PostgreSQL repository | `controlplane/internal/iam/repository/self_device_repo.go` |
 | ACR PubSub router | `acr/src/transport/redis.rs` |
 | Active-session reader | `acr/src/user/device.rs` |
 | Session indexes | `acr/src/user/session.rs` |

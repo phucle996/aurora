@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS devices (
     public_key_fingerprint varchar(255) NOT NULL,
     risk_flags jsonb NOT NULL DEFAULT '{}'::jsonb,
     revoked_at timestamptz NULL,
-    client_device_id varchar(128) NULL,
+    client_device_id uuid NULL,
     last_seen_ip inet NULL,
     last_seen_user_agent text NULL,
     last_seen_at timestamptz NULL,
@@ -154,26 +154,6 @@ CREATE TABLE IF NOT EXISTS lifecycle_fact_outbox_records (
         CHECK (trace_id IS NULL OR octet_length(trace_id) = 16)
 );
 
--- Resource-first revoke workflow: the same PostgreSQL transaction changes the
--- device state, removes refresh tokens and records the runtime command. ACR
--- receives the command only from the relay after this durable boundary commits.
-CREATE TABLE IF NOT EXISTS device_runtime_revoke_outbox_records (
-    id BIGSERIAL PRIMARY KEY,
-    event_id UUID NOT NULL UNIQUE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    client_device_ids TEXT[] NOT NULL CHECK (cardinality(client_device_ids) > 0),
-    status VARCHAR(16) NOT NULL DEFAULT 'PENDING'
-        CHECK (status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'DEAD')),
-    attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-    available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    lease_until TIMESTAMPTZ,
-    published_at TIMESTAMPTZ,
-    last_error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-COMMENT ON TABLE device_runtime_revoke_outbox_records IS 'Durable handoff from IAM device revoke mutations to ACR runtime session eviction.';
 
 -- [COMMENT]: Danh mục quyền tĩnh 3 cấp (<module>:<object>:<behavior>)
 CREATE TABLE IF NOT EXISTS permissions (

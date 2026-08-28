@@ -180,12 +180,12 @@ capability check and the repository's durable hierarchy check.
    browser-supplied user level.
 2. `middleware.Authorize("iam:device:read", L1Registry, "2")` checks the
    caller's permission and required level before the handler runs.
-3. `DevicePlatformHandler.ListUserDevicesPlatform` starts a five-second
+3. `PersonalDeviceHandler.ListUserDevicesPlatform` starts a five-second
    operation, parses target `id`, and obtains caller level through
    `pkg/context.GetUserLevel`.
-4. The handler invokes `DevicePlatformService.ListUserDevicesPlatform` with
+4. The handler invokes `PersonalDeviceService.ListUserDevicesPlatform` with
    target UUID, caller level, fixed limit 100, and offset 0.
-5. `DevicePlatformRepository.ListDevicesByUserIDWithHierarchy` executes one
+5. `PersonalDeviceRepository.ListDevicesByUserID` executes one
    CTE. `target_info` obtains the target role level; `devs` selects target
    devices only when `target_level > caller_level`, ordered by last seen and
    creation time.
@@ -196,6 +196,12 @@ capability check and the repository's durable hierarchy check.
 7. The service currently allocates `presenceByTracked` but never fills it.
    Therefore `IsOnline` remains false and `LastSeenAt` remains the PostgreSQL
    value. It does not call ACR or Shared Redis.
+8. The service records one `iam.device.list_user_devices_platform` workflow
+   observation. A durable hierarchy rejection is `rejected/forbidden`;
+   timeout/cancellation and unexpected repository failures are failures.
+9. Repository errors are returned unchanged to the handler. The handler maps
+   `ErrActionNotAllowed` to `403`; every other repository error is logged at the
+   HTTP boundary and returned as the common `500` envelope.
 
 ```mermaid
 sequenceDiagram
@@ -204,10 +210,10 @@ sequenceDiagram
     participant Inject as ContextInjector
     participant Authz as Authorize middleware
     participant Registry as L1Registry
-    participant Handler as DevicePlatformHandler
+    participant Handler as PersonalDeviceHandler
     participant Getter as context_getter
-    participant Service as DevicePlatformService
-    participant Repo as DevicePlatformRepository
+    participant Service as PersonalDeviceService
+    participant Repo as PersonalDeviceRepository
     participant PG as IAM PostgreSQL
 
     Envoy->>Router: GET /api/v1/personal/iam/users/{target}/devices
@@ -226,7 +232,7 @@ sequenceDiagram
         Repo->>PG: target_info role level and target devices
         PG-->>Repo: Target level plus durable device rows
         Repo->>Repo: Reject target level <= caller level
-        Repo-->>Service: DevicePresence rows
+        Repo-->>Service: PersonalDeviceListItem rows
         Service->>Service: Apply currently empty runtime presence map
         Service-->>Handler: List result
         Handler-->>Envoy: 200 audit envelope
@@ -242,12 +248,12 @@ service's presence map.
 
 ```mermaid
 sequenceDiagram
-    participant Service as DevicePlatformService
-    participant Handler as DevicePlatformHandler
+    participant Service as PersonalDeviceService
+    participant Handler as PersonalDeviceHandler
     participant Envoy as Envoy
     participant Browser as Cloud Console
 
-    Service-->>Handler: DeviceListResult with PostgreSQL fields
+    Service-->>Handler: PersonalDeviceListResult with PostgreSQL fields
     Handler->>Handler: Derive revoked or active status
     Handler->>Handler: Preserve current IsOnline false projection
     Handler->>Handler: Build audit envelope and page total
@@ -260,7 +266,7 @@ sequenceDiagram
 | `device.id` | PostgreSQL `devices.id` as returned by platform repository | Platform repository currently selects `d.id`, not the self-list canonical `client_device_id`. |
 | `device.device_name` | PostgreSQL | Direct projection |
 | `device.status` | `revoked_at` and `IsOnline` | `revoked` first, then `online`, else `active` |
-| `is_online` | `DevicePresence.IsOnline` | Currently false due to empty `presenceByTracked` map |
+| `is_online` | `PersonalDeviceListItem.IsOnline` | Currently false due to empty `presenceByTracked` map |
 | `last_seen_at`, IP, UA | PostgreSQL | Last durable projection |
 | `total` | `len(items)` | Page length, not a count query |
 
@@ -292,6 +298,9 @@ this God View does not silently claim that platform audit reads Auth-State Redis
 - ACR strips client-provided identity and level headers before forwarding.
 - The current service does not provide live `is_online`; UI must treat the field
   as a current implementation limitation, not a real-time security signal.
+- The service must not replace a repository failure with a generic service
+  taxonomy. Preserving the original error lets the handler distinguish the
+  durable hierarchy rejection and sanitize every unknown dependency failure.
 - The repository query currently references `%s.user_roles`. The IAM migrations
   must be checked against this relation name before production deployment; this
   God View records the code boundary without silently changing the schema.
@@ -303,7 +312,7 @@ this God View does not silently claim that platform audit reads Auth-State Redis
 | Neutral path and owner rewrite | `acr/src/gateway/ext_authz.rs` |
 | Route and `Authorize` middleware | `controlplane/internal/iam/route.go` |
 | Context injection | `controlplane/internal/http/middleware/context_injector.go` |
-| HTTP handler | `controlplane/internal/iam/transport/http/handler/device_platform_handler.go` |
-| Service | `controlplane/internal/iam/service/device_platform_service.go` |
-| Hierarchy repository | `controlplane/internal/iam/repository/device_platform_repo.go` |
+| HTTP handler | `controlplane/internal/iam/transport/http/handler/personal_device_handler.go` |
+| Service | `controlplane/internal/iam/service/personal_device_service.go` |
+| Hierarchy repository | `controlplane/internal/iam/repository/personal_device_repo.go` |
 | Console audit client | `cloud-console/src/features/iam/devices-api.ts` |

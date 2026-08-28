@@ -27,19 +27,29 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// [COMMENT]: Danh sách các kênh Redis PubSub và tiền tố kênh phản hồi phục vụ cho các luồng xác thực IAM
 const (
+	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng xác thực Username/Password
 	verifyCredentialsChannel          = "iam.auth.verify_credentials"
 	verifyCredentialsReplyPrefix      = "iam.auth.verify_credentials.reply."
+
+	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng xác thực danh tính mạng xã hội (Google, GitHub)
 	verifyExternalIdentityChannel     = "iam.auth.verify_external_identity"
 	verifyExternalIdentityReplyPrefix = "iam.auth.verify_external_identity.reply."
+
+	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng liên kết tài khoản bên thứ 3 vào user hiện tại
 	linkExternalIdentityChannel       = "iam.auth.link_external_identity"
 	linkExternalIdentityReplyPrefix   = "iam.auth.link_external_identity.reply."
+
+	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng xác thực thử thách MFA (TOTP / recovery code)
 	verifyMfaChallengeChannel         = "iam.auth.verify_mfa_challenge"
 	verifyMfaChallengeReplyPrefix     = "iam.auth.verify_mfa_challenge.reply."
 
+	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng phục hồi session từ opaque refresh token
 	recoverUserSessionChannel     = "iam.auth.recover_user_session"
 	recoverUserSessionReplyPrefix = "iam.auth.recover_user_session.reply."
 
+	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng thu hồi opaque refresh token (Logout)
 	revokeOpaqueTokenChannel     = "iam.auth.revoke_opaque_token"
 	revokeOpaqueTokenReplyPrefix = "iam.auth.revoke_opaque_token.reply."
 )
@@ -69,9 +79,11 @@ func NewAuthRedisHandler(
 	sessionRefreshService iamSvcInterface.SessionRefreshService,
 	otel *observability.OTel,
 ) (*AuthRedisHandler, error) {
+	// [COMMENT]: Kiểm tra các dependency bắt buộc trước khi khởi tạo handler
 	if sharedRedis == nil || authService == nil || userService == nil || sessionRefreshService == nil {
 		return nil, errors.New("auth Redis handler requires Shared Redis, AuthService, UserService and SessionRefreshService")
 	}
+	// [COMMENT]: Khởi tạo handler với pool 64 worker slots giới hạn concurrency cục bộ
 	return &AuthRedisHandler{
 		cfg:                   cfg,
 		sharedRedis:           sharedRedis,
@@ -88,7 +100,9 @@ func (h *AuthRedisHandler) Start() error {
 	if h == nil {
 		return errors.New("auth Redis handler is nil")
 	}
+	// [COMMENT]: Tạo context có gắn Operation ID cho luồng subscription
 	ctx, cancel := context.WithCancel(pkgcontext.WithOperation(context.Background(), "iam.auth.pubsub.subscribe"))
+	// [COMMENT]: Đăng ký lắng nghe đồng thời tất cả các channel xác thực của IAM Auth
 	pubsub := h.sharedRedis.Subscribe(ctx,
 		verifyCredentialsChannel,
 		verifyExternalIdentityChannel,
@@ -97,6 +111,7 @@ func (h *AuthRedisHandler) Start() error {
 		recoverUserSessionChannel,
 		revokeOpaqueTokenChannel,
 	)
+	// [COMMENT]: Chờ phản hồi subscribe ban đầu từ Redis để đảm bảo kết nối thành công
 	if _, err := pubsub.Receive(ctx); err != nil {
 		cancel()
 		_ = pubsub.Close()
@@ -105,9 +120,11 @@ func (h *AuthRedisHandler) Start() error {
 	h.cancel = cancel
 	h.pubsub = pubsub
 
+	// [COMMENT]: Khởi chạy background worker loop xử lý message từ PubSub channel
 	h.loopWG.Add(1)
 	go func() {
 		defer h.loopWG.Done()
+		// [COMMENT]: Cấu hình channel buffer kích thước 256 messages từ Redis client
 		channel := pubsub.Channel(goredis.WithChannelSize(256))
 		for {
 			select {
@@ -117,6 +134,7 @@ func (h *AuthRedisHandler) Start() error {
 				if !ok {
 					return
 				}
+				// [COMMENT]: Điều phối công việc thông qua bounded worker slots
 				select {
 				case h.slots <- struct{}{}:
 					h.workWG.Add(1)
@@ -134,10 +152,12 @@ func (h *AuthRedisHandler) Start() error {
 	return nil
 }
 
+// [COMMENT]: dispatch định tuyến message nhận được từ Redis PubSub tới handler tương ứng dựa trên Channel
 func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 	if msg == nil {
 		return
 	}
+	// [COMMENT]: Chuyển đổi payload sang dạng byte slice để xử lý Protobuf
 	payload := []byte(msg.Payload)
 	switch msg.Channel {
 	case verifyCredentialsChannel:
@@ -155,26 +175,35 @@ func (h *AuthRedisHandler) dispatch(msg *goredis.Message) {
 	}
 }
 
+// [COMMENT]: =========================================================================
+// [COMMENT]: LUỒNG LIÊN KẾT TÀI KHOẢN MẠNG XÃ HỘI (LinkExternalIdentity)
+// [COMMENT]: =========================================================================
 func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
+	// [COMMENT]: Thiết lập context với timeout 10 giây và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.link_external_identity"), 10*time.Second)
 	defer cancel()
 
+	// [COMMENT]: Kiểm tra kích thước envelope: 16 byte đầu là Request ID dạng UUID binary
 	if len(payload) <= 16 {
 		logger.SysWarnCtx(ctx, "Redis.LinkExternalIdentity", "Missing request id envelope")
 		return
 	}
+	// [COMMENT]: Parse Request ID từ 16 byte đầu envelope
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
 		logger.SysWarnCtx(ctx, "Redis.LinkExternalIdentity", "Invalid request id envelope")
 		return
 	}
+	// [COMMENT]: Cấu hình kênh phản hồi và khóa phân tán để đảm bảo tính idempotent giữa các replica
 	replyChannel := linkExternalIdentityReplyPrefix + requestID.String()
 	lockKey := "iam:auth:dispatch:link_external_identity:" + requestID.String()
+	// [COMMENT]: SetNX 30s đảm bảo chỉ 1 replica xử lý request; replica thua lock sẽ drop request an toàn
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
 	if err != nil || !acquired {
 		return
 	}
 
+	// [COMMENT]: Closure respond đóng gói và gửi phản hồi Protobuf về reply channel tương ứng
 	respond := func(response *iamproto.LinkExternalIdentityResponse) {
 		data, marshalErr := proto.Marshal(response)
 		if marshalErr != nil {
@@ -186,26 +215,32 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 		}
 	}
 
+	// [COMMENT]: Giới hạn kích thước payload tối đa (16 bytes envelope + 8KB Protobuf) chống tấn công DoS/OOM
 	var request iamproto.LinkExternalIdentityRequest
 	if len(payload) > 16+(8<<10) {
 		respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "INVALID_REQUEST_PAYLOAD"})
 		return
 	}
+	// [COMMENT]: Unmarshal Protobuf payload từ byte 16 trở đi
 	if err := proto.Unmarshal(payload[16:], &request); err != nil {
 		respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "INVALID_REQUEST_PAYLOAD"})
 		return
 	}
+	// [COMMENT]: Parse và chuẩn hóa các trường định danh UUID, Provider, Timestamp và Avatar URL
 	operationID, operationErr := uuid.Parse(strings.TrimSpace(request.OperationId))
 	userID, userErr := uuid.Parse(strings.TrimSpace(request.UserId))
 	provider := iamEntity.ExternalProvider(request.Provider)
 	verifiedAt := time.Unix(request.EmailVerifiedAt, 0).UTC()
 	avatarURL := strings.TrimSpace(request.AvatarUrl)
 	avatarValid := true
+	// [COMMENT]: Validate URL avatar phải dùng giao thức https và không chứa thông tin user/fragment
 	if avatarURL != "" {
 		parsed, parseErr := url.Parse(avatarURL)
 		avatarValid = parseErr == nil && parsed.Scheme == "https" && parsed.Host != "" &&
 			parsed.User == nil && parsed.Fragment == ""
 	}
+	// [COMMENT]: Rào chắn wire boundary: kiểm tra nghiêm ngặt schema version, UUID hợp lệ, provider được hỗ trợ,
+	// [COMMENT]: format email/subject/display_name, độ lệch thời gian xác thực (-10m đến +5m), và ký tự điều khiển
 	if request.SchemaVersion != 1 ||
 		operationErr != nil || operationID == uuid.Nil ||
 		userErr != nil || userID == uuid.Nil ||
@@ -238,6 +273,7 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 	if avatarURL != "" {
 		avatar = &avatarURL
 	}
+	// [COMMENT]: Gọi userService để thực hiện liên kết định danh bên ngoài với user
 	err = h.userService.LinkExternalIdentity(ctx, iamEntity.LinkExternalIdentity{
 		OperationID:     operationID,
 		UserID:          userID,
@@ -249,6 +285,7 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 		AvatarURL:       avatar,
 	})
 	if err != nil {
+		// [COMMENT]: Ánh xạ lỗi nghiệp vụ từ domain sang mã lỗi chuẩn của giao thức phản hồi
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrExternalIdentityConflict):
 			respond(&iamproto.LinkExternalIdentityResponse{ErrorMessage: "IDENTITY_ALREADY_LINKED"})
@@ -262,29 +299,39 @@ func (h *AuthRedisHandler) handleLinkExternalIdentity(payload []byte) {
 		}
 		return
 	}
+	// [COMMENT]: Trả về kết quả liên kết thành công
 	respond(&iamproto.LinkExternalIdentityResponse{Linked: true})
 }
 
+// [COMMENT]: =========================================================================
+// [COMMENT]: LUỒNG XÁC THỰC DANH TÍNH MẠNG XÃ HỘI (VerifyExternalIdentity)
+// [COMMENT]: =========================================================================
 func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
+	// [COMMENT]: Thiết lập context với timeout 10 giây và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_external_identity"), 10*time.Second)
 	defer cancel()
 
+	// [COMMENT]: Kiểm tra kích thước envelope: 16 byte đầu là Request ID dạng UUID binary
 	if len(payload) <= 16 {
 		logger.SysWarnCtx(ctx, "Redis.VerifyExternalIdentity", "Missing request id envelope")
 		return
 	}
+	// [COMMENT]: Parse Request ID từ envelope 16 byte
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
 		logger.SysWarnCtx(ctx, "Redis.VerifyExternalIdentity", "Invalid request id envelope")
 		return
 	}
+	// [COMMENT]: Thiết lập reply channel và distributed lock key
 	replyChannel := verifyExternalIdentityReplyPrefix + requestID.String()
 	lockKey := "iam:auth:dispatch:verify_external_identity:" + requestID.String()
+	// [COMMENT]: Chỉ replica giành được lock mới được chạm DB để xác thực social login
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
 	if err != nil || !acquired {
 		return
 	}
 
+	// [COMMENT]: Closure respond đóng gói và xuất bản VerifyExternalIdentityResponse về Redis reply channel
 	respond := func(resp *iamproto.VerifyExternalIdentityResponse) {
 		respData, marshalErr := proto.Marshal(resp)
 		if marshalErr != nil {
@@ -295,6 +342,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 			logger.SysErrorCtx(ctx, "Redis.VerifyExternalIdentity", "Failed to send Redis reply")
 		}
 	}
+	// [COMMENT]: Unmarshal Protobuf payload sau prefix Request ID
 	var req iamproto.VerifyExternalIdentityRequest
 	if err := proto.Unmarshal(payload[16:], &req); err != nil {
 		respond(&iamproto.VerifyExternalIdentityResponse{
@@ -303,6 +351,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		})
 		return
 	}
+	// [COMMENT]: Kiểm tra các trường bắt buộc và từ chối ZoneCode 'global'
 	if req.SchemaVersion != 1 || req.OperationId == "" ||
 		req.Provider == "" || req.ProviderSubject == "" ||
 		req.ProviderEmail == "" || req.DisplayName == "" ||
@@ -313,7 +362,9 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		})
 		return
 	}
+	// [COMMENT]: Giải mã public key Base64 Ed25519 (phải đúng 32 bytes)
 	decodedPublicKey, publicKeyErr := base64.StdEncoding.DecodeString(req.PublicKey)
+	// [COMMENT]: Rào chắn wire boundary: kiểm tra nghiêm ngặt định dạng chuỗi, độ dài tối đa, độ lệch thời gian, avatar HTTPS
 	// This is the Redis wire boundary: reject malformed/unbounded input here so
 	// service/repository layers can operate on the canonical identity contract.
 	if req.Provider != strings.ToLower(req.Provider) ||
@@ -337,6 +388,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		})
 		return
 	}
+	// [COMMENT]: Parse Operation ID dạng UUID
 	operationID, err := uuid.Parse(req.OperationId)
 	if err != nil {
 		respond(&iamproto.VerifyExternalIdentityResponse{
@@ -345,6 +397,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		})
 		return
 	}
+	// [COMMENT]: Parse Client Device ID dạng UUID nếu có
 	var clientDeviceID uuid.UUID
 	if req.ClientDeviceId != "" {
 		clientDeviceID, err = uuid.Parse(req.ClientDeviceId)
@@ -356,6 +409,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 			return
 		}
 	}
+	// [COMMENT]: Xác định provider hỗ trợ (Google / GitHub)
 	provider := iamEntity.ExternalProvider(req.Provider)
 	if provider != iamEntity.ExternalProviderGoogle && provider != iamEntity.ExternalProviderGitHub {
 		respond(&iamproto.VerifyExternalIdentityResponse{
@@ -365,6 +419,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		return
 	}
 
+	// [COMMENT]: Xây dựng ExternalLoginRequest chuẩn hóa từ thông tin xác thực danh tính
 	loginReq := iamEntity.ExternalLoginRequest{
 		OperationID: operationID,
 		Identity: iamEntity.VerifiedExternalIdentity{
@@ -384,8 +439,10 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		RemoteIP:        req.ClientIp,
 		UserAgent:       req.UserAgent,
 	}
+	// [COMMENT]: Gọi AuthService để xác thực danh tính bên ngoài và thiết lập phiên đăng nhập
 	res, err := h.authService.VerifyExternalIdentity(ctx, loginReq)
 	if err != nil {
+		// [COMMENT]: Ánh xạ lỗi taxonomy từ tầng domain sang lỗi giao thức tương ứng
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
 			respond(&iamproto.VerifyExternalIdentityResponse{
@@ -411,6 +468,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 		}
 		return
 	}
+	// [COMMENT]: Xuất bản phản hồi kết quả xác thực thành công chứa thông tin phiên, MFA và token
 	respond(&iamproto.VerifyExternalIdentityResponse{
 		Valid:                 res.Valid,
 		MfaRequired:           res.MFARequired,
@@ -427,6 +485,7 @@ func (h *AuthRedisHandler) handleVerifyExternalIdentity(payload []byte) {
 	})
 }
 
+// [COMMENT]: optionalString chuyển đổi chuỗi rỗng thành con trỏ nil, tránh lưu trữ chuỗi rỗng không cần thiết
 func optionalString(value string) *string {
 	if value == "" {
 		return nil
@@ -438,13 +497,16 @@ func optionalString(value string) *string {
 // 1. LUỒNG XÁC THỰC CREDENTIALS (VerifyUserCredentials)
 // =========================================================================
 func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
+	// [COMMENT]: Thiết lập context với timeout 10 giây và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_credentials"), 10*time.Second)
 	defer cancel()
 
+	// [COMMENT]: Khởi tạo OpenTelemetry server span ghi nhận trace phân tán cho luồng xác thực credentials
 	var span trace.Span
 	if h.otel != nil {
 		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.verify_credentials")
 		defer span.End()
+		// [COMMENT]: Gắn các thuộc tính trace cho hệ thống messaging Redis
 		span.SetAttributes(
 			attribute.String("messaging.system", "redis"),
 			attribute.String("messaging.destination", verifyCredentialsChannel),
@@ -457,20 +519,24 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Missing request id envelope")
 		return
 	}
+	// [COMMENT]: Trích xuất Request ID từ 16 byte đầu của envelope
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
 		logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
+	// [COMMENT]: Cấu hình kênh phản hồi và khóa phân tán để đảm bảo tính idempotent giữa các replica
 	replyChannel := verifyCredentialsReplyPrefix + requestID.String()
 	lockKey := "iam:auth:dispatch:verify_credentials:" + requestID.String()
+	// [COMMENT]: Tranh chấp distributed lock qua SetNX; replica thua lock sẽ im lặng để winner xử lý
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
 	if err != nil || !acquired {
 		// [COMMENT]: Redis lỗi thì fail-close; replica thua lock im lặng để winner trả lời ACR.
 		return
 	}
 
+	// [COMMENT]: Closure respond đóng gói và gửi phản hồi Protobuf về reply channel
 	respond := func(resp *iamproto.VerifyUserCredentialsResponse) {
 		if replyChannel == "" {
 			return
@@ -485,6 +551,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		}
 	}
 
+	// [COMMENT]: Unmarshal Protobuf payload từ sau phần envelope
 	var req iamproto.VerifyUserCredentialsRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
 		logger.SysErrorCtx(ctx, "Redis.VerifyUserCredentials", "Failed to unmarshal request data")
@@ -495,6 +562,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		return
 	}
 
+	// [COMMENT]: Kiểm tra tính hợp lệ của username và password
 	if req.Username == "" || req.Password == "" {
 		logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Username and password are required")
 		respond(&iamproto.VerifyUserCredentialsResponse{
@@ -504,6 +572,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		return
 	}
 
+	// [COMMENT]: Parse client device ID nếu client có gửi kèm
 	var clientDeviceID uuid.UUID
 	if req.ClientDeviceId != "" {
 		if parsed, err := uuid.Parse(req.ClientDeviceId); err == nil {
@@ -511,6 +580,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		}
 	}
 
+	// [COMMENT]: Xây dựng LoginRequest chuẩn hóa gửi xuống domain layer
 	loginReq := iamEntity.LoginRequest{
 		Username:        req.Username,
 		Password:        req.Password,
@@ -523,8 +593,10 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		UserAgent:       req.UserAgent,
 	}
 
+	// [COMMENT]: Gọi AuthService để xác thực thông tin đăng nhập người dùng
 	res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
 	if err != nil {
+		// [COMMENT]: Xử lý các trường hợp lỗi từ domain: yêu cầu xác minh tài khoản, thiếu role, sai thông tin đăng nhập hoặc lỗi hệ thống
 		if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 			respond(&iamproto.VerifyUserCredentialsResponse{
 				Valid:        false,
@@ -556,6 +628,7 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		return
 	}
 
+	// [COMMENT]: Tạo payload VerifyUserCredentialsResponse chứa kết quả xác thực, token và thông tin phiên
 	resp := &iamproto.VerifyUserCredentialsResponse{
 		Valid:                 res.Valid,
 		MfaRequired:           res.MFARequired,
@@ -569,27 +642,37 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 		Username:              res.Username,
 		ClientProofPublicKey:  res.ClientProofPublicKey,
 	}
+	// [COMMENT]: Gửi phản hồi thành công qua reply channel
 	respond(resp)
 }
 
+// [COMMENT]: =========================================================================
+// [COMMENT]: LUỒNG XÁC THỰC THỬ THÁCH MFA (VerifyMfaChallenge)
+// [COMMENT]: =========================================================================
 func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
+	// [COMMENT]: Thiết lập context với timeout 10 giây và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.verify_mfa_challenge"), 10*time.Second)
 	defer cancel()
+	// [COMMENT]: Kiểm tra kích thước envelope chứa Request ID 16 bytes
 	if len(payload) <= 16 {
 		logger.SysWarnCtx(ctx, "Redis.VerifyMfaChallenge", "Missing request id envelope")
 		return
 	}
+	// [COMMENT]: Parse Request ID từ envelope
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
 		logger.SysWarnCtx(ctx, "Redis.VerifyMfaChallenge", "Invalid request id envelope")
 		return
 	}
+	// [COMMENT]: Thiết lập reply channel và distributed lock key
 	replyChannel := verifyMfaChallengeReplyPrefix + requestID.String()
 	lockKey := "iam:auth:dispatch:verify_mfa_challenge:" + requestID.String()
+	// [COMMENT]: Giành quyền xử lý challenge bằng SetNX lock 30s
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
 	if err != nil || !acquired {
 		return
 	}
+	// [COMMENT]: Closure respond tuần tự hóa và gửi phản hồi VerifyMfaChallengeResponse
 	respond := func(resp *iamproto.VerifyMfaChallengeResponse) {
 		data, marshalErr := proto.Marshal(resp)
 		if marshalErr != nil {
@@ -598,16 +681,20 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 		}
 		_ = h.sharedRedis.Publish(context.Background(), replyChannel, data).Err()
 	}
+	// [COMMENT]: Unmarshal Protobuf payload của yêu cầu xác thực MFA challenge
 	var req iamproto.VerifyMfaChallengeRequest
 	if err := proto.Unmarshal(payload[16:], &req); err != nil {
 		respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "INVALID_MFA_CHALLENGE"})
 		return
 	}
+	// [COMMENT]: Parse các UUID: UserID, MFASettingID, OperationID
 	userID, err := uuid.Parse(strings.TrimSpace(req.UserId))
 	mfaSettingID, mfaSettingErr := uuid.Parse(strings.TrimSpace(req.MfaSettingId))
 	operationID, operationIDErr := uuid.Parse(strings.TrimSpace(req.OperationId))
+	// [COMMENT]: Giải mã Ed25519 Public Key từ Base64 và chuẩn hóa method (totp / recovery_code)
 	decodedPublicKey, publicKeyErr := base64.StdEncoding.DecodeString(req.PublicKey)
 	method := strings.ToLower(strings.TrimSpace(req.Method))
+	// [COMMENT]: Rào chắn wire boundary: kiểm tra tính hợp lệ của UUID, độ dài chuỗi, mã OTP/Recovery code và public key
 	if err != nil || userID == uuid.Nil ||
 		mfaSettingErr != nil || mfaSettingID == uuid.Nil ||
 		operationIDErr != nil || operationID == uuid.Nil ||
@@ -621,6 +708,7 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 		respond(&iamproto.VerifyMfaChallengeResponse{ErrorMessage: "INVALID_MFA_CHALLENGE"})
 		return
 	}
+	// [COMMENT]: Parse Client Device ID nếu có
 	clientDeviceID := uuid.Nil
 	if strings.TrimSpace(req.ClientDeviceId) != "" {
 		clientDeviceID, err = uuid.Parse(req.ClientDeviceId)
@@ -629,6 +717,7 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 			return
 		}
 	}
+	// [COMMENT]: Gọi AuthService thực hiện xác minh mã MFA (TOTP / Recovery Code) và thiết lập session
 	result, err := h.authService.VerifyMfaLogin(ctx, iamEntity.MFALoginRequest{
 		UserID:          userID,
 		MFASettingID:    mfaSettingID,
@@ -645,6 +734,7 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 		UserAgent:       strings.TrimSpace(req.UserAgent),
 	})
 	if err != nil {
+		// [COMMENT]: Ánh xạ lỗi MFA không hợp lệ hoặc lỗi hệ thống sang mã lỗi giao thức
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrMFAInvalidCode),
 			errors.Is(err, iamTaxonomy.ErrRecoveryCodeInvalid),
@@ -658,6 +748,7 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 		}
 		return
 	}
+	// [COMMENT]: Trả về thông tin phiên đã xác thực MFA thành công kèm refresh token và tenant scope
 	respond(&iamproto.VerifyMfaChallengeResponse{
 		Valid:                 result.Valid,
 		UserId:                result.UserID,
@@ -672,10 +763,12 @@ func (h *AuthRedisHandler) handleVerifyMfaChallenge(payload []byte) {
 	})
 }
 
+// [COMMENT]: validMFALoginCode kiểm tra định dạng cú pháp mã MFA tương ứng với từng phương thức xác thực
 func validMFALoginCode(method, code string) bool {
 	code = strings.TrimSpace(code)
 	switch method {
 	case "totp":
+		// [COMMENT]: Đối với TOTP: mã phải gồm chính xác 6 chữ số (0-9)
 		if len(code) != 6 {
 			return false
 		}
@@ -686,6 +779,7 @@ func validMFALoginCode(method, code string) bool {
 		}
 		return true
 	case "recovery_code":
+		// [COMMENT]: Đối với Recovery Code: mã phải gồm chính xác 16 ký tự thuộc bảng Base32/Crockford (loại trừ 0, 1, I, O)
 		if len(code) != 16 {
 			return false
 		}
@@ -697,17 +791,23 @@ func validMFALoginCode(method, code string) bool {
 		}
 		return true
 	default:
+		// [COMMENT]: Từ chối các phương thức MFA không được hỗ trợ
 		return false
 	}
 }
 
+// [COMMENT]: =========================================================================
+// [COMMENT]: LUỒNG PHỤC HỒI PHIÊN NGƯỜI DÙNG (RecoverUserSession)
+// [COMMENT]: =========================================================================
 // handleRecoverUserSession authenticates the opaque user/device credential and
 // resolves the requested runtime context in one database snapshot. It does not
 // mutate the token and is deliberately isolated from tenant switching.
 func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
+	// [COMMENT]: Thiết lập context với timeout ngắn (650ms) đáp ứng yêu cầu độ trễ cực thấp cho hot path session recovery
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.recover_user_session"), 650*time.Millisecond)
 	defer cancel()
 
+	// [COMMENT]: Khởi tạo OpenTelemetry server span ghi nhận trace phân tán
 	var span trace.Span
 	if h.otel != nil {
 		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.recover_user_session")
@@ -718,18 +818,22 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 		)
 	}
 
+	// [COMMENT]: Kiểm tra kích thước envelope tối thiểu 16 byte cho Request ID
 	if len(payload) <= 16 {
 		logger.SysWarnCtx(ctx, "Redis.RecoverUserSession", "Missing request id envelope")
 		return
 	}
+	// [COMMENT]: Trích xuất Request ID từ 16 byte đầu envelope
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
 		logger.SysWarnCtx(ctx, "Redis.RecoverUserSession", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
+	// [COMMENT]: Cấu hình kênh phản hồi và khóa phân tán
 	replyChannel := recoverUserSessionReplyPrefix + requestID.String()
 	lockKey := "iam:auth:dispatch:recover_user_session:" + requestID.String()
+	// [COMMENT]: Redis PubSub fan-out tới mọi replica. SetNX lock 5s đảm bảo đúng 1 replica chạm DB
 	// Redis PubSub fans the request to every CP replica. The bounded lock makes
 	// exactly one replica touch PostgreSQL; callers retry safely after timeout.
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 5*time.Second).Result()
@@ -737,6 +841,7 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 		return
 	}
 
+	// [COMMENT]: Closure respond đóng gói và gửi RecoverUserSessionResponse về Redis reply channel
 	respond := func(resp *iamproto.RecoverUserSessionResponse) {
 		respData, err := proto.Marshal(resp)
 		if err != nil {
@@ -748,22 +853,26 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 		}
 	}
 
+	// [COMMENT]: Giới hạn kích thước payload tối đa 4KB để chống payload phình to bất thường
 	if len(reqData) > 4<<10 {
 		respond(&iamproto.RecoverUserSessionResponse{})
 		return
 	}
+	// [COMMENT]: Unmarshal Protobuf payload của RecoverUserSessionRequest
 	var req iamproto.RecoverUserSessionRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
 		logger.SysWarnCtx(ctx, "Redis.RecoverUserSession", "Invalid request payload")
 		respond(&iamproto.RecoverUserSessionResponse{})
 		return
 	}
+	// [COMMENT]: Kiểm tra độ dài hợp lệ của opaque refresh token (64 - 512 ký tự)
 	rawRefreshToken := strings.TrimSpace(req.RefreshToken)
 	if len(rawRefreshToken) < 64 || len(rawRefreshToken) > 512 {
 		respond(&iamproto.RecoverUserSessionResponse{})
 		return
 	}
 
+	// [COMMENT]: Parse requested Tenant ID nếu client yêu cầu chuyển đổi hoặc chỉ định tenant context
 	var requestedTenantID *uuid.UUID
 	if req.RequestedTenantId != nil {
 		parsedTenantID, parseErr := uuid.Parse(strings.TrimSpace(*req.RequestedTenantId))
@@ -774,8 +883,10 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 		requestedTenantID = &parsedTenantID
 	}
 
+	// [COMMENT]: Gọi SessionRefreshService để giải mã token và xác định quyền runtime trong một database snapshot duy nhất
 	recovered, err := h.sessionRefreshService.RecoverUserSession(ctx, rawRefreshToken, requestedTenantID)
 	if err != nil {
+		// [COMMENT]: Lỗi hạ tầng fail-closed không trả response để ACR timeout và bảo vệ tính an toàn của phiên
 		// Infrastructure failures have no domain response. The ACR timeout is the
 		// fail-closed availability boundary and never becomes invalid credentials.
 		logger.SysErrorCtx(ctx, "Redis.RecoverUserSession", "Session recovery unavailable")
@@ -786,22 +897,26 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 		return
 	}
 
+	// [COMMENT]: Xây dựng RecoverUserSessionResponse chứa trạng thái hợp lệ của credential và quyền context
 	response := &iamproto.RecoverUserSessionResponse{
 		CredentialValid:            recovered.CredentialValid,
 		ContextAuthorized:          recovered.ContextAuthorized,
 		PersonalFallbackAuthorized: recovered.PersonalFallbackAuthorized,
 	}
+	// [COMMENT]: Gán thông tin danh tính người dùng nếu credential hợp lệ
 	if recovered.CredentialValid {
 		response.UserId = recovered.UserID.String()
 		response.ClientDeviceId = recovered.ClientDeviceID
 		response.Username = recovered.Username
 	}
+	// [COMMENT]: Gán quyền Role Level và Tenant ID đã giải quyết nếu context hoặc personal fallback được cấp quyền
 	if recovered.ContextAuthorized || recovered.PersonalFallbackAuthorized {
 		response.RoleLevel = recovered.RoleLevel
 		if recovered.ResolvedTenantID != nil {
 			response.ResolvedTenantId = recovered.ResolvedTenantID.String()
 		}
 	}
+	// [COMMENT]: Xuất bản phản hồi về reply channel cho ACR
 	respond(response)
 }
 
@@ -809,9 +924,11 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 // 3. LUỒNG THU HỒI REFRESH TOKEN (RevokeOpaqueRefreshToken)
 // =========================================================================
 func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
+	// [COMMENT]: Thiết lập context với timeout 650ms và định danh operation
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), "iam.auth.revoke_opaque_token"), 650*time.Millisecond)
 	defer cancel()
 
+	// [COMMENT]: Tạo OpenTelemetry span ghi nhận vết phân tán cho thao tác thu hồi token
 	var span trace.Span
 	if h.otel != nil {
 		ctx, span = h.otel.StartServerSpan(ctx, "Redis iam.auth.revoke_opaque_token")
@@ -828,41 +945,50 @@ func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
 		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Missing request id envelope")
 		return
 	}
+	// [COMMENT]: Parse Request ID từ 16 byte đầu envelope
 	requestID, err := uuid.FromBytes(payload[:16])
 	if err != nil || requestID == uuid.Nil {
 		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Invalid request id envelope")
 		return
 	}
 	reqData := payload[16:]
+	// [COMMENT]: Thiết lập reply channel và distributed lock key 30s tránh khuếch đại write load trên nhiều replica
 	replyChannel := revokeOpaqueTokenReplyPrefix + requestID.String()
 	lockKey := "iam:auth:dispatch:revoke_opaque_token:" + requestID.String()
+	// [COMMENT]: Tranh chấp distributed lock qua SetNX
 	acquired, err := h.sharedRedis.SetNX(ctx, lockKey, "1", 30*time.Second).Result()
 	if err != nil || !acquired {
 		return
 	}
 
+	// [COMMENT]: Giới hạn kích thước payload tối đa 4KB
 	var req iamproto.RevokeOpaqueRefreshTokenRequest
 	if len(reqData) > 4<<10 {
 		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Request payload exceeds limit")
 		return
 	}
+	// [COMMENT]: Unmarshal Protobuf payload của RevokeOpaqueRefreshTokenRequest
 	if err := proto.Unmarshal(reqData, &req); err != nil {
 		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Invalid request payload")
 		return
 	}
+	// [COMMENT]: Kiểm tra độ dài hợp lệ của opaque refresh token
 	rawRefreshToken := strings.TrimSpace(req.RefreshToken)
 	if len(rawRefreshToken) < 64 || len(rawRefreshToken) > 512 {
 		logger.SysWarnCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Invalid refresh credential shape")
 		return
 	}
 
+	// [COMMENT]: Gọi SessionRefreshService để thu hồi token bền vững trong database
 	err = h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, rawRefreshToken)
 	if err != nil {
+		// [COMMENT]: Nếu thu hồi thất bại, không trả response để ACR timeout giữ cookie/trạng thái fail-safe
 		// ACR must time out and keep cookies when durable revocation is not proven.
 		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to revoke refresh credential")
 		return
 	}
 
+	// [COMMENT]: Đóng gói và gửi phản hồi thu hồi token thành công về reply channel
 	respData, marshalErr := proto.Marshal(&iamproto.RevokeOpaqueRefreshTokenResponse{})
 	if marshalErr != nil {
 		logger.SysErrorCtx(ctx, "Redis.RevokeOpaqueRefreshToken", "Failed to marshal revoke response")
@@ -873,16 +999,20 @@ func (h *AuthRedisHandler) handleRevokeOpaqueToken(payload []byte) {
 	}
 }
 
+// [COMMENT]: Stop dừng tất cả các Redis PubSub subscription và chờ các worker goroutine hoàn tất công việc
 func (h *AuthRedisHandler) Stop() {
 	if h == nil {
 		return
 	}
+	// [COMMENT]: Hủy context subscription
 	if h.cancel != nil {
 		h.cancel()
 	}
+	// [COMMENT]: Đóng kết nối PubSub Redis
 	if h.pubsub != nil {
 		_ = h.pubsub.Close()
 	}
+	// [COMMENT]: Đợi vòng lặp nhận message và các worker đang chạy hoàn thành trước khi thoát
 	h.loopWG.Wait()
 	h.workWG.Wait()
 }

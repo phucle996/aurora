@@ -76,19 +76,19 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// [COMMENT]: 1.3) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/iam/device/read",
-		module.DeviceSelfHandler.ListMyDevices,
+		module.SelfDeviceHandler.ListMyDevices,
 	)
 
 	// [COMMENT]: 1.4) Thu hồi quyền truy cập của một thiết bị cụ thể
 	router.POST("/api/v1/me/critical/iam/device/delete/:device_id",
 		middleware.RequireSessionProof(),
-		module.DeviceSelfHandler.RevokeMyDevice,
+		module.SelfDeviceHandler.RevokeMyDevice,
 	)
 
 	// [COMMENT]: 1.5) Đăng xuất khỏi toàn bộ thiết bị khác ngoại trừ thiết bị hiện tại
 	router.POST("/api/v1/me/critical/iam/device/delete-others",
 		middleware.RequireSessionProof(),
-		module.DeviceSelfHandler.LogoutOtherDevices,
+		module.SelfDeviceHandler.LogoutOtherDevices,
 	)
 
 	// ========================================================================
@@ -191,7 +191,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// [COMMENT]: Lấy danh sách thiết bị của một user cụ thể (yêu cầu quyền iam:device:read và level 2) thông qua platform handler
 	router.GET("/api/v1/personal/iam/users/:id/devices",
 		middleware.Authorize("iam:device:read", module.L1Registry, "2"),
-		module.DevicePlatformHandler.ListUserDevicesPlatform,
+		module.PersonalDeviceHandler.ListUserDevicesPlatform,
 	)
 
 	// ------------------------------------------------------------------------

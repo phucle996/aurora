@@ -32,7 +32,7 @@ import (
 type AuthService struct {
 	repo                  iamRepoInterface.AuthRepository
 	refreshSvc            iamSvcInterface.SessionRefreshService
-	deviceSvc             iamSvcInterface.DeviceSelfService // [COMMENT]: Sử dụng DeviceSelfService phục vụ quản trị thiết bị cá nhân
+	deviceSvc             iamSvcInterface.SelfDeviceService // [COMMENT]: Sử dụng SelfDeviceService cho verified login user
 	registry              *cacheengine.CacheRegistry
 	ott                   iamSvcInterface.OneTimeTokenService
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher
@@ -45,7 +45,7 @@ type AuthService struct {
 func NewAuthService(
 	repo iamRepoInterface.AuthRepository,
 	refreshSvc iamSvcInterface.SessionRefreshService,
-	deviceSvc iamSvcInterface.DeviceSelfService,
+	deviceSvc iamSvcInterface.SelfDeviceService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	verificationPublisher iamSvcInterface.AccountVerificationPublisher,
@@ -360,12 +360,12 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	// [COMMENT]: 4. Phân giải/Tìm kiếm thiết bị đang hoạt động tương thích
 	matchedClientDeviceID, err := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
 
-	var clientDeviceID string
-	if err != nil || matchedClientDeviceID == "" {
-		newDeviceID := uuid.New()
-		clientDeviceID = newDeviceID.String()
+	var clientDeviceID uuid.UUID
+	if err == nil && matchedClientDeviceID != nil && *matchedClientDeviceID != uuid.Nil {
+		clientDeviceID = *matchedClientDeviceID
 	} else {
-		clientDeviceID = matchedClientDeviceID
+		newDeviceID, _ := uuid.NewV7()
+		clientDeviceID = newDeviceID
 	}
 
 	deviceName := req.DeviceName
@@ -382,7 +382,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		DeviceType:           &deviceType,
 		PublicKey:            req.DevicePublicKey,
 		PublicKeyFingerprint: fingerprint,
-		ClientDeviceID:       cleanOptionalString(&clientDeviceID),
+		ClientDeviceID:       &clientDeviceID,
 		LastSeenIP:           cleanOptionalString(&req.RemoteIP),
 		LastSeenUserAgent:    cleanOptionalString(&req.UserAgent),
 		UpdatedAt:            now.UTC(),
@@ -393,14 +393,11 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	if deviceErr != nil {
 		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
 	}
-	if trackedDevice == nil || strings.TrimSpace(trackedDevice.ID) == "" || trackedDevice.RevokedAt != nil {
+	if trackedDevice == nil || trackedDevice.ID == uuid.Nil || trackedDevice.RevokedAt != nil {
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, "unauthenticated")
 	}
-	trackedDeviceID, trackedErr := uuid.Parse(strings.TrimSpace(trackedDevice.ID))
-	if trackedErr != nil {
-		return nil, fmt.Errorf("%w: failed to parse tracked device ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, trackedErr)
-	}
+	trackedDeviceID := trackedDevice.ID
 
 	// [COMMENT]: 5. Sinh Refresh Token nếu thiết bị được đánh dấu tin cậy (Trust Device)
 	var rawRefresh string
@@ -419,7 +416,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		UserID:                user.ID.String(),
 		Level:                 user.Level,
 		TenantID:              tenantID,
-		ClientDeviceID:        clientDeviceID,
+		ClientDeviceID:        clientDeviceID.String(),
 		RefreshToken:          rawRefresh,
 		RefreshTokenExpiresAt: refreshExpiresAt,
 		Username:              user.Username,
@@ -477,13 +474,11 @@ func (s *AuthService) VerifyMfaLogin(
 	}
 	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, canonicalPublicKey)
 	clientDeviceID := req.ClientDeviceID
-	if matchedClientDeviceID != "" {
-		if parsed, parseErr := uuid.Parse(matchedClientDeviceID); parseErr == nil {
-			clientDeviceID = parsed
-		}
+	if matchedClientDeviceID != nil && *matchedClientDeviceID != uuid.Nil {
+		clientDeviceID = *matchedClientDeviceID
 	}
 	if clientDeviceID == uuid.Nil {
-		clientDeviceID = uuid.New()
+		clientDeviceID, _ = uuid.NewV7()
 	}
 	deviceName := strings.TrimSpace(req.DeviceName)
 	if deviceName == "" {
@@ -494,26 +489,22 @@ func (s *AuthService) VerifyMfaLogin(
 		deviceType = "browser"
 	}
 	fp := sha256.Sum256([]byte(canonicalPublicKey))
-	clientDeviceIDValue := clientDeviceID.String()
 	loginDevice := iamEntity.Device{
 		UserID:               user.ID,
 		DeviceName:           deviceName,
 		DeviceType:           &deviceType,
 		PublicKey:            canonicalPublicKey,
 		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
-		ClientDeviceID:       cleanOptionalString(&clientDeviceIDValue),
+		ClientDeviceID:       &clientDeviceID,
 		LastSeenIP:           cleanOptionalString(&req.RemoteIP),
 		LastSeenUserAgent:    cleanOptionalString(&req.UserAgent),
 		UpdatedAt:            time.Now().UTC(),
 	}
 	trackedDevice, err := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
-	if err != nil || trackedDevice == nil || trackedDevice.RevokedAt != nil {
+	if err != nil || trackedDevice == nil || trackedDevice.ID == uuid.Nil || trackedDevice.RevokedAt != nil {
 		return nil, fmt.Errorf("%w: register mfa login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
-	trackedDeviceID, err := uuid.Parse(strings.TrimSpace(trackedDevice.ID))
-	if err != nil {
-		return nil, iamTaxonomy.ErrAuthenticationUnavailable
-	}
+	trackedDeviceID := trackedDevice.ID
 
 	var rawRefresh string
 	var refreshExpiresAt time.Time
@@ -619,13 +610,11 @@ func (s *AuthService) VerifyExternalIdentity(
 
 	matchedClientDeviceID, _ := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
 	clientDeviceID := req.ClientDeviceID
-	if matchedClientDeviceID != "" {
-		if parsed, parseErr := uuid.Parse(matchedClientDeviceID); parseErr == nil {
-			clientDeviceID = parsed
-		}
+	if matchedClientDeviceID != nil && *matchedClientDeviceID != uuid.Nil {
+		clientDeviceID = *matchedClientDeviceID
 	}
 	if clientDeviceID == uuid.Nil {
-		clientDeviceID = uuid.New()
+		clientDeviceID, _ = uuid.NewV7()
 	}
 
 	deviceName := strings.TrimSpace(req.DeviceName)
@@ -637,7 +626,6 @@ func (s *AuthService) VerifyExternalIdentity(
 		deviceType = "browser"
 	}
 	fp := sha256.Sum256([]byte(req.DevicePublicKey))
-	clientDeviceIDValue := clientDeviceID.String()
 	remoteIP := req.RemoteIP
 	userAgent := req.UserAgent
 	loginDevice := iamEntity.Device{
@@ -646,7 +634,7 @@ func (s *AuthService) VerifyExternalIdentity(
 		DeviceType:           &deviceType,
 		PublicKey:            req.DevicePublicKey,
 		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
-		ClientDeviceID:       cleanOptionalString(&clientDeviceIDValue),
+		ClientDeviceID:       &clientDeviceID,
 		LastSeenIP:           cleanOptionalString(&remoteIP),
 		LastSeenUserAgent:    cleanOptionalString(&userAgent),
 		UpdatedAt:            time.Now().UTC(),
@@ -655,14 +643,11 @@ func (s *AuthService) VerifyExternalIdentity(
 	if err != nil {
 		return nil, fmt.Errorf("%w: register external login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
 	}
-	if trackedDevice == nil || trackedDevice.RevokedAt != nil || strings.TrimSpace(trackedDevice.ID) == "" {
+	if trackedDevice == nil || trackedDevice.RevokedAt != nil || trackedDevice.ID == uuid.Nil {
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
 		return nil, iamTaxonomy.ErrInvalidCredentials
 	}
-	trackedDeviceID, err := uuid.Parse(trackedDevice.ID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: parse external login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
-	}
+	trackedDeviceID := trackedDevice.ID
 
 	var rawRefresh string
 	var refreshExpiresAt time.Time

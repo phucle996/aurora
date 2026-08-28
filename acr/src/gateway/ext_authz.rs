@@ -1521,7 +1521,7 @@ impl Authorization for ExtAuthzService {
                     if let Some(c) = sre_claims {
                         let device_id =
                             extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID)
-                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
 
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, "sre".to_string()),
@@ -1552,7 +1552,7 @@ impl Authorization for ExtAuthzService {
                     if let Some(c) = claims {
                         let device_id =
                             extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID)
-                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, c.uid.clone()),
                             (HEADER_X_USER_NAME, c.sub.clone()),

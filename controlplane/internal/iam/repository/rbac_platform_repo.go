@@ -8,7 +8,6 @@ import (
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/proto"
 
@@ -202,7 +201,7 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 
 	var roles []iamEntity.Role
 	for rows.Next() {
-		var role iamModel.Role
+		var role iamEntity.Role
 		var createdByName string // [COMMENT]: kết quả JOIN từ user_profiles — không phải cột trong bảng roles
 		var assignmentsCount, permissionsCount int
 		err := rows.Scan(
@@ -222,11 +221,10 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 		if err != nil {
 			return nil, fmt.Errorf("rbac platform repo: scan platform role row: %w", err)
 		}
-		entityRole := iamModel.RoleModelToEntity(role)
-		entityRole.CreatedByName = createdByName
-		entityRole.AssignmentsCount = assignmentsCount
-		entityRole.PermissionsCount = permissionsCount
-		roles = append(roles, entityRole)
+		role.CreatedByName = createdByName
+		role.AssignmentsCount = assignmentsCount
+		role.PermissionsCount = permissionsCount
+		roles = append(roles, role)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -356,7 +354,7 @@ func (r *RbacPlatformRepository) ListPermissions(ctx context.Context, callerUser
 
 	var perms []iamEntity.Permission
 	for rows.Next() {
-		var p iamModel.Permission
+		var p iamEntity.Permission
 		err := rows.Scan(
 			&p.ID,
 			&p.Module,
@@ -369,7 +367,7 @@ func (r *RbacPlatformRepository) ListPermissions(ctx context.Context, callerUser
 		if err != nil {
 			return nil, fmt.Errorf("rbac platform repo: scan permission row: %w", err)
 		}
-		perms = append(perms, iamModel.PermissionModelToEntity(p))
+		perms = append(perms, p)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -380,7 +378,7 @@ func (r *RbacPlatformRepository) ListPermissions(ctx context.Context, callerUser
 
 // [COMMENT]: GetUserRoleDetails lấy thông tin chi tiết vai trò của user kèm kiểm tra cấp bậc
 func (r *RbacPlatformRepository) GetUserRoleDetails(ctx context.Context, userID uuid.UUID, callerLevel int32) (*iamEntity.Role, error) {
-	var role iamModel.Role
+	var role iamEntity.Role
 
 	query := fmt.Sprintf(`
 		SELECT rl.id, rl.code, rl.name, COALESCE(rl.description, ''), rl.role_level, 'platform', rl.created_at, rl.updated_at
@@ -409,8 +407,7 @@ func (r *RbacPlatformRepository) GetUserRoleDetails(ctx context.Context, userID 
 		return nil, fmt.Errorf("rbac platform repo: query user role details: %w", err)
 	}
 
-	entityRole := iamModel.RoleModelToEntity(role)
-	return &entityRole, nil
+	return &role, nil
 }
 
 // [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user theo user id
@@ -570,30 +567,30 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 	var permissions []iamEntity.Permission
 
 	for rows.Next() {
-		var roleModel iamModel.Role
-		var permModel iamModel.Permission
+		var roleRow iamEntity.Role
+		var perm iamEntity.Permission
 		var createdByName string // [COMMENT]: kết quả JOIN từ user_profiles — không phải cột trong bảng roles
 		var assignmentsCount int
 
 		err := rows.Scan(
-			&roleModel.ID,
-			&roleModel.Code,
-			&roleModel.Name,
-			&roleModel.Description,
-			&roleModel.RoleLevel,
-			&roleModel.Scope,
-			&roleModel.CreatedBy,
+			&roleRow.ID,
+			&roleRow.Code,
+			&roleRow.Name,
+			&roleRow.Description,
+			&roleRow.RoleLevel,
+			&roleRow.Scope,
+			&roleRow.CreatedBy,
 			&createdByName,
 			&assignmentsCount,
-			&roleModel.CreatedAt,
-			&roleModel.UpdatedAt,
-			&permModel.ID,
-			&permModel.Module,
-			&permModel.Object,
-			&permModel.Behavior,
-			&permModel.Description,
-			&permModel.CreatedAt,
-			&permModel.UpdatedAt,
+			&roleRow.CreatedAt,
+			&roleRow.UpdatedAt,
+			&perm.ID,
+			&perm.Module,
+			&perm.Object,
+			&perm.Behavior,
+			&perm.Description,
+			&perm.CreatedAt,
+			&perm.UpdatedAt,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("rbac platform repo: scan role detail join row: %w", err)
@@ -601,18 +598,17 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 
 		if role == nil {
 			// Ràng buộc kiểm tra cấp bậc: callerLevel phải có quyền cao hơn (chỉ số nhỏ hơn) so với role Level lấy ra
-			if roleModel.RoleLevel <= int(callerLevel) {
+			if roleRow.RoleLevel <= int(callerLevel) {
 				return nil, nil, iamTaxonomy.ErrActionNotAllowed
 			}
 
-			entityRole := iamModel.RoleModelToEntity(roleModel)
-			entityRole.CreatedByName = createdByName
-			entityRole.AssignmentsCount = assignmentsCount
-			role = &entityRole
+			roleRow.CreatedByName = createdByName
+			roleRow.AssignmentsCount = assignmentsCount
+			role = &roleRow
 		}
 
-		if permModel.ID != uuid.Nil {
-			permissions = append(permissions, iamModel.PermissionModelToEntity(permModel))
+		if perm.ID != uuid.Nil {
+			permissions = append(permissions, perm)
 		}
 	}
 

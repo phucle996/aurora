@@ -12,7 +12,6 @@ import (
 	iamHandler "controlplane/internal/iam/transport/http/handler"
 	iamPubsub "controlplane/internal/iam/transport/pubsub"
 	iamPubsubHandler "controlplane/internal/iam/transport/pubsub/handler"
-	iamStream "controlplane/internal/iam/transport/stream"
 	"controlplane/internal/observability"
 	"errors"
 	"fmt"
@@ -32,8 +31,8 @@ type IAMModule struct {
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler           *iamHandler.AuthHandler
 	UserHandler           *iamHandler.UserHandler
-	DeviceSelfHandler     *iamHandler.DeviceSelfHandler     // [COMMENT]: Handler quản lý thiết bị cá nhân
-	DevicePlatformHandler *iamHandler.DevicePlatformHandler // [COMMENT]: Handler giám sát thiết bị platform
+	SelfDeviceHandler     *iamHandler.SelfDeviceHandler     // [COMMENT]: Handler nhánh self
+	PersonalDeviceHandler *iamHandler.PersonalDeviceHandler // [COMMENT]: Handler nhánh personal
 	RbacPlatformHandler   *iamHandler.RbacPlatformHandler   // [COMMENT]: Handler cho các tác vụ platform-scoped RBAC
 	RbacTenantHandler     *iamHandler.RbacTenantHandler     // [COMMENT]: Handler cho các tác vụ tenant-scoped RBAC
 	RenderContextHandler  *iamHandler.RenderContextHandler
@@ -43,15 +42,14 @@ type IAMModule struct {
 	RbacPlatformRepository               iamRepoInterface.RbacPlatformRepository // [COMMENT]: Repo quản lý platform role
 	RbacTenantRepository                 iamRepoInterface.RbacTenantRepository   // [COMMENT]: Repo quản lý tenant role
 	RenderContextRepository              iamRepoInterface.RenderContextRepository
-	DeviceSelfRepository                 iamRepoInterface.DeviceSelfRepository     // [COMMENT]: Repo quản lý thiết bị cá nhân
-	DevicePlatformRepository             iamRepoInterface.DevicePlatformRepository // [COMMENT]: Repo quản lý thiết bị platform
+	SelfDeviceRepository                 iamRepoInterface.SelfDeviceRepository     // [COMMENT]: Repo thiết bị của verified self user
+	PersonalDeviceRepository             iamRepoInterface.PersonalDeviceRepository // [COMMENT]: Repo nhánh personal quản lý thiết bị platform
 	AuthService                          iamSvcInterface.AuthService
 	UserService                          iamSvcInterface.UserService
 	SessionRefreshService                iamSvcInterface.SessionRefreshService
-	deviceSelfSvcImpl                    iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
-	devicePlatformSvcImpl                iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
+	selfDeviceSvcImpl                    iamSvcInterface.SelfDeviceService     // giữ interface type để tránh type assertion
+	personalDeviceSvcImpl                iamSvcInterface.PersonalDeviceService // giữ interface type để tránh type assertion
 	lifecycleFactRelay                   *iamSvcImpl.LifecycleFactRelay
-	deviceRuntimeRevokeRelay             *iamStream.DeviceRuntimeRevokeRelay
 	billingAuthorizationRedisHandler     *iamPubsubHandler.BillingAuthorizationRedisHandler
 	runtimeReadAuthorizationRedisHandler *iamPubsubHandler.RuntimeReadAuthorizationRedisHandler
 	authRedisHandler                     *iamPubsubHandler.AuthRedisHandler
@@ -130,16 +128,16 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct user repository")
 	}
 
-	// Device Self Repository (PostgreSQL)
-	deviceSelfRepo := iamRepoImpl.NewDeviceSelfRepository(cfg, db)
-	if deviceSelfRepo == nil {
-		return nil, errors.New("iam module: failed to construct device self repository")
+	// Self Device Repository (PostgreSQL)
+	selfDeviceRepo := iamRepoImpl.NewSelfDeviceRepository(cfg, db)
+	if selfDeviceRepo == nil {
+		return nil, errors.New("iam module: failed to construct self device repository")
 	}
 
-	// Device Platform Repository (PostgreSQL)
-	devicePlatformRepo := iamRepoImpl.NewDevicePlatformRepository(cfg, db)
-	if devicePlatformRepo == nil {
-		return nil, errors.New("iam module: failed to construct device platform repository")
+	// Personal Device Repository (PostgreSQL)
+	personalDeviceRepo := iamRepoImpl.NewPersonalDeviceRepository(cfg, db)
+	if personalDeviceRepo == nil {
+		return nil, errors.New("iam module: failed to construct personal device repository")
 	}
 
 	// Refresh Token Storage (PostgreSQL)
@@ -195,53 +193,34 @@ func NewModule(
 	// Khởi tạo các Engine xử lý Business Logic chính.
 	workflowMetrics := otel.WorkflowRecorder("iam")
 
-	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, cacheEngine, rds, workflowMetrics)
-	if deviceSelfSvc == nil {
-		return nil, errors.New("iam module: failed to construct device self service")
-	}
-	deviceRuntimeRevokeRepo := iamRepoImpl.NewDeviceRuntimeRevokeRepository(cfg, db)
-	deviceRuntimeRevokeSvc := iamSvcImpl.NewDeviceRuntimeRevokeService(deviceRuntimeRevokeRepo)
-	deviceRuntimeRevokeRelay, err := iamStream.NewDeviceRuntimeRevokeRelay(
-		deviceRuntimeRevokeSvc,
-		rds,
-		cfg.Redis.DurableReplicaAcks,
-		cfg.Redis.DurableWait,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("iam module: configure device runtime revoke relay: %w", err)
+	selfDeviceSvc := iamSvcImpl.NewSelfDeviceService(selfDeviceRepo, cacheEngine, rds, authRedis, workflowMetrics)
+	if selfDeviceSvc == nil {
+		return nil, errors.New("iam module: failed to construct self device service")
 	}
 
-	devicePresenceProjectionRepo := iamRepoImpl.NewDevicePresenceProjectionRepository(cfg, db)
-	devicePresenceProjectionSvc := iamSvcImpl.NewDevicePresenceProjectionService(devicePresenceProjectionRepo)
 	devicePresenceProjectionHandler := iamPubsubHandler.NewDevicePresenceProjectionRedisHandler(
 		rds,
-		devicePresenceProjectionSvc,
+		selfDeviceSvc,
 		otel,
 	)
-	deviceSessionCapacityEvictionRepo := iamRepoImpl.NewDeviceSessionCapacityEvictionRepository(cfg, db)
-	deviceSessionCapacityEvictionSvc := iamSvcImpl.NewDeviceSessionCapacityEvictionService(deviceSessionCapacityEvictionRepo)
 	deviceSessionCapacityEvictionHandler := iamPubsubHandler.NewDeviceSessionCapacityEvictionRedisHandler(
 		rds,
-		deviceSessionCapacityEvictionSvc,
+		selfDeviceSvc,
 		otel,
 	)
 
-	devicePlatformSvc := iamSvcImpl.NewDevicePlatformService(devicePlatformRepo, workflowMetrics)
-	if devicePlatformSvc == nil {
-		return nil, errors.New("iam module: failed to construct device platform service")
+	personalDeviceSvc := iamSvcImpl.NewPersonalDeviceService(personalDeviceRepo, workflowMetrics)
+	if personalDeviceSvc == nil {
+		return nil, errors.New("iam module: failed to construct personal device service")
 	}
 
-	deviceSelfHandler := iamHandler.NewDeviceSelfHandler(
-		deviceSelfSvc,
-		deviceRuntimeRevokeSvc,
-		deviceRuntimeRevokeRelay.Notify,
-	)
-	if deviceSelfHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP device self handler")
+	selfDeviceHandler := iamHandler.NewSelfDeviceHandler(selfDeviceSvc)
+	if selfDeviceHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP self device handler")
 	}
-	devicePlatformHandler := iamHandler.NewDevicePlatformHandler(devicePlatformSvc)
-	if devicePlatformHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP device platform handler")
+	personalDeviceHandler := iamHandler.NewPersonalDeviceHandler(personalDeviceSvc)
+	if personalDeviceHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP personal device handler")
 	}
 
 	// ------------------------------------------------------------------------
@@ -290,7 +269,7 @@ func NewModule(
 	}
 
 	authSvc := iamSvcImpl.NewAuthService(
-		authRepo, refreshSvc, deviceSelfSvc,
+		authRepo, refreshSvc, selfDeviceSvc,
 		cacheEngine, oneTimeTokenSvc, verificationPublisher,
 		lifecycleFactRelay, mfaSvc,
 		nil,
@@ -385,12 +364,11 @@ func NewModule(
 		otel:                                 otel,
 		AuthService:                          authSvc,
 		lifecycleFactRelay:                   lifecycleFactRelay,
-		deviceRuntimeRevokeRelay:             deviceRuntimeRevokeRelay,
 		AuthHandler:                          authHandler,
 		UserService:                          userService,
 		UserHandler:                          userHandler,
-		DeviceSelfHandler:                    deviceSelfHandler,
-		DevicePlatformHandler:                devicePlatformHandler,
+		SelfDeviceHandler:                    selfDeviceHandler,
+		PersonalDeviceHandler:                personalDeviceHandler,
 		RbacPlatformHandler:                  rbacPlatformHandler,
 		RbacTenantHandler:                    rbacTenantHandler,
 		RenderContextHandler:                 renderContextHandler,
@@ -398,10 +376,10 @@ func NewModule(
 		RbacPlatformRepository:               rbacPlatformRepo,
 		RbacTenantRepository:                 rbacTenantRepo,
 		RenderContextRepository:              renderContextRepo,
-		DeviceSelfRepository:                 deviceSelfRepo,
-		DevicePlatformRepository:             devicePlatformRepo,
-		deviceSelfSvcImpl:                    deviceSelfSvc,
-		devicePlatformSvcImpl:                devicePlatformSvc,
+		SelfDeviceRepository:                 selfDeviceRepo,
+		PersonalDeviceRepository:             personalDeviceRepo,
+		selfDeviceSvcImpl:                    selfDeviceSvc,
+		personalDeviceSvcImpl:                personalDeviceSvc,
 		SessionRefreshService:                refreshSvc,
 		billingAuthorizationRedisHandler:     billingAuthorizationRedisHandler,
 		runtimeReadAuthorizationRedisHandler: runtimeReadAuthorizationRedisHandler,

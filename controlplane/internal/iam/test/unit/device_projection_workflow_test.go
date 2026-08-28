@@ -7,42 +7,15 @@ import (
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamService "controlplane/internal/iam/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
 
-type devicePresenceProjectionRepositoryStub struct {
-	updates []iamEntity.DevicePresenceUpdate
-	err     error
-}
-
-func (r *devicePresenceProjectionRepositoryStub) Apply(
-	_ context.Context,
-	updates []iamEntity.DevicePresenceUpdate,
-) error {
-	r.updates = updates
-	return r.err
-}
-
-type deviceSessionCapacityEvictionRepositoryStub struct {
-	userID    uuid.UUID
-	deviceIDs []uuid.UUID
-	err       error
-}
-
-func (r *deviceSessionCapacityEvictionRepositoryStub) Evict(
-	_ context.Context,
-	userID uuid.UUID,
-	deviceIDs []uuid.UUID,
-) error {
-	r.userID = userID
-	r.deviceIDs = deviceIDs
-	return r.err
-}
-
-func TestDevicePresenceProjectionServiceAppliesNormalizedBatch(t *testing.T) {
-	repository := &devicePresenceProjectionRepositoryStub{}
-	service := iamService.NewDevicePresenceProjectionService(repository)
+func TestSelfDeviceServiceAppliesPresenceProjectionBatch(t *testing.T) {
+	repository := &selfDeviceRepositoryStub{}
+	metrics := &deviceWorkflowRecorderSpy{}
+	service := iamService.NewSelfDeviceService(repository, nil, nil, nil, metrics)
 	updates := []iamEntity.DevicePresenceUpdate{{
 		DeviceID:          uuid.NewString(),
 		LastSeenAt:        1_786_594_400,
@@ -50,25 +23,32 @@ func TestDevicePresenceProjectionServiceAppliesNormalizedBatch(t *testing.T) {
 		LastSeenUserAgent: "Aurora Console",
 	}}
 
-	if err := service.Apply(context.Background(), updates); err != nil {
+	if err := service.ApplyDevicePresenceProjection(context.Background(), updates); err != nil {
 		t.Fatalf("apply presence projection: %v", err)
 	}
 	if len(repository.updates) != 1 || repository.updates[0] != updates[0] {
 		t.Fatalf("repository received unexpected presence batch: %#v", repository.updates)
 	}
+	if metrics.callCount != 1 || metrics.result != observability.ResultSuccess || metrics.reason != observability.ReasonNone {
+		t.Fatalf("unexpected presence workflow observation: calls=%d result=%s reason=%s", metrics.callCount, metrics.result, metrics.reason)
+	}
 }
 
-func TestDeviceSessionCapacityEvictionServicePropagatesDurableFailure(t *testing.T) {
-	repository := &deviceSessionCapacityEvictionRepositoryStub{err: errors.New("postgres unavailable")}
-	service := iamService.NewDeviceSessionCapacityEvictionService(repository)
+func TestSelfDeviceServicePropagatesCapacityEvictionFailure(t *testing.T) {
+	repository := &selfDeviceRepositoryStub{err: errors.New("postgres unavailable")}
+	metrics := &deviceWorkflowRecorderSpy{}
+	service := iamService.NewSelfDeviceService(repository, nil, nil, nil, metrics)
 	userID := uuid.New()
 	deviceID := uuid.New()
 
-	err := service.Evict(context.Background(), userID, []uuid.UUID{deviceID})
+	err := service.ApplyDeviceSessionCapacityEviction(context.Background(), userID, []uuid.UUID{deviceID})
 	if !errors.Is(err, repository.err) {
 		t.Fatalf("expected durable failure to stay retryable, got %v", err)
 	}
-	if repository.userID != userID || len(repository.deviceIDs) != 1 || repository.deviceIDs[0] != deviceID {
-		t.Fatalf("repository received unexpected eviction: user=%s devices=%v", repository.userID, repository.deviceIDs)
+	if repository.evictionUser != userID || len(repository.evictionIDs) != 1 || repository.evictionIDs[0] != deviceID {
+		t.Fatalf("repository received unexpected eviction: user=%s devices=%v", repository.evictionUser, repository.evictionIDs)
+	}
+	if metrics.callCount != 1 || metrics.result != observability.ResultFailure || metrics.reason != observability.ReasonInternal {
+		t.Fatalf("unexpected capacity workflow observation: calls=%d result=%s reason=%s", metrics.callCount, metrics.result, metrics.reason)
 	}
 }

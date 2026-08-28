@@ -7,7 +7,6 @@ use crate::sre::claims::SreTokenManager;
 use crate::token::TokenManager;
 use futures_util::StreamExt;
 use prost::Message;
-use redis::streams::{StreamClaimReply, StreamId, StreamReadReply};
 use redis::AsyncCommands;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,13 +19,8 @@ const VERIFY_USER_TRINITY_CHANNEL: &str = "iam.auth.verify_user_trinity";
 const VERIFY_USER_TRINITY_REPLY_PREFIX: &str = "iam.auth.verify_user_trinity.reply.";
 const VERIFY_ADMIN_TRINITY_CHANNEL: &str = "iam.auth.verify_admin_trinity";
 const VERIFY_ADMIN_TRINITY_REPLY_PREFIX: &str = "iam.auth.verify_admin_trinity.reply.";
-const REVOKE_STREAM: &str = "iam:device:revoke-requests";
-const REVOKE_GROUP: &str = "acr-device-runtime-v1";
-const REVOKE_BATCH: usize = 32;
-const REVOKE_CLAIM_MIN_IDLE: Duration = Duration::from_secs(30);
 
-// [COMMENT]: SharedRedisRouter nhận toàn bộ Central-internal auth/device/topology traffic.
-// Query realtime dùng PubSub; security command dùng Stream consumer group để không mất lệnh khi pod restart.
+// [COMMENT]: SharedRedisRouter nhận toàn bộ Central-internal auth/device/topology traffic qua PubSub.
 pub struct SharedRedisRouter {
     shared_redis: Arc<RedisRuntimeClient>,
     shared_bus: Arc<SharedRedisBus>,
@@ -67,24 +61,6 @@ impl SharedRedisRouter {
             .await
             .map_err(|error| format!("subscribe admin trinity channel: {error}"))?;
 
-        let mut stream_connection = shared_redis
-            .get_multiplexed_tokio_connection()
-            .await
-            .map_err(|error| format!("open device Stream connection: {error}"))?;
-        let create_result: redis::RedisResult<()> = redis::cmd("XGROUP")
-            .arg("CREATE")
-            .arg(REVOKE_STREAM)
-            .arg(REVOKE_GROUP)
-            .arg("0")
-            .arg("MKSTREAM")
-            .query_async(&mut stream_connection)
-            .await;
-        if let Err(error) = create_result {
-            if !error.to_string().contains("BUSYGROUP") {
-                return Err(format!("create device revoke consumer group: {error}"));
-            }
-        }
-
         let router = Arc::new(Self {
             shared_redis,
             shared_bus,
@@ -94,7 +70,6 @@ impl SharedRedisRouter {
             config,
         });
         router.start_pubsub_listener(subscriber);
-        router.start_revoke_stream_worker();
         Ok(router)
     }
 
@@ -286,197 +261,5 @@ impl SharedRedisRouter {
                 }
             }
         });
-    }
-
-    fn start_revoke_stream_worker(&self) {
-        let client = self.shared_redis.clone();
-        let session_mgr = self.session_mgr.clone();
-        tokio::spawn(async move {
-            // A consumer identity is per process, never per deployment. Redis
-            // consumer groups then assign fresh messages exclusively and
-            // XAUTOCLAIM is the explicit HA takeover for abandoned PEL entries.
-            let consumer = format!("acr-device-runtime-{}", Uuid::now_v7());
-            let mut claim_start = "0-0".to_string();
-            loop {
-                let mut connection = match client.get_multiplexed_tokio_connection().await {
-                    Ok(value) => value,
-                    Err(error) => {
-                        Logger::sys_error(
-                            "shared_redis.device_revoke",
-                            "Failed to connect Shared Redis Stream",
-                            &error.to_string(),
-                        );
-                        tokio::time::sleep(Duration::from_millis(
-                            250 + (Uuid::now_v7().as_u128() % 251) as u64,
-                        ))
-                        .await;
-                        continue;
-                    }
-                };
-
-                loop {
-                    let claimed: redis::RedisResult<(String, StreamClaimReply, Vec<String>)> =
-                        redis::cmd("XAUTOCLAIM")
-                            .arg(REVOKE_STREAM)
-                            .arg(REVOKE_GROUP)
-                            .arg(&consumer)
-                            .arg(REVOKE_CLAIM_MIN_IDLE.as_millis() as usize)
-                            .arg(&claim_start)
-                            .arg("COUNT")
-                            .arg(REVOKE_BATCH)
-                            .query_async(&mut connection)
-                            .await;
-                    let (next_claim_start, claimed, _) = match claimed {
-                        Ok(reply) => reply,
-                        Err(error) => {
-                            Logger::sys_error(
-                                "shared_redis.device_revoke",
-                                "Failed to reclaim pending revoke messages",
-                                &error.to_string(),
-                            );
-                            break;
-                        }
-                    };
-                    claim_start = if next_claim_start.is_empty() {
-                        "0-0".to_string()
-                    } else {
-                        next_claim_start
-                    };
-                    if !claimed.ids.is_empty() {
-                        process_revoke_entries(&session_mgr, &mut connection, claimed.ids).await;
-                        continue;
-                    }
-
-                    let fresh: redis::RedisResult<StreamReadReply> = redis::cmd("XREADGROUP")
-                        .arg("GROUP")
-                        .arg(REVOKE_GROUP)
-                        .arg(&consumer)
-                        .arg("COUNT")
-                        .arg(REVOKE_BATCH)
-                        .arg("BLOCK")
-                        .arg(5_000)
-                        .arg("STREAMS")
-                        .arg(REVOKE_STREAM)
-                        .arg(">")
-                        .query_async(&mut connection)
-                        .await;
-                    match fresh {
-                        Ok(reply) => {
-                            for key in reply.keys {
-                                process_revoke_entries(&session_mgr, &mut connection, key.ids)
-                                    .await;
-                            }
-                        }
-                        Err(error) if error.is_timeout() => {}
-                        Err(error) => {
-                            Logger::sys_error(
-                                "shared_redis.device_revoke",
-                                "Failed to read new revoke messages",
-                                &error.to_string(),
-                            );
-                            break;
-                        }
-                    }
-                }
-                // A connected server can still reject stream commands (ACL,
-                // failover, unavailable group). Back off those failures too.
-                tokio::time::sleep(Duration::from_millis(
-                    250 + (Uuid::now_v7().as_u128() % 251) as u64,
-                ))
-                .await;
-            }
-        });
-    }
-}
-
-async fn process_revoke_entries(
-    session_mgr: &Arc<SessionManager>,
-    connection: &mut crate::infra::redis::RedisConnection,
-    entries: Vec<StreamId>,
-) {
-    for entry in entries {
-        let payload = match entry
-            .map
-            .get("payload")
-            .and_then(|value| redis::from_redis_value::<Vec<u8>>(value).ok())
-        {
-            Some(value) => value,
-            None => {
-                // [COMMENT]: Payload không đúng contract là poison message; ACK+DEL để
-                // không chặn toàn consumer, đồng thời log để producer được sửa.
-                Logger::sys_error(
-                    "shared_redis.device_revoke",
-                    "Dropping revoke message without binary payload",
-                    &entry.id,
-                );
-                acknowledge_revoke(connection, &entry.id).await;
-                continue;
-            }
-        };
-
-        let request =
-            match crate::user::device::device_proto::RevokeUserSessionsByDevicesRequest::decode(
-                payload.as_slice(),
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    Logger::sys_error(
-                        "shared_redis.device_revoke",
-                        "Dropping malformed revoke protobuf",
-                        &error.to_string(),
-                    );
-                    acknowledge_revoke(connection, &entry.id).await;
-                    continue;
-                }
-            };
-
-        match crate::user::revoke::revoke_sessions_by_devices(session_mgr, &request).await {
-            Ok(_) => acknowledge_revoke(connection, &entry.id).await,
-            Err(error) => {
-                // Do not ACK on Auth Redis failure. A unique consumer owns the
-                // pending entry until it recovers; after the idle lease another
-                // replica takes it over explicitly with XAUTOCLAIM.
-                Logger::sys_error(
-                    "shared_redis.device_revoke",
-                    "Revoke execution failed; message remains pending",
-                    &error,
-                );
-            }
-        }
-    }
-}
-
-async fn acknowledge_revoke(connection: &mut crate::infra::redis::RedisConnection, entry_id: &str) {
-    let acked: redis::RedisResult<i64> = redis::cmd("XACK")
-        .arg(REVOKE_STREAM)
-        .arg(REVOKE_GROUP)
-        .arg(entry_id)
-        .query_async(connection)
-        .await;
-    match acked {
-        Ok(0) => Logger::sys_warn(
-            "shared_redis.device_revoke",
-            "Revoke stream entry was not acknowledged; preserving it",
-            entry_id,
-        ),
-        Ok(_) => {
-            let deleted: redis::RedisResult<i64> = redis::cmd("XDEL")
-                .arg(REVOKE_STREAM)
-                .arg(entry_id)
-                .query_async(connection)
-                .await;
-            if let Err(error) = deleted {
-                Logger::sys_error(
-                    "shared_redis.device_revoke",
-                    "Failed to delete acknowledged revoke stream entry",
-                    &error.to_string(),
-                );
-            }
-        }
-        Err(error) => Logger::sys_error(
-            "shared_redis.device_revoke",
-            "Failed to acknowledge revoke stream entry",
-            &error.to_string(),
-        ),
     }
 }

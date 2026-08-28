@@ -15,18 +15,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: DevicePlatformHandler quản lý và giám sát thiết bị toàn platform dành cho Platform Admin
-type DevicePlatformHandler struct {
-	deviceSvc domainservice.DevicePlatformService
+// PersonalDeviceHandler owns platform-authorized device audit in `/personal`.
+type PersonalDeviceHandler struct {
+	deviceSvc domainservice.PersonalDeviceService
 }
 
-// [COMMENT]: NewDevicePlatformHandler khởi tạo một thể hiện mới của DevicePlatformHandler
-func NewDevicePlatformHandler(deviceSvc domainservice.DevicePlatformService) *DevicePlatformHandler {
-	return &DevicePlatformHandler{deviceSvc: deviceSvc}
+func NewPersonalDeviceHandler(deviceSvc domainservice.PersonalDeviceService) *PersonalDeviceHandler {
+	return &PersonalDeviceHandler{deviceSvc: deviceSvc}
 }
 
 // [COMMENT]: ListUserDevicesPlatform lấy danh sách thiết bị của một user bất kỳ (phải có level cao hơn target user)
-func (h *DevicePlatformHandler) ListUserDevicesPlatform(c *gin.Context) {
+func (h *PersonalDeviceHandler) ListUserDevicesPlatform(c *gin.Context) {
 	const op = "iam.device.list_user_devices_platform"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -71,7 +70,7 @@ func (h *DevicePlatformHandler) ListUserDevicesPlatform(c *gin.Context) {
 		// [COMMENT]: Đóng gói thông tin thiết bị dưới dạng flat + nested object tương thích ngược với Cloud Console
 		presentationItems = append(presentationItems, gin.H{
 			"device": gin.H{
-				"id":          item.ID,
+				"id":          item.ID.String(),
 				"device_name": item.DeviceName,
 				"status":      status,
 			},

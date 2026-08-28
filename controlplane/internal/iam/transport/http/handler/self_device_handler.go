@@ -17,29 +17,22 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: DeviceSelfHandler quản lý thiết bị cá nhân của chính user đang hoạt động
-type DeviceSelfHandler struct {
-	deviceSvc           domainservice.DeviceSelfService
-	runtimeRevokeSvc    domainservice.DeviceRuntimeRevokeService
-	notifyRuntimeRevoke func()
+// SelfDeviceHandler owns device operations scoped to the verified `/me` user.
+type SelfDeviceHandler struct {
+	deviceSvc domainservice.SelfDeviceService
 }
 
-// NewDeviceSelfHandler wires the read workflow and the separate resource-first
-// runtime revoke workflow at the HTTP boundary.
-func NewDeviceSelfHandler(
-	deviceSvc domainservice.DeviceSelfService,
-	runtimeRevokeSvc domainservice.DeviceRuntimeRevokeService,
-	notifyRuntimeRevoke func(),
-) *DeviceSelfHandler {
-	return &DeviceSelfHandler{
-		deviceSvc:           deviceSvc,
-		runtimeRevokeSvc:    runtimeRevokeSvc,
-		notifyRuntimeRevoke: notifyRuntimeRevoke,
+// NewSelfDeviceHandler wires device HTTP handlers for the verified `/me` user.
+func NewSelfDeviceHandler(
+	deviceSvc domainservice.SelfDeviceService,
+) *SelfDeviceHandler {
+	return &SelfDeviceHandler{
+		deviceSvc: deviceSvc,
 	}
 }
 
 // [COMMENT]: ListMyDevices trả về danh sách thiết bị của chính user
-func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
+func (h *SelfDeviceHandler) ListMyDevices(c *gin.Context) {
 	const op = "iam.device.list_my_devices"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -84,12 +77,12 @@ func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 		// [COMMENT]: Đóng gói thông tin thiết bị dưới dạng flat + nested object tương thích ngược với Cloud Console
 		presentationItems = append(presentationItems, gin.H{
 			"device": gin.H{
-				"id":          item.ID,
+				"id":          item.ID.String(),
 				"device_name": item.DeviceName,
 				"status":      status,
 			},
 			"is_online":            item.IsOnline,
-			"is_current":           item.ID == currentDeviceID.String(),
+			"is_current":           item.ID == currentDeviceID,
 			"last_seen_at":         item.LastSeenAt,
 			"last_seen_ip":         item.LastIP,
 			"last_seen_user_agent": item.LastUA,
@@ -99,7 +92,7 @@ func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 }
 
 // [COMMENT]: RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể thuộc sở hữu chính user
-func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
+func (h *SelfDeviceHandler) RevokeMyDevice(c *gin.Context) {
 	const op = "iam.device.revoke_my_device"
 	ctx := pkgcontext.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -121,7 +114,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	err = h.runtimeRevokeSvc.RevokeDevice(ctx, userID, clientDeviceID, currentDeviceID)
+	err = h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "action not allowed - cannot revoke current device")
@@ -142,12 +135,11 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
-	h.notifyRuntimeRevoke()
 	c.Status(http.StatusNoContent)
 }
 
 // [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
-func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
+func (h *SelfDeviceHandler) LogoutOtherDevices(c *gin.Context) {
 	const op = "iam.device.logout_other_devices"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -162,7 +154,7 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	affected, err := h.runtimeRevokeSvc.RevokeOtherDevices(ctx, userID, currentDeviceID)
+	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
@@ -178,6 +170,5 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
-	h.notifyRuntimeRevoke()
 	apires.RespondSuccess(c, gin.H{"revoked_sessions": affected}, "ok")
 }

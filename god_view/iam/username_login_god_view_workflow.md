@@ -393,7 +393,7 @@ sequenceDiagram
 | Shared contract | [`proto/iam/authentication/v1/login.proto`](../../proto/iam/authentication/v1/login.proto) |
 | CP Redis handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | CP service | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
-| CP repository/device/refresh | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
+| CP repository/device/refresh | [`controlplane/internal/iam/repository/auth_repo.go`](../../controlplane/internal/iam/repository/auth_repo.go), [`controlplane/internal/iam/service/self_device_service.go`](../../controlplane/internal/iam/service/self_device_service.go) |
 
 ## Change rule
 

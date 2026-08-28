@@ -1,9 +1,9 @@
 # Self Device Revocation — God View
 
 This document is the end-to-end Source of Truth for revoking one registered
-device from the current user's account. The operation is intentionally a
-desired-state command: PostgreSQL marks the device revoked and removes its
-refresh credentials before ACR asynchronously removes runtime sessions.
+device from the current user's account. The operation is executed in Controlplane:
+PostgreSQL marks the device revoked and removes its refresh credentials in an atomic
+CTE, followed by immediate direct session eviction on Auth Redis.
 
 The current device is never allowed to revoke itself through this endpoint. A
 client-supplied target ID is treated as untrusted until the PostgreSQL ownership
@@ -21,10 +21,9 @@ and current-device CTE checks pass.
 | Permission middleware | No RBAC `Authorize`; the repository CTE enforces user ownership and self-revocation fence |
 | Session proof | Normal session verification only. This endpoint is not marked critical in the current route table. |
 | Path rewrite | None. ACR preserves `/api/v1/me/iam/device/delete/:device_id`. |
-| Durable owner | IAM PostgreSQL device row and refresh-token rows |
-| Runtime cleanup | Shared Redis Stream consumed by ACR replicas |
-| Commit boundary | PostgreSQL CTE commit precedes Shared Redis `XADD`; runtime cleanup is at-least-once. |
-| Canonical protobuf | `proto/iam/session/v1/session.proto` |
+| Durable owner | IAM PostgreSQL `devices` and `refresh_tokens` rows |
+| Runtime cleanup | Direct Auth Redis Lua eviction executed by Controlplane `SelfDeviceService` |
+| Commit boundary | Device revoke and refresh-token deletion commit in one PostgreSQL CTE. Runtime session cleanup follows immediately on Auth Redis. |
 
 ## REST input contract
 
@@ -62,16 +61,12 @@ and current-device CTE checks pass.
 
 | Result | Status | Body |
 |---|---:|---|
-| Durable revoke and stream enqueue succeeded | `204 No Content` | Empty body |
+| Durable revoke and runtime session eviction succeeded | `204 No Content` | Empty body |
 | Malformed target UUID | `400` | `{ "error": "bad request", "message": "invalid device id" }` |
 | Target is current device | `403` | `{ "error": "forbidden", "message": "cannot revoke current device" }` |
 | Target is not owned or session is invalid | `403` | `{ "error": "forbidden", "message": "forbidden" }` |
-| PostgreSQL or Shared Redis failure | `500` | `{ "error": "internal_error", "message": "internal server error" }` |
+| PostgreSQL or unexpected service failure | `500` | `{ "error": "internal_error", "message": "internal server error" }` |
 | ACR admission failure | Local `401`, `403`, `429`, or `503` | No request reaches CP |
-
-The service returns `500` when `XADD` fails after the PostgreSQL commit. That
-does not roll the durable revoke back; retry is safe because the repository and
-runtime command are idempotent.
 
 ## Phase 1 — Client → Envoy → ACR admission
 
@@ -137,111 +132,60 @@ sequenceDiagram
 | Inject | `x-session-proof-verified: false` |
 | Preserve | `:path` and HTTP method |
 
-## Phase 2 — Controlplane ownership transaction
+## Phase 2 — Controlplane ownership transaction & direct runtime session eviction
 
-The request enters `DeviceSelfHandler.RevokeMyDevice` through the `/me` Gin
-group. The handler, service, and repository have distinct failure boundaries.
+The request enters `SelfDeviceHandler.RevokeMyDevice` through the `/me` Gin
+group. The handler, service, and repository execute the durable change and runtime
+invalidation directly.
 
 1. `ContextInjector` parses the ACR headers. Missing user or current-device
    context stops the handler before any write.
 2. The handler starts operation `iam.device.revoke_my_device` with a five-second
    timeout and parses `device_id` as UUID.
 3. It obtains `userID` and `currentDeviceID` through `pkg/context` getters and
-   calls `DeviceSelfService.RevokeMyDevice`.
-4. `DeviceSelfRepository.RevokeMyDevice` executes one PostgreSQL CTE with
+   calls `SelfDeviceService.RevokeMyDevice`.
+4. `SelfDeviceRepository.RevokeSelfDevice` executes one PostgreSQL CTE with
    `FOR UPDATE` on the target row. Matching uses
-   `COALESCE(client_device_id, id::text) = target` and `user_id = owner`.
+   `COALESCE(client_device_id, id) = target` and `user_id = owner`.
 5. The CTE updates `revoked_at` only when the target differs from the current
    canonical device and is not already revoked. It deletes refresh-token rows
-   for the updated device in the same transaction.
-6. The CTE returns target-exists, current-device, already-revoked, and updated
-   count flags. Missing owner/target maps to invalid session. Current target
-   maps to action-not-allowed. Already-revoked is an idempotent success.
-7. After the transaction commits, the service encodes
-   `RevokeUserSessionsByDevicesRequest{user_id, [client_device_id]}` as protobuf
-   and appends it to Shared Redis stream `iam:device:revoke-requests`.
-8. The HTTP handler sends `204` only after `XADD` succeeds.
+   for the updated device.
+6. The CTE returns target-exists, current-device, and updated count flags.
+   Missing owner/target maps to invalid session (`403`). Current target maps to
+   action-not-allowed (`403`).
+7. Upon successful database mutation, `SelfDeviceService` executes an inline Lua script
+   directly on `authRedis` to evict active runtime sessions:
+   - Queries session keys from `iam:device_access_index:{clientDeviceID}`.
+   - Deletes each session key, removes it from `iam:user_access_index:{userID}`, and deletes associated session aliases.
+   - Deletes the device access index `iam:device_access_index:{clientDeviceID}`.
+8. The service records one `iam.device.revoke_my_device` workflow observation.
+9. The HTTP handler sends `204 No Content`.
 
 ```mermaid
 sequenceDiagram
     participant Envoy as Envoy
     participant Route as Gin /me route
     participant Inject as ContextInjector
-    participant Handler as DeviceSelfHandler
-    participant Service as DeviceSelfService
-    participant Repo as DeviceSelfRepository
+    participant Handler as SelfDeviceHandler
+    participant Service as SelfDeviceService
+    participant Repo as SelfDeviceRepository
     participant PG as IAM PostgreSQL
-    participant Stream as Shared Redis Stream
+    participant Auth as Auth-State Redis
 
     Envoy->>Route: POST revoke target UUID
     Route->>Inject: Parse x-user-id and x-client-device-id
     Inject->>Handler: Context values
     Handler->>Handler: Parse target device_id UUID
     Handler->>Service: RevokeMyDevice owner target current
-    Service->>Repo: RevokeMyDevice
+    Service->>Repo: RevokeSelfDevice
     Repo->>PG: CTE lock target by owner and canonical client ID
-    PG->>PG: Set revoked_at and delete refresh tokens atomically
-    PG-->>Repo: exists current already-revoked updated-count flags
-    Repo-->>Service: Idempotent durable result
-    Service->>Service: Encode revoke protobuf
-    Service->>Stream: XADD iam:device:revoke-requests payload
-    Stream-->>Service: Stream entry ID
+    PG->>PG: Set revoked_at, delete refresh tokens
+    PG-->>Repo: exists, current, affected count
+    Repo-->>Service: Durable mutation result
+    Service->>Auth: EVAL inline Lua (delete sessions, alias, indices)
+    Auth-->>Service: Evicted session count
     Service-->>Handler: Success
     Handler-->>Envoy: 204 No Content
-```
-
-## Phase 3 — ACR runtime session cleanup
-
-The Shared Redis command is consumed asynchronously by every ACR replica in
-consumer group `acr-device-runtime-v1`. The stream is the durable bridge from
-the PostgreSQL commit to Auth-State Redis cleanup.
-
-1. `SharedRedisRouter` creates the group if needed and uses a unique
-   `acr-device-runtime-{UUIDv7}` consumer per process. It reclaims abandoned
-   entries with `XAUTOCLAIM` (30-second idle threshold, persisted scan cursor)
-   before reading new entries with `>`.
-2. It processes at most 32 entries per read and blocks for up to five seconds
-   when no fresh entry exists.
-3. Consumer-group assignment owns fresh delivery; there is no extra dispatch
-   lock. Reconnect and stream-command failures back off with 250–500ms jitter.
-4. Missing payload or malformed protobuf is a poison message. ACR logs the
-   contract failure and ACKs plus deletes the entry so one bad producer cannot
-   stall the group.
-5. A valid request calls `revoke_sessions_by_devices`. For each target device,
-   ACR reads `iam:device_access_index:{client_device_id}` from Auth-State Redis.
-6. Each indexed session key has its Billing/session aliases revoked first. A
-   Redis pipeline then expires session keys for five seconds, removes them from
-   `iam:user_access_index:{user_id}`, and deletes the device index.
-7. Auth-State Redis failure leaves the stream entry pending. A different ACR
-   replica may retry it; no ACK is emitted for partial failure.
-8. Only after all target device IDs complete does ACR issue `XACK`. `XDEL`
-   follows only a positive ACK; a failed or zero ACK preserves the entry.
-
-```mermaid
-sequenceDiagram
-    participant Stream as Shared Redis Stream
-    participant Router as ACR SharedRedisRouter
-    participant Revoke as ACR revoke_sessions_by_devices
-    participant Auth as Auth-State Redis
-    participant Alias as ACR session alias revoker
-
-    Router->>Stream: XAUTOCLAIM idle >= 30s with per-process consumer
-    Router->>Stream: XREADGROUP new IDs > count 32 block 5s
-    Router->>Revoke: Decode RevokeUserSessionsByDevicesRequest
-    loop each client_device_id
-        Revoke->>Auth: SMEMBERS iam:device_access_index:{device}
-        Auth-->>Revoke: Full session keys
-        loop each access session
-            Revoke->>Alias: Revoke aliases for access key
-        end
-        Revoke->>Auth: EXPIRE sessions 5s and remove user index
-        Revoke->>Auth: DEL device access index
-    end
-    alt all Auth Redis operations succeed
-        Router->>Stream: XACK then XDEL
-    else Auth Redis failure
-        Router->>Stream: Leave entry pending for retry
-    end
 ```
 
 ## Key and contract inventory
@@ -251,13 +195,10 @@ sequenceDiagram
 | `iam.devices.client_device_id` | IAM PostgreSQL | Durable target identity |
 | `iam.devices.revoked_at` | IAM PostgreSQL | Durable revoke state |
 | `iam.refresh_tokens.device_id` | IAM PostgreSQL | Deleted in same CTE transaction |
-| `RevokeUserSessionsByDevicesRequest` | Protobuf | Runtime command payload |
-| `iam:device:revoke-requests` | Shared Redis Stream | Durable command bridge |
-| `acr-device-runtime-v1` | Shared Redis consumer group | ACR runtime worker ownership |
-| `acr-device-runtime-{UUIDv7}` | Shared Redis consumer identity | Per-process ownership; idle PEL entries can be reclaimed |
 | `iam:device_access_index:{device}` | Auth-State Redis Set | Session keys for one device |
 | `iam:user_access_index:{user}` | Auth-State Redis Set | User session cleanup |
-| `iam:user_session:{zone}:{tenant}:{user}:{access_key}` | Auth-State Redis | Runtime credential, five-second grace on revoke |
+| `iam:session_alias:{access_key}` | Auth-State Redis | Session alias key deleted on eviction |
+| `iam:user_session:{zone}:{tenant}:{user}:{access_key}` | Auth-State Redis | Runtime credential deleted immediately |
 
 ## Failure, retry, and security invariants
 
@@ -265,16 +206,10 @@ sequenceDiagram
   verified user owner in its target predicate.
 - A client cannot revoke the current device because the CTE compares canonical
   target and current IDs while the target row is locked.
-- PostgreSQL commit precedes runtime cleanup. A successful HTTP response means
-  the durable state and command enqueue completed, not that every ACR replica
-  has already removed its session.
-- `XADD` failure returns `500` even though PostgreSQL is already revoked. The
-  next client retry sees the already-revoked desired state and enqueues the
-  runtime command again.
-- Runtime cleanup is at-least-once. `EXPIRE`, `SREM`, and `DEL` are safe to
-  repeat; no exactly-once claim is made.
-- Poison messages are dropped only when their wire contract is invalid. A
-  transient Auth Redis failure remains pending for takeover.
+- PostgreSQL commit precedes runtime session invalidation on Auth Redis.
+- Service-generated ownership/current-device outcomes use IAM taxonomy;
+  repository errors retain their original identity until the HTTP handler.
+- Runtime session invalidation on Auth Redis is idempotent.
 - Logs must omit cookies, access secrets, JWTs, and full session keys.
 
 ## Code map
@@ -283,10 +218,9 @@ sequenceDiagram
 |---|---|
 | Route | `controlplane/internal/iam/route.go` |
 | Context getters | `controlplane/pkg/context/context_getter.go` |
-| HTTP handler | `controlplane/internal/iam/transport/http/handler/device_self_handler.go` |
-| Service | `controlplane/internal/iam/service/device_self_service.go` |
-| Durable CTE | `controlplane/internal/iam/repository/device_self_repo.go` |
-| Stream consumer | `acr/src/transport/redis.rs` |
-| Auth-State revoke | `acr/src/user/revoke.rs` |
-| Session/index primitives | `acr/src/user/session.rs` |
+| HTTP handler | `controlplane/internal/iam/transport/http/handler/self_device_handler.go` |
+| Service | `controlplane/internal/iam/service/self_device_service.go` |
+| Durable CTE | `controlplane/internal/iam/repository/self_device_repo.go` |
+| Redis session/index state | `acr/src/user/session.rs` |
 | Console command | `cloud-console/src/features/iam/devices-api.ts` |
+

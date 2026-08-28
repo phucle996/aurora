@@ -69,8 +69,12 @@ whose `revoked_at IS NULL`, so duplicate delivery has no extra durable effect.
    entries with `XAUTOCLAIM` after 30 seconds.
 3. Transport rejects malformed protobuf, oversized payloads, invalid UUIDs and
    invalid/oversized device batches as poison events.
-4. A dependency or PostgreSQL failure leaves the entry pending for retry.
-5. A successful CTE is acknowledged first; failed `XDEL` is observable
+4. `SelfDeviceService.ApplyDeviceSessionCapacityEviction` records one workflow
+   observation under `iam.device.session_capacity_eviction.apply` and returns
+   the repository error unchanged to the stream handler.
+5. A dependency or PostgreSQL failure is logged by the handler and leaves the
+   entry pending for retry.
+6. A successful CTE is acknowledged first; failed `XDEL` is observable
    retention debt but cannot re-run the durable state transition.
 
 ## Code map
@@ -79,6 +83,6 @@ whose `revoked_at IS NULL`, so duplicate delivery has no extra durable effect.
 |---|---|
 | ACR producer and source cleanup | `acr/src/user/session.rs` |
 | Shared Stream adapter | `acr/src/infra/shared_redis.rs` |
-| CP stream transport | `controlplane/internal/iam/transport/pubsub/handler/device_session_capacity_eviction.go` |
-| CP service | `controlplane/internal/iam/service/device_session_capacity_eviction_service.go` |
-| CP CTE repository | `controlplane/internal/iam/repository/device_session_capacity_eviction_repo.go` |
+| CP stream transport | `controlplane/internal/iam/transport/pubsub/handler/self_device_handler.go` |
+| CP service | `controlplane/internal/iam/service/self_device_service.go` |
+| CP CTE repository | `controlplane/internal/iam/repository/self_device_repo.go` |

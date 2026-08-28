@@ -40,6 +40,12 @@ timestamp and updates a row only when the incoming timestamp is not older than
 the durable `last_seen_at`. Reordered Pub/Sub messages therefore cannot regress
 presence history.
 
+`SelfDeviceService.ApplyDevicePresenceProjection` records one workflow
+observation under `iam.device.presence.apply`. It returns the repository error
+unchanged to `DevicePresenceProjectionRedisHandler`; the handler logs the real
+cause and keeps the existing best-effort, at-most-once settlement rule. A
+database failure is therefore observable but the Pub/Sub batch is not retried.
+
 ```mermaid
 sequenceDiagram
     participant ACR as ACR flush worker
@@ -64,6 +70,6 @@ advisory projection.
 | Owner | Source |
 |---|---|
 | ACR batch producer | `acr/src/user/device.rs` |
-| CP Pub/Sub transport | `controlplane/internal/iam/transport/pubsub/handler/device_presence_projection.go` |
-| CP service | `controlplane/internal/iam/service/device_presence_projection_service.go` |
-| CP CTE repository | `controlplane/internal/iam/repository/device_presence_projection_repo.go` |
+| CP Pub/Sub transport | `controlplane/internal/iam/transport/pubsub/handler/self_device_handler.go` |
+| CP service | `controlplane/internal/iam/service/self_device_service.go` |
+| CP CTE repository | `controlplane/internal/iam/repository/self_device_repo.go` |
