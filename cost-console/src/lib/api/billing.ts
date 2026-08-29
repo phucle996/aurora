@@ -120,6 +120,24 @@ export interface PricingScheduleDetail {
   latest_version: PricingScheduleVersion | null;
 }
 
+export interface PricingScheduleRateStateVersion extends PricingScheduleVersion {
+  change_reason: string;
+}
+
+export interface PricingScheduleRateState {
+  id: string;
+  code: string;
+  display_name: string;
+  charge_kind_code: string;
+  pricing_model: PricingModel;
+  currency: string;
+  metadata_version: number;
+  observed_at: string;
+  latest_version_number: number | null;
+  effective_version: PricingScheduleRateStateVersion | null;
+  next_scheduled_version: PricingScheduleRateStateVersion | null;
+}
+
 export interface PricingSchedulesResponse {
   pricing_schedules: PricingSchedule[];
   pagination: { page: number; limit: number; total: number };
@@ -357,6 +375,10 @@ export const billingApi = {
 
   async getPricingScheduleDetail(code: string): Promise<PricingScheduleDetail> {
     return request<PricingScheduleDetail>(`/billing/pricing-schedules/${encodeURIComponent(code)}`);
+  },
+
+  async getPricingScheduleRateState(code: string): Promise<PricingScheduleRateState> {
+    return request<PricingScheduleRateState>(`/billing/pricing-schedules/${encodeURIComponent(code)}/rate-state`);
   },
 
   async updatePricingScheduleMetadata(code: string, payload: { metadata_version: number; display_name: string }): Promise<PricingSchedule> {

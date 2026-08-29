@@ -49,6 +49,11 @@ func RegisterRoutes(router *gin.Engine, m *Module, health *handler.HealthHandler
 		m.PricingScheduleHandler.GetPricingScheduleDetail,
 	)
 	router.GET(
+		"/api/v1/billing/pricing-schedules/:code/rate-state",
+		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
+		m.PricingScheduleRateStateHandler.GetPricingScheduleRateState,
+	)
+	router.GET(
 		"/api/v1/billing/storage/zone-price-adjustments",
 		m.PersonalAuthorizationMiddleware.Authorize("billing:pricing_schedule:read", false),
 		m.StoragePricingHandler.ListZonePriceAdjustments,

@@ -37,9 +37,10 @@ type Module struct {
 	PersonalPaymentHandler *handler.PersonalPaymentHandler
 	TenantPaymentHandler   *handler.TenantPaymentHandler
 
-	StoragePricingService  billingSvcInterface.StoragePricingService
-	StoragePricingHandler  *handler.StoragePricingHandler
-	PricingScheduleHandler *handler.PricingScheduleHandler
+	StoragePricingService           billingSvcInterface.StoragePricingService
+	StoragePricingHandler           *handler.StoragePricingHandler
+	PricingScheduleHandler          *handler.PricingScheduleHandler
+	PricingScheduleRateStateHandler *handler.PricingScheduleRateStateHandler
 
 	HypervisorPricingService      billingSvcInterface.HypervisorPricingService
 	HypervisorPricingHandler      *handler.HypervisorPricingHandler
@@ -52,7 +53,8 @@ type Module struct {
 	ResourceOwnershipService  billingSvcInterface.ResourceOwnershipService
 	ResourceOwnershipConsumer *redisHandler.ResourceOwnershipConsumer
 
-	PricingScheduleService billingSvcInterface.PricingScheduleService
+	PricingScheduleService          billingSvcInterface.PricingScheduleService
+	PricingScheduleRateStateService billingSvcInterface.PricingScheduleRateStateService
 
 	WalletAdmissionOutboxRepo  billingRepoInterface.WalletAdmissionOutboxRepository
 	WalletAdmissionOutboxRelay *service.WalletAdmissionOutboxRelay
@@ -202,6 +204,10 @@ func NewModule(
 	if pricingScheduleRepo == nil {
 		return nil, fmt.Errorf("failed to initialize PricingScheduleRepository: instance is nil")
 	}
+	pricingScheduleRateStateRepo := repository.NewPricingScheduleRateStateRepository(dbPool)
+	if pricingScheduleRateStateRepo == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleRateStateRepository: instance is nil")
+	}
 
 	storagePricingRepo := repository.NewStoragePricingRepository(dbPool)
 	if storagePricingRepo == nil {
@@ -211,6 +217,10 @@ func NewModule(
 	pricingScheduleService := service.NewPricingScheduleService(pricingScheduleRepo)
 	if pricingScheduleService == nil {
 		return nil, fmt.Errorf("failed to initialize PricingScheduleService: instance is nil")
+	}
+	pricingScheduleRateStateService := service.NewPricingScheduleRateStateService(pricingScheduleRateStateRepo)
+	if pricingScheduleRateStateService == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleRateStateService: instance is nil")
 	}
 	storagePricingService := service.NewStoragePricingService(storagePricingRepo, redisClient)
 	if storagePricingService == nil {
@@ -225,6 +235,10 @@ func NewModule(
 	pricingScheduleHandler := handler.NewPricingScheduleHandler(pricingScheduleService)
 	if pricingScheduleHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PricingScheduleHandler: instance is nil")
+	}
+	pricingScheduleRateStateHandler := handler.NewPricingScheduleRateStateHandler(pricingScheduleRateStateService)
+	if pricingScheduleRateStateHandler == nil {
+		return nil, fmt.Errorf("failed to initialize PricingScheduleRateStateHandler: instance is nil")
 	}
 
 	// 5. Hypervisor & Mail Pricing DI
@@ -313,6 +327,7 @@ func NewModule(
 		StoragePricingService:           storagePricingService,
 		StoragePricingHandler:           storagePricingHandler,
 		PricingScheduleHandler:          pricingScheduleHandler,
+		PricingScheduleRateStateHandler: pricingScheduleRateStateHandler,
 		HypervisorPricingService:        hypervisorPricingService,
 		HypervisorPricingHandler:        hypervisorPricingHandler,
 		HypervisorResourcePlanService:   hypervisorResourcePlanService,
@@ -323,6 +338,7 @@ func NewModule(
 		ResourceOwnershipService:        ownershipService,
 		ResourceOwnershipConsumer:       ownershipConsumer,
 		PricingScheduleService:          pricingScheduleService,
+		PricingScheduleRateStateService: pricingScheduleRateStateService,
 		WalletAdmissionOutboxRepo:       walletAdmissionOutboxRepo,
 		WalletAdmissionOutboxRelay:      walletAdmissionOutboxRelay,
 		PersonalAuthorizationMiddleware: personalAuthorizationMiddleware,

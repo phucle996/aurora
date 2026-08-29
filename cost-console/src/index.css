@@ -1,6 +1,8 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
 
 @theme {
+	--font-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -53,7 +55,27 @@
   --border: 220 13% 91%;
   --input: 220 13% 91%;
   --ring: 224 71.4% 4.1%;
-  --radius: 0.5rem;
+  --radius: 4px;
+}
+
+@layer base {
+  html {
+    font-family: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: inherit;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
 }
 
 .dark {
@@ -76,4 +98,67 @@
   --border: 215 27.9% 16.9%;
   --input: 215 27.9% 16.9%;
   --ring: 263.4 70% 50.4%;
+}
+
+/* Legacy feature screens use explicit Slate utilities. Keep their visual
+ * hierarchy readable in the light shell while those workflows migrate to
+ * semantic surface tokens. */
+html:not(.dark) .cost-app [class*="bg-slate-950"],
+html:not(.dark) .cost-app [class*="bg-slate-900"] { background-color: #ffffff !important; }
+html:not(.dark) .cost-app [class*="border-slate-800"],
+html:not(.dark) .cost-app [class*="border-slate-700"] { border-color: #e5e7eb !important; }
+html:not(.dark) .cost-app [class*="text-slate-100"],
+html:not(.dark) .cost-app [class*="text-slate-200"] { color: #111827 !important; }
+html:not(.dark) .cost-app [class*="text-slate-300"],
+html:not(.dark) .cost-app [class*="text-slate-400"] { color: #6b7280 !important; }
+html:not(.dark) .cost-app [class*="text-slate-500"] { color: #6b7280 !important; }
+
+/* Pricing catalog owns its states explicitly so light mode can never inherit
+ * a dark hover/selected utility from the legacy screen. */
+.cost-schedule-item {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+  color: #111827;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+.cost-schedule-item:hover,
+.cost-schedule-item:focus-visible { background: #f8fafc; }
+.cost-schedule-item-selected {
+  background: #eff6ff;
+  border-left-color: #2563eb;
+}
+.cost-schedule-title { color: #1f2937; }
+.cost-schedule-code { color: #2563eb; }
+.cost-schedule-meta { color: #64748b; }
+
+html.dark .cost-schedule-item {
+  background: #0f172a;
+  border-color: #1e293b;
+  border-left-color: transparent;
+  color: #f1f5f9;
+}
+html.dark .cost-schedule-item:hover,
+html.dark .cost-schedule-item:focus-visible { background: #1e293b; }
+html.dark .cost-schedule-item-selected {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+  border-left-color: #3b82f6;
+}
+html.dark .cost-schedule-title { color: #f1f5f9; }
+html.dark .cost-schedule-code { color: #93c5fd; }
+html.dark .cost-schedule-meta { color: #94a3b8; }
+
+@keyframes cost-tab-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.cost-tab-panel {
+  animation: cost-tab-enter 160ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cost-tab-panel { animation: none; }
 }

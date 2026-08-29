@@ -1,43 +1,25 @@
-import { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { BrowserRouter, Navigate, Routes, Route } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Header } from './components/Header';
 import { RouteGuard } from './components/RouteGuard';
+import { Sidebar } from './components/Sidebar';
 import PricingSchedulesPage from './page/pricing-schedules/page';
 import DashboardPage from './page/dashboard/page';
 import { ReferralCampaigns } from './page/referrals/ReferralCampaigns';
 import { queryClient } from './lib/queryClient';
 import { useAuthStore } from './lib/store/useAuthStore';
-import { navigationItems } from './navigation';
-import { Coins } from 'lucide-react';
 import { Toaster } from 'sonner';
 import './App.css';
 
-// Component hiển thị fallback cho các menu tính năng chưa phát triển
-function FeatureInDevelopment() {
-  const location = useLocation(); // Lấy thông tin route hiện tại
-  const currentItem = navigationItems.find(n => location.pathname.startsWith(n.path) && n.path !== '/');
-
-  return (
-    <div className="p-12 text-center border border-slate-200 dark:border-slate-800 border-dashed rounded-xl bg-white dark:bg-slate-900 text-slate-400 text-xs">
-      <Coins className="h-10 w-10 mx-auto text-slate-300 dark:text-slate-700 mb-3" />
-      <h3 className="font-bold text-sm text-slate-700 dark:text-slate-300">Tính năng đang phát triển</h3>
-      <p className="text-[11px] text-slate-400 max-w-xs mx-auto mt-1">
-        Giao diện quản lý "{currentItem?.name || 'Tính năng'}" hiện đang được phát triển.
-      </p>
-    </div>
-  );
-}
-
-// Shell khung chính của ứng dụng Cost Console dành cho User đã đăng nhập
 function CostDashboardShell() {
-  // State quản lý loại tiền tệ chính (VND / USD)
-  const [currency, setCurrency] = useState('VND');
-  const { checkPermission, renderContext, isLoading, error } = useAuthStore();
-  const hasAdminDashboard = [
-    ['billing:pricing_schedule', 'publish'],
-    ['billing:credit', 'adjust'],
-  ].some(([key, action]) => checkPermission(key, action));
+  const { renderContext, isLoading, error } = useAuthStore();
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('cost.theme') !== 'light');
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('cost.theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
 
   if (!renderContext) {
     return (
@@ -55,71 +37,42 @@ function CostDashboardShell() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-200 overflow-hidden">
-      {/* Thanh Navigation Header phía trên */}
-      <Header
-        currency={currency}
-        setCurrency={setCurrency}
-      />
+    <div className="cost-app flex h-screen flex-col overflow-hidden bg-slate-50 font-sans text-slate-900 dark:bg-slate-950 dark:text-slate-200">
+      <Header ownerKind={renderContext.kind} darkMode={darkMode} onToggleTheme={() => setDarkMode((value) => !value)} />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar />
+        <main className="min-w-0 flex-1 overflow-y-auto bg-slate-50 dark:bg-slate-950">
+          <section className="mx-auto w-full max-w-[1600px] p-4 pb-24 sm:p-6 sm:pb-24 lg:p-8">
+            <Routes>
+              {/* Controlled PAYG pricing schedule catalog. Legacy plans/tiers are removed. */}
+              <Route
+                path="/pricing-schedules"
+                element={
+                  <RouteGuard
+                    requiredKey="billing:pricing_schedule"
+                    requiredAction="read"
+                  >
+                    <PricingSchedulesPage />
+                  </RouteGuard>
+                }
+              />
 
-      {/* Khu vực nội dung hiển thị chính (Main Content Area) */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <section className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          <Routes>
-            {/* Controlled PAYG pricing schedule catalog. Legacy plans/tiers are removed. */}
-            <Route
-              path="/pricing-schedules"
-              element={
-                <RouteGuard
-                  requiredKey="billing:pricing_schedule"
-                  requiredAction="read"
-                >
-                  <PricingSchedulesPage />
-                </RouteGuard>
-              }
-            />
+              <Route path="/" element={<DashboardPage personal={renderContext.kind === "personal"} />} />
+              <Route path="/dashboard" element={<DashboardPage personal={renderContext.kind === "personal"} />} />
+              <Route
+                path="/referrals"
+                element={
+                  <RouteGuard requiredKey="billing:credit" requiredAction="adjust">
+                    <ReferralCampaigns />
+                  </RouteGuard>
+                }
+              />
 
-            {/* Route trang chủ / và /dashboard */}
-            <Route path="/" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.kind === "personal"} />} />
-            <Route path="/dashboard" element={<DashboardPage currency={currency} admin={hasAdminDashboard} personal={renderContext?.kind === "personal"} />} />
-            <Route
-              path="/invoices"
-              element={
-                <RouteGuard requiredKey="billing:ledger" requiredAction="read">
-                  <FeatureInDevelopment />
-                </RouteGuard>
-              }
-            />
-            <Route
-              path="/gateways"
-              element={
-                <RouteGuard requiredKey="billing:wallet" requiredAction="read">
-                  <FeatureInDevelopment />
-                </RouteGuard>
-              }
-            />
-            <Route
-              path="/history"
-              element={
-                <RouteGuard requiredKey="billing:ledger" requiredAction="read">
-                  <FeatureInDevelopment />
-                </RouteGuard>
-              }
-            />
-            <Route
-              path="/referrals"
-              element={
-                <RouteGuard requiredKey="billing:credit" requiredAction="adjust">
-                  <ReferralCampaigns />
-                </RouteGuard>
-              }
-            />
-
-            {/* Catch-all route cho các menu khác chưa dựng UI chi tiết */}
-            <Route path="*" element={<FeatureInDevelopment />} />
-          </Routes>
-        </section>
-      </main>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
@@ -186,7 +139,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AppContent />
-        <Toaster position="top-right" richColors />
+        <Toaster position="bottom-right" richColors closeButton toastOptions={{ className: 'cost-toast' }} />
       </BrowserRouter>
     </QueryClientProvider>
   );

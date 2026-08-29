@@ -108,26 +108,26 @@ export function WalletOnboarding({ personal }: { personal: boolean }) {
   const parsedAmount = usdToMicroUnits(amountUSD);
   const amountValid = parsedAmount !== null && BigInt(parsedAmount) >= requiredMinimum;
   const hasLiveReferral = state.referral?.status === "RESERVED" || state.referral?.status === "REDEEMED";
+  const ownerLabel = personal ? "Personal account" : "Tenant account";
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-blue-500">
-            {personal ? "Personal billing" : "Tenant billing"}
+          <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-blue-400">
+            Account overview · {ownerLabel}
           </p>
-          <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">
-            {walletPending ? "Kích hoạt wallet" : personal ? "Wallet của bạn" : "Wallet của tenant"}
+          <h2 className="mt-1 text-xl font-bold tracking-tight text-slate-100">
+            {walletPending ? "Activate your billing wallet" : "Billing balance"}
           </h2>
-          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">
-            Tiền thật và promotional credit được ghi riêng trong immutable ledger. Browser chỉ tạo
-            payment intent; settlement đã ký từ gateway mới có thể kích hoạt wallet.
+          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-400">
+            Cash and promotional credit are shown separately. A payment only changes this balance after gateway settlement commits.
           </p>
         </div>
-        <div className={`inline-flex w-fit items-center gap-2 text-xs font-semibold ${
+        <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${
           walletActive
-            ? "text-emerald-600 dark:text-emerald-400"
-            : "text-amber-600 dark:text-amber-400"
+            ? "border-emerald-900/60 bg-emerald-950/30 text-emerald-300"
+            : "border-amber-900/60 bg-amber-950/30 text-amber-300"
         }`}>
           <span className={`h-2 w-2 rounded-full ${walletActive ? "bg-emerald-500" : "bg-amber-500"}`} />
           {walletActive ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
@@ -135,37 +135,38 @@ export function WalletOnboarding({ personal }: { personal: boolean }) {
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {personal && <div className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex items-center justify-between text-slate-500">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Cash balance</span>
-            <WalletCards size={17} className="text-blue-500" />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(13rem,0.7fr)_minmax(13rem,0.7fr)]">
+        <section className="relative overflow-hidden rounded-xl border border-blue-900/60 bg-[linear-gradient(135deg,rgba(30,64,175,0.36),rgba(15,23,42,0.94)_58%)] p-6 shadow-[0_20px_45px_-30px_rgba(59,130,246,0.7)]">
+          <div className="absolute -top-16 -right-12 h-44 w-44 rounded-full bg-blue-500/15 blur-2xl" />
+          <div className="relative flex items-start justify-between gap-4 text-slate-400">
+            <span className="text-[10px] font-bold uppercase tracking-[0.16em]">Cash balance</span>
+            <WalletCards size={18} className="text-blue-300" />
           </div>
-          <p className="mt-4 text-xl font-bold text-slate-900 dark:text-slate-100">
+          <p className="relative mt-8 text-3xl font-bold tracking-tight tabular-nums text-white sm:text-4xl">
             {formatUSDMicroUnits(state.wallet.cash_balance_micro_units)}
           </p>
-          <p className="mt-1 text-[10px] text-slate-600">Refundable payment balance</p>
-        </div>}
-        <div className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <p className="relative mt-2 text-[11px] text-slate-400">Settled funds in your {personal ? "personal" : "tenant"} wallet</p>
+        </section>
+        <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-[10px] font-bold uppercase tracking-wider">Promotional credit</span>
-            <Gift size={17} className="text-violet-500" />
+            <Gift size={17} className="text-violet-300" />
           </div>
-          <p className="mt-4 text-xl font-bold text-slate-900 dark:text-slate-100">
+          <p className="mt-6 text-xl font-bold tabular-nums text-slate-100">
             {formatUSDMicroUnits(state.wallet.promotional_balance_micro_units)}
           </p>
-          <p className="mt-1 text-[10px] text-slate-600">Non-withdrawable campaign credit</p>
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-5 sm:col-span-2 dark:border-slate-800 dark:bg-slate-900 xl:col-span-1">
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-500">Campaign credit; tracked independently from cash.</p>
+        </section>
+        <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="flex items-center justify-between text-slate-500">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Ledger safety</span>
-            <ShieldCheck size={17} className="text-emerald-500" />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Wallet safety</span>
+            <ShieldCheck size={17} className="text-emerald-300" />
           </div>
-          <p className="mt-4 text-sm font-semibold text-slate-900 dark:text-slate-100">Exact USD micro-units</p>
-          <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
-            Wallet row lock serializes top-up{personal ? ", referral grant" : ""} and usage debit.
+          <p className="mt-6 text-sm font-semibold text-slate-100">Exact USD micro-units</p>
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+            Every debit and settlement is serialized by the wallet durable boundary.
           </p>
-        </div>
+        </section>
       </div>
 
       {!walletClosed && (

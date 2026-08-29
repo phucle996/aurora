@@ -2,9 +2,6 @@ import type { ComponentType } from "react";
 import {
   LayoutDashboard,
   Coins,
-  Receipt,
-  CreditCard,
-  History,
   TicketPercent,
 } from "lucide-react";
 
@@ -20,34 +17,13 @@ export interface NavigationItem {
 // This is presentation metadata only. IAM Render Context decides which entries
 // survive; Cost Manager Authorize remains the execution boundary.
 export const navigationItems: NavigationItem[] = [
-  { id: "dashboard", name: "Dashboard", path: "/", icon: LayoutDashboard },
+  { id: "dashboard", name: "Overview", path: "/", icon: LayoutDashboard },
   {
     id: "pricing-schedules",
     name: "Pricing",
     path: "/pricing-schedules",
     icon: Coins,
     permission: { key: "billing:pricing_schedule", action: "read" },
-  },
-  {
-    id: "invoices",
-    name: "Hóa Đơn Kế Toán",
-    path: "/invoices",
-    icon: Receipt,
-    permission: { key: "billing:ledger", action: "read" },
-  },
-  {
-    id: "gateways",
-    name: "Cổng Nạp Tiền",
-    path: "/gateways",
-    icon: CreditCard,
-    permission: { key: "billing:wallet", action: "read" },
-  },
-  {
-    id: "history",
-    name: "Lịch Sử Giao Dịch",
-    path: "/history",
-    icon: History,
-    permission: { key: "billing:ledger", action: "read" },
   },
   {
     id: "referrals",
