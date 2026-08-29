@@ -1,8 +1,9 @@
 use super::{
     apply_session_proof_header_boundary, apply_workspace_header_boundary, authority_matches_origin,
-    is_acr_local_owner_control_path, is_billing_alias_path, is_internal_owner_billing_path,
-    is_internal_owner_path, is_internal_render_context_path, is_personal_only_neutral_path,
-    rewrite_neutral_owner_path, rewrite_owner_billing_path, rewrite_render_context_path,
+    billing_target_zone_code, is_acr_local_owner_control_path, is_billing_alias_path,
+    is_billing_zone_adjustment_path, is_internal_owner_billing_path, is_internal_owner_path,
+    is_internal_render_context_path, is_personal_only_neutral_path, rewrite_neutral_owner_path,
+    rewrite_owner_billing_path, rewrite_render_context_path,
 };
 
 #[test]
@@ -114,6 +115,36 @@ fn billing_surface_selects_session_by_console_authority() {
         "/api/v1/billing/critical/tiers/STORAGE/CODE",
         true
     ));
+}
+
+#[test]
+fn billing_zone_adjustment_target_is_exactly_scoped_by_method_path_and_code() {
+    assert!(is_billing_zone_adjustment_path(
+        "GET",
+        "/api/v1/billing/storage/zone-price-adjustments"
+    ));
+    assert!(is_billing_zone_adjustment_path(
+        "POST",
+        "/api/v1/billing/critical/hypervisor/zone-price-adjustments/versions"
+    ));
+    assert!(!is_billing_zone_adjustment_path(
+        "GET",
+        "/api/v1/billing/pricing-schedules"
+    ));
+    assert_eq!(
+        billing_target_zone_code(
+            "/api/v1/billing/storage/zone-price-adjustments?limit=100&zone_code=HCM-1"
+        ),
+        Ok("hcm-1".to_string())
+    );
+    assert!(
+        billing_target_zone_code("/api/v1/billing/storage/zone-price-adjustments?limit=100")
+            .is_err()
+    );
+    assert!(billing_target_zone_code(
+        "/api/v1/billing/storage/zone-price-adjustments?zone_code=hcm-1&zone_code=hn-1"
+    )
+    .is_err());
 }
 
 #[test]

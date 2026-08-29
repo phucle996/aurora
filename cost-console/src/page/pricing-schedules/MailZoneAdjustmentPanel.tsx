@@ -10,9 +10,10 @@ import { cn } from '../../lib/utils';
 
 type MailZoneAdjustmentPanelProps = {
   canPublish: boolean;
+  zoneCode: string;
 };
 
-export function MailZoneAdjustmentPanel({ canPublish }: MailZoneAdjustmentPanelProps) {
+export function MailZoneAdjustmentPanel({ canPublish, zoneCode }: MailZoneAdjustmentPanelProps) {
   const [result, setResult] = useState<MailZonePriceAdjustmentsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
@@ -26,7 +27,7 @@ export function MailZoneAdjustmentPanel({ canPublish }: MailZoneAdjustmentPanelP
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      setResult(await billingApi.listMailZonePriceAdjustments(100, signal));
+      setResult(await billingApi.listMailZonePriceAdjustments(zoneCode, 100, signal));
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         toast.error(error instanceof Error ? error.message : 'Unable to load Mail Zone price adjustments');
@@ -34,7 +35,7 @@ export function MailZoneAdjustmentPanel({ canPublish }: MailZoneAdjustmentPanelP
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [zoneCode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -90,7 +91,7 @@ export function MailZoneAdjustmentPanel({ canPublish }: MailZoneAdjustmentPanelP
 
     setPublishing(true);
     try {
-      const published = await billingApi.publishMailZonePriceAdjustment({
+      const published = await billingApi.publishMailZonePriceAdjustment(zoneCode, {
         expected_latest_version: latest?.version_number ?? 0,
         effective_from: `${effectiveFrom}:00.000Z`,
         change_reason: changeReason.trim(),
@@ -117,7 +118,7 @@ export function MailZoneAdjustmentPanel({ canPublish }: MailZoneAdjustmentPanelP
           <p className="mt-1 text-[10px] text-slate-400">
             Multiplies the immutable GLOBAL Mail recipient rate for the trusted operator Zone.
           </p>
-          {result && <p className="mt-1 font-mono text-[10px] text-violet-300">Zone {result.zone_id}</p>}
+          {result && <p className="mt-1 font-mono text-[10px] text-violet-300">Selected Zone {zoneCode} · {result.zone_id}</p>}
         </div>
         <button
           type="button"

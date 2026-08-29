@@ -20,15 +20,18 @@ async function sha256Hex(value: string): Promise<string> {
 // [COMMENT]: Base duy nhất cho Billing mutation critical: mỗi call lấy nonce và ký đúng wire body một lần.
 export async function criticalFetcher<T>(path: string, options: CriticalOptions): Promise<T> {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  if (!normalizedPath.startsWith('/billing/critical/') || normalizedPath.includes('?')) {
-    throw new Error('criticalFetcher only accepts query-free /billing/critical/* paths');
+  const pathWithoutQuery = normalizedPath.split('?', 1)[0];
+  if (!pathWithoutQuery.startsWith('/billing/critical/')) {
+    throw new Error('criticalFetcher only accepts /billing/critical/* paths');
   }
   const challenge = await request<CriticalChallenge>('/billing/auth/session-proof/challenge', {
     method: 'POST',
   });
   const serializedBody = options.body === undefined ? '' : JSON.stringify(options.body);
   const timestamp = Math.floor(Date.now() / 1000);
-	const fullPath = apiRequestPath(normalizedPath);
+  // The signed path intentionally includes a bounded query such as zone_code.
+  // ACR resolves that selector before forwarding the trusted target Zone.
+  const fullPath = apiRequestPath(normalizedPath);
   const message = [
     'aurora.session-proof.v1',
     challenge.challenge_id,

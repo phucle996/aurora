@@ -125,6 +125,11 @@ export interface PricingSchedulesResponse {
   pagination: { page: number; limit: number; total: number };
 }
 
+export interface ZoneCatalogEntry {
+  code: string;
+  name: string;
+}
+
 export interface MailZonePriceAdjustment {
   id: string;
   zone_id: string;
@@ -397,64 +402,68 @@ export const billingApi = {
 		});
 	},
 
-  async listMailZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<MailZonePriceAdjustmentsResponse> {
-    const query = new URLSearchParams({ limit: String(limit) });
+  async listZoneCatalog(): Promise<ZoneCatalogEntry[]> {
+    return request<ZoneCatalogEntry[]>('/zones/catalog');
+  },
+
+  async listMailZonePriceAdjustments(zoneCode: string, limit = 100, signal?: AbortSignal): Promise<MailZonePriceAdjustmentsResponse> {
+    const query = new URLSearchParams({ limit: String(limit), zone_code: zoneCode });
     return request<MailZonePriceAdjustmentsResponse>(`/billing/mail/zone-price-adjustments?${query.toString()}`, {
       method: 'GET',
       signal,
     });
   },
 
-	async listStorageZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<StorageZonePriceAdjustmentsResponse> {
-    const query = new URLSearchParams({ limit: String(limit) });
+	async listStorageZonePriceAdjustments(zoneCode: string, limit = 100, signal?: AbortSignal): Promise<StorageZonePriceAdjustmentsResponse> {
+    const query = new URLSearchParams({ limit: String(limit), zone_code: zoneCode });
     return request<StorageZonePriceAdjustmentsResponse>(`/billing/storage/zone-price-adjustments?${query.toString()}`, {
       method: 'GET',
       signal,
     });
 	},
 
-	async listHypervisorZonePriceAdjustments(limit = 100, signal?: AbortSignal): Promise<HypervisorZonePriceAdjustmentsResponse> {
-		const query = new URLSearchParams({ limit: String(limit) });
+	async listHypervisorZonePriceAdjustments(zoneCode: string, limit = 100, signal?: AbortSignal): Promise<HypervisorZonePriceAdjustmentsResponse> {
+		const query = new URLSearchParams({ limit: String(limit), zone_code: zoneCode });
 		return request<HypervisorZonePriceAdjustmentsResponse>(`/billing/hypervisor/zone-price-adjustments?${query.toString()}`, {
 			method: 'GET',
 			signal,
 		});
 	},
 
-  async publishStorageZonePriceAdjustment(payload: {
+  async publishStorageZonePriceAdjustment(zoneCode: string, payload: {
     expected_latest_version: number;
     effective_from: string;
     change_reason: string;
     multiplier_numerator: string;
     multiplier_denominator: string;
   }): Promise<PublishedStorageZonePriceAdjustment> {
-    return criticalFetcher<PublishedStorageZonePriceAdjustment>('/billing/critical/storage/zone-price-adjustments/versions', {
+    return criticalFetcher<PublishedStorageZonePriceAdjustment>(`/billing/critical/storage/zone-price-adjustments/versions?zone_code=${encodeURIComponent(zoneCode)}`, {
       method: 'POST',
       body: payload,
     });
   },
 
-	async publishMailZonePriceAdjustment(payload: {
+	async publishMailZonePriceAdjustment(zoneCode: string, payload: {
     expected_latest_version: number;
     effective_from: string;
     change_reason: string;
     multiplier_numerator: string;
     multiplier_denominator: string;
   }): Promise<PublishedMailZonePriceAdjustment> {
-    return criticalFetcher<PublishedMailZonePriceAdjustment>('/billing/critical/mail/zone-price-adjustments/versions', {
+		return criticalFetcher<PublishedMailZonePriceAdjustment>(`/billing/critical/mail/zone-price-adjustments/versions?zone_code=${encodeURIComponent(zoneCode)}`, {
       method: 'POST',
       body: payload,
 		});
 	},
 
-	async publishHypervisorZonePriceAdjustment(payload: {
+	async publishHypervisorZonePriceAdjustment(zoneCode: string, payload: {
 		expected_latest_version: number;
 		effective_from: string;
 		change_reason: string;
 		multiplier_numerator: string;
 		multiplier_denominator: string;
 	}): Promise<PublishedHypervisorZonePriceAdjustment> {
-		return criticalFetcher<PublishedHypervisorZonePriceAdjustment>('/billing/critical/hypervisor/zone-price-adjustments/versions', {
+		return criticalFetcher<PublishedHypervisorZonePriceAdjustment>(`/billing/critical/hypervisor/zone-price-adjustments/versions?zone_code=${encodeURIComponent(zoneCode)}`, {
 			method: 'POST',
 			body: payload,
 		});

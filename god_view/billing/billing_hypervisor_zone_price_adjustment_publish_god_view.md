@@ -7,12 +7,12 @@ uses the Storage adjustment table.
 ## API-scope contract
 
 The operator sends
-`POST /api/v1/billing/critical/hypervisor/zone-price-adjustments/versions` with
+`POST /api/v1/billing/critical/hypervisor/zone-price-adjustments/versions?zone_code={code}` with
 Billing Alias cookies, CSRF/session proof and a bounded JSON body containing
 `expected_latest_version`, UTC `effective_from`, `change_reason` and decimal
-string numerator/denominator. The body has no Zone. ACR removes caller Zone
-headers, consumes proof bound to the exact request and injects the verified
-operator Zone. Cost API requires `billing:pricing_schedule:publish` at the
+string numerator/denominator. The body has no Zone. ACR resolves exactly one
+active/draining `zone_code`, removes caller Zone headers, consumes proof bound
+to the exact request and injects the target Zone. Cost API requires `billing:pricing_schedule:publish` at the
 critical role level.
 
 ## Phase 1 — Client → Envoy → ACR
@@ -25,8 +25,8 @@ sequenceDiagram
     participant API as Cost API
     C->>E: POST Hypervisor multiplier version plus proof
     E->>A: exact CheckRequest headers/path/body
-    A->>A: CORS, session, CSRF, rate and one-time proof
-    A-->>E: verified operator user and Zone; remove spoofed authority
+    A->>A: CORS, session, CSRF, rate, target zone_code and one-time proof
+    A-->>E: verified operator user and target Zone; remove spoofed authority
     E->>API: unchanged bounded body plus trusted context
 ```
 
@@ -56,4 +56,3 @@ window and passes only its opaque rational lineage to the generic PAYG kernel.
 - `cost-manager/api/internal/repository/hypervisor_pricing_repo.go`
 - `cost-manager/api/migrations/000003_tables_pricing.up.sql`
 - `cost-manager/engine/src/service/hypervisor/hourly_allocation_settlement.rs`
-

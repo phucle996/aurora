@@ -9,12 +9,14 @@ The generic pricing-schedule service is read-only catalog infrastructure.
 ## API-scope contract
 
 The operator calls
-`POST /api/v1/billing/critical/storage/zone-price-adjustments/versions` with a
-Billing Alias session and one-time proof. The body contains
+`POST /api/v1/billing/critical/storage/zone-price-adjustments/versions?zone_code={code}`
+with a Billing Alias session and one-time proof. ACR resolves the one
+active/draining catalog code into the target Zone, and the exact query is bound
+into the proof. The body contains
 `expected_latest_version`, UTC `effective_from`, `change_reason`,
 `multiplier_numerator` and `multiplier_denominator`. Multiplier fields are
 base-10 integer strings. The body cannot contain a Zone: ACR removes caller
-authority headers and injects the verified operator Zone; Cost API requires
+authority headers and injects the resolved target Zone; Cost API requires
 fresh `billing:pricing_schedule:publish` permission.
 
 `105/100` means 105% of the Global base; `80/100` means 80%. The multiplier is
@@ -32,12 +34,12 @@ sequenceDiagram
     participant API as Cost API
     UI->>E: POST Storage adjustment version with proof and bounded JSON
     E->>A: CheckRequest exact method/path/headers/body
-    A->>A: CORS, session, CSRF and rate limits
+    A->>A: CORS, session, CSRF, rate limits and target zone_code resolution
     A->>V: Verify exact request and consume one-time proof
     alt denied
         A-->>E: local 401/403/429/503
     else verified operator
-        A->>A: remove caller Zone; inject verified user and Zone
+        A->>A: remove caller Zone; inject verified user and target Zone
         A-->>E: allow unchanged path/body
         E->>API: trusted request
     end

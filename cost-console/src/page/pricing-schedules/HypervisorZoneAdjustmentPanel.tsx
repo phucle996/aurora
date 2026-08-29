@@ -5,9 +5,9 @@ import { toast } from 'sonner';
 import { billingApi, type HypervisorZonePriceAdjustmentsResponse } from '../../lib/api/billing';
 import { cn } from '../../lib/utils';
 
-type HypervisorZoneAdjustmentPanelProps = { canPublish: boolean };
+type HypervisorZoneAdjustmentPanelProps = { canPublish: boolean; zoneCode: string };
 
-export function HypervisorZoneAdjustmentPanel({ canPublish }: HypervisorZoneAdjustmentPanelProps) {
+export function HypervisorZoneAdjustmentPanel({ canPublish, zoneCode }: HypervisorZoneAdjustmentPanelProps) {
   const [result, setResult] = useState<HypervisorZonePriceAdjustmentsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
@@ -19,7 +19,7 @@ export function HypervisorZoneAdjustmentPanel({ canPublish }: HypervisorZoneAdju
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      setResult(await billingApi.listHypervisorZonePriceAdjustments(100, signal));
+      setResult(await billingApi.listHypervisorZonePriceAdjustments(zoneCode, 100, signal));
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         toast.error(error instanceof Error ? error.message : 'Unable to load Hypervisor Zone price adjustments');
@@ -27,7 +27,7 @@ export function HypervisorZoneAdjustmentPanel({ canPublish }: HypervisorZoneAdju
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [zoneCode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -71,7 +71,7 @@ export function HypervisorZoneAdjustmentPanel({ canPublish }: HypervisorZoneAdju
     }
     setPublishing(true);
     try {
-      const published = await billingApi.publishHypervisorZonePriceAdjustment({
+      const published = await billingApi.publishHypervisorZonePriceAdjustment(zoneCode, {
         expected_latest_version: latest?.version_number ?? 0,
         effective_from: `${effectiveFrom}:00.000Z`,
         change_reason: changeReason.trim(),
@@ -93,7 +93,7 @@ export function HypervisorZoneAdjustmentPanel({ canPublish }: HypervisorZoneAdju
   return (
     <div className="space-y-4 rounded-lg border border-amber-900/50 bg-amber-950/10 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h3 className="text-xs font-bold text-amber-100">Hypervisor Zone price adjustment</h3><p className="mt-1 text-[10px] text-slate-400">Multiplies every immutable GLOBAL Hypervisor rate for the trusted operator Zone.</p>{result && <p className="mt-1 font-mono text-[10px] text-amber-300">Zone {result.zone_id}</p>}</div>
+        <div><h3 className="text-xs font-bold text-amber-100">Hypervisor Zone price adjustment</h3><p className="mt-1 text-[10px] text-slate-400">Multiplies every immutable GLOBAL Hypervisor rate for the selected Zone.</p>{result && <p className="mt-1 font-mono text-[10px] text-amber-300">Selected Zone {zoneCode} · {result.zone_id}</p>}</div>
         <button type="button" onClick={() => void load()} className="rounded border border-slate-700 p-2 text-slate-400 hover:text-white" aria-label="Refresh Hypervisor Zone price adjustments"><RefreshCw size={14} className={cn(loading && 'animate-spin')} /></button>
       </div>
       {loading && !result ? <div className="flex items-center gap-2 py-5 text-xs text-slate-500"><RefreshCw size={14} className="animate-spin" /> Loading Zone adjustment history…</div> : <>

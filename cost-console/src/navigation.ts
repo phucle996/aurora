@@ -23,7 +23,7 @@ export const navigationItems: NavigationItem[] = [
   { id: "dashboard", name: "Dashboard", path: "/", icon: LayoutDashboard },
   {
     id: "pricing-schedules",
-    name: "Pricing Schedules",
+    name: "Pricing",
     path: "/pricing-schedules",
     icon: Coins,
     permission: { key: "billing:pricing_schedule", action: "read" },

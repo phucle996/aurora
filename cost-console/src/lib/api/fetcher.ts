@@ -6,7 +6,10 @@ const BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || "/api/v1").replac
 export function apiRequestPath(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const url = `${BASE_URL}${normalizedPath}`;
-  if (/^https?:\/\//i.test(url)) return new URL(url).pathname;
+  if (/^https?:\/\//i.test(url)) {
+    const parsed = new URL(url);
+    return `${parsed.pathname}${parsed.search}`;
+  }
   return url;
 }
 

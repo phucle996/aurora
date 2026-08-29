@@ -6,14 +6,12 @@ Zone verified by ACR. It does not publish, cancel or mutate pricing.
 ## API-scope contract
 
 Cost Console sends
-`GET /api/v1/billing/storage/zone-price-adjustments?limit=100` with Billing
-Alias cookies. Envoy supplies the exact method, path, query, headers and origin
-in the ACR `CheckRequest`. ACR enforces CORS/rate/session, removes
-caller-provided proof and identity headers, and overwrites them with the
-verified Billing Alias user and `x-zone-id`. It forwards the unchanged
-method/path/query; there is no owner rewrite and the query contains no
-`zone_id`. Cost API requires `billing:pricing_schedule:read`; session proof is
-not required for this read.
+`GET /api/v1/billing/storage/zone-price-adjustments?limit=100&zone_code={code}`
+with Billing Alias cookies. The selectable `zone_code` is never a Zone UUID or
+authority header. ACR verifies the Alias, resolves exactly one active/draining
+catalog code, removes caller Zone headers and overwrites `x-zone-id` with the
+resolved target. Cost reads only that trusted header and requires
+`billing:pricing_schedule:read`; proof is not required for this read.
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -25,8 +23,8 @@ sequenceDiagram
     participant API as Cost API
     C->>E: GET Storage Zone adjustment history
     E->>A: CheckRequest exact method/path/query/headers
-    A->>A: CORS, rate and Billing Alias verification
-    A-->>E: overwrite identity context with trusted user and Zone
+    A->>A: CORS, rate, Alias verification and target zone_code resolution
+    A-->>E: overwrite identity context with trusted user and target Zone
     E->>API: unchanged GET plus trusted x-zone-id
 ```
 
@@ -46,10 +44,11 @@ history means Global inheritance `1/1` and expected first version `0`.
 
 ## Failure and security rules
 
-- Missing trusted Zone is denied before repository access.
+- Missing, repeated, malformed or inactive `zone_code` is denied by ACR before
+  Cost is called.
 - Invalid limit returns 400.
 - Database failure returns 500 without a fabricated cache fallback.
-- Caller path/query/body cannot select another Zone.
+- A caller selects only catalog code; Cost never trusts query/header Zone data.
 - Settlement independently resolves its immutable effective version from
   Billing PostgreSQL at report time.
 

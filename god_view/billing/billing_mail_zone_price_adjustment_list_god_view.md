@@ -6,15 +6,11 @@ Zone verified by ACR. It does not publish, cancel or mutate pricing.
 ## API-scope contract
 
 Cost Console sends
-`GET /api/v1/billing/mail/zone-price-adjustments?limit=100` with Billing Alias
-cookies. Envoy supplies the exact method, path, query, headers and origin in the
-ACR `CheckRequest`. ACR enforces CORS/rate/session, removes caller-provided
-proof headers, overwrites caller-provided identity context with the Billing
-Alias `x-user-id`, `x-user-name`, `x-zone-id` and `x-tenant-id`, and overwrites
-`x-session-proof-verified=false`. It forwards the unchanged method/path/query;
-there is no owner-path rewrite. The query contains no `zone_id`.
-Cost API requires `billing:pricing_schedule:read`; session proof is not required
-for this non-mutating workflow.
+`GET /api/v1/billing/mail/zone-price-adjustments?limit=100&zone_code={code}`
+with Billing Alias cookies. ACR resolves exactly one active/draining catalog
+code, removes caller Zone headers and overwrites `x-zone-id` with the selected
+target. Cost reads only that trusted header and requires
+`billing:pricing_schedule:read`; proof is not required for this read.
 
 ## Phase 1 — Client → Envoy → ACR
 
@@ -26,8 +22,8 @@ sequenceDiagram
     participant API as Cost API
     C->>E: GET Mail Zone adjustment history
     E->>A: CheckRequest exact method/path/query/headers
-    A->>A: CORS, rate and Billing Alias verification
-    A-->>E: overwrite identity context with trusted Alias user and Zone
+    A->>A: CORS, rate, Alias verification and target zone_code resolution
+    A-->>E: overwrite identity context with trusted Alias user and target Zone
     E->>API: unchanged GET plus trusted x-zone-id
 ```
 
@@ -48,10 +44,11 @@ first publish.
 
 ## Failure and security rules
 
-- Missing/invalid trusted Zone is denied before repository access.
+- Missing, repeated, malformed or inactive `zone_code` is denied by ACR before
+  Cost is called.
 - Invalid limit returns 400.
 - Database failure returns 500; no stale local fallback is fabricated.
-- A caller cannot enumerate another Zone through path, query or body.
+- A caller selects only catalog code; Cost never trusts query/header Zone data.
 - Read results are informational; settlement resolves the effective immutable
   row directly from Billing PostgreSQL at evidence time.
 

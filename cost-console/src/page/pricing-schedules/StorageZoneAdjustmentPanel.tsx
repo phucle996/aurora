@@ -5,9 +5,9 @@ import { toast } from 'sonner';
 import { billingApi, type StorageZonePriceAdjustmentsResponse } from '../../lib/api/billing';
 import { cn } from '../../lib/utils';
 
-type StorageZoneAdjustmentPanelProps = { canPublish: boolean };
+type StorageZoneAdjustmentPanelProps = { canPublish: boolean; zoneCode: string };
 
-export function StorageZoneAdjustmentPanel({ canPublish }: StorageZoneAdjustmentPanelProps) {
+export function StorageZoneAdjustmentPanel({ canPublish, zoneCode }: StorageZoneAdjustmentPanelProps) {
   const [result, setResult] = useState<StorageZonePriceAdjustmentsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
@@ -19,7 +19,7 @@ export function StorageZoneAdjustmentPanel({ canPublish }: StorageZoneAdjustment
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      setResult(await billingApi.listStorageZonePriceAdjustments(100, signal));
+      setResult(await billingApi.listStorageZonePriceAdjustments(zoneCode, 100, signal));
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         toast.error(error instanceof Error ? error.message : 'Unable to load Storage Zone price adjustments');
@@ -27,7 +27,7 @@ export function StorageZoneAdjustmentPanel({ canPublish }: StorageZoneAdjustment
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [zoneCode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -82,7 +82,7 @@ export function StorageZoneAdjustmentPanel({ canPublish }: StorageZoneAdjustment
     }
     setPublishing(true);
     try {
-      const published = await billingApi.publishStorageZonePriceAdjustment({
+      const published = await billingApi.publishStorageZonePriceAdjustment(zoneCode, {
         expected_latest_version: latest?.version_number ?? 0,
         effective_from: `${effectiveFrom}:00.000Z`,
         change_reason: changeReason.trim(),
@@ -106,8 +106,8 @@ export function StorageZoneAdjustmentPanel({ canPublish }: StorageZoneAdjustment
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-xs font-bold text-cyan-100">Storage Zone price adjustment</h3>
-          <p className="mt-1 text-[10px] text-slate-400">Multiplies every immutable GLOBAL Storage rate for the trusted operator Zone.</p>
-          {result && <p className="mt-1 font-mono text-[10px] text-cyan-300">Zone {result.zone_id}</p>}
+          <p className="mt-1 text-[10px] text-slate-400">Multiplies every immutable GLOBAL Storage rate for the selected Zone.</p>
+          {result && <p className="mt-1 font-mono text-[10px] text-cyan-300">Selected Zone {zoneCode} · {result.zone_id}</p>}
         </div>
         <button type="button" onClick={() => void load()} className="rounded border border-slate-700 p-2 text-slate-400 hover:text-white" aria-label="Refresh Storage Zone price adjustments">
           <RefreshCw size={14} className={cn(loading && 'animate-spin')} />

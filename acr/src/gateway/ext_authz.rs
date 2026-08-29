@@ -92,6 +92,52 @@ fn is_billing_alias_path(method: &str, path: &str, is_billing_console_authority:
             || (method == "GET" && path == "/api/v1/iam/context/read"))
 }
 
+fn is_billing_zone_adjustment_path(method: &str, path: &str) -> bool {
+    matches!(
+        (method, path),
+        ("GET", "/api/v1/billing/storage/zone-price-adjustments")
+            | ("GET", "/api/v1/billing/mail/zone-price-adjustments")
+            | ("GET", "/api/v1/billing/hypervisor/zone-price-adjustments")
+            | (
+                "POST",
+                "/api/v1/billing/critical/storage/zone-price-adjustments/versions"
+            )
+            | (
+                "POST",
+                "/api/v1/billing/critical/mail/zone-price-adjustments/versions"
+            )
+            | (
+                "POST",
+                "/api/v1/billing/critical/hypervisor/zone-price-adjustments/versions"
+            )
+    )
+}
+
+fn billing_target_zone_code(path: &str) -> Result<String, &'static str> {
+    let query = path
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    let mut values = url::form_urlencoded::parse(query.as_bytes())
+        .filter_map(|(key, value)| (key == "zone_code").then_some(value.into_owned()));
+    let Some(code) = values.next() else {
+        return Err("zone_code is required");
+    };
+    if values.next().is_some() {
+        return Err("zone_code must be supplied once");
+    }
+    let code = code.trim().to_ascii_lowercase();
+    if code.is_empty()
+        || code.len() > 64
+        || !code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("zone_code is invalid");
+    }
+    Ok(code)
+}
+
 fn is_internal_render_context_path(path: &str) -> bool {
     matches!(
         path,
@@ -886,8 +932,40 @@ impl Authorization for ExtAuthzService {
         // Zone Resolution & Boundaries
         let is_admin = sre_claims.is_some();
 
+        let billing_target_zone_id =
+            if is_billing && is_billing_zone_adjustment_path(method, path_without_query) {
+                let zone_code = match billing_target_zone_code(path) {
+                    Ok(zone_code) => zone_code,
+                    Err(reason) => {
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied(reason),
+                        )))
+                    }
+                };
+                match crate::infra::zone::resolve_code_to_id_and_status(
+                    &self.shared_redis,
+                    redis_client.as_ref(),
+                    &zone_code,
+                )
+                .await
+                {
+                    Some((zone_id, status)) if matches!(status.as_str(), "active" | "draining") => {
+                        Some(zone_id)
+                    }
+                    _ => {
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied("Zone unavailable"),
+                        )))
+                    }
+                }
+            } else {
+                None
+            };
+
         let cookies_to_set_zone = if is_billing {
-            // [COMMENT]: Billing zone đã bind khi exchange; không tin cookie/header zone do client gửi lại.
+            // The Billing Alias remains host-session authority. A pricing
+            // adjustment target is the sole exception: ACR resolves the
+            // caller's zone_code and overwrites x-zone-id below.
             Vec::new()
         } else if is_admin {
             match crate::sre::zone_resolution::resolve_and_verify_zone_admin(
@@ -1507,7 +1585,10 @@ impl Authorization for ExtAuthzService {
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, alias.user_id),
                             (HEADER_X_USER_NAME, alias.username),
-                            (HEADER_X_ZONE_ID, alias.zone_id),
+                            (
+                                HEADER_X_ZONE_ID,
+                                billing_target_zone_id.unwrap_or(alias.zone_id),
+                            ),
                             (HEADER_X_TENANT_ID, alias.tenant_id),
                         ];
 

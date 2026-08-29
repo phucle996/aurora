@@ -7,14 +7,12 @@ outside this workflow.
 ## API-scope contract
 
 Cost Console sends
-`POST /api/v1/billing/critical/mail/zone-price-adjustments/versions` with Alias
-cookies, CSRF/session proof and JSON containing `expected_latest_version`, UTC
+`POST /api/v1/billing/critical/mail/zone-price-adjustments/versions?zone_code={code}`
+with Alias cookies, CSRF/session proof and JSON containing `expected_latest_version`, UTC
 `effective_from`, `change_reason` and decimal-string numerator/denominator. The
-body contains no Zone. Envoy gives ACR the exact method, path, headers and body;
-ACR applies origin/CORS, rate, session and one-time proof checks, removes raw
-proof headers, overwrites identity context with the Billing Alias `x-user-id`,
-`x-user-name`, `x-zone-id` and `x-tenant-id`, and injects the opaque verified
-proof marker/challenge. It does not rewrite the path. Cost requires
+body contains no Zone. ACR resolves exactly one active/draining `zone_code`,
+removes caller Zone headers, injects that target `x-zone-id`, then verifies the
+proof over the exact path/body. Cost requires
 `billing:pricing_schedule:publish` at critical level.
 
 ## Phase 1 — Client → Envoy → ACR
@@ -27,8 +25,8 @@ sequenceDiagram
     participant API as Cost API
     C->>E: POST bounded multiplier body plus proof
     E->>A: CheckRequest exact method/path/headers/body
-    A->>A: CORS, rate, session, CSRF and one-time proof
-    A-->>E: consume raw proof; overwrite trusted Alias user and Zone context
+    A->>A: CORS, rate, session, CSRF, target zone_code and one-time proof
+    A-->>E: consume raw proof; overwrite trusted Alias user and target Zone context
     E->>API: exact body plus trusted context
 ```
 
