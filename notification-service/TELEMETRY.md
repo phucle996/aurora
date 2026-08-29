@@ -57,7 +57,6 @@ workspaces, and resource identifiers are forbidden labels.
 |---|---|---|
 | `notification_http_requests_total` | Counter | `http.route`, `http.response.status_class` |
 | `notification_http_request_duration_seconds` | Histogram | `http.route`, `http.response.status_class` |
-| `notification_shared_redis_realtime_events_total` | Counter | `event.kind`, `outcome` |
 | `notification_shared_redis_calls_total` | Counter | `rpc.operation`, `outcome` |
 | `notification_shared_redis_call_duration_seconds` | Histogram | `rpc.operation`, `outcome` |
 | `notification_shared_redis_stream_events_total` | Counter | `stream.kind`, `outcome` |
@@ -97,9 +96,6 @@ Central activity Stream
   -> extracted producer context
   -> activity projection span
 
-Shared Redis realtime Pub/Sub
-  -> runtime update span
-  -> Centrifugo publish span
 ```
 
 Connect, job Stream, activity Stream, and Centrifugo adapters create or extract
@@ -122,4 +118,3 @@ Alert on persistent Stream failure/invalid-contract growth, Centrifugo publish
 failure, Redis auth timeouts, Scylla errors, and telemetry loss. Use Scylla and
 the owning producer's durable state—not a trace, log, or realtime message—to
 confirm business completion.
-

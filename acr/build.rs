@@ -8,7 +8,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(false)
         .compile(
             &[
-                "../proto/iam/session/v1/session.proto",
                 "../proto/iam/authentication/v1/session_recovery.proto",
                 "../proto/iam/authentication/v1/login.proto",
                 "../proto/iam/authentication/v1/social_login.proto",

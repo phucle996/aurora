@@ -1,11 +1,9 @@
-use crate::application::auth::ConnectAuthorizer;
-use crate::timeline::activity::ActivityService;
-use crate::timeline::inbox::InboxService;
+use crate::service::{ActivityService, ConnectAuthorizer, NotificationService};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
     pub authorizer: Arc<ConnectAuthorizer>,
     pub activities: Arc<ActivityService>,
-    pub inbox: Arc<InboxService>,
+    pub inbox: Arc<NotificationService>,
 }

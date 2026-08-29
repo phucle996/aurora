@@ -319,6 +319,20 @@ static_resources:
                       address: centrifugo
                       port_value: 8000
 
+    - name: notification_service_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: notification_service_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: notification-service
+                      port_value: 8083
+
 admin:
   access_log:
     - name: envoy.access_loggers.stdout

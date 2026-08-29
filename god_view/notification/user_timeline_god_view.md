@@ -23,8 +23,6 @@ flowchart LR
   JS --> NS2["Notification job consumer"]
   NS2 --> S2[("Scylla activity + inbox")]
   NS2 --> CF["Centrifugo notifications:<user_id>"]
-  RT["JO runtime Pub/Sub"] --> NS3["Runtime consumer"]
-  NS3 --> CF2["Centrifugo runtime:<user_id>"]
   API["Console /api/v1/me/*"] --> S1
   API --> S2
 ```
@@ -42,11 +40,10 @@ flowchart LR
 - Managed Service result events dùng immutable `command_event_id` làm
   `notification_id`: `PROCESSING` tạo record, `SUCCESS`/`FAILED` update cùng record;
   status hay attempt không tạo record mới.
-- `runtime` là soft-state Pub/Sub, không ghi Scylla và có thể mất khi subscriber
-  reconnect; UI rehydrate API authoritative khi có, hoặc hiển thị stale tới update
-  kế tiếp. Managed Service V1 không có runtime snapshot, Pub/Sub envelope hay
-  `runtime:<actor_user_id>` channel; `PROCESSING → SUCCESS|FAILED` là timeline
-  durable duy nhất của module.
+- Runtime read không đi qua Notification Service hoặc Centrifugo. Browser xin
+  assertion ngắn hạn tại ACR rồi gọi trực tiếp Zone Public Edge; Zone kiểm tra
+  assertion/replay trước khi stream SSE. `PROCESSING → SUCCESS|FAILED` ở đây chỉ
+  là timeline durable và `notifications:<user_id>` wake-up của module.
 
 ## Scylla model
 
@@ -72,15 +69,10 @@ flowchart LR
 
 ## Security and failure semantics
 
-- API derive principal solely from the verified cookie; client không truyền
-  `user_id`.
-- At the Notification HTTP handler, the current implementation re-verifies the
-  cookie through `ConnectAuthorizer`; it does not trust an incoming `x-user-id`
-  as a substitute. Missing/invalid credentials return `401`, unavailable auth
-  returns `503`, and malformed auth replies return `500`, all with the generic
-  body `request rejected`. A defensive UUID-conversion failure remains an empty
-  `500`. Timeline authorization carries a compact local error; only the HTTP
-  boundary constructs a response. This does not impose a response-size limit.
+- Timeline API chỉ lấy subject từ `x-user-id` đã được ACR xác minh và overwrite;
+  client không được chọn `user_id`. Centrifugo connect là workflow khác: handler
+  chuyển cookie tới `ConnectAuthorizer`, fail closed khi ACR từ chối, unavailable
+  hoặc trả reply sai protocol, và chỉ cấp `notifications:<user_id>`.
 - Activity metadata bị giới hạn 16 KiB và không được chứa token, secret hoặc
   raw customer payload.
 - Redis consumer ACK chỉ sau Scylla durability; lỗi dependency giữ PEL để retry.
@@ -92,16 +84,17 @@ flowchart LR
 - Activity producers dùng capacity guard `XLEN < 100000`, không `XTRIM` hoặc
   `MAXLEN` trên stream có thể còn PEL. Khi đầy, producer ghi lỗi và không làm
   hỏng business transaction; đây là backpressure có chủ đích cần alert.
-- Scylla outage làm activity/job pending và API trả `503`; không làm runtime
-  Pub/Sub bị biến thành durable queue.
+- Scylla outage làm activity/job pending và API trả `503`; runtime read trực tiếp
+  tại Zone không được biến thành durable queue của Notification Service.
 - HA replicas không dùng distributed lock cho Scylla writes; duplicate event
   convergence dựa trên primary key và retry at-least-once.
 
 ## Contract and implementation
 
 - `proto/notification/activity/v1/user_activity.proto`
-- `notification-service/src/contract/activity.rs`
-- `notification-service/src/inbound/activity_stream.rs`
+- `notification-service/src/repo/timeline.rs`
+- `notification-service/src/repo/notification.rs`
+- `notification-service/src/service/{activity,notification,job_notifications}.rs`
+- `notification-service/src/transport/stream/{activity_stream,job_stream}.rs`
 - `notification-service/src/infra/scylla/schema.rs`
-- `notification-service/src/infra/scylla/store.rs`
-- `notification-service/src/api/timeline.rs`
+- `notification-service/src/transport/http_handler/timeline.rs`

@@ -1,12 +1,11 @@
-mod api;
 mod app;
-mod application;
 mod config;
-mod contract;
-mod inbound;
 mod infra;
+mod middleware;
 mod observability;
-mod timeline;
+mod repo;
+mod service;
+mod transport;
 
 use config::Config;
 use observability::logger::Logger;

@@ -1,10 +1,6 @@
-use crate::application::job_notifications::JobNotificationService;
 use crate::config::RuntimeConfig;
-use crate::contract::job::{
-    proto::JobNotificationEvent, valid_event, JOB_NOTIFICATION_CONSUMER_GROUP,
-    JOB_NOTIFICATION_DLQ, JOB_NOTIFICATION_STREAM,
-};
 use crate::observability::{logger::Logger, metrics::MetricsManager, tracing::OtelTracer};
+use crate::service::JobNotificationService;
 use opentelemetry::trace::FutureExt;
 use prost::Message;
 use redis::streams::{
@@ -15,6 +11,45 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 
+pub const JOB_NOTIFICATION_STREAM: &str = "stream:{job_notifications}";
+pub const JOB_NOTIFICATION_DLQ: &str = "stream:{job_notifications_quarantine}";
+pub const JOB_NOTIFICATION_CONSUMER_GROUP: &str = "notification-job-v1";
+
+pub mod proto {
+    tonic::include_proto!("job");
+}
+
+pub use proto::JobNotificationEvent;
+
+// [COMMENT]: Kiểm tra tính hợp lệ của sự kiện JobNotificationEvent từ Redis Stream
+pub fn valid_event(event: &JobNotificationEvent) -> bool {
+    (uuid::Uuid::parse_str(&event.notification_id).is_ok())
+        && uuid::Uuid::parse_str(&event.job_id).is_ok()
+        && uuid::Uuid::parse_str(&event.user_id).is_ok()
+        && chrono::DateTime::from_timestamp(event.created_at, 0)
+            .is_some_and(|value| value <= chrono::Utc::now() + chrono::Duration::minutes(5))
+        && matches!(event.status.as_str(), "PROCESSING" | "SUCCESS" | "FAILED")
+        && !event.event_type.is_empty()
+        && event.event_type.len() <= 128
+        && event.title.len() <= 256
+        && event.message.len() <= 4_096
+        && event.resource_id.len() <= 256
+        && (event.event_type != "managed_service.instance.execute"
+            || (event.status_version > 0
+                && i64::try_from(event.status_version).is_ok()
+                && ((event.status == "PROCESSING" && !event.status_version.is_multiple_of(2))
+                    || (event.status != "PROCESSING" && event.status_version.is_multiple_of(2)))))
+        && crate::observability::tracing::OtelTracer::is_valid_propagation_context(
+            &event.trace_parent,
+            &event.trace_state,
+        )
+}
+
+pub fn parse_notification_id(event: &JobNotificationEvent) -> Result<String, uuid::Error> {
+    uuid::Uuid::parse_str(&event.notification_id).map(|value| value.to_string())
+}
+
+// [COMMENT]: Consumer lắng nghe sự kiện Job Notification từ Redis Stream và chuyển giao cho JobNotificationService
 pub struct JobStreamConsumer {
     client: Arc<redis::Client>,
     dispatcher: Arc<JobNotificationService>,
@@ -298,8 +333,6 @@ async fn quarantine_and_ack(
     reason: &str,
     payload_len: usize,
 ) -> redis::RedisResult<()> {
-    // Quarantine metadata is sufficient for operations and avoids copying a
-    // malformed payload that could contain a secret or unbounded customer data.
     let _: i64 = redis::Script::new(
         r#"
         redis.call('XADD', KEYS[2], 'MAXLEN', '~', 10000, '*',
@@ -326,5 +359,151 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>, delay: Duration
     tokio::select! {
         changed = shutdown.changed() => changed.is_ok() && *shutdown.borrow(),
         _ = tokio::time::sleep(delay) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event() -> proto::JobNotificationEvent {
+        proto::JobNotificationEvent {
+            job_id: uuid::Uuid::new_v4().to_string(),
+            user_id: uuid::Uuid::new_v4().to_string(),
+            status: "SUCCESS".to_string(),
+            event_type: "storage.bucket.create".to_string(),
+            title: "Bucket Created".to_string(),
+            message: String::new(),
+            created_at: chrono::Utc::now().timestamp(),
+            trace_parent: String::new(),
+            trace_state: String::new(),
+            resource_id: "bucket-1".to_string(),
+            job_version: 1,
+            attempt: 0,
+            notification_id: uuid::Uuid::new_v4().to_string(),
+            status_version: 0,
+        }
+    }
+
+    #[test]
+    fn rolling_event_without_trace_context_is_valid() {
+        assert!(valid_event(&event()));
+    }
+
+    #[test]
+    fn missing_notification_id_is_rejected() {
+        let mut candidate = event();
+        candidate.notification_id.clear();
+        assert!(!valid_event(&candidate));
+        assert!(parse_notification_id(&candidate).is_err());
+    }
+
+    #[test]
+    fn partial_trace_context_and_oversized_message_are_rejected() {
+        let mut candidate = event();
+        candidate.trace_state = "vendor=value".to_string();
+        assert!(!valid_event(&candidate));
+
+        candidate.trace_state.clear();
+        candidate.message = "x".repeat(4_097);
+        assert!(!valid_event(&candidate));
+    }
+
+    #[test]
+    fn status_timestamp_and_identity_are_strictly_validated() {
+        let mut candidate = event();
+        candidate.status = "SUCCEEDED".to_string();
+        assert!(!valid_event(&candidate));
+
+        let mut candidate = event();
+        candidate.user_id = "not-a-uuid".to_string();
+        assert!(!valid_event(&candidate));
+
+        let mut candidate = event();
+        candidate.created_at = (chrono::Utc::now() + chrono::Duration::minutes(6)).timestamp();
+        assert!(!valid_event(&candidate));
+    }
+
+    #[test]
+    fn managed_service_status_version_parity_fences_processing_and_terminal_updates() {
+        let mut candidate = event();
+        candidate.event_type = "managed_service.instance.execute".to_string();
+        candidate.status = "PROCESSING".to_string();
+        candidate.status_version = 3;
+        assert!(valid_event(&candidate));
+
+        candidate.status_version = 4;
+        assert!(!valid_event(&candidate));
+
+        candidate.status = "SUCCESS".to_string();
+        assert!(valid_event(&candidate));
+
+        candidate.status_version = 3;
+        assert!(!valid_event(&candidate));
+
+        candidate.status_version = u64::MAX;
+        assert!(!valid_event(&candidate));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable Redis from NOTIFICATION_TEST_REDIS_URL"]
+    async fn quarantine_is_metadata_only_and_atomically_settles_source_entry() {
+        let url = std::env::var("NOTIFICATION_TEST_REDIS_URL")
+            .expect("NOTIFICATION_TEST_REDIS_URL must point to disposable Redis");
+        let client = redis::Client::open(url).expect("Redis client");
+        let mut connection = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Redis connection");
+        redis::cmd("FLUSHDB")
+            .query_async::<()>(&mut connection)
+            .await
+            .expect("flush disposable DB");
+        ensure_consumer_group(&mut connection)
+            .await
+            .expect("consumer group");
+        let source_payload = b"raw-customer-secret-must-not-enter-quarantine";
+        redis::cmd("XADD")
+            .arg(JOB_NOTIFICATION_STREAM)
+            .arg("*")
+            .arg("payload")
+            .arg(source_payload.as_slice())
+            .query_async::<String>(&mut connection)
+            .await
+            .expect("stream append");
+        let entries = read_new_entries(&mut connection, "integration-test", 1)
+            .await
+            .expect("read into PEL");
+        assert_eq!(entries.len(), 1);
+
+        quarantine_and_ack(
+            &mut connection,
+            &entries[0].id,
+            "JOB_NOTIFICATION_PROTO_INVALID",
+            source_payload.len(),
+        )
+        .await
+        .expect("quarantine and ACK");
+
+        let source_len: usize = connection
+            .xlen(JOB_NOTIFICATION_STREAM)
+            .await
+            .expect("source length");
+        let quarantine_len: usize = connection
+            .xlen(JOB_NOTIFICATION_DLQ)
+            .await
+            .expect("quarantine length");
+        let quarantine: Value = redis::cmd("XRANGE")
+            .arg(JOB_NOTIFICATION_DLQ)
+            .arg("-")
+            .arg("+")
+            .query_async(&mut connection)
+            .await
+            .expect("quarantine rows");
+        let quarantine_debug = format!("{quarantine:?}");
+        assert_eq!(source_len, 0);
+        assert_eq!(quarantine_len, 1);
+        assert!(quarantine_debug.contains("JOB_NOTIFICATION_PROTO_INVALID"));
+        assert!(!quarantine_debug.contains("raw-customer-secret"));
     }
 }

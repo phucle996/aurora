@@ -4,11 +4,13 @@ use opentelemetry::{global, Context, KeyValue};
 use std::borrow::Cow;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+// [COMMENT]: Giới hạn kích thước tối đa cho các trường W3C Trace Context và span attributes nhằm tránh cấp phát bộ nhớ không kiểm soát
 const MAX_TRACEPARENT_BYTES: usize = 128;
 const MAX_TRACESTATE_BYTES: usize = 512;
 const MAX_SPAN_NAME_BYTES: usize = 128;
 const MAX_ATTRIBUTES_PER_SPAN: usize = 32;
 
+// [COMMENT]: Cấu trúc chứa traceparent và tracestate để truyền context qua mạng
 #[derive(Default)]
 pub struct PropagationContext {
     pub traceparent: String,
@@ -25,6 +27,7 @@ impl Injector for PropagationContext {
     }
 }
 
+// [COMMENT]: Cấu trúc mượn (borrowed) để trích xuất trace context hiệu quả không cần clone String
 struct BorrowedPropagationContext<'a> {
     traceparent: &'a str,
     tracestate: &'a str,
@@ -49,9 +52,11 @@ impl Extractor for BorrowedPropagationContext<'_> {
     }
 }
 
+// [COMMENT]: OtelTracer cung cấp các helper tiện ích để trích xuất, tạo và hoàn tất span phân tán
 pub struct OtelTracer;
 
 impl OtelTracer {
+    // [COMMENT]: Trích xuất Context OpenTelemetry từ traceparent và tracestate chuỗi W3C
     pub fn extract_context(traceparent: &str, tracestate: &str) -> Context {
         if traceparent.is_empty()
             || traceparent.len() > MAX_TRACEPARENT_BYTES
@@ -68,6 +73,7 @@ impl OtelTracer {
         })
     }
 
+    // [COMMENT]: Kiểm tra xem thông tin trace context có hợp lệ (W3C trace ID và span ID khác 0) hay không
     pub fn is_valid_propagation_context(traceparent: &str, tracestate: &str) -> bool {
         if traceparent.is_empty() {
             return tracestate.is_empty();
@@ -78,6 +84,7 @@ impl OtelTracer {
             .is_valid()
     }
 
+    // [COMMENT]: Bắt đầu một span mới gắn kèm với parent context cụ thể
     pub fn start_span_with_parent(
         name: impl Into<Cow<'static, str>>,
         kind: SpanKind,
@@ -93,6 +100,7 @@ impl OtelTracer {
         parent.clone().with_span(span)
     }
 
+    // [COMMENT]: Bắt đầu một span con từ context hiện tại trong luồng thực thi
     pub fn start_current_span(
         name: impl Into<Cow<'static, str>>,
         kind: SpanKind,
@@ -102,6 +110,7 @@ impl OtelTracer {
         Self::start_span_with_parent(name, kind, attributes, &parent)
     }
 
+    // [COMMENT]: Đánh dấu kết thúc span và ghi nhận trạng thái lỗi nếu có
     pub fn finish_span(context: &Context, error_code: Option<&str>) {
         let span = context.span();
         if let Some(error_code) = error_code {
@@ -113,6 +122,7 @@ impl OtelTracer {
         span.end();
     }
 
+    // [COMMENT]: Tiêm context hiện tại vào carrier để gửi kèm message sang service khác
     pub fn inject_context(context: &Context) -> PropagationContext {
         let mut carrier = PropagationContext::default();
         global::get_text_map_propagator(|propagator| {
@@ -122,6 +132,7 @@ impl OtelTracer {
     }
 }
 
+// [COMMENT]: Lấy trace_id và span_id dạng chuỗi từ span hiện tại phục vụ đưa vào log fields
 pub(crate) fn current_span_identifiers() -> (Option<String>, Option<String>) {
     let current = Context::current();
     if let Some(ids) = identifiers_from_context(&current) {
@@ -159,6 +170,7 @@ fn current_parent_context() -> Context {
     Context::new()
 }
 
+// [COMMENT]: Giới hạn độ dài tên span để tránh tràn bộ nhớ tracer
 fn bounded_span_name(name: Cow<'static, str>) -> Cow<'static, str> {
     if name.len() <= MAX_SPAN_NAME_BYTES {
         return name;
@@ -170,6 +182,7 @@ fn bounded_span_name(name: Cow<'static, str>) -> Cow<'static, str> {
     Cow::Owned(name[..end].to_owned())
 }
 
+// [COMMENT]: Lấy hostname của node hoặc container đang chạy
 pub fn get_node_hostname() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| {
         hostname::get()

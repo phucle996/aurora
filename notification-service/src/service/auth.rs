@@ -1,7 +1,8 @@
-use crate::application::ports::{AuthError, AuthVerifier};
+use crate::service::ports::{AuthError, AuthVerifier};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// [COMMENT]: Thông tin định danh xác thực bóc tách từ Cookie client
 #[derive(Debug)]
 pub enum AuthCredentials {
     Admin {
@@ -16,6 +17,7 @@ pub enum AuthCredentials {
     },
 }
 
+// [COMMENT]: Lỗi phân quyền / xác thực kết nối Realtime Centrifugo
 #[derive(Debug)]
 pub enum ConnectAuthError {
     MissingCredentials,
@@ -36,6 +38,7 @@ impl ConnectAuthError {
     }
 }
 
+// [COMMENT]: Service chịu trách nhiệm authorize kết nối WebSocket Centrifugo và xác minh với ACR
 pub struct ConnectAuthorizer {
     verifier: Arc<dyn AuthVerifier>,
 }
@@ -45,6 +48,7 @@ impl ConnectAuthorizer {
         Self { verifier }
     }
 
+    // [COMMENT]: Trích xuất cookie, chọn credentials và gọi ACR xác minh
     pub async fn authorize(&self, cookie_header: &str) -> Result<String, ConnectAuthError> {
         let cookies = parse_cookies(cookie_header);
         let credentials = if cookies.contains_key("admin_api_token") {
@@ -63,6 +67,7 @@ impl ConnectAuthorizer {
             return Err(ConnectAuthError::MissingCredentials);
         };
 
+        // [COMMENT]: Gửi RPC xác thực sang ACR thông qua verifier port
         let principal = match self.verifier.verify(credentials).await {
             Ok(principal) => principal,
             Err(AuthError::Invalid) => return Err(ConnectAuthError::InvalidCredentials),
@@ -103,7 +108,7 @@ fn required_cookie(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::{AuthError, AuthenticatedPrincipal};
+    use crate::service::ports::{AuthError, AuthenticatedPrincipal};
     use futures_util::future::BoxFuture;
 
     struct Verifier {
@@ -150,6 +155,67 @@ mod tests {
         }));
         assert!(matches!(
             authorizer.authorize("access_token=token").await,
+            Err(ConnectAuthError::MissingCredentials)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verifier_failures_map_to_stable_http_classes() {
+        for (result, expected) in [
+            (
+                Err(AuthError::Invalid),
+                ConnectAuthError::InvalidCredentials,
+            ),
+            (
+                Err(AuthError::Unavailable("redis unavailable".to_string())),
+                ConnectAuthError::Unavailable,
+            ),
+            (
+                Err(AuthError::Protocol("malformed protobuf".to_string())),
+                ConnectAuthError::InvalidResponse,
+            ),
+        ] {
+            let authorizer = ConnectAuthorizer::new(Arc::new(Verifier { result }));
+            let error = authorizer
+                .authorize("access_token=token; access_key=key; access_secret=secret")
+                .await
+                .expect_err("authorization must fail");
+            assert_eq!(error.status_code(), expected.status_code());
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_principal_from_auth_backend_fails_closed() {
+        let authorizer = ConnectAuthorizer::new(Arc::new(Verifier {
+            result: Ok(AuthenticatedPrincipal {
+                id: "not-a-uuid".to_string(),
+            }),
+        }));
+        assert!(matches!(
+            authorizer
+                .authorize("access_token=token; access_key=key; access_secret=secret")
+                .await,
+            Err(ConnectAuthError::InvalidResponse)
+        ));
+    }
+
+    #[tokio::test]
+    async fn incomplete_admin_cookie_does_not_fall_back_to_user_credentials() {
+        let authorizer = ConnectAuthorizer::new(Arc::new(Verifier {
+            result: Ok(AuthenticatedPrincipal {
+                id: uuid::Uuid::new_v4().to_string(),
+            }),
+        }));
+        assert!(authorizer
+            .authorize(
+                "admin_api_token=admin; access_token=user; access_key=key; access_secret=secret",
+            )
+            .await
+            .is_ok());
+        assert!(matches!(
+            authorizer
+                .authorize("admin_api_token=admin; access_token=user; access_secret=secret")
+                .await,
             Err(ConnectAuthError::MissingCredentials)
         ));
     }

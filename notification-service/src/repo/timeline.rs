@@ -1,10 +1,5 @@
-use crate::application::ports::AppError;
 use crate::config::TimelineConfig;
-use crate::timeline::event::{
-    ActivityCategory, ActivityEvent, ActivityPage, ActivityView, NotificationItem,
-    NotificationPage, NotificationView,
-};
-use crate::timeline::store::TimelineStore;
+use crate::service::ports::AppError;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -13,6 +8,189 @@ use scylla::client::session::Session;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+
+// [COMMENT]: Phân loại danh mục của sự kiện hoạt động người dùng (Security, Identity, Resource, Billing, Access)
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActivityCategory {
+    Security,
+    Identity,
+    Resource,
+    Billing,
+    Access,
+}
+
+impl ActivityCategory {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "security" => Some(Self::Security),
+            "identity" => Some(Self::Identity),
+            "resource" => Some(Self::Resource),
+            "billing" => Some(Self::Billing),
+            "access" => Some(Self::Access),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Security => "security",
+            Self::Identity => "identity",
+            Self::Resource => "resource",
+            Self::Billing => "billing",
+            Self::Access => "access",
+        }
+    }
+}
+
+// [COMMENT]: Kết quả thực thi của sự kiện hoạt động (Succeeded, Failed, Started)
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActivityOutcome {
+    Succeeded,
+    Failed,
+    Started,
+}
+
+impl ActivityOutcome {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "started" => Some(Self::Started),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Started => "started",
+        }
+    }
+}
+
+// [COMMENT]: Loại tác tử thực hiện hành động (SelfUser, Admin, System)
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActorType {
+    SelfUser,
+    Admin,
+    System,
+}
+
+impl ActorType {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "self" => Some(Self::SelfUser),
+            "admin" => Some(Self::Admin),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SelfUser => "self",
+            Self::Admin => "admin",
+            Self::System => "system",
+        }
+    }
+}
+
+// [COMMENT]: Entity bản ghi sự kiện hoạt động lưu trữ trong ScyllaDB
+#[derive(Clone, Debug)]
+pub struct ActivityEvent {
+    pub event_id: Uuid,
+    pub user_id: Uuid,
+    pub category: ActivityCategory,
+    pub action: String,
+    pub actor_type: ActorType,
+    pub actor_id: Option<Uuid>,
+    pub outcome: ActivityOutcome,
+    pub source_service: String,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub occurred_at: DateTime<Utc>,
+    pub metadata_json: String,
+    pub schema_version: u32,
+    /// Stable replay ordering for one event identity. A larger version must
+    /// win even when Redis pending-entry recovery delivers it out of order.
+    pub projection_version: i64,
+}
+
+impl ActivityEvent {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.action.is_empty() || self.action.len() > 128 {
+            return Err(invalid("activity action length is invalid"));
+        }
+        if self.source_service.is_empty() || self.source_service.len() > 64 {
+            return Err(invalid("activity source service length is invalid"));
+        }
+        if self.title.len() > 256 || self.summary.len() > 4_096 {
+            return Err(invalid("activity display fields are too large"));
+        }
+        if self.metadata_json.len() > 16 * 1024
+            || serde_json::from_str::<serde_json::Value>(&self.metadata_json).is_err()
+        {
+            return Err(invalid("activity metadata must be bounded JSON"));
+        }
+        if self.schema_version == 0 {
+            return Err(invalid("activity schema version is invalid"));
+        }
+        if self.occurred_at > Utc::now() + Duration::minutes(5) {
+            return Err(invalid("activity timestamp is too far in the future"));
+        }
+        Ok(())
+    }
+}
+
+// [COMMENT]: DTO Query phân trang cho Activity Timeline APIs
+#[derive(Clone, Debug, Deserialize)]
+pub struct PageRequest {
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+    pub category: Option<String>,
+}
+
+// [COMMENT]: View model trả về client cho một sự kiện hoạt động
+#[derive(Clone, Debug, Serialize)]
+pub struct ActivityView {
+    pub event_id: Uuid,
+    pub category: String,
+    pub action: String,
+    pub actor_type: String,
+    pub outcome: String,
+    pub source_service: String,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub occurred_at: DateTime<Utc>,
+    pub metadata: serde_json::Value,
+}
+
+// [COMMENT]: Kết quả phân trang danh sách hoạt động
+#[derive(Clone, Debug, Serialize)]
+pub struct ActivityPage {
+    pub items: Vec<ActivityView>,
+    pub next_cursor: Option<String>,
+}
+
+// [COMMENT]: Repository trait định nghĩa các thao tác lưu trữ và truy vấn dòng hoạt động ScyllaDB
+pub trait TimelineRepo: Send + Sync {
+    fn persist_activity<'a>(&'a self, event: ActivityEvent) -> BoxFuture<'a, Result<(), AppError>>;
+    fn list_activity<'a>(
+        &'a self,
+        user_id: Uuid,
+        cursor: Option<&'a str>,
+        category: Option<ActivityCategory>,
+        limit: usize,
+        max_month_scan: usize,
+    ) -> BoxFuture<'a, Result<ActivityPage, AppError>>;
+}
 
 const INSERT_ACTIVITY: &str = "INSERT INTO activity_by_user_month (
     user_id, month_bucket, occurred_at, event_id, category, action, actor_type,
@@ -25,11 +203,6 @@ const INSERT_ACTIVITY_CATEGORY: &str = "INSERT INTO activity_by_user_category_mo
     actor_id, outcome, source_service, resource_type, resource_id, operation_id,
     title, summary, metadata_json, schema_version
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ? AND TTL ?";
-
-const INSERT_NOTIFICATION: &str = "INSERT INTO inbox_by_user_month (
-    user_id, month_bucket, created_at, notification_id, activity_event_id,
-    severity, title, message, operation, resource_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ? AND TTL ?";
 
 #[derive(scylla::SerializeRow)]
 #[scylla(flavor = "enforce_order", skip_name_checks)]
@@ -79,11 +252,11 @@ struct CategoryInsert<'a> {
     ttl: i32,
 }
 
+// [COMMENT]: ScyllaTimelineStore triển khai lưu trữ và truy vấn sự kiện hoạt động với ScyllaDB
 #[derive(Clone)]
 pub struct ScyllaTimelineStore {
     session: Arc<Session>,
     activity_ttl: i32,
-    inbox_ttl: i32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -99,10 +272,10 @@ impl ScyllaTimelineStore {
         Ok(Self {
             session,
             activity_ttl: days_to_ttl(config.activity_retention_days)?,
-            inbox_ttl: days_to_ttl(config.inbox_retention_days)?,
         })
     }
 
+    // [COMMENT]: Ghi đồng thời 2 projection (theo user_id và theo category) để tối ưu truy vấn
     async fn write_activity(&self, event: ActivityEvent) -> Result<(), AppError> {
         let bucket = month_bucket(event.occurred_at);
         let actor_id = event.actor_id.map(|value| value.to_string());
@@ -172,32 +345,7 @@ impl ScyllaTimelineStore {
         Ok(())
     }
 
-    async fn write_notification(&self, item: NotificationItem) -> Result<(), AppError> {
-        let bucket = month_bucket(item.created_at);
-        self.session
-            .query_unpaged(
-                INSERT_NOTIFICATION,
-                (
-                    item.user_id,
-                    bucket.as_str(),
-                    item.created_at,
-                    item.notification_id,
-                    item.activity_event_id,
-                    item.severity.as_str(),
-                    item.title.as_str(),
-                    item.message.as_str(),
-                    item.operation.as_str(),
-                    item.resource_id.as_deref(),
-                    item.created_at
-                        .timestamp_micros()
-                        .saturating_add(item.projection_version),
-                    self.inbox_ttl,
-                ),
-            )
-            .await?;
-        Ok(())
-    }
-
+    // [COMMENT]: Đọc danh sách hoạt động với phân trang cursor duyệt ngược qua các bucket tháng
     async fn read_activity(
         &self,
         user_id: Uuid,
@@ -363,139 +511,11 @@ impl ScyllaTimelineStore {
         }
         Ok(items)
     }
-
-    async fn read_notifications(
-        &self,
-        user_id: Uuid,
-        cursor: Option<&str>,
-        limit: usize,
-        max_month_scan: usize,
-    ) -> Result<NotificationPage, AppError> {
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let mut bucket = cursor
-            .as_ref()
-            .map(|value| value.bucket.clone())
-            .unwrap_or_else(|| month_bucket(Utc::now()));
-        let mut before = cursor
-            .as_ref()
-            .map(|value| value.timestamp)
-            .unwrap_or_else(|| Utc::now() + Duration::seconds(1));
-        let mut before_id = cursor
-            .as_ref()
-            .map(|value| value.id)
-            .unwrap_or_else(max_uuid);
-        let read_before = self.read_before(user_id).await?;
-        let mut items = Vec::with_capacity(limit);
-
-        for _ in 0..max_month_scan {
-            let remaining = limit.saturating_sub(items.len());
-            if remaining == 0 {
-                break;
-            }
-            let result = self
-                .session
-                .query_unpaged(
-                    "SELECT created_at, notification_id, activity_event_id, severity,
-                            title, message, operation, resource_id, read_at
-                     FROM inbox_by_user_month
-                     WHERE user_id = ? AND month_bucket = ?
-                       AND (created_at, notification_id) < (?, ?)
-                     LIMIT ?",
-                    (
-                        user_id,
-                        bucket.as_str(),
-                        before,
-                        before_id,
-                        remaining as i32,
-                    ),
-                )
-                .await?
-                .into_rows_result()?;
-            let mut fetched = 0;
-            for row in result.rows::<(
-                DateTime<Utc>,
-                Uuid,
-                Uuid,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<DateTime<Utc>>,
-            )>()? {
-                let (
-                    created_at,
-                    notification_id,
-                    activity_event_id,
-                    severity,
-                    title,
-                    message,
-                    operation,
-                    resource_id,
-                    explicit_read_at,
-                ) = row?;
-                fetched += 1;
-                items.push(NotificationView {
-                    notification_id,
-                    activity_event_id,
-                    severity,
-                    title,
-                    message,
-                    operation,
-                    resource_id,
-                    created_at,
-                    read_at: explicit_read_at
-                        .or_else(|| read_before.filter(|cursor| created_at <= *cursor)),
-                });
-            }
-            if fetched >= remaining {
-                break;
-            }
-            bucket = previous_month(&bucket)?;
-            before = month_end(&bucket)?;
-            before_id = max_uuid();
-        }
-        let next_cursor = items.last().map(|item| {
-            encode_cursor(&TimelineCursor {
-                bucket: month_bucket(item.created_at),
-                timestamp: item.created_at,
-                id: item.notification_id,
-                category: None,
-            })
-        });
-        Ok(NotificationPage {
-            items,
-            next_cursor: next_cursor.transpose()?,
-        })
-    }
-
-    async fn read_before(&self, user_id: Uuid) -> Result<Option<DateTime<Utc>>, AppError> {
-        let result = self
-            .session
-            .query_unpaged(
-                "SELECT read_before FROM inbox_state_by_user WHERE user_id = ?",
-                (user_id,),
-            )
-            .await?
-            .into_rows_result()?;
-        let mut rows = result.rows::<(Option<DateTime<Utc>>,)>()?;
-        match rows.next() {
-            Some(row) => Ok(row?.0),
-            None => Ok(None),
-        }
-    }
 }
 
-impl TimelineStore for ScyllaTimelineStore {
+impl TimelineRepo for ScyllaTimelineStore {
     fn persist_activity<'a>(&'a self, event: ActivityEvent) -> BoxFuture<'a, Result<(), AppError>> {
         Box::pin(self.write_activity(event))
-    }
-
-    fn persist_notification<'a>(
-        &'a self,
-        item: NotificationItem,
-    ) -> BoxFuture<'a, Result<(), AppError>> {
-        Box::pin(self.write_notification(item))
     }
 
     fn list_activity<'a>(
@@ -507,57 +527,6 @@ impl TimelineStore for ScyllaTimelineStore {
         max_month_scan: usize,
     ) -> BoxFuture<'a, Result<ActivityPage, AppError>> {
         Box::pin(self.read_activity(user_id, cursor, category, limit, max_month_scan))
-    }
-
-    fn list_notifications<'a>(
-        &'a self,
-        user_id: Uuid,
-        cursor: Option<&'a str>,
-        limit: usize,
-        max_month_scan: usize,
-    ) -> BoxFuture<'a, Result<NotificationPage, AppError>> {
-        Box::pin(self.read_notifications(user_id, cursor, limit, max_month_scan))
-    }
-
-    fn mark_notification_read<'a>(
-        &'a self,
-        user_id: Uuid,
-        month_bucket: &'a str,
-        created_at: DateTime<Utc>,
-        notification_id: Uuid,
-    ) -> BoxFuture<'a, Result<(), AppError>> {
-        Box::pin(async move {
-            self.session
-                .query_unpaged(
-                    "UPDATE inbox_by_user_month SET read_at = ?
-                     WHERE user_id = ? AND month_bucket = ?
-                       AND created_at = ? AND notification_id = ? IF EXISTS",
-                    (
-                        Utc::now(),
-                        user_id,
-                        month_bucket,
-                        created_at,
-                        notification_id,
-                    ),
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
-    fn mark_all_notifications_read<'a>(
-        &'a self,
-        user_id: Uuid,
-    ) -> BoxFuture<'a, Result<(), AppError>> {
-        Box::pin(async move {
-            self.session
-                .query_unpaged(
-                    "INSERT INTO inbox_state_by_user (user_id, read_before) VALUES (?, ?)",
-                    (user_id, Utc::now()),
-                )
-                .await?;
-            Ok(())
-        })
     }
 }
 
@@ -724,5 +693,50 @@ mod tests {
             month_end("2026-12").unwrap(),
             Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()
         );
+    }
+
+    #[test]
+    fn malformed_cursor_and_bucket_mismatch_are_rejected() {
+        assert!(decode_cursor("not-base64url***").is_err());
+        let cursor = TimelineCursor {
+            bucket: "2026-06".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2026, 7, 25, 10, 0, 0).unwrap(),
+            id: Uuid::new_v4(),
+            category: None,
+        };
+        assert!(decode_cursor(&encode_cursor(&cursor).unwrap()).is_err());
+        assert!(previous_month("2026-13").is_err());
+    }
+
+    #[test]
+    fn activity_validation_rejects_unbounded_or_invalid_projection_input() {
+        let mut event = ActivityEvent {
+            event_id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            category: ActivityCategory::Security,
+            action: "session.login".to_string(),
+            actor_type: ActorType::SelfUser,
+            actor_id: None,
+            outcome: ActivityOutcome::Succeeded,
+            source_service: "acr".to_string(),
+            resource_type: None,
+            resource_id: None,
+            operation_id: None,
+            title: "Signed in".to_string(),
+            summary: String::new(),
+            occurred_at: Utc::now(),
+            metadata_json: "{}".to_string(),
+            schema_version: 1,
+            projection_version: 0,
+        };
+        assert!(event.validate().is_ok());
+        event.action.clear();
+        assert!(event.validate().is_err());
+        event.action = "session.login".to_string();
+        event.metadata_json = "[] trailing".to_string();
+        assert!(event.validate().is_err());
+        event.metadata_json = "{}".to_string();
+        event.schema_version = 0;
+        assert!(event.validate().is_err());
     }
 }

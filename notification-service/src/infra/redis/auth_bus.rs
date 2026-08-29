@@ -1,15 +1,17 @@
-use crate::application::auth::AuthCredentials;
-use crate::application::ports::{AppError, AuthError, AuthVerifier, AuthenticatedPrincipal};
 use crate::config::RedisConfig;
-use crate::contract::trinity::rpc::{
-    VerifyAdminTrinityTokenRequest, VerifyAdminTrinityTokenResponse, VerifyUserTrinityTokenRequest,
-    VerifyUserTrinityTokenResponse,
-};
+use crate::service::{AppError, AuthCredentials, AuthError, AuthVerifier, AuthenticatedPrincipal};
+pub mod proto {
+    tonic::include_proto!("trinity.rpc");
+}
 use crate::infra::vault::VaultClient;
 use crate::observability::{logger::Logger, metrics::MetricsManager};
 use futures_util::future::BoxFuture;
 use futures_util::StreamExt;
 use prost::Message;
+use proto::{
+    VerifyAdminTrinityTokenRequest, VerifyAdminTrinityTokenResponse, VerifyUserTrinityTokenRequest,
+    VerifyUserTrinityTokenResponse,
+};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use std::collections::HashMap;
@@ -349,5 +351,119 @@ async fn run_reply_router(
                 delay = std::cmp::min(delay.saturating_mul(2), reconnect_max);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn principal_must_be_a_uuid() {
+        assert!(valid_principal(Uuid::new_v4().to_string()).is_ok());
+        assert!(matches!(
+            valid_principal("root".to_string()),
+            Err(AuthError::Protocol(_))
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable Redis from NOTIFICATION_TEST_AUTH_REDIS_URL"]
+    async fn user_auth_request_reply_preserves_envelope_and_principal() {
+        let url = std::env::var("NOTIFICATION_TEST_AUTH_REDIS_URL")
+            .expect("NOTIFICATION_TEST_AUTH_REDIS_URL must point to disposable Redis");
+        let client = Arc::new(redis::Client::open(url).expect("Redis client"));
+        let mut publisher = client
+            .get_connection_manager()
+            .await
+            .expect("publisher connection");
+        redis::cmd("FLUSHDB")
+            .query_async::<()>(&mut publisher)
+            .await
+            .expect("flush disposable DB");
+        let bus = Arc::new(RedisAuthBus {
+            client: client.clone(),
+            publisher,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            connect_timeout: Duration::from_secs(1),
+            timeout: Duration::from_secs(1),
+            max_pending: 8,
+            reconnect_initial: Duration::from_millis(10),
+            reconnect_max: Duration::from_millis(50),
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let reply_router = bus.spawn_reply_router(shutdown_rx);
+
+        let mut request_subscriber = client.get_async_pubsub().await.expect("request subscriber");
+        request_subscriber
+            .subscribe("iam.auth.verify_user_trinity")
+            .await
+            .expect("subscribe auth request");
+
+        let mut readiness = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("readiness connection");
+        for _ in 0..50 {
+            let pattern_count: usize = redis::cmd("PUBSUB")
+                .arg("NUMPAT")
+                .query_async(&mut readiness)
+                .await
+                .expect("pattern count");
+            if pattern_count > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let responder_client = client.clone();
+        let expected_user = Uuid::new_v4();
+        let responder = tokio::spawn(async move {
+            let mut messages = request_subscriber.on_message();
+            let message = tokio::time::timeout(Duration::from_secs(1), messages.next())
+                .await
+                .expect("auth request timeout")
+                .expect("auth request");
+            let envelope = message.get_payload_bytes();
+            assert!(envelope.len() > 16);
+            let request_id = Uuid::from_slice(&envelope[..16]).expect("request UUID");
+            let request =
+                VerifyUserTrinityTokenRequest::decode(&envelope[16..]).expect("user auth protobuf");
+            assert_eq!(request.access_token, "token");
+            assert_eq!(request.access_key, "key");
+            assert_eq!(request.access_secret, "secret");
+            let response = VerifyUserTrinityTokenResponse {
+                valid: true,
+                user_id: expected_user.to_string(),
+            };
+            let mut response_bytes = Vec::new();
+            response
+                .encode(&mut response_bytes)
+                .expect("encode response");
+            let mut connection = responder_client
+                .get_multiplexed_async_connection()
+                .await
+                .expect("response connection");
+            connection
+                .publish::<_, _, i64>(
+                    format!("iam.auth.verify_user_trinity.reply.{request_id}"),
+                    response_bytes,
+                )
+                .await
+                .expect("publish auth response");
+        });
+
+        let principal = bus
+            .verify(AuthCredentials::User {
+                access_token: "token".to_string(),
+                access_key: "key".to_string(),
+                access_secret: "secret".to_string(),
+            })
+            .await
+            .expect("verified principal");
+        assert_eq!(principal.id, expected_user.to_string());
+        responder.await.expect("responder task");
+        shutdown_tx.send(true).expect("shutdown router");
+        reply_router.await.expect("reply router task");
     }
 }

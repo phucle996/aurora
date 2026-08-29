@@ -72,9 +72,9 @@ jobs:
               prefix=notification-service
               component=notification-service
               image_name=aurora-notification-service
-              context=notification-service
+              context=.
               dockerfile=notification-service/Dockerfile
-              source_paths=(notification-service proto/notification-service .github/workflows/central-release.yml)
+              source_paths=(notification-service proto/notification/job proto/notification/activity proto/iam/trinity .dockerignore .github/workflows/central-release.yml)
               ;;
             cost-manager-v*)
               prefix=cost-manager

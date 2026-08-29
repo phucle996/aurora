@@ -1,5 +1,5 @@
-use crate::application::ports::AppError;
 use crate::config::ScyllaConfig;
+use crate::service::ports::AppError;
 use scylla::client::session::Session;
 
 pub async fn ensure(session: &Session, config: &ScyllaConfig) -> Result<(), AppError> {

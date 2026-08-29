@@ -16,7 +16,7 @@ Tài liệu được thiết kế cho các kỹ sư phát triển phân hệ Not
 ### ❓ Phân hệ Centrifugo Connect Authentication là gì?
 
 Đây là quy trình xác thực ủy quyền kết nối (Connection Proxy) khi máy khách (Browser/Client) thực hiện thiết lập kết nối WebSocket/SSE đến cụm dịch vụ **Centrifugo Engine**.
-Thay vì tự giải mã token và duy trì kết nối trực tiếp đến session store, Centrifugo ủy thác kiểm tra quyền qua HTTP POST đến **Notification Service**. Notification phân tách Admin/End-User và gọi **ACR** qua Shared L2 Redis Request-Reply. JO kết thúc NATS Core Central-Zone; Notification nhận realtime nội vùng Central qua Shared Redis Pub/Sub, tách khỏi auth request path.
+Thay vì tự giải mã token và duy trì kết nối trực tiếp đến session store, Centrifugo ủy thác kiểm tra quyền qua HTTP POST đến **Notification Service**. Notification phân tách Admin/End-User và gọi **ACR** qua Shared L2 Redis Request-Reply. Workflow này chỉ cấp kênh notification durable; runtime read dùng assertion ACR và được browser gọi trực tiếp sang Zone Public Edge.
 
 ### 📍 Các Biên Công Nghệ Hoạt Động
 
@@ -53,7 +53,7 @@ graph TD
     acr -- "5. Kiểm tra session & Secret Hash" --> AuthRedis
     acr -- "6. PUBLISH request-scoped reply" --> SharedRedis
     SharedRedis -- "7. Return verify result" --> Notification
-    Notification -- "8. Response 200 OK + notifications:<user_id> + runtime:<user_id>" --> Centrifugo
+    Notification -- "8. Response 200 OK + notifications:<user_id>" --> Centrifugo
     Centrifugo -- "9. Thiết lập kết nối thành công" --> Client
 ```
 
@@ -88,7 +88,7 @@ sequenceDiagram
         alt Xác thực hợp lệ
             acr-->>SharedRedis: Reply request-scoped (valid = true, admin_id)
             SharedRedis-->>NS: Nhận response
-            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["notifications:<user_id>", "runtime:<user_id>"])
+            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["notifications:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
             acr-->>SharedRedis: Reply request-scoped (valid = false)
@@ -108,7 +108,7 @@ sequenceDiagram
         alt Xác thực hợp lệ
             acr-->>SharedRedis: Trả request-scoped response (valid = true, user_id)
             SharedRedis-->>NS: Nhận response
-            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["notifications:<user_id>", "runtime:<user_id>"])
+            NS-->>CF: HTTP 200 OK (user: user_id, channels: ["notifications:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
             acr-->>SharedRedis: Trả request-scoped response (valid = false)
@@ -159,16 +159,16 @@ Notification duy trì một Pub/Sub reply socket cho cả pod. Mỗi request đ�
 
 ### 📈 Distributed Tracing & Giám Sát (Metrics)
 - **Tracing Context**: Hệ thống trích xuất header `traceparent` từ Centrifugo (được lan truyền từ client ban đầu) thông qua W3C Trace Context để đo lường độ trễ E2E.
-- **OTel Metrics**: Auth call dùng `notification_shared_redis_calls_total` và `notification_shared_redis_call_duration_seconds`; realtime listener nội vùng Central dùng metric Shared Redis. Label phải thuộc tập hữu hạn theo [Notification telemetry contract](../../notification-service/TELEMETRY.md).
+- **OTel Metrics**: Auth call dùng `notification_shared_redis_calls_total` và `notification_shared_redis_call_duration_seconds`. Label phải thuộc tập hữu hạn theo [Notification telemetry contract](../../notification-service/TELEMETRY.md).
 
 ---
 
 ## 🏛️ 6. Bản Đồ Tham Chiếu File Mã Nguồn (Implementation References)
 
-- **HTTP Connect Adapter**: [connect.rs](../../notification-service/src/inbound/connect.rs).
-- **Connect Authorization Use Case**: [auth.rs](../../notification-service/src/application/auth.rs).
+- **HTTP Connect Adapter**: [realtime.rs](../../notification-service/src/transport/http_handler/realtime.rs).
+- **Connect Authorization Use Case**: [auth.rs](../../notification-service/src/service/auth.rs).
 - **Notification Shared Redis Auth Bus**: [auth_bus.rs](../../notification-service/src/infra/redis/auth_bus.rs).
-- **User/Admin Verification Contract**: [trinity.rs](../../notification-service/src/contract/trinity.rs).
+- **User/Admin Verification Contract**: [auth_bus.rs](../../notification-service/src/infra/redis/auth_bus.rs) và `proto/iam/trinity/v1/token_verification.proto`.
 - **ACR Shared Redis Router**: [redis.rs](../../acr/src/transport/redis.rs).
 - **ACR Session Validator**: [verify.rs](../../acr/src/user/verify.rs), [verify.rs](../../acr/src/sre/verify.rs).
 - **Cấu hình Router**: [router.rs](../../notification-service/src/app/router.rs) - Cấu hình đường dẫn `/api/v1/realtime/connect`.

@@ -3,9 +3,9 @@ use opentelemetry::{global, KeyValue};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+// [COMMENT]: Khai báo các đối tượng metric toàn cục OpenTelemetry với OnceLock khởi tạo lười
 static HTTP_REQUESTS: OnceLock<Counter<u64>> = OnceLock::new();
 static HTTP_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
-static REDIS_REALTIME_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
 static REDIS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static REDIS_STREAM_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
@@ -13,13 +13,14 @@ static CENTRIFUGO_PUBLISHES: OnceLock<Counter<u64>> = OnceLock::new();
 static EVENT_AGE_AT_PUBLISH: OnceLock<Histogram<f64>> = OnceLock::new();
 static TELEMETRY_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 
+// [COMMENT]: MetricsManager quản lý việc ghi nhận các chỉ số hiệu năng và trạng thái của Notification Service
 pub struct MetricsManager;
 
 impl MetricsManager {
+    // [COMMENT]: Khởi tạo trước toàn bộ metric để tránh độ trễ trong request path đầu tiên
     pub fn init() {
         let _ = Self::http_requests();
         let _ = Self::http_duration();
-        let _ = Self::redis_realtime_events();
         let _ = Self::redis_calls();
         let _ = Self::redis_duration();
         let _ = Self::redis_stream_events();
@@ -47,15 +48,6 @@ impl MetricsManager {
                 .f64_histogram("notification_http_request_duration_seconds")
                 .with_description("Centrifugo connect proxy latency")
                 .with_unit("s")
-                .init()
-        })
-    }
-
-    fn redis_realtime_events() -> &'static Counter<u64> {
-        REDIS_REALTIME_EVENTS.get_or_init(|| {
-            Self::meter()
-                .u64_counter("notification_shared_redis_realtime_events_total")
-                .with_description("Shared Redis realtime PubSub outcomes")
                 .init()
         })
     }
@@ -118,6 +110,7 @@ impl MetricsManager {
         })
     }
 
+    // [COMMENT]: Ghi nhận số lượng và thời gian thực thi của một HTTP request
     pub fn record_http_request(path: &str, status: &str, duration: Duration) {
         let attrs = [
             KeyValue::new("http.route", normalized_route(path)),
@@ -127,14 +120,7 @@ impl MetricsManager {
         Self::http_duration().record(duration.as_secs_f64(), &attrs);
     }
 
-    pub fn record_redis_realtime(kind: &'static str, status: &'static str) {
-        let attrs = [
-            KeyValue::new("event.kind", realtime_kind(kind)),
-            KeyValue::new("outcome", realtime_outcome(status)),
-        ];
-        Self::redis_realtime_events().add(1, &attrs);
-    }
-
+    // [COMMENT]: Ghi nhận kết quả và thời gian gọi RPC qua Shared Redis
     pub fn record_redis_call(channel: &str, status: &str, duration: Duration) {
         let attrs = [
             KeyValue::new("rpc.operation", redis_operation(channel)),
@@ -144,6 +130,7 @@ impl MetricsManager {
         Self::redis_duration().record(duration.as_secs_f64(), &attrs);
     }
 
+    // [COMMENT]: Ghi nhận kết quả xử lý một sự kiện từ Redis Stream (durable delivery, invalid, DLQ)
     pub fn record_redis_stream_event(stream: &'static str, status: &'static str) {
         Self::redis_stream_events().add(
             1,
@@ -154,19 +141,12 @@ impl MetricsManager {
         );
     }
 
+    // [COMMENT]: Ghi nhận kết quả publish thông báo sang Centrifugo HTTP API
     pub fn record_centrifugo_publish(status: &str) {
         Self::centrifugo_publishes().add(1, &[KeyValue::new("outcome", generic_outcome(status))]);
     }
 
-    /// Compatibility name: this measures age at Centrifugo HTTP ACK, not
-    /// delivery to a browser or durable business completion.
-    pub fn record_delivered_lag(status: &str, duration: Duration) {
-        Self::event_age_at_publish().record(
-            duration.as_secs_f64(),
-            &[KeyValue::new("outcome", generic_outcome(status))],
-        );
-    }
-
+    // [COMMENT]: Ghi nhận tình trạng bộ đệm log (thành công, bị rớt, bị nén tần suất)
     pub(crate) fn record_log_pipeline(attempted: u64, dropped: u64, suppressed: u64) {
         let counter = Self::telemetry_events();
         if attempted > 0 {
@@ -199,17 +179,19 @@ impl MetricsManager {
     }
 }
 
+// [COMMENT]: Chuẩn hóa path của endpoint để tránh bùng nổ cardinality metric (chỉ chấp nhận các route hợp lệ)
 fn normalized_route(path: &str) -> &'static str {
     match path {
         "/api/v1/realtime/connect" => "/api/v1/realtime/connect",
-        "/api/v1/me/activities" => "/api/v1/me/activities",
-        "/api/v1/me/notifications" => "/api/v1/me/notifications",
-        "/api/v1/me/notifications/:id/read" => "/api/v1/me/notifications/:id/read",
-        "/api/v1/me/notifications/read-all" => "/api/v1/me/notifications/read-all",
+        "/api/v1/me/activity/list" => "/api/v1/me/activity/list",
+        "/api/v1/me/notification/list" => "/api/v1/me/notification/list",
+        "/api/v1/me/notification/:id/read" => "/api/v1/me/notification/:id/read",
+        "/api/v1/me/notification/read-all" => "/api/v1/me/notification/read-all",
         _ => "other",
     }
 }
 
+// [COMMENT]: Nhóm status code theo lớp (2xx, 3xx, 4xx, 5xx)
 fn status_class(status: &str) -> &'static str {
     match status.as_bytes().first() {
         Some(b'2') => "2xx",
@@ -220,6 +202,7 @@ fn status_class(status: &str) -> &'static str {
     }
 }
 
+// [COMMENT]: Chuẩn hóa tên kênh Redis RPC
 fn redis_operation(channel: &str) -> &'static str {
     match channel {
         "verify_user_trinity_token" => "verify_user_trinity",
@@ -228,24 +211,7 @@ fn redis_operation(channel: &str) -> &'static str {
     }
 }
 
-fn realtime_kind(kind: &str) -> &'static str {
-    match kind {
-        "storage" => "storage",
-        "mail_runtime" => "mail_runtime",
-        _ => "other",
-    }
-}
-
-fn realtime_outcome(status: &str) -> &'static str {
-    match status {
-        "success" => "success",
-        "delivery_failed" => "delivery_failed",
-        "oversized" => "oversized",
-        "invalid" => "invalid",
-        _ => "other",
-    }
-}
-
+// [COMMENT]: Chuẩn hóa trạng thái kết quả của Redis Stream
 fn stream_outcome(status: &str) -> &'static str {
     match status {
         "delivered" => "delivered",
@@ -256,6 +222,7 @@ fn stream_outcome(status: &str) -> &'static str {
     }
 }
 
+// [COMMENT]: Chuẩn hóa loại Redis Stream
 fn stream_kind(stream: &str) -> &'static str {
     match stream {
         "job_notification" => "job_notification",
@@ -264,6 +231,7 @@ fn stream_kind(stream: &str) -> &'static str {
     }
 }
 
+// [COMMENT]: Chuẩn hóa trạng thái kết quả chung (success, timeout, failure, invalid)
 fn generic_outcome(status: &str) -> &'static str {
     match status {
         "ok" | "success" | "delivered" => "success",
