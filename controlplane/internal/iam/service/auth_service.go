@@ -268,9 +268,13 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		result, reason = observability.ResultRejected, observability.ReasonPreconditionFailed
 		return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, "precondition_failed")
 
-	case iamEntity.UserStatusSuspended, iamEntity.UserStatusDisabled:
+	case iamEntity.UserStatusDisabled:
 		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, "unauthenticated")
+		return nil, apperr.Wrap(iamTaxonomy.ErrAccountDisabled, nil, "unauthenticated")
+
+	case iamEntity.UserStatusSuspended:
+		result, reason = observability.ResultRejected, observability.ReasonUnauthenticated
+		return nil, apperr.Wrap(iamTaxonomy.ErrAccountSuspended, nil, "unauthenticated")
 
 	case iamEntity.UserStatusActive:
 		// [COMMENT]: Tài khoản đang hoạt động bình thường, cho phép tiếp tục đăng nhập

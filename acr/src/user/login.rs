@@ -509,6 +509,22 @@ fn canonicalize_login_identity(
     Ok((username, tenant_domain))
 }
 
+// The identity service may return an internal reason code for observability.
+// Public login responses deliberately collapse account-state and credential
+// rejections so the browser cannot use the endpoint for account enumeration.
+fn public_login_rejection(error_code: &str) -> (HttpStatusCode, &'static str) {
+    if error_code == "AUTHENTICATION_UNAVAILABLE" {
+        return (
+            HttpStatusCode::InternalServerError,
+            "Authentication is temporarily unavailable. Please try again.",
+        );
+    }
+    (
+        HttpStatusCode::Unauthorized,
+        "We couldn't sign you in. Check your details and try again.",
+    )
+}
+
 /// Issue a user Trinity only after Zone resolution and persist it before success.
 /// Return a compact workflow error; callers own their HTTP/gRPC response policy.
 pub async fn release_user_session(
@@ -897,23 +913,21 @@ pub async fn handle_login(
     }
 
     if !cp_res.valid {
-        let err_msg = if cp_res.error_message.is_empty() {
-            "Invalid username or password".to_string()
+        let error_code = if cp_res.error_message.is_empty() {
+            "INVALID_CREDENTIALS"
         } else {
-            cp_res.error_message.clone()
+            cp_res.error_message.as_str()
         };
         Logger::sys_warn(
             "user.login",
-            &format!("Authentication rejected: {}", err_msg),
+            &format!("Authentication rejected: {error_code}"),
             "",
         );
-        if err_msg == "ACCOUNT_VERIFICATION_REQUIRED" {
+        if error_code == "ACCOUNT_VERIFICATION_REQUIRED" {
             return Some(Ok(Response::new(build_verification_required_json())));
         }
-        return Some(Ok(Response::new(build_denied_json(
-            HttpStatusCode::Unauthorized,
-            &err_msg,
-        ))));
+        let (status, public_message) = public_login_rejection(error_code);
+        return Some(Ok(Response::new(build_denied_json(status, public_message))));
     }
 
     let refresh_cookie_max_age = if trust_device {

@@ -10,6 +10,14 @@ JWT nor role/permission snapshot.
 to Cost Manager. It accepts only a Cost-origin handoff code, verifier and Cost
 Ed25519 public key; the owner context comes solely from the consumed handoff.
 
+Before this exchange, Cost Console's `/auth/start` boot code uses its injected
+`cloudConsoleUrl` runtime value to navigate to
+`https://cloud.aurora.local/billing/authorize`. That value must name the public
+Cloud authority, never the developer-only `https://localhost`; a stale local
+origin would redirect the browser to a separate host with no Cloud Trinity
+cookies and incorrectly prompt for sign-in. The Cost Console origin itself is
+independently selected by Cloud's `costConsoleUrl` runtime value.
+
 ## Phase 1 — Cost Console → Envoy → ACR exchanges code
 
 ### REST input and output

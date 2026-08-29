@@ -176,6 +176,14 @@ global. Session user vẫn phải có Zone UUID cụ thể.
 | MFA `202` | `error_code=MFA_REQUIRED`, `mfa_required`, `challenge_id`, `expires_in`, `methods` |
 | Success `204` | Empty body |
 
+For a rejected credential/account-state result, CP sends an internal reason
+code over the private reply channel (`INVALID_CREDENTIALS`, `ACCOUNT_DISABLED`,
+`ACCOUNT_SUSPENDED` or `ACCOUNT_NOT_READY`). ACR logs that code with the request
+correlation but always returns the same public `401` message: `We couldn't sign
+you in. Check your details and try again.` This keeps disabled and suspended
+accounts non-enumerable. `AUTHENTICATION_UNAVAILABLE` is mapped to public `500`
+with a retryable generic message, never to an invalid-credential result.
+
 When `trust_device=true`, the refresh token and expiry come from CP; ACR only
 writes the HttpOnly cookie and never mints a second token.
 
@@ -342,8 +350,10 @@ sequenceDiagram
         Repo->>DB: users + tenant membership/role lookup
         DB-->>Repo: LoginUser + password hash + scope
         S->>S: Argon2 verify + account-state gate
-        alt invalid/suspended/disabled
+        alt invalid credentials
             S-->>H: invalid-credentials taxonomy
+        else disabled or suspended after password verification
+            S-->>H: account-disabled or account-suspended taxonomy
         else pending-active
             S->>L2: SETNX resend cooldown
             S->>DB: verification outbox (cooldown winner)
@@ -380,8 +390,10 @@ sequenceDiagram
   browser key as runtime proof state.
 - Shared Redis, CP, Vault or Auth-State failure is fail-closed: no authenticated
   response and no cookies.
-- Public errors are generic; logs/metrics use reason classes and correlation
-  IDs, never username, password, raw token, signature or key material.
+- Public errors are generic; CP and ACR logs record the sanitized reason code
+  (`account_disabled`, `account_suspended`, `invalid_credentials` or service
+  outage) with correlation IDs, never username, password, raw token, signature
+  or key material.
 
 ## Code map
 

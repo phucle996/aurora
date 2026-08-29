@@ -30,6 +30,8 @@ var (
 	ErrUserAlreadyExist            = errors.New("iam: user already exists")
 	ErrUserNotFound                = errors.New("iam: user not found")
 	ErrInvalidCredentials          = errors.New("iam: invalid credentials")
+	ErrAccountDisabled             = errors.New("iam: account disabled")
+	ErrAccountSuspended            = errors.New("iam: account suspended")
 	ErrVerificationRequired        = errors.New("iam: verification required")
 	ErrAuthenticationUnavailable   = errors.New("iam: authentication unavailable")
 	ErrInvalidSession              = errors.New("iam: invalid session")

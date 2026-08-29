@@ -70,6 +70,43 @@ type AuthRedisHandler struct {
 	slots  chan struct{}
 }
 
+// loginRejection keeps private credential/account-state reasons explicit at the
+// CP transport boundary. ACR consumes only its stable code and decides the
+// generic public response, while the log message remains useful to operators.
+type loginRejection struct {
+	logMessage string
+	errorCode  string
+}
+
+func loginRejectionFor(err error) (loginRejection, bool) {
+	switch {
+	case errors.Is(err, iamTaxonomy.ErrVerificationRequired):
+		return loginRejection{errorCode: "ACCOUNT_VERIFICATION_REQUIRED"}, true
+	case errors.Is(err, iamTaxonomy.ErrRoleRequired):
+		return loginRejection{
+			logMessage: "Login attempt blocked: no active role assigned in target scope",
+			errorCode:  "ACCOUNT_NOT_READY",
+		}, true
+	case errors.Is(err, iamTaxonomy.ErrAccountDisabled):
+		return loginRejection{
+			logMessage: "Login attempt rejected: account disabled",
+			errorCode:  "ACCOUNT_DISABLED",
+		}, true
+	case errors.Is(err, iamTaxonomy.ErrAccountSuspended):
+		return loginRejection{
+			logMessage: "Login attempt rejected: account suspended",
+			errorCode:  "ACCOUNT_SUSPENDED",
+		}, true
+	case errors.Is(err, iamTaxonomy.ErrUserNotFound), errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
+		return loginRejection{
+			logMessage: "Login attempt failed: invalid credentials",
+			errorCode:  "INVALID_CREDENTIALS",
+		}, true
+	default:
+		return loginRejection{}, false
+	}
+}
+
 // [COMMENT]: NewAuthRedisHandler khởi tạo handler lắng nghe các sự kiện qua Shared Redis PubSub cho Auth domain
 func NewAuthRedisHandler(
 	cfg *config.Config,
@@ -615,34 +652,20 @@ func (h *AuthRedisHandler) handleVerifyCredentials(payload []byte) {
 	// [COMMENT]: Gọi AuthService để xác thực thông tin đăng nhập người dùng
 	res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
 	if err != nil {
-		// [COMMENT]: Xử lý các trường hợp lỗi từ domain: yêu cầu xác minh tài khoản, thiếu role, sai thông tin đăng nhập hoặc lỗi hệ thống
-		if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
+		if rejection, handled := loginRejectionFor(err); handled {
+			if rejection.logMessage != "" {
+				logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", rejection.logMessage)
+			}
 			respond(&iamproto.VerifyUserCredentialsResponse{
 				Valid:        false,
-				ErrorMessage: "ACCOUNT_VERIFICATION_REQUIRED",
-			})
-			return
-		}
-		if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
-			logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
-			respond(&iamproto.VerifyUserCredentialsResponse{
-				Valid:        false,
-				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
-			})
-			return
-		}
-		if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
-			logger.SysWarnCtx(ctx, "Redis.VerifyUserCredentials", "Login attempt failed: invalid credentials")
-			respond(&iamproto.VerifyUserCredentialsResponse{
-				Valid:        false,
-				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
+				ErrorMessage: rejection.errorCode,
 			})
 			return
 		}
 		logger.SysErrorCtx(ctx, "Redis.VerifyUserCredentials", "Failed to verify credentials due to system error")
 		respond(&iamproto.VerifyUserCredentialsResponse{
 			Valid:        false,
-			ErrorMessage: "authentication service temporarily unavailable",
+			ErrorMessage: "AUTHENTICATION_UNAVAILABLE",
 		})
 		return
 	}
