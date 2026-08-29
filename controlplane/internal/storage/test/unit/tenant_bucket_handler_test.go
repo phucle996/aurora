@@ -62,6 +62,7 @@ func (s *tenantBucketServiceStub) GetBucket(_ context.Context, bucketID uuid.UUI
 	return &storageEntity.TenantBucket{
 		ID:                 bucketID,
 		Name:               "tn-12345678-test-bucket",
+		Status:             storageEntity.BucketStatusReady,
 		WorkspaceID:        workspaceID,
 		TenantID:           tenantID,
 		ZoneID:             zoneID,
@@ -185,8 +186,17 @@ func TestTenantBucketCreate_Success(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if resp["data"] == nil {
-		t.Fatalf("expected data in response, got nil")
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data in response, got %#v", resp["data"])
+	}
+	for _, field := range []string{"bucket_id", "bucket_name", "credential_id", "access_key", "secret_key", "policy"} {
+		if data[field] == nil {
+			t.Fatalf("expected neutral create field %q, got %#v", field, data)
+		}
+	}
+	if data["bucket"] != nil || data["credential"] != nil {
+		t.Fatalf("tenant response must match the neutral create contract: %#v", data)
 	}
 }
 
@@ -219,6 +229,19 @@ func TestTenantBucketGet_Success(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Status      string `json:"status"`
+			WorkspaceID string `json:"workspace_id"`
+			UsedMB      string `json:"used_mb"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if response.Data.Status != storageEntity.BucketStatusReady || response.Data.WorkspaceID != workspaceID.String() || response.Data.UsedMB != "1.000000" {
+		t.Fatalf("neutral bucket detail fields mismatch: %#v", response.Data)
 	}
 }
 

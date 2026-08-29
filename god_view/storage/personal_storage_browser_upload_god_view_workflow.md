@@ -77,7 +77,6 @@ When `file.size >= 10 MiB`, Cloud Console automatically executes the multipart w
 
 | Key | Read / Write | Invariant |
 |---|---|---|
-| `AURORA_ZONE_ACCESS/{access_session_id}` | Zone Control | Checked before issuing any ticket. Required action: `PutObject`. |
 | `AURORA_ZONE_ADMISSION/{resource_id}` | Zone Control & Public Edge | Public Authorizer checks `decision == "ALLOW"`. Suspended/depleted wallet halts upload immediately. |
 | `AURORA_ZONE_TRANSFER/{ticket_id}` | Public authorizer | CAS state transition (`Issued` → `Consuming`). Each part uses an isolated one-time ticket. |
 | `TransferTicketV1.public_path` | Public authorizer | Exact match against Envoy `:path` (including query strings like `?uploads`, `?partNumber=X&uploadId=Y`, `?uploadId=Y`). |
@@ -88,7 +87,29 @@ When `file.size >= 10 MiB`, Cloud Console automatically executes the multipart w
 ## Phase 1 — Browser → Zone Public Envoy → Public Authorizer
 
 The browser sends the ticket header and body to the Zone Public Edge hostname.
-Envoy forwards the `CheckRequest` to `PublicAuthorizer` (without buffering the stream payload, keeping gateway RAM bounded).
+The sole browser/SDK selector is presence of `X-Aurora-Transfer-Ticket`; neither
+`Origin`, User-Agent nor `Authorization` selects the branch. The ordered Envoy
+route chooses `minio_transfer` when the header is present. Lua then removes any
+caller `Authorization` and `X-Amz-*` credential headers while preserving the
+ticket for ext_authz. `PublicAuthorizer` sees that same header and executes the
+ticket branch. Header presence is only a branch marker, not authority: the
+request is denied unless the ticket and admission checks below succeed.
+
+If the header were absent, this exact request would enter the SDK branch and
+the fallback `minio` cluster instead; a Console browser has no SigV4 credential
+with which MinIO could authorize it. Envoy forwards the `CheckRequest` without
+buffering the stream payload, keeping gateway RAM bounded.
+
+This data-path phase reads
+`AURORA_ZONE_TRANSFER/{ticket_id}` as protobuf `TransferTicketV1` with
+`schema_version`, `ticket_id`, `secret_sha256`, `capability`, `actor_id`,
+`zone_id`, `resource_id`, `workspace_id`, `operation_id`, `method`,
+`public_path`, optional `content_length`, optional `content_type`,
+`issued_at_unix_seconds`, `expires_at_unix_seconds`, `one_time` and `state`.
+After exact secret/Zone/method/path/constraint checks it CASes only `state` from
+`Issued` to `Consuming`. Before that CAS, the resource-id admission read uses
+only `resource_id`, `policy_version`, `decision`,
+`effective_at_unix_seconds` and `valid_until_unix_seconds`.
 
 ```mermaid
 sequenceDiagram
@@ -136,8 +157,9 @@ sequenceDiagram
 ## Phase 2 — MinIO Streaming & Signing
 
 Public Envoy applies bounded connection buffers and stream idle timeouts.
-The upstream signing filter applies internal AWS SigV4 credentials. The browser ticket
-is removed before the upstream hop.
+The already-selected `minio_transfer` cluster applies internal AWS SigV4
+credentials. The authorizer removes the browser ticket before the upstream
+hop; route selection does not fall back to the SDK cluster after that removal.
 
 ```mermaid
 sequenceDiagram

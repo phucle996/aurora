@@ -3,6 +3,7 @@ mod contract;
 mod http;
 mod mail;
 mod source;
+mod storage;
 mod stream;
 mod telemetry;
 

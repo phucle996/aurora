@@ -269,7 +269,8 @@ Every wallet transition is committed with a Cost-owned
 publishes the same minimal owner-level `CommercialAdmissionChangedV1` to each
 module-specific stream. It does not resolve Storage resources. Storage
 Controlplane owns its local owner-to-bucket projection, creates scoped Zone
-outbox rows in the same transaction and relays those rows after commit.
+outbox rows in the same transaction, and Job Orchestrator relays those committed
+rows to Dataplane.
 
 ```mermaid
 sequenceDiagram
@@ -277,10 +278,12 @@ sequenceDiagram
     participant R as Cost wallet admission relay
     participant S as Shared Redis stream
     participant C as Controlplane Storage projection
-    participant K as Kafka Zone admission topic
-    participant Z as Zone Control admission consumer
+    participant O as Storage PostgreSQL outbox
+    participant J as Job Orchestrator
+    participant K as Zone job-command Kafka
+    participant D as Dataplane admission executor
     participant V as Zone admission KV
-    participant E as Zone Control/Public authorizer
+    participant E as Zone Edge authorizers
 
     B->>B: Commit wallet status, version, reason and wallet_admission_outbox
     R->>B: Claim unpublished outbox row with claim token
@@ -289,10 +292,11 @@ sequenceDiagram
     R->>B: Mark the claimed row published
     S-->>C: Consumer group delivers event
     C->>C: Apply owner policy_version and resolve Storage-owned resources
-    C->>C: Append scoped Zone delivery to PostgreSQL outbox in the same commit
-    C->>K: Relay one scoped event per target Zone and mark delivered after Kafka ACK
-    K-->>Z: Zone Control consumer receives target event
-    Z->>V: CAS resource admission by policy_version
+    C->>O: Append protected storage.bucket.commercial_admission per bucket in the same commit
+    O-->>J: PostgreSQL changefeed exposes committed rows
+    J->>K: Publish sealed JobCommandV1 to exact target Zone
+    K-->>D: Consume and validate resource/Zone/schema
+    D->>V: CAS resource-id and name indexes by policy_version
     E->>V: Read admission before billable ticket issue/transfer
     alt missing, stale or SUSPEND_BILLABLE
         E-->>E: Deny billable operation; revoke/delete remains allowed
@@ -303,7 +307,9 @@ sequenceDiagram
 
 The Central projection and Zone KV are rebuildable read models. A lower or
 duplicate policy version is a no-op; a missing or expired `ALLOW` fails closed.
-The browser, SDK and Zone authorizers never call Billing synchronously.
+Dataplane is the sole Zone admission writer; Zone Control has no parallel
+admission consumer or topic. The browser, SDK and Zone authorizers never call
+Billing synchronously.
 
 ## Failure and security rules
 

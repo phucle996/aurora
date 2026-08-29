@@ -16,6 +16,27 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+  # MinIO owns physical usage observation. The collector scrapes only the
+  # reviewed bucket gauges and sends them to Zone VictoriaMetrics; no object
+  # path, credential, audit event or Central identity enters this pipeline.
+  prometheus/minio_bucket:
+    config:
+      scrape_configs:
+        - job_name: minio-bucket-runtime
+          scrape_interval: 15s
+          scrape_timeout: 5s
+          metrics_path: /minio/v2/metrics/bucket
+          scheme: http
+          static_configs:
+            - targets: ["minio:9000"]
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: "minio_bucket_usage_total_bytes|minio_bucket_usage_object_total"
+              action: keep
+            - source_labels: [bucket]
+              regex: "(ws|tn)-[a-z0-9-]{1,60}"
+              action: keep
+
   # Docker development lacks the Kubernetes namespace filesystem boundary.
   # Read the canonical Docker path once and reject every non-Zone record in a
   # bounded processor before it can reach Zone VictoriaLogs.
@@ -215,7 +236,7 @@ service:
       processors: [memory_limiter, batch]
       exporters: [otlp_http/victoriatraces]
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, prometheus/minio_bucket]
       processors: [memory_limiter, batch]
       exporters: [prometheus_remote_write]
     logs:

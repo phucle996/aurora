@@ -149,6 +149,15 @@ access record, binds session/actor/workspace/Zone, checks record integrity,
 expiry, `ListBucket`, bucket/prefix/query, then requires current resource
 admission. Only it derives trusted resource and bucket headers for MinIO.
 
+Phase 3 reads `AURORA_ZONE_ACCESS/{access_session_id}` JSON fields
+`access_session_id`, `binding_hash`, `actor_id`, `resource_id`, `bucket_name`,
+`workspace_id`, `zone_id`, `actions`, `key_prefix`,
+`expires_at_unix_seconds` and `policy_revision`. It then reads only
+`policy_version`, `decision`, `effective_at_unix_seconds` and
+`valid_until_unix_seconds` from
+`AURORA_ZONE_ADMISSION/{resource_id}`. No physical bucket authority is taken
+from admission or request labels.
+
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Control Authorizer
@@ -187,7 +196,7 @@ sequenceDiagram
 | Client sends forged Aurora/S3 auth headers | ACR overwrites trusted headers and Zone Lua strips all caller S3/Aurora material before Envoy signs. |
 | Central route points to wrong Zone | Assertion Zone mismatch denies at that Zone. Current static dev cluster therefore has availability, not cross-Zone authorization, limitation. |
 | Query canonicalization disagreement | ACR signs the exact bytes; Zone alone applies the capability and strict path/query contract before Envoy rewrite. |
-| Wallet admission missing or suspended | Zone denies before MinIO even if the access record and signature are otherwise valid. |
+| Commercial admission missing or suspended | Zone denies before MinIO even if the access record and signature are otherwise valid. |
 | MinIO is down | Authorized request may return upstream `5xx`; access record is unchanged. |
 
 ## Code map

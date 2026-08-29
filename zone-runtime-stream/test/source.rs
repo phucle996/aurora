@@ -6,6 +6,7 @@ fn scope(module: &str) -> RuntimeScope {
         module: module.into(),
         resource_type: "instance".into(),
         resource_id: Uuid::new_v4(),
+        resource_name: None,
         owner_id: Uuid::new_v4(),
         workspace_id: Uuid::new_v4(),
         zone_id: Uuid::new_v4(),

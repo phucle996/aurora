@@ -101,7 +101,7 @@ func (h *TenantBucketHandler) Create(c *gin.Context) {
 			logger.HandlerWarn(c, op, createErr, "invalid bucket name format")
 			apires.RespondBadRequest(c, "invalid bucket name format")
 		case errors.Is(createErr, storageTaxonomy.ErrCommercialAdmissionDenied):
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		case errors.Is(createErr, storageTaxonomy.ErrNotFound):
 			apires.RespondForbidden(c, "workspace does not exist in this tenant or user is not active")
 		default:
@@ -112,23 +112,12 @@ func (h *TenantBucketHandler) Create(c *gin.Context) {
 	}
 
 	apires.RespondCreated(c, gin.H{
-		"bucket": gin.H{
-			"id":                   createResult.BucketID.String(),
-			"name":                 createResult.BucketName,
-			"workspace_id":         workspaceID.String(),
-			"zone_id":              zoneID.String(),
-			"tenant_id":            tenantID.String(),
-			"capacity_quota_bytes": req.QuotaBytes,
-			"used_bytes":           0,
-			"versioning_enabled":   req.VersioningEnabled,
-			"lifecycle_rules":      []storageEntity.BucketLifecycleRule{},
-		},
-		"credential": gin.H{
-			"id":         createResult.CredentialID.String(),
-			"access_key": createResult.AccessKey,
-			"secret_key": createResult.SecretKey,
-			"policy":     createResult.Policy,
-		},
+		"bucket_id":     createResult.BucketID.String(),
+		"bucket_name":   createResult.BucketName,
+		"credential_id": createResult.CredentialID.String(),
+		"access_key":    createResult.AccessKey,
+		"secret_key":    createResult.SecretKey,
+		"policy":        createResult.Policy,
 	}, "tenant bucket created successfully")
 }
 
@@ -187,8 +176,10 @@ func (h *TenantBucketHandler) Get(c *gin.Context) {
 		"workspace_id":           bucket.WorkspaceID.String(),
 		"zone_id":                bucket.ZoneID.String(),
 		"tenant_id":              bucket.TenantID.String(),
+		"status":                 bucket.Status,
 		"capacity_quota_bytes":   bucket.CapacityQuotaBytes,
 		"used_bytes":             bucket.UsedBytes,
+		"used_mb":                formatUsedMegabytes(bucket.UsedBytes),
 		"used_bytes_megabytes":   formatUsedMegabytes(bucket.UsedBytes),
 		"encrypt_enabled":        bucket.EncryptEnabled,
 		"versioning_enabled":     bucket.VersioningEnabled,
@@ -248,8 +239,10 @@ func (h *TenantBucketHandler) List(c *gin.Context) {
 			"workspace_id":           b.WorkspaceID.String(),
 			"zone_id":                b.ZoneID.String(),
 			"tenant_id":              b.TenantID.String(),
+			"status":                 b.Status,
 			"capacity_quota_bytes":   b.CapacityQuotaBytes,
 			"used_bytes":             b.UsedBytes,
+			"used_mb":                formatUsedMegabytes(b.UsedBytes),
 			"used_bytes_megabytes":   formatUsedMegabytes(b.UsedBytes),
 			"encrypt_enabled":        b.EncryptEnabled,
 			"versioning_enabled":     b.VersioningEnabled,
@@ -329,7 +322,7 @@ func (h *TenantBucketHandler) UpdateQuota(c *gin.Context) {
 		case errors.Is(err, storageTaxonomy.ErrResizeLimitTooLow):
 			apires.RespondBadRequest(c, "quota leaves less than one GiB free")
 		case errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied):
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -397,7 +390,7 @@ func (h *TenantBucketHandler) UpdateVersioning(c *gin.Context) {
 		case errors.Is(err, storageTaxonomy.ErrNotFound):
 			apires.RespondNotFound(c, "bucket not found")
 		case errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied):
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -543,7 +536,7 @@ func (h *TenantBucketHandler) UpdateLifecycle(c *gin.Context) {
 		case errors.Is(err, storageTaxonomy.ErrVersioningRequired):
 			apires.RespondBadRequest(c, "noncurrent version expiration requires bucket versioning to be enabled")
 		case errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied):
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")

@@ -1,7 +1,5 @@
 # Tenant Bucket Delete — God View
 
-> **Critical-route revision (2026-08-26):** the public request is `DELETE /api/v1/critical/storage/buckets/{bucket_id}`; ACR consumes the exact session proof and rewrites only to `/api/v1/tenant/critical/storage/buckets/{bucket_id}`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
-
 Tenant Bucket Deletion is asynchronous. Controlplane transitions the bucket and
 all child credentials to `DELETING` while inserting the sealed Zone command.
 Central rows are hard-deleted only after Dataplane confirms physical teardown.
@@ -10,10 +8,12 @@ Central rows are hard-deleted only after Dataplane confirms physical teardown.
 
 ## API-scope contract
 
-Browser calls neutral `DELETE /api/v1/storage/buckets/{id}`. ACR validates the Trinity
+Browser calls neutral `DELETE /api/v1/critical/storage/buckets/{id}` with no body
+and an exact bound session proof. ACR validates the proof and Trinity
 tenant membership, resolves workspace and zone context, rewrites the path to
-`/api/v1/tenant/storage/buckets/{id}`, and injects trusted identity headers (`x-user-id`,
+`/api/v1/tenant/critical/storage/buckets/{id}`, and injects trusted identity headers (`x-user-id`,
 `x-workspace-id`, `x-zone-id`, `x-tenant-id`). Controlplane requires `storage:bucket:delete` permission.
+`RequireSessionProof` runs before `Authorize`.
 
 ---
 
@@ -26,6 +26,7 @@ tenant membership, resolves workspace and zone context, rewrites the path to
 | `Cookie` | ACR derives Trinity session, tenant membership, Zone, and workspace context. |
 | `Origin` | CORS enforcement at Envoy / ACR. |
 | `X-Requested-With` or `Sec-Fetch-Site` | Required by ACR CSRF check for `DELETE`. |
+| `x-session-proof-challenge-id`, `x-session-proof-timestamp`, `x-session-proof-signature` | Exact `DELETE`/critical-path/empty-body proof consumed by ACR; raw cryptographic fields are removed before upstream. |
 | `traceparent` | Injected into outbox record for distributed OpenTelemetry tracing. |
 
 ### Response payload
@@ -40,6 +41,20 @@ tenant membership, resolves workspace and zone context, rewrites the path to
 
 ---
 
+## Key and transport contract
+
+| Store / transport | Operation | Invariant |
+|---|---|---|
+| `storage.tenant_buckets` and credentials | `READY -> DELETING`, then hard-delete on success | Exact Tenant/workspace/member/Zone scope is rechecked by repository. |
+| `storage.storage_outbox_records` | Insert `storage.bucket.delete` | Durable name, owner, Zone and protected payload are the command authority. |
+| `storage.resource_admission_projection` | Hard-delete after successful Zone result | Retained while Zone teardown can retry. |
+| `AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}` | CAS tombstone | Disables runtime read and preserves deletion identity. |
+| `AURORA_ZONE_ADMISSION/{bucket_id}` | Revision-fenced delete | Removed only for exact stored ID/name identity. |
+| `AURORA_ZONE_ADMISSION/name/{physical_name}` | Revision-fenced delete | Releases SDK name lookup for safe reuse. |
+| Zone command/result topics | At-least-once | JO settles only the exact durable outbox event. |
+
+---
+
 ## Phase 1 — Client → Envoy → ACR
 
 ```mermaid
@@ -51,13 +66,13 @@ sequenceDiagram
     participant Redis as Auth-State Redis
     participant CP as Controlplane
 
-    Browser->>Envoy: DELETE /api/v1/storage/buckets/{id}
-    Envoy->>ACR: CheckRequest
-    ACR->>Redis: Validate Trinity tenant session & resolve workspace/zone
+    Browser->>Envoy: DELETE /api/v1/critical/storage/buckets/{id} with proof
+    Envoy->>ACR: CheckRequest exact method path headers and empty body
+    ACR->>Redis: Validate proof, Trinity tenant session and workspace/zone
     ACR->>ACR: Strip untrusted headers & inject x-user-id, x-tenant-id, x-workspace-id, x-zone-id
-    ACR->>ACR: Rewrite path to /api/v1/tenant/storage/buckets/{id}
+    ACR->>ACR: Rewrite path to /api/v1/tenant/critical/storage/buckets/{id}
     ACR-->>Envoy: Ok
-    Envoy->>CP: Forward DELETE /api/v1/tenant/storage/buckets/{id}
+    Envoy->>CP: Forward DELETE /api/v1/tenant/critical/storage/buckets/{id}
 ```
 
 ---
@@ -179,21 +194,44 @@ sequenceDiagram
     participant KafkaCmd as Zone Command Kafka
     participant DP as Zone Dataplane (BucketDeleteExecutor)
     participant MinIO as MinIO S3 Cluster
+    participant KV as Zone config KV
 
     PG-->>JO: Read committed outbox record (topic: storage.bucket.delete)
     JO->>KafkaCmd: Publish JobCommandV1 (sealed BucketDeleteSync, target zone)
     KafkaCmd-->>DP: Consume job command
     DP->>DP: Decrypt payload & decode BucketDeleteSync
-    DP->>MinIO: MinIO Admin DeleteServiceAccount (all access keys)
-    DP->>MinIO: S3 DeleteBucket (purges bucket and contents)
+    DP->>MinIO: S3 DeleteBucket (non-empty/error remains retryable)
+    DP->>MinIO: MinIO Admin DeleteServiceAccount and policy for all access keys
+    DP->>KV: CAS disabled storage.bucket.head bucket tombstone
+    DP->>KV: CAS-delete admission name/physical_name then bucket_id
     MinIO-->>DP: Teardown completed
 ```
+
+The runtime-head CAS on
+`AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}` preserves
+`schema_version`, module/type, resource/name, Tenant owner, workspace and Zone;
+sets `runtime_read_enabled=false`, `tombstoned=true`, replaces `event_id` with
+the delete job and increments `version`.
+
+Dataplane then reads, identity-checks and revision-deletes
+`AURORA_ZONE_ADMISSION/name/{physical_name}` followed by
+`AURORA_ZONE_ADMISSION/{bucket_id}`. Missing keys are idempotent success;
+identity mismatch/corruption fails closed and CAS contention is retryable. Thus
+a successful delete cannot leave an SDK name bound to a deleted resource.
+
+Before publishing the terminal job result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1` with `schema_version=2`, `command_sha256`, `attempt`,
+`message`, `result_payload`, `result_payload_schema_version`, `result_status`
+and optional `error_code`. This receipt is replay evidence only, not Tenant or
+bucket authority; matching command bytes reuse the result and conflict or
+corruption fails closed.
 
 ---
 
 ## Phase 4 — Job Settlement & Resource Ownership Handover (Billing Registry)
 
-Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi CTE đóng trạng thái outbox sang `SUCCEEDED`, xóa dòng tenant bucket vật lý trong PostgreSQL, và **ngay lập tức kích hoạt luồng Fast-Path đẩy sự kiện sở hữu (`RESOURCE_DELETED`) sang Cost Manager** để đóng sổ tính cước.
+Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi CTE đóng trạng thái outbox sang `SUCCEEDED`, xóa tenant bucket, credentials và `storage.resource_admission_projection` của exact `(resource_id, zone_id)`, và **ngay lập tức kích hoạt luồng Fast-Path đẩy sự kiện sở hữu (`RESOURCE_DELETED`) sang Cost Manager** để đóng sổ tính cước. Central admission topology chỉ bị xóa sau Zone success.
 
 ```mermaid
 sequenceDiagram
@@ -210,7 +248,7 @@ sequenceDiagram
 
     DP->>KafkaRes: Publish JobResult (job_id, status: SUCCEEDED)
     KafkaRes-->>JO: Consume JobResult
-    JO->>PG: 1. Execute isolated Tenant Delete CTE (status = 'SUCCEEDED')
+    JO->>PG: 1. Delete bucket/credentials/resource admission and settle SUCCEEDED
     
     rect rgb(255, 245, 240)
     Note over JO,Proj: Luồng chuyển giao sở hữu sang Billing (Fast-Path)

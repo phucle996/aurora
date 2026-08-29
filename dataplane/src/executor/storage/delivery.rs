@@ -28,7 +28,7 @@ pub async fn dispatch_storage_job(
     match action {
         // [COMMENT]: Định tuyến action bucket.create sang BucketCreateExecutor chuyên biệt
         "bucket.create" => {
-            let exec = super::bucket::BucketCreateExecutor;
+            let exec = super::bucket::BucketCreateExecutor::new(zone_kv.clone());
             exec.execute(payload).await
         }
 
@@ -64,7 +64,7 @@ pub async fn dispatch_storage_job(
 
         // [COMMENT]: Định tuyến xóa bucket
         "bucket.delete" => {
-            let exec = super::BucketDeleteExecutor;
+            let exec = super::BucketDeleteExecutor::new(zone_kv.clone());
             exec.execute(payload).await
         }
 

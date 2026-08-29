@@ -14,6 +14,7 @@ pub struct RuntimeScope {
     pub module: String,
     pub resource_type: String,
     pub resource_id: Uuid,
+    pub resource_name: Option<String>,
     pub owner_id: Uuid,
     pub workspace_id: Uuid,
     pub zone_id: Uuid,
@@ -80,6 +81,7 @@ impl RuntimeScope {
         }
         let adapter_exists = match self.module.as_str() {
             "mail" => crate::mail::validate_scope(self),
+            "storage" => crate::storage::validate_scope(self),
             "managed_service" => self.resource_type == "instance",
             "hypervisor" => self.resource_type == "vm",
             _ => false,

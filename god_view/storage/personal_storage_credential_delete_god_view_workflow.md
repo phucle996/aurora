@@ -155,6 +155,14 @@ sequenceDiagram
     end
 ```
 
+Before publishing either terminal result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. Its exact fields are `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+It is replay evidence only and contains no access key, secret or credential
+authority.
+
 ## Security discrepancy and recovery
 
 | Condition | Actual behavior |
@@ -174,7 +182,7 @@ sequenceDiagram
 - `dataplane/src/executor/storage/credential.rs`
 - `job-orchestrator/src/results/storage/credential.rs`
 
-## Wallet admission rule
+## Commercial admission rule
 
 Credential delete is outside the billable-expansion gate. The workflow still
 enforces verified personal ownership, the bucket/credential fence and the

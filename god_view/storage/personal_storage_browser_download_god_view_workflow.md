@@ -26,22 +26,19 @@ A successful response is the MinIO object body streamed to the browser with
 safe Content-Type, Content-Length and ETag headers. The browser creates a
 temporary object URL and revokes it after the download starts.
 
-## Key and state contract
-
-| Key | Rule |
-|---|---|
-| AURORA_ZONE_TRANSFER/{ticket_id} | Read once and CAS Issued to Consuming. |
-| method | Must be GET. |
-| public_path | Must equal the exact Envoy :path. |
-| content_length | Must be absent for download. |
-| content_type | Must be absent unless explicitly bound. |
-| expires_at_unix_seconds | Expired ticket is denied before MinIO. |
-
 ## Phase 1 — Browser → Zone Public Envoy → Public Authorizer
 
-The route is selected by the presence of the ticket header. The fallback public
-SDK route is disabled for this request, so a browser cannot accidentally turn a
-ticket transfer into an unsigned generic MinIO request.
+The sole browser/SDK selector is presence of `X-Aurora-Transfer-Ticket`; Envoy
+does not classify by `Origin`, User-Agent or SigV4 syntax. The ordered route
+selects `minio_transfer` before filters run. Lua preserves the ticket but strips
+caller `Authorization` and `X-Amz-*` credentials, and `PublicAuthorizer` uses
+the same header presence to enter the ticket branch. The header is only a
+selector until its secret, bindings and admission have been verified.
+
+An absent ticket would select the SDK branch and direct `minio` cluster. A
+browser cannot silently fall back because it has no valid MinIO SigV4
+credential. Conversely, a client that sends both SigV4 and a ticket is treated
+only as a ticket client; its SigV4 headers are removed.
 
 ~~~mermaid
 sequenceDiagram
@@ -68,8 +65,21 @@ sequenceDiagram
     end
 ~~~
 
-The authorizer performs no storage lookup. Storage bucket and object
-authorization settled in Zone Control when the ticket was created.
+The authorizer performs no Controlplane or MinIO metadata lookup. Bucket and
+object authorization settled in Zone Control when the ticket was created; this
+phase rechecks only ticket bindings and current commercial admission.
+
+This phase reads
+`AURORA_ZONE_TRANSFER/{ticket_id}` as protobuf `TransferTicketV1` with
+`schema_version`, `ticket_id`, `secret_sha256`, `capability`, `actor_id`,
+`zone_id`, `resource_id`, `workspace_id`, `operation_id`, `method`,
+`public_path`, optional `content_length`, optional `content_type`,
+`issued_at_unix_seconds`, `expires_at_unix_seconds`, `one_time` and `state`.
+Download requires exact `GET`/path, no bound content length and current
+`Issued`; the CAS changes only `state` to `Consuming`. Before consuming, the
+authorizer reads `AURORA_ZONE_ADMISSION/{resource_id}` fields `resource_id`,
+`policy_version`, `decision`, `effective_at_unix_seconds` and
+`valid_until_unix_seconds` and requires current `ALLOW`.
 
 ## Phase 2 — Public Edge stream and browser settlement
 
@@ -95,7 +105,9 @@ sequenceDiagram
 
 Ticket consumption occurs before the upstream read. A failed read is not
 replayable with the consumed ticket; the Console requests a new ticket before
-retrying.
+retrying. Removing the ticket after authorization does not change the
+previously selected `minio_transfer` route; that cluster signs the MinIO request
+with Zone-owned credentials.
 
 ## Failure and recovery
 
@@ -114,8 +126,3 @@ retrying.
 - zone-public-edge-gateway/envoy.yaml
 - zone-public-edge-gateway/authorizer/src/main.rs
 - proto/zone/transfer/v1/transfer_ticket.proto
-
-Public Authorizer also reads `AURORA_ZONE_ADMISSION/{resource_id}` before it
-CASes the ticket to `Consuming`. Missing, expired or suspended admission is a
-`403` with no MinIO request; only a current `ALLOW` record reaches the signed
-upstream GET.

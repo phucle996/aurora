@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useUserSession } from "@/session/use-session";
 import { publicRuntimeConfig } from "@/runtime-config";
 import { decodeEvent, dedupeKey, type EventCallback, type EventMap, type EventType, type RealtimeStatus, type RealtimeStream } from "@/realtime/contracts";
-export type { BucketSizesPayload, JobNotificationPayload, MailRuntimePayload, RealtimeStatus, RealtimeStream } from "@/realtime/contracts";
+export type { JobNotificationPayload, MailRuntimePayload, RealtimeStatus, RealtimeStream } from "@/realtime/contracts";
 
 type RealtimeContextValue = {
   status: RealtimeStatus;
@@ -103,7 +103,7 @@ export function RealtimeProvider({ children, userId, generation }: { children: R
       const stream = streamForChannel(ctx.channel);
       if (!stream || !isRecord(ctx.data)) return;
       const eventType = ctx.data.event_type;
-      if (typeof eventType !== "string" || !["job.notification", "mail.consumer.runtime.changed", "storage.bucket.sizes.sync"].includes(eventType)) return;
+      if (typeof eventType !== "string" || !["job.notification", "mail.consumer.runtime.changed"].includes(eventType)) return;
       if (ctx.data.stream !== undefined && ctx.data.stream !== stream) return;
       const payload = decodeEvent(eventType as EventType, ctx.data.data ?? ctx.data);
       if (!payload) return;

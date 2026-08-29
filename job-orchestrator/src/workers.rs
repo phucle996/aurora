@@ -69,14 +69,12 @@ impl RuntimeWorkers {
 
         let storage_config = self.config.clone();
         let storage_kafka = self.kafka.clone();
-        let storage_redis = self.cache_redis.clone();
         let storage_worker = async move {
             let mut failures = 0_u32;
             loop {
                 if let Err(error) = storage_usage::worker::run_bucket_sizes_listener(
                     &storage_config,
                     storage_kafka.clone(),
-                    &storage_redis,
                 )
                 .await
                 {

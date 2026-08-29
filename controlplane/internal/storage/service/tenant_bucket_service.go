@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"controlplane/internal/observability"
+	"controlplane/internal/security"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageproto "controlplane/internal/storage/transport/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -60,7 +61,15 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
-
+	if len(param.Name) == 0 || len(param.Name) > 51 ||
+		!((param.Name[0] >= 'a' && param.Name[0] <= 'z') || (param.Name[0] >= '0' && param.Name[0] <= '9')) ||
+		!((param.Name[len(param.Name)-1] >= 'a' && param.Name[len(param.Name)-1] <= 'z') || (param.Name[len(param.Name)-1] >= '0' && param.Name[len(param.Name)-1] <= '9')) ||
+		strings.IndexFunc(param.Name, func(value rune) bool {
+			return !(value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '-')
+		}) >= 0 {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
+		return nil, storageTaxonomy.ErrInvalidBucketName
+	}
 
 	bucketID, err := uuid.NewV7()
 	if err != nil {
@@ -113,11 +122,17 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(
 	}
 
 	syncEvent := &storageproto.BucketCreateSync{
-		Name:       bucket.Name,
-		AccessKey:  accessKey,
-		SecretKey:  secretKey,
-		Policy:     policy,
-		QuotaBytes: bucket.CapacityQuotaBytes,
+		Name:          bucket.Name,
+		AccessKey:     accessKey,
+		SecretKey:     secretKey,
+		Policy:        policy,
+		QuotaBytes:    bucket.CapacityQuotaBytes,
+		BucketId:      bucket.ID[:],
+		OwnerId:       bucket.TenantID[:],
+		OwnerType:     string(storageEntity.StorageOwnerTypeTenant),
+		WorkspaceId:   bucket.WorkspaceID[:],
+		ZoneId:        bucket.ZoneID[:],
+		SchemaVersion: 2,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -471,8 +486,14 @@ func (s *TenantBucketSvcImpl) DeleteBucket(
 	}
 
 	syncEvent := &storageproto.BucketDeleteSync{
-		Name:       bucket.Name,
-		AccessKeys: accessKeys,
+		Name:          bucket.Name,
+		AccessKeys:    accessKeys,
+		BucketId:      bucket.ID[:],
+		OwnerId:       bucket.TenantID[:],
+		OwnerType:     string(storageEntity.StorageOwnerTypeTenant),
+		WorkspaceId:   bucket.WorkspaceID[:],
+		ZoneId:        bucket.ZoneID[:],
+		SchemaVersion: 1,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {

@@ -29,26 +29,36 @@ the Public Edge boundary and never enter any journal or report.
 
 ## Phase 1 — Public Edge emits the trusted access event
 
-The event is emitted only after the ticket has been accepted by the embedded
-Public Authorizer and the upstream request has completed. Envoy owns the byte
-counters and final status. The client cannot select `resource_id` or any
-metering classification.
+The event is emitted only after either a browser transfer ticket or a direct
+SDK request has passed the embedded Public Authorizer and the upstream request
+has completed. Envoy owns the byte counters and final status. The client cannot
+select `resource_id` or any metering classification.
+
+The branch selector is exactly header presence. A request containing
+`X-Aurora-Transfer-Ticket` is routed to `minio_transfer`, has caller SigV4
+headers removed and must pass the ticket branch. Without that header, Envoy
+uses the direct `minio` route, preserves SDK SigV4 and the authorizer uses the
+admission name index. `Origin`, User-Agent and `Authorization` never choose the
+branch; sending both ticket and SigV4 still selects only the ticket branch.
 
 ```mermaid
 sequenceDiagram
     participant C as Browser or SDK
     participant E as Zone Public Edge Envoy
     participant A as Embedded Public Authorizer
-    participant K as Zone KV ticket state
+    participant K as Zone transfer/admission KV
     participant M as MinIO or runtime stream
     participant L as Envoy access logger
 
-    C->>E: GET/PUT public route plus transfer ticket
+    C->>E: Browser method-bound ticket request or SDK SigV4 GET/PUT
     E->>A: ExtAuthz CheckRequest(method, path, headers, metadata)
-    A->>A: Decode ticket signature and expiry
-    A->>K: Read ticket state and consume one-time state when required
-    K-->>A: Ticket status, resource UUID, operation and route binding
-    alt ticket invalid, expired, replayed or KV unavailable
+    alt browser ticket branch
+        A->>A: Split ticket id/secret and hash the secret
+        A->>K: Read resource ticket and admission; CAS Issued to Consuming
+    else direct SDK branch
+        A->>K: Read admission name/{bucket}; preserve SigV4 for MinIO
+    end
+    alt authority invalid, expired, replayed or KV unavailable
         A-->>E: Deny or fail-closed unavailable decision
         E-->>C: Error; no upstream request and no metering event
     else authorized
@@ -71,7 +81,7 @@ The logger records only the fields needed by the Zone projection:
 | `request_id` | Compatibility alias of `event_id` during journal migration |
 | `zone_id` | Zone configuration, not a client header |
 | `resource_id` | Authorizer-injected `X-AURORA-RESOURCE-ID`, non-nil UUID |
-| `method` | `GET` or `PUT` |
+| `method` | Original authorized method. Browser multipart may journal `POST`/`DELETE`; only successful `GET`/`PUT` enters transfer billing. |
 | `status` | Final HTTP status; only 2xx rows are billable |
 | `bytes_received` | Envoy upload counter, input to `NETWORK_IN` |
 | `bytes_sent` | Envoy download counter, input to `NETWORK_OUT` |
@@ -79,6 +89,30 @@ The logger records only the fields needed by the Zone projection:
 
 No ticket, cookie, `Authorization`, access secret, object key or raw path is
 written to the access event.
+
+At the KV boundary, the Public Authorizer reads
+`AURORA_ZONE_TRANSFER/{ticket_id}` protobuf `TransferTicketV1` fields
+`schema_version`, `ticket_id`, `secret_sha256`, `capability`, `actor_id`,
+`zone_id`, `resource_id`, `workspace_id`, `operation_id`, `method`,
+`public_path`, optional content constraints, issue/expiry timestamps,
+`one_time` and `state`, then CASes `Issued` to `Consuming`. It also reads
+`AURORA_ZONE_ADMISSION/{resource_id}` JSON fields `resource_id`,
+`policy_version`, `decision`, `effective_at_unix_seconds` and
+`valid_until_unix_seconds`. Only a current `ALLOW` reaches MinIO and therefore
+the response-completion logger.
+
+For the direct SDK branch there is no transfer-ticket KV access. The
+authorizer reads `AURORA_ZONE_ADMISSION/name/{bucket}` JSON fields
+`resource_id`, `resource_name`, `policy_version`, `decision`,
+`effective_at_unix_seconds` and optional `valid_until_unix_seconds`; it requires
+the record name to equal the path bucket and a current `ALLOW`, then injects the
+record's `resource_id` for metering. MinIO, not KV, validates the preserved
+SigV4 credential and bucket policy.
+
+The journal retains authorized browser multipart control calls for diagnosis,
+but the hourly publisher filters to `method IN ('GET', 'PUT')`. Consequently
+multipart initiate/complete/abort are not transfer quantities; uploaded part
+bytes are counted from their successful ticket-bound `PUT` requests.
 
 ## Phase 2 — Zone OTel routes diagnostic and metering copies
 
@@ -158,6 +192,13 @@ The completion marker is the barrier for billing. A report publisher must see
 all configured shard IDs for the same hourly `billing_window_end`; otherwise
 the window remains pending and no partial storage charge is emitted.
 
+The scanner's KV inputs are local orchestration only:
+`AURORA_ZONE_CONFIG/zone.metadata` stores JSON `status`, `services`,
+`updated_at`; and
+`AURORA_ZONE_CONTROL_ASSIGNMENTS/assignment.storage_scan.{shard}` stores JSON
+`unit_key`, `member_id`, `assignment_epoch`, `assigned_at_unix_ms`,
+`expires_at_unix_ms`. Neither schema carries bucket usage or billing quantity.
+
 ## Phase 4 — Zone Control closes the hourly window and writes the outbox
 
 The single `assignment.storage_report.0` worker runs every few seconds only to
@@ -204,6 +245,11 @@ to and is capped at 720 hourly windows. After a successful startup pass, the
 steady loop retries only the newest 24 windows to avoid a permanent 30-day
 ClickHouse rescan. Reports older than the explicit retention boundary are
 quarantined rather than silently charged.
+
+`AURORA_ZONE_CONTROL_ASSIGNMENTS/assignment.storage_report.0` uses the same
+assignment JSON schema (`unit_key`, `member_id`, `assignment_epoch`,
+`assigned_at_unix_ms`, `expires_at_unix_ms`). Phase 4 consumes only the matching
+epoch and unexpired lease; report contents come from ClickHouse, not this KV.
 
 ## Phase 5 — Durable Zone outbox relay to Kafka
 

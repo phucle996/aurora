@@ -1,10 +1,12 @@
 package storageRepoImpl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	jobpayload "controlplane/internal/security"
@@ -12,11 +14,13 @@ import (
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
+	storageproto "controlplane/internal/storage/transport/proto"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 // TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
@@ -48,6 +52,61 @@ func (r *TenantBucketRepoImpl) Create(
 	actorUserID uuid.UUID,
 	outbox *storageEntity.StorageOutboxRecord,
 ) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage repo: begin tenant bucket create: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	admission := storageEntity.CommercialAdmissionProjection{
+		OwnerID:   bucket.TenantID,
+		OwnerType: string(storageEntity.StorageOwnerTypeTenant),
+	}
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`
+		SELECT policy_version, decision, restriction_reason, effective_at,
+		       valid_until, source_event_id
+		FROM %s.commercial_admission_projection
+		WHERE owner_id=$1 AND owner_type='TENANT'
+		  AND decision='ALLOW'
+		  AND effective_at <= NOW()
+		  AND (valid_until IS NULL OR valid_until > NOW())
+		FOR KEY SHARE`, r.storage), bucket.TenantID).Scan(
+		&admission.PolicyVersion, &admission.Decision, &admission.RestrictionReason,
+		&admission.EffectiveAt, &admission.ValidUntil, &admission.EventID,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return storageTaxonomy.ErrCommercialAdmissionDenied
+		}
+		return fmt.Errorf("storage repo: lock tenant create admission: %w", err)
+	}
+
+	var syncEvent storageproto.BucketCreateSync
+	if err := proto.Unmarshal(outbox.Payload, &syncEvent); err != nil {
+		return fmt.Errorf("storage repo: decode tenant bucket create payload: %w", err)
+	}
+	if syncEvent.SchemaVersion != 2 || syncEvent.Name != bucket.Name ||
+		!bytes.Equal(syncEvent.BucketId, bucket.ID[:]) ||
+		!bytes.Equal(syncEvent.OwnerId, bucket.TenantID[:]) ||
+		syncEvent.OwnerType != string(storageEntity.StorageOwnerTypeTenant) ||
+		!bytes.Equal(syncEvent.WorkspaceId, bucket.WorkspaceID[:]) ||
+		!bytes.Equal(syncEvent.ZoneId, bucket.ZoneID[:]) {
+		return errors.New("storage repo: tenant bucket create payload scope mismatch")
+	}
+	syncEvent.AdmissionPolicyVersion = admission.PolicyVersion
+	syncEvent.AdmissionDecision = admission.Decision
+	syncEvent.AdmissionEffectiveAt = admission.EffectiveAt.UTC().Format(time.RFC3339Nano)
+	syncEvent.AdmissionSourceEventId = admission.EventID.String()
+	if admission.ValidUntil != nil {
+		syncEvent.AdmissionValidUntil = admission.ValidUntil.UTC().Format(time.RFC3339Nano)
+	}
+	if admission.RestrictionReason != nil {
+		syncEvent.AdmissionRestrictionReason = *admission.RestrictionReason
+	}
+	outbox.Payload, err = proto.Marshal(&syncEvent)
+	if err != nil {
+		return fmt.Errorf("storage repo: encode tenant bucket create payload: %w", err)
+	}
+
 	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{
 		ZoneID:               outbox.ZoneID,
 		SourceDomain:         "STORAGE",
@@ -121,17 +180,27 @@ func (r *TenantBucketRepoImpl) Create(
 			       $21, $22, $7, $23,
 			       ib.name, $24
 			FROM ins_bucket ib
+		),
+		inserted_resource_admission AS (
+			INSERT INTO %s.resource_admission_projection (
+				resource_id, resource_name, zone_id, owner_id, owner_type,
+				policy_version, decision, restriction_reason, effective_at,
+				valid_until, source_event_id, updated_at
+			)
+			SELECT ib.id, ib.name, ib.zone_id, ib.tenant_id, 'TENANT',
+			       $32, $33, $34, $35, $36, $37, NOW()
+			FROM ins_bucket ib
 		)
 		SELECT
 			(SELECT ok FROM admitted)          AS admitted,
 			(SELECT id FROM ins_bucket)        AS created_id;
-	`, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage, r.storage)
+	`, r.storage, r.hierarchy, r.hierarchy, r.storage, r.storage, r.storage, r.storage)
 
 	tagsBytes, _ := json.Marshal(bucket.Tags)
 
 	var admitted bool
 	var createdID *uuid.UUID
-	err = r.db.QueryRow(ctx, query,
+	err = tx.QueryRow(ctx, query,
 		// $1-$6: Bucket params
 		bucket.ID,
 		bucket.Name,
@@ -167,6 +236,12 @@ func (r *TenantBucketRepoImpl) Create(
 		bucket.RetentionDays,
 		bucket.LegalHoldEnabled,
 		tagsBytes,
+		admission.PolicyVersion,
+		admission.Decision,
+		admission.RestrictionReason,
+		admission.EffectiveAt,
+		admission.ValidUntil,
+		admission.EventID,
 	).Scan(&admitted, &createdID)
 
 	if err != nil {
@@ -181,6 +256,9 @@ func (r *TenantBucketRepoImpl) Create(
 	}
 	if createdID == nil {
 		return storageTaxonomy.ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage repo: commit tenant bucket create: %w", err)
 	}
 
 	bucket.Status = storageEntity.BucketStatusProvisioning

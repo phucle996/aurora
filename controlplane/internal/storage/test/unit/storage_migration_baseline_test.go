@@ -73,14 +73,18 @@ func TestStorageMigrationBaselineContainsFinalSchemaOnly(t *testing.T) {
 	for _, required := range []string{
 		"commercial_admission_projection",
 		"resource_admission_projection",
-		"commercial_admission_zone_outbox",
 	} {
 		if !strings.Contains(admissionSQL, required) {
 			t.Fatalf("admission baseline is missing %q", required)
 		}
 	}
 	all := resourceSQL + jobSQL + admissionSQL
-	for _, obsolete := range []string{"resource_lifecycle_events", "access_session_auth_projection", "ALTER TABLE"} {
+	for _, obsolete := range []string{
+		"resource_lifecycle_events",
+		"access_session_auth_projection",
+		"commercial_admission_zone_outbox",
+		"ALTER TABLE",
+	} {
 		if strings.Contains(all, obsolete) {
 			t.Fatalf("greenfield baseline still contains obsolete migration behavior %q", obsolete)
 		}

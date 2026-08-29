@@ -30,8 +30,8 @@ pub struct AccessRecord {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AdmissionRecord {
-    pub wallet_version: i64,
-    pub admission_mode: String,
+    pub policy_version: i64,
+    pub decision: String,
     pub effective_at_unix_seconds: i64,
     pub valid_until_unix_seconds: Option<i64>,
 }
@@ -116,7 +116,7 @@ impl AccessStore {
         .map_err(|_| AuthzError::Dependency("Zone admission KV read timed out".into()))?
         .map_err(|_| AuthzError::Dependency("Zone admission KV read failed".into()))?;
         let Some(entry) = entry else {
-            return Err(AuthzError::Denied("STORAGE_WALLET_ADMISSION_MISSING"));
+            return Err(AuthzError::Denied("STORAGE_COMMERCIAL_ADMISSION_MISSING"));
         };
         let record: AdmissionRecord = serde_json::from_slice(&entry.value)
             .map_err(|_| AuthzError::Dependency("Zone admission record is corrupt".into()))?;
@@ -124,14 +124,14 @@ impl AccessStore {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| AuthzError::Dependency("system clock invalid".into()))?
             .as_secs() as i64;
-        if record.wallet_version <= 0
-            || record.admission_mode != "ALLOW"
+        if record.policy_version <= 0
+            || record.decision != "ALLOW"
             || record.effective_at_unix_seconds > now
             || record
                 .valid_until_unix_seconds
                 .is_some_and(|until| until <= now)
         {
-            return Err(AuthzError::Denied("STORAGE_WALLET_ADMISSION_SUSPENDED"));
+            return Err(AuthzError::Denied("STORAGE_COMMERCIAL_ADMISSION_SUSPENDED"));
         }
         Ok(())
     }
@@ -237,5 +237,41 @@ impl AccessStore {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdmissionRecord;
+
+    #[test]
+    fn decodes_the_storage_owned_admission_schema() {
+        let value = serde_json::json!({
+            "resource_id": "01990c25-b030-7b50-826a-33bb9553e34b",
+            "resource_name": "personal-bucket",
+            "policy_version": 7,
+            "decision": "ALLOW",
+            "restriction_reason": null,
+            "effective_at_unix_seconds": 1_700_000_000,
+            "valid_until_unix_seconds": null,
+            "source_event_id": "01990c25-b030-7b50-826a-33bb9553e34c"
+        });
+
+        let record: AdmissionRecord =
+            serde_json::from_value(value).expect("canonical admission must decode");
+        assert_eq!(record.policy_version, 7);
+        assert_eq!(record.decision, "ALLOW");
+    }
+
+    #[test]
+    fn rejects_the_retired_wallet_field_names() {
+        let value = serde_json::json!({
+            "wallet_version": 7,
+            "admission_mode": "ALLOW",
+            "effective_at_unix_seconds": 1_700_000_000,
+            "valid_until_unix_seconds": null
+        });
+
+        assert!(serde_json::from_value::<AdmissionRecord>(value).is_err());
     }
 }

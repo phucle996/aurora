@@ -172,6 +172,13 @@ sequenceDiagram
     MinIO-->>DP: Service Account deleted
 ```
 
+Before result publication, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1` with `schema_version=2`, `command_sha256`, `attempt`,
+`message`, `result_payload`, `result_payload_schema_version`, `result_status`
+and optional `error_code`. It is replay evidence only and contains no Tenant
+credential access key, secret or authority.
+
 ---
 
 ## Phase 4 — Job Settlement, Timeline & Realtime Notification

@@ -154,6 +154,9 @@ fn fixed_query(scope: &RuntimeScope) -> Result<String, SourceError> {
     if scope.module == "mail" {
         return crate::mail::fixed_query(scope).ok_or(SourceError::Scope);
     }
+    if scope.module == "storage" {
+        return crate::storage::fixed_query(scope).ok_or(SourceError::Scope);
+    }
     let module = query_label(&scope.module)?;
     let resource_type = query_label(&scope.resource_type)?;
     let resource_id = scope.resource_id.to_string();

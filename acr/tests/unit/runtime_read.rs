@@ -1,4 +1,4 @@
-use super::{runtime_component_token, zone_code_token};
+use super::{runtime_component_token, runtime_resource_contract, zone_code_token};
 
 #[test]
 fn zone_code_is_a_single_dns_label() {
@@ -16,4 +16,13 @@ fn runtime_component_is_bounded_and_path_safe() {
     assert!(!runtime_component_token(""));
     assert!(!runtime_component_token("../../secret"));
     assert!(!runtime_component_token(&"x".repeat(129)));
+}
+
+#[test]
+fn storage_bucket_registry_is_exact_and_permission_pinned() {
+    assert_eq!(
+        runtime_resource_contract("storage_bucket"),
+        Some(("storage", "bucket", "storage:bucket:read"))
+    );
+    assert_eq!(runtime_resource_contract("storage"), None);
 }

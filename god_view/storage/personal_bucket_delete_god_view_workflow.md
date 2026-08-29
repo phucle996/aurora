@@ -1,19 +1,19 @@
 # Personal Bucket Delete — God View
 
-> **Critical-route revision (2026-08-26):** the public request is `DELETE /api/v1/critical/storage/buckets/{bucket_id}` with no body; ACR consumes the exact session proof and rewrites only to `/api/v1/personal/critical/storage/buckets/{bucket_id}`. The bucket name is read from the owner-fenced durable row, never supplied by the browser. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
-
 Bucket deletion requests irreversible Zone work. Controlplane retains the bucket
-and credentials until Dataplane reports physical bucket deletion success. The
-current HTTP contract has a critical name-binding discrepancy below.
+and credentials until Dataplane reports physical bucket deletion and authority
+cleanup success.
 
 ## API-scope contract
 
-Browser calls `DELETE /api/v1/storage/buckets/{bucket_id}?name={bucket_name}`.
+Browser calls `DELETE /api/v1/critical/storage/buckets/{bucket_id}` with no body.
 ACR chooses personal only for a verified platform session, rewrites to the
-internal personal route, and injects trusted identity/workspace/Zone context.
+internal `/api/v1/personal/critical/storage/buckets/{bucket_id}` route, consumes
+the exact session proof, and injects trusted identity/workspace/Zone context.
 `Authorize` requires `storage:bucket:delete` at current workspace or wildcard.
-Repository proves bucket ownership by id but does **not** prove that the client
-query `name` equals the id's physical name before sealing the command.
+Controlplane runs `RequireSessionProof` before `Authorize`. The browser selects
+only the UUID; repository resolves the physical name from the durable row and
+rechecks exact user/workspace/Zone scope before transitioning it.
 
 ## REST input and output
 
@@ -24,14 +24,14 @@ query `name` equals the id's physical name before sealing the command.
 | `Cookie` | ACR resolves Trinity user, platform branch, Zone and workspace. |
 | `Origin` | CORS. |
 | `X-Requested-With` or `Sec-Fetch-Site` | CSRF requirement for `DELETE`. |
+| `x-session-proof-challenge-id`, `x-session-proof-timestamp`, `x-session-proof-signature` | Bound to exact `DELETE`, query-free critical path and empty-body hash; ACR consumes/removes raw proof and overwrites the verified marker/challenge upstream. |
 | `traceparent` | Copied to outbox if valid. |
 
-### Path and query payload
+### Path payload
 
 | Field | Contract |
 |---|---|
 | `bucket_id` | UUID. Handler rejects invalid value with `400`. |
-| `name` query | Required non-empty trimmed physical name. It is used in `BucketDeleteSync` and outbox `resource_name`. It is not cross-checked against the locked bucket record. |
 
 ### Response headers
 
@@ -44,7 +44,7 @@ query `name` equals the id's physical name before sealing the command.
 | Status | Payload |
 |---|---|
 | `200` | `data: null` and message `bucket deletion initiated` after durable outbox insert |
-| `400` | Invalid UUID or missing `name` query |
+| `400` | Invalid UUID |
 | `403` | ACR, context or permission failure |
 | `404` | Bucket id absent or not owned by user |
 | `500` | Payload protection/database failure |
@@ -56,16 +56,20 @@ query `name` equals the id's physical name before sealing the command.
 | Auth-State Redis session | ACR verification | Browser identity and workspace header are never upstream authority. |
 | `storage.personal_credentials` | `READY -> DELETING` | Child resources remain until Zone success; failure restores them to `READY`. |
 | `storage.personal_buckets` | `READY -> DELETING`, then hard-delete | Must remain until successful physical deletion; DB rejects hard-delete from another state. |
-| `storage.storage_outbox_records` | Insert `storage.bucket.delete` | Holds resource id, locked physical `resource_name`, Zone, owner and encrypted payload. The payload still contains client-supplied name. |
+| `storage.storage_outbox_records` | Insert `storage.bucket.delete` | Holds resource id, durable physical `resource_name`, Zone, owner and encrypted payload; no browser-supplied name enters the command. |
+| `storage.resource_admission_projection` | Hard-delete after successful Zone result | Central admission topology is retained while deletion can still retry. |
+| `AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}` | CAS tombstone | Disables runtime reads while preserving exact identity and deletion event. |
+| `AURORA_ZONE_ADMISSION/{bucket_id}` | Revision-fenced delete | Removed only if stored ID/name identity matches the durable target. |
+| `AURORA_ZONE_ADMISSION/name/{physical_name}` | Revision-fenced delete | Releases the SDK name index for safe later name reuse. |
 | Zone command/result topics | Kafka | JO and Dataplane execute at least once. |
 | Ownership stream | Shared Redis stream | Derived `RESOURCE_DELETED` is published after terminal success from durable outbox metadata. |
 
 ## Phase 1 — Client → Envoy → ACR
 
-Envoy sends raw path including query string to ACR. ACR checks CORS, rate limits,
-session, CSRF, Zone and tenant. It strips caller `x-workspace-id`, overwrites
-trusted context headers and rewrites neutral path to personal. It does not parse
-or validate `name`; query remains intact for Controlplane.
+Envoy sends exact method/path, headers and empty body to ACR. ACR checks CORS,
+rate limits, session, session proof, CSRF, Zone and tenant. It strips caller
+identity/workspace headers, overwrites trusted context headers and rewrites the
+neutral critical path to Personal. There is no name query or request payload.
 
 ```mermaid
 sequenceDiagram
@@ -74,30 +78,32 @@ sequenceDiagram
     participant A as ACR ExtAuthz
     participant AR as Auth-State Redis
 
-    B->>E: DELETE bucket id with name query
-    E->>A: CheckRequest exact path including query
-    A->>AR: Verify Trinity session
+    B->>E: DELETE /api/v1/critical/storage/buckets/bucket_id with proof
+    E->>A: CheckRequest exact method path headers and empty body
+    A->>AR: Verify Trinity session and consume bound proof
     A->>A: CORS rate limits CSRF Zone tenant workspace
     alt edge verification fails
         A-->>E: Local 401, 403 or 429
         E-->>B: No upstream call
     else verified platform context
-        A-->>E: Overwrite headers and personal rewrite
-        E->>E: Forward original query to Controlplane
+        A-->>E: Overwrite headers and critical Personal rewrite
+        E->>E: Forward no-query request to Controlplane
     end
 ```
 
 ## Phase 2 — Controlplane deletion command transaction
 
-After permission middleware, handler parses id and requires `name`. Service first
-reads access keys using bucket id plus user id. It builds
-`BucketDeleteSync{Name: query_name, AccessKeys: owned_bucket_keys}` and sets
-outbox Zone/workspace from ACR context. Repository HPKE-seals payload before it
-locks the `READY` bucket owned by user and rejects the command if any child is
-not `READY`. It transitions all child
-credentials to `DELETING`, then inserts outbox. The CTE writes locked `bucket.name` into
-outbox `resource_name`, but does not compare that locked name to ciphertext
-payload. It does not delete business rows here.
+After proof and permission middleware, handler parses only the bucket UUID.
+Service calls the delete-specific repository projection with
+`(bucket_id, user_id, workspace_id, zone_id)` and receives durable
+`(id, name, workspace_id, zone_id)`. It reads access keys through the owner
+fence and builds `BucketDeleteSync` exclusively from those durable facts.
+
+Repository HPKE-seals the command, then its mutation CTE locks the exact `READY`
+bucket and rechecks user ownership, workspace and both bucket/workspace Zone
+facts. It rejects the command if any child is not `READY`, transitions every
+credential and the bucket to `DELETING`, and inserts the outbox row with the
+same durable name. It does not delete business or admission rows here.
 
 ```mermaid
 sequenceDiagram
@@ -110,13 +116,15 @@ sequenceDiagram
 
     M->>M: Require storage bucket delete grant
     M->>H: Trusted user workspace Zone context
-    H->>H: Parse id and require name query
-    H->>S: DeleteBucket command
+    H->>H: Parse bucket id only
+    H->>S: DeleteBucket with trusted user workspace Zone
+    S->>R: GetDeleteTarget with four-dimensional scope
+    R->>PG: SELECT durable id name workspace zone through owner fence
     S->>R: List access keys by owned bucket id
     R->>PG: SELECT credentials through owner fence
     S->>R: Insert delete outbox
-    R->>V: Seal BucketDeleteSync including query name
-    R->>PG: Bucket/credentials -> DELETING and insert outbox
+    R->>V: Seal BucketDeleteSync with durable target
+    R->>PG: Recheck exact scope, bucket/credentials -> DELETING, insert outbox
     alt ownership row exists
         PG-->>H: Command durable
         H-->>M: 200 deletion initiated
@@ -128,8 +136,11 @@ sequenceDiagram
 
 ## Phase 3 — Outbox CDC Dispatch & Dataplane Execution
 
-Dataplane deletes named physical bucket first. If that succeeds, it tries to
-delete each MinIO user and policy but logs and ignores cleanup errors.
+Dataplane deletes the durable named physical bucket first, deletes each MinIO
+user and policy, disables/tombstones `storage.bucket.head.{bucket_id}`, then
+revision-deletes both admission indexes. A MinIO or KV cleanup failure keeps the
+command retryable; MinIO `NoSuchBucket` and already-absent exact KV keys are
+idempotent replay results.
 
 ```mermaid
 sequenceDiagram
@@ -139,21 +150,44 @@ sequenceDiagram
     participant KC as Zone command Kafka
     participant DP as Zone Dataplane (BucketDeleteExecutor)
     participant M as MinIO Cluster
+    participant KV as Zone config KV
 
     PG-->>JO: Read committed outbox record (topic: storage.bucket.delete)
     JO->>KC: Publish JobCommandV1 (sealed BucketDeleteSync, target zone)
     KC-->>DP: Consume job command
     DP->>DP: Decrypt payload & decode BucketDeleteSync
-    DP->>M: S3 DeleteBucket (purges bucket and contents)
-    DP->>M: Best effort DeleteServiceAccount & DeletePolicy
+    DP->>M: S3 DeleteBucket (non-empty/error remains retryable)
+    DP->>M: DeleteServiceAccount & DeletePolicy
+    DP->>KV: CAS disabled runtime tombstone
+    DP->>KV: CAS-delete admission name/physical_name then bucket_id
     M-->>DP: Physical deletion finished
 ```
+
+The runtime-head CAS preserves
+`AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}` fields
+`schema_version`, module/type, resource/name, Personal owner, workspace and
+Zone; sets `runtime_read_enabled=false`, `tombstoned=true`, replaces
+`event_id` with the delete job and increments `version`.
+
+Admission cleanup reads and decodes each key, requires exact durable
+`resource_id/resource_name` equality and uses revision-conditional delete.
+Identity mismatch or corrupt JSON fails closed; CAS contention is retryable.
+Deleting the name index before the ID index prevents a successful command from
+leaving an SDK lookup bound to a deleted resource.
+
+Before publishing the terminal job result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1` with `schema_version=2`, `command_sha256`, `attempt`,
+`message`, `result_payload`, `result_payload_schema_version`, `result_status`
+and optional `error_code`. This is replay evidence only; it carries no bucket,
+owner or deletion authority. Matching command bytes reuse the result, while a
+conflicting or corrupt receipt fails closed.
 
 ---
 
 ## Phase 4 — Job Settlement & Resource Ownership Handover (Billing Registry)
 
-Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi CTE xóa dòng personal bucket vật lý trong PostgreSQL, chuyển outbox sang `SUCCEEDED`, và **ngay lập tức kích hoạt luồng Fast-Path đẩy sự kiện sở hữu (`RESOURCE_DELETED`) sang Cost Manager** để đóng sổ tính cước.
+Ngay sau khi nhận kết quả từ Dataplane, Job Orchestrator Result Worker thực thi CTE xóa personal bucket, credentials và `storage.resource_admission_projection` của exact `(resource_id, zone_id)`, chuyển outbox sang `SUCCEEDED`, và **ngay lập tức kích hoạt luồng Fast-Path đẩy sự kiện sở hữu (`RESOURCE_DELETED`) sang Cost Manager** để đóng sổ tính cước. Central admission row chỉ bị xóa sau khi Zone đã cleanup thành công.
 
 ```mermaid
 sequenceDiagram
@@ -170,7 +204,7 @@ sequenceDiagram
 
     DP->>KR: Publish JobResult (job_id, status: SUCCEEDED)
     KR-->>JO: Consume JobResult
-    JO->>PG: 1. Execute isolated Personal Delete CTE (status = 'SUCCEEDED')
+    JO->>PG: 1. Delete bucket/credentials/resource admission and settle SUCCEEDED
 
     rect rgb(255, 245, 240)
     Note over JO,Proj: Luồng chuyển giao sở hữu sang Billing (Fast-Path)

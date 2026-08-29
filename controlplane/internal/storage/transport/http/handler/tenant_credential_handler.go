@@ -92,7 +92,7 @@ func (h *TenantCredentialHandler) Create(c *gin.Context) {
 		case errors.Is(err, storageTaxonomy.ErrNotFound):
 			apires.RespondNotFound(c, "bucket not found")
 		case errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied):
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")

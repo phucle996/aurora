@@ -123,10 +123,12 @@ pub async fn mint(
 
     // The public resource type is an ACR-owned registry. A client cannot pick
     // a permission or an internal adapter path independently.
-    let (module, internal_resource_type, permission) = match request.resource_type.as_str() {
-        "mail_consumer" => ("mail", "consumer", "email:consumer:read"),
-        _ => return Err("runtime assertion resource type is not enabled"),
-    };
+    let (module, internal_resource_type, permission) =
+        runtime_resource_contract(&request.resource_type)
+            .ok_or("runtime assertion resource type is not enabled")?;
+    if module == "storage" && (panel != "metrics" || component_id.is_some()) {
+        return Err("runtime assertion panel is not enabled for this resource");
+    }
     let tenant_id = claims
         .tenant_id
         .as_deref()
@@ -225,6 +227,17 @@ pub async fn mint(
         path,
         expires_at: expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     })
+}
+
+// This registry is a security boundary: one public token maps to exactly one
+// internal adapter and permission. Keeping the mapping pure makes accidental
+// permission/path widening directly testable.
+fn runtime_resource_contract(value: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match value {
+        "mail_consumer" => Some(("mail", "consumer", "email:consumer:read")),
+        "storage_bucket" => Some(("storage", "bucket", "storage:bucket:read")),
+        _ => None,
+    }
 }
 
 fn zone_code_token(value: &str) -> bool {

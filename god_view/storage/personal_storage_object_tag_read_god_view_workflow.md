@@ -126,6 +126,14 @@ then requires record integrity, expiry, action, bucket/prefix and admission
 before MinIO call. XML returns via Envoys unchanged
 except security request headers were stripped on ingress.
 
+Phase 3 reads `AURORA_ZONE_ACCESS/{access_session_id}` JSON fields
+`access_session_id`, `binding_hash`, `actor_id`, `resource_id`, `bucket_name`,
+`workspace_id`, `zone_id`, `actions`, `key_prefix`,
+`expires_at_unix_seconds` and `policy_revision`; the action must contain
+`GetObjectTagging`. `AURORA_ZONE_ADMISSION/{resource_id}` contributes only
+`policy_version`, `decision`, `effective_at_unix_seconds` and
+`valid_until_unix_seconds`.
+
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Authorizer

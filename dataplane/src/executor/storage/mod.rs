@@ -7,6 +7,7 @@ pub mod delete;
 pub mod delivery;
 pub mod lifecycle;
 pub mod resize;
+pub(crate) mod runtime_registration;
 pub mod versioning;
 
 // Dataplane compiles the shared storage schema for command compatibility, but

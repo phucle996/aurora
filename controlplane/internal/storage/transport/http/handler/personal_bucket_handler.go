@@ -116,7 +116,7 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 			logger.HandlerWarn(c, op, createErr, "invalid bucket name format")
 			apires.RespondBadRequest(c, "invalid bucket name format")
 		case errors.Is(createErr, storageTaxonomy.ErrCommercialAdmissionDenied):
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		default:
 			logger.HandlerError(c, op, createErr)
 			apires.RespondInternalError(c, "internal_error")
@@ -167,6 +167,8 @@ func (h *PersonalBucketHandler) Get(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                   bucket.ID.String(),
 		"name":                 bucket.Name,
+		"workspace_id":         bucket.WorkspaceID.String(),
+		"status":               bucket.Status,
 		"capacity_quota_bytes": bucket.CapacityQuotaBytes,
 		"used_mb":              formatUsedMegabytes(bucket.UsedBytes),
 		"versioning_enabled":   bucket.VersioningEnabled,
@@ -210,6 +212,8 @@ func (h *PersonalBucketHandler) List(c *gin.Context) {
 		resList[i] = gin.H{
 			"id":                   b.ID.String(),
 			"name":                 b.Name,
+			"workspace_id":         b.WorkspaceID.String(),
+			"status":               b.Status,
 			"capacity_quota_bytes": b.CapacityQuotaBytes,
 			"used_mb":              formatUsedMegabytes(b.UsedBytes),
 			"versioning_enabled":   b.VersioningEnabled,
@@ -297,7 +301,7 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 			return
 		}
 		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 			return
 		}
 		logger.HandlerError(c, op, updateErr)
@@ -342,7 +346,7 @@ func (h *PersonalBucketHandler) UpdateVersioning(c *gin.Context) {
 			return
 		}
 		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 			return
 		}
 		logger.HandlerError(c, op, updateErr)
@@ -462,7 +466,7 @@ func (h *PersonalBucketHandler) UpdateLifecycle(c *gin.Context) {
 			return
 		}
 		if errors.Is(updateErr, storageTaxonomy.ErrCommercialAdmissionDenied) {
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 			return
 		}
 		logger.HandlerError(c, op, updateErr)
@@ -614,7 +618,7 @@ func (h *PersonalBucketHandler) CreateAccessSession(c *gin.Context) {
 	}
 	if err := h.accessSessionSvc.CreatePersonalStorageAccessSession(ctx, session); err != nil {
 		if errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied) {
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 			return
 		}
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {

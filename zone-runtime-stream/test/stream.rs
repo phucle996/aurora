@@ -25,6 +25,7 @@ fn test_scope(zone_id: Uuid) -> RuntimeScope {
         module: "mail".into(),
         resource_type: "consumer".into(),
         resource_id: Uuid::new_v4(),
+        resource_name: None,
         owner_id: Uuid::new_v4(),
         workspace_id: Uuid::new_v4(),
         zone_id,

@@ -1,7 +1,5 @@
 # Personal Bucket Create — God View
 
-> **Critical-route revision (2026-08-26):** the public request is `POST /api/v1/critical/storage/buckets`; ACR consumes the session proof bound to its exact method, path and body, then rewrites only to `/api/v1/personal/critical/storage/buckets`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
-
 Tạo bucket cá nhân là một mutation owner-scoped bất đồng bộ. HTTP `201` chỉ
 xác nhận Controlplane đã atomically ghi business row (`PROVISIONING`), bootstrap credential và
 protected outbox command (`PENDING`). Nó **không** chứng minh bucket hoặc credential đã
@@ -9,11 +7,13 @@ protected outbox command (`PENDING`). Nó **không** chứng minh bucket hoặc 
 
 ## API-scope contract
 
-Browser chỉ gọi neutral route `POST /api/v1/storage/buckets`. Nó không được
+Browser chỉ gọi neutral route `POST /api/v1/critical/storage/buckets`. Nó không được
 gọi `/personal`, gửi owner, workspace, tenant hay Zone. ACR xác thực Trinity
 session, resolve Zone và tenant từ cookie/session đã kiểm chứng, rồi chỉ khi
 tenant sentinel là `platform` mới rewrite path thành
-`/api/v1/personal/storage/buckets`.
+`/api/v1/personal/critical/storage/buckets`. ACR consume session proof bind với
+exact method, public path và body; Controlplane chạy `RequireSessionProof` trước
+`Authorize`.
 
 Controlplane dùng permission key năm bậc
 `{username}:{workspace_id}:storage:bucket:write` hoặc wildcard workspace.
@@ -26,7 +26,7 @@ workspace đã xác minh mới được inject lại.
 | Browser input | Name, quota, policy và advanced options | None |
 | ACR | Trinity session, Zone, tenant branch, workspace cookie | Auth-State Redis session |
 | Controlplane | Workspace ownership, bucket/credential/outbox transaction | PostgreSQL |
-| JO and Dataplane | Exact outbox command and target Zone | Kafka command/result plus MinIO |
+| JO and Dataplane | Exact outbox command and target Zone | Kafka command/result, MinIO and `storage.bucket.head.{bucket_id}` |
 | Cost Manager | Resource ownership event (`RESOURCE_CREATED`) | Billing PostgreSQL (`resource_ownership_projection`) |
 
 ## REST input and output
@@ -38,6 +38,7 @@ workspace đã xác minh mới được inject lại.
 | `Cookie` | Envoy forwards it only to ACR. ACR reads Trinity access session, workspace and Zone context cookies. It is not forwarded to Controlplane as authority. |
 | `Origin` | ACR allow-origin check. |
 | `X-Requested-With: XMLHttpRequest` or `Sec-Fetch-Site: same-origin|same-site` | Required by ACR CSRF check for this `POST`. |
+| `x-session-proof-challenge-id`, `x-session-proof-timestamp`, `x-session-proof-signature` | Bound to exact `POST`, public critical path and serialized JSON hash. ACR consumes/removes the raw proof and overwrites upstream with `x-session-proof-verified=true` plus the verified challenge id. |
 | `X-Client-Device-ID` cookie value | Pre/post-auth rate-limit dimension after ACR parses the cookie. |
 | `traceparent` | Distributed trace propagation when present. |
 
@@ -45,7 +46,7 @@ workspace đã xác minh mới được inject lại.
 
 | Field | Contract at Controlplane handler |
 |---|---|
-| `name` | Required and trimmed. Empty is `400`. The physical name becomes `ws-{first-8-workspace-uuid}-{name}`. |
+| `name` | Required, trimmed, 1–51 byte, chỉ lowercase ASCII, digit hoặc `-`, và phải bắt đầu/kết thúc bằng lowercase ASCII hoặc digit. Physical name là `ws-{first-8-workspace-uuid}-{name}` và không vượt quá 63 byte. |
 | `quota_bytes` | Accepted as `int64`; no handler-side positive range validation exists. Dataplane only applies a quota when it is positive. |
 | `policy` | Required JSON. `<BUCKET_NAME>` is replaced with physical name. Create validates JSON syntax only. |
 | `encrypt_enabled`, `versioning_enabled`, `object_locking_enabled`, `replication_enabled`, `legal_hold_enabled` | Required booleans. Stored and transported in the create command. |
@@ -68,7 +69,7 @@ workspace đã xác minh mới được inject lại.
 | `404` | `error`, `message` | Workspace ownership CTE produced no row. |
 | `409` | `error`, `message` | Database unique conflict, mapped as bucket name conflict. |
 | `500` | `error=internal_error`, `message` | Vault payload protection, PostgreSQL or another unclassified failure. |
-| `503` | `error=STORAGE_WALLET_ADMISSION_UNAVAILABLE` | Wallet admission gate suspended or unrated. |
+| `503` | `error=STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE` | Commercial admission gate suspended or unrated. |
 
 ## Key and transport contract
 
@@ -80,8 +81,12 @@ workspace đã xác minh mới được inject lại.
 | `storage.personal_buckets` | PostgreSQL | Insert with `status='PROVISIONING'` | In-flight candidate. Physical status transitions to `READY` upon JO settlement. |
 | `storage.personal_credentials` | PostgreSQL | Insert access key, policy and `state=CREATING` | The secret key is intentionally not retained; JO promotes this bootstrap credential with the bucket. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert `storage.bucket.create` in same CTE | First durable async command boundary. Payload is HPKE-protected and has immutable `zone_id`. |
+| `storage.resource_admission_projection` | PostgreSQL | Insert in the same create transaction | Exact bucket receives the locked current owner `ALLOW` snapshot before Zone dispatch. |
 | `aurora.jobs.commands.zone.{zone_id}.v1` | Kafka | JO publishes `JobCommandV1` from WAL | At-least-once delivery. `event_id` is job id. |
 | `aurora.jobs.results.v1` | Kafka | Dataplane publishes result | JO settles only the matching durable outbox row. |
+| `AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}` | Zone config KV | CAS-create after MinIO provisioning | Runtime identity/ownership registration. |
+| `AURORA_ZONE_ADMISSION/{bucket_id}` | Zone admission KV | CAS-create from create snapshot | Bucket-ID commercial lookup. |
+| `AURORA_ZONE_ADMISSION/name/{physical_name}` | Zone admission KV | CAS-create the same value | SDK physical-name commercial lookup. |
 | `stream:{billing}:resource_ownership` | Shared Redis Stream | JO publishes `ResourceOwnershipChangedV1` | Cost Manager consumes and updates `resource_ownership_projection`. |
 
 ---
@@ -98,7 +103,10 @@ For a platform session it removes client `x-workspace-id`, overwrites
 `x-user-id`, `x-user-name`, `x-user-level`, `x-tenant-id=platform`,
 `x-zone-id`, `x-client-device-id`, and injects the verified workspace cookie
 as `x-workspace-id`. It sets `:path` to the internal personal route and adds
-`x-original-path`. No credential field is interpreted by ACR.
+`x-original-path`. Raw proof headers, cookies, authorization and all
+client-supplied identity/context copies are removed; only the verified proof
+marker/challenge and trusted context survive upstream. No credential field is
+interpreted by ACR.
 
 ```mermaid
 sequenceDiagram
@@ -108,7 +116,7 @@ sequenceDiagram
     participant AR as Auth-State Redis
     participant Z as Shared Zone Cache
 
-    B->>E: POST /api/v1/storage/buckets with JSON
+    B->>E: POST /api/v1/critical/storage/buckets with JSON and proof
     E->>A: CheckRequest method path headers body
     A->>A: Check Origin and pre-auth rate limit
     A->>AR: Load and verify Trinity session
@@ -120,7 +128,7 @@ sequenceDiagram
     else platform session and valid context
         A->>A: Remove client workspace header
         A->>A: Overwrite identity and context headers
-        A-->>E: Allow with :path personal storage route
+        A-->>E: Allow with :path /api/v1/personal/critical/storage/buckets
         E->>E: Route to Controlplane cluster
     end
 ```
@@ -133,13 +141,22 @@ Global `ContextInjector` parses only ACR-injected headers into Gin context.
 `Authorize("storage:bucket:write", "*")` loads compiled personal role grants
 and matches the workspace-scoped key. 
 
-Trước khi mở transaction tạo bucket, Service kiểm tra `CommercialAdmission` của `(owner_id=user_id, owner_type=PERSONAL)`:
-- Nếu missing, expired hoặc `SUSPEND_BILLABLE` $\to$ trả về `503 STORAGE_WALLET_ADMISSION_UNAVAILABLE`.
-- Nếu `ALLOW` $\to$ Repository mã hóa payload `BucketCreateSync` và thực thi CTE nguyên tử:
-  1. Xác minh `personal_workspaces.owner_id == user_id`.
-  2. Tạo dòng `personal_buckets` với trạng thái `status = 'PROVISIONING'`.
-  3. Tạo dòng `personal_credentials` với `state = 'CREATING'` (lưu access_key + policy).
-  4. Tạo dòng `storage_outbox_records` với `status = 'PENDING'`.
+Repository mở transaction, lock `FOR KEY SHARE` đúng owner admission row chỉ
+khi quyết định hiện tại là `ALLOW`, rồi chép snapshot đó vào
+`BucketCreateSync` schema 2 trước khi seal. Lock này serialize create với
+owner admission update: create hoặc commit trước để event mới fanout tới bucket,
+hoặc thấy quyết định mới và fail closed.
+
+Trong cùng transaction, CTE recheck owner admission và
+`personal_workspaces(owner_id, workspace_id, zone_id)`, sau đó atomically:
+
+1. Tạo `personal_buckets` với `status='PROVISIONING'`.
+2. Tạo bootstrap credential với `state='CREATING'`.
+3. Tạo protected outbox `storage.bucket.create` với `status='PENDING'`.
+4. Tạo `resource_admission_projection` cho exact bucket từ cùng locked snapshot.
+
+Missing, expired hoặc suspended owner admission trả
+`503 STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE`; không business row nào được ghi.
 
 ```mermaid
 sequenceDiagram
@@ -147,7 +164,6 @@ sequenceDiagram
     participant M as ContextInjector & Authorize
     participant H as PersonalBucketHandler
     participant S as PersonalBucketService
-    participant W as CommercialAdmissionRepository
     participant R as PersonalBucketRepository
     participant V as Vault payload protector
     participant PG as PostgreSQL
@@ -157,18 +173,18 @@ sequenceDiagram
     M->>H: Continue only with storage bucket write
     H->>H: Bind JSON and start 5 second context
     H->>S: CreateBucketForPersonal trusted command
-    S->>W: RequireOwnerAdmission(user_id, PERSONAL)
-    W->>PG: Read local owner admission projection
+    S->>R: Create bucket credential and schema-2 outbox
+    R->>PG: Lock current owner ALLOW admission FOR KEY SHARE
     alt admission missing or suspended
         W-->>S: ErrCommercialAdmissionDenied
-        S-->>H: 503 STORAGE_WALLET_ADMISSION_UNAVAILABLE
+        S-->>H: 503 STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE
     else current ALLOW
         S->>S: Generate UUIDv7 ids, keys and physical name
         S->>S: Substitute policy bucket name and parse JSON
-        S->>R: Create bucket credential and outbox
+        R->>R: Copy locked admission into BucketCreateSync
         R->>V: Seal BucketCreateSync with Zone topic resource metadata
         V-->>R: Ciphertext and payload key id
-        R->>PG: Atomic CTE (Admission check + 3 Inserts)
+        R->>PG: Atomic CTE admission recheck plus 4 inserts
         PG-->>R: Outbox command is durable
         R-->>S: CreatedBucketResult
         S-->>H: 201 JSON
@@ -181,9 +197,38 @@ sequenceDiagram
 
 JO consumes the PostgreSQL logical changefeed, validates source/topic/version
 and forwards the ciphertext byte-for-byte as `JobCommandV1` to the immutable
-target Zone. Dataplane validates/open-protects the command, dispatches
-`bucket.create`, creates MinIO bucket, applies positive quota, creates user,
-then creates and attaches `policy-{access_key}`.
+target Zone. Dataplane validates/open-protects schema 2 including exact
+bucket/owner/workspace/Zone registration and the locked `ALLOW` snapshot,
+dispatches `bucket.create`, creates
+the MinIO bucket, applies positive quota, creates the user, attaches
+`policy-{access_key}`, then CAS-creates the runtime head and both admission
+indexes. A KV failure keeps the command retryable after idempotent MinIO side
+effects. JO may promote the bucket to `READY` only after all three KV writes
+succeed.
+
+The runtime key is `AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}`. Its JSON schema is
+`schema_version=1`, `runtime_read_enabled=true`, `module="storage"`,
+`resource_type="bucket"`, exact `resource_id`, server-owned `resource_name`,
+`version=1`, create `event_id`, `tombstoned=false`, Personal `owner_id`,
+`owner_type="PERSONAL"`, `workspace_id` and `zone_id`.
+
+Dataplane also writes the same commercial JSON record to
+`AURORA_ZONE_ADMISSION/{bucket_id}` and
+`AURORA_ZONE_ADMISSION/name/{physical_name}`. Its schema is `resource_id`,
+`resource_name`, `policy_version`, `decision='ALLOW'`, null
+`restriction_reason`, `effective_at_unix_seconds`, optional
+`valid_until_unix_seconds` and `source_event_id`. Equal-version replay is
+success only when the complete record and resource identity are identical;
+any identity/equal-version conflict fails closed.
+
+After the executor returns a terminal result and before publishing that result,
+Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. This receipt contains only `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+It is execution replay evidence, not bucket authority: a matching command hash
+reuses the terminal result; a conflicting or corrupt receipt fails closed.
 
 ```mermaid
 sequenceDiagram
@@ -193,6 +238,7 @@ sequenceDiagram
     participant KC as Zone command Kafka
     participant DP as Zone Dataplane (BucketCreateExecutor)
     participant M as MinIO Cluster
+    participant KV as Zone config KV
 
     PG-->>JO: Committed storage.bucket.create row
     JO->>KC: JobCommandV1 (exact target zone)
@@ -202,6 +248,8 @@ sequenceDiagram
     DP->>M: MinIO Admin SetBucketQuota (Hard Quota)
     DP->>M: MinIO Admin CreateServiceAccount (Access Key, Secret Key, Policy)
     M-->>DP: Provisioning succeeded
+    DP->>KV: CAS storage.bucket.head.bucket_id with Personal scope and physical name
+    DP->>KV: CAS admission bucket_id and name/physical_name
 ```
 
 ---
@@ -470,12 +518,3 @@ sequenceDiagram
 - **Cost Engine Settlement Worker**: `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - **Cost Engine Pricing Runtime & Lease**: `cost-manager/engine/src/engine/` (`pricing_runtime.rs`, `settlement.rs`, `lease.rs`)
 - **Billing PostgreSQL Tables**: `billing.resource_ownership_projection`, `billing.usage_charges`, `billing.usage_charge_lines`, `billing.wallets`
-
-## Completion replay revision — 2026-08-27
-
-Partial bucket provisioning retries forward and never runs compensating deletes.
-Completed jobs persist a protobuf success receipt in Zone config KV, bound to
-the exact authenticated command hash and operation epoch, before result publication.
-A matching replay republishes that result; a conflicting or unreadable receipt
-fails closed. Receipt retention/garbage collection still needs an explicit safe
-replay-horizon contract before high-volume production use.

@@ -62,6 +62,7 @@ async fn runtime_stream(
         Ok(value) => value,
         Err(response) => return response.into_response(),
     };
+    let resource_name = header_string(&headers, "x-aurora-resource-name");
     let owner_id = match required_uuid_header(&headers, "x-aurora-owner-id") {
         Ok(value) => value,
         Err(response) => return response.into_response(),
@@ -104,6 +105,7 @@ async fn runtime_stream(
         module,
         resource_type,
         resource_id,
+        resource_name,
         owner_id,
         workspace_id,
         zone_id,

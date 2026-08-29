@@ -29,7 +29,6 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 /// other units are free to move to another Zone Control replica.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 enum WorkClass {
-    StorageAdmission,
     MetadataProjection,
     MetadataRepair,
     StorageProbe,
@@ -42,8 +41,7 @@ enum WorkClass {
 }
 
 impl WorkClass {
-    const ALL: [Self; 10] = [
-        Self::StorageAdmission,
+    const ALL: [Self; 9] = [
         Self::MetadataProjection,
         Self::MetadataRepair,
         Self::StorageProbe,
@@ -57,7 +55,6 @@ impl WorkClass {
 
     const fn as_str(self) -> &'static str {
         match self {
-            Self::StorageAdmission => "storage_admission",
             Self::MetadataProjection => "metadata_projection",
             Self::MetadataRepair => "metadata_repair",
             Self::StorageProbe => "storage_probe",
@@ -452,7 +449,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
         let mut metering_task: Option<WorkflowTask> = None;
         let mut storage_report_relay_task: Option<WorkflowTask> = None;
         let mut metadata_task: Option<WorkflowTask> = None;
-        let mut storage_admission_task: Option<WorkflowTask> = None;
         let mut metadata_repair_task: Option<WorkflowTask> = None;
         let mut storage_probe_task: Option<WorkflowTask> = None;
         let mut mail_probe_task: Option<WorkflowTask> = None;
@@ -477,7 +473,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                         stop_workflow(&mut metering_task).await;
                         stop_workflow(&mut storage_report_relay_task).await;
                         stop_workflow(&mut metadata_task).await;
-                        stop_workflow(&mut storage_admission_task).await;
                         stop_workflow(&mut metadata_repair_task).await;
                         stop_workflow(&mut storage_probe_task).await;
                         stop_workflow(&mut mail_probe_task).await;
@@ -505,7 +500,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                     }
                     let report_unit = WorkUnit { class: WorkClass::StorageReport, shard: 0 };
                     let metadata_unit = WorkUnit { class: WorkClass::MetadataProjection, shard: 0 };
-                    let storage_admission_unit = WorkUnit { class: WorkClass::StorageAdmission, shard: 0 };
                     let repair_unit = WorkUnit { class: WorkClass::MetadataRepair, shard: 0 };
                     let storage_probe_unit = WorkUnit { class: WorkClass::StorageProbe, shard: 0 };
                     let mail_probe_unit = WorkUnit { class: WorkClass::MailProbe, shard: 0 };
@@ -518,7 +512,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                     };
                     let report_assignment = coordinator.assignment_for(report_unit).await.ok().flatten();
                     let metadata_assignment = coordinator.assignment_for(metadata_unit).await.ok().flatten();
-                    let storage_admission_assignment = coordinator.assignment_for(storage_admission_unit).await.ok().flatten();
                     let repair_assignment = coordinator.assignment_for(repair_unit).await.ok().flatten();
                     let storage_probe_assignment = coordinator.assignment_for(storage_probe_unit).await.ok().flatten();
                     let mail_probe_assignment = coordinator.assignment_for(mail_probe_unit).await.ok().flatten();
@@ -527,7 +520,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                     let worker_scale_assignment = coordinator.assignment_for(worker_scale_unit).await.ok().flatten();
                     let owns_report_unit = owns(report_assignment.clone());
                     let owns_metadata_unit = owns(metadata_assignment.clone());
-                    let owns_storage_admission = owns(storage_admission_assignment.clone());
                     let owns_repair_unit = owns(repair_assignment.clone());
                     let owns_storage_probe = owns(storage_probe_assignment.clone());
                     let owns_mail_probe = owns(mail_probe_assignment.clone());
@@ -542,16 +534,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
                         move |task_shutdown, assignment_epoch| {
                             tokio::spawn(async move {
                                 zone_metadata::run_projection(config, state, kafka, task_shutdown, assignment_epoch).await
-                            })
-                        }
-                    }).await;
-                    sync_workflow(&mut storage_admission_task, owns_storage_admission, "storage_admission", storage_admission_assignment.as_ref().map_or(0, |value| value.assignment_epoch), {
-                        let config = config.clone();
-                        let state = state.clone();
-                        let kafka = kafka.clone();
-                        move |task_shutdown, assignment_epoch| {
-                            tokio::spawn(async move {
-                                crate::admission::run_projection(config, state, kafka, task_shutdown, assignment_epoch).await
                             })
                         }
                     }).await;
@@ -665,7 +647,6 @@ pub fn start(config: Config, shutdown: CancellationToken) {
         stop_workflow(&mut metering_task).await;
         stop_workflow(&mut storage_report_relay_task).await;
         stop_workflow(&mut metadata_task).await;
-        stop_workflow(&mut storage_admission_task).await;
         stop_workflow(&mut metadata_repair_task).await;
         stop_workflow(&mut storage_probe_task).await;
         stop_workflow(&mut mail_probe_task).await;

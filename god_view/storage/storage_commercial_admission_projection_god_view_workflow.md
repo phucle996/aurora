@@ -38,15 +38,25 @@ projection to the repository.
 
 `repository.StorageCommercialAdmissionProjectionRepo.Apply` owns one PostgreSQL
 transaction. It monotonic-upserts `storage.commercial_admission_projection`,
-reads the fenced winner, then resolves all current personal or tenant buckets
-through Storage and Hierarchy durable ownership joins. For each owned bucket it
+reads the fenced winner, then resolves only buckets in
+`PROVISIONING|READY|UPDATING` through Storage and Hierarchy durable ownership
+joins. Both owner branches take `FOR KEY SHARE OF bucket`; this serializes the
+fanout with delete's `FOR UPDATE`, so `DELETING`/deleted targets cannot receive
+a later Zone admission command. For each selected bucket it
 upserts `storage.resource_admission_projection` and writes
-`storage.commercial_admission_zone_outbox` in the same transaction.
+one protected `storage.bucket.commercial_admission` row to
+`storage.storage_outbox_records` in the same transaction.
 
 The repository calls the narrow `CommercialAdmissionZonePayloadEncoder`; the
 Storage-owned protobuf `controlplane.storage.v1.StorageAdmissionChangedV1`
 contains exactly one resolved bucket. Times are normalized to UTC. Any SQL or
 encoding failure rolls back owner, resource and outbox writes together.
+
+This Central phase does not write Zone KV. The protected outbox payload contains
+`event_id`, `owner_id`, `owner_type`, `policy_version`, `decision`,
+`restriction_reason`, `effective_at`, `valid_until`, `resource_id`,
+`resource_name` and `zone_id`; the Zone projection schema belongs to the
+separate delivery workflow.
 
 ## Failure and security invariants
 
@@ -55,6 +65,9 @@ encoding failure rolls back owner, resource and outbox writes together.
 - Missing/expired local state never means allow.
 - The owner projection and each immediate bucket/outbox projection commit or
   roll back together.
+- Owner-row and bucket-row locks serialize create/delete against fanout; a new
+  bucket receives either its create snapshot plus any later winner, while a
+  deleting bucket is excluded.
 - Storage-to-Zone delivery belongs to its separate relay workflow.
 
 ## Code ownership map

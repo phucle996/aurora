@@ -53,7 +53,7 @@ a `BucketVersioningSync` outbox job.
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:write` permission grant. |
 | `404` | `{"status": "error", "code": "NOT_FOUND", "message": "bucket not found"}` | Bucket does not exist or is not owned by the user. |
-| `503` | `{"status": "error", "code": "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "message": "storage billing admission is not currently available"}` | Billing / admission gate check denied. |
+| `503` | `{"error": "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE", "message": "Service Unavailable"}` | Commercial admission gate denied. |
 | `500` | `{"status": "error", "code": "INTERNAL_ERROR", "message": "internal_error"}` | Database error, payload sealing failure, or outbox insert error. |
 
 ---
@@ -285,6 +285,13 @@ sequenceDiagram
      ```
   6. Falls back to `mc version enable/suspend` CLI if S3 API endpoint encounters transient protocol error.
 - **Output**: MinIO S3 cluster updates physical bucket versioning state.
+
+Before publishing the terminal result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. Its exact fields are `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+It is job replay evidence, not bucket-versioning authority.
 
 ---
 

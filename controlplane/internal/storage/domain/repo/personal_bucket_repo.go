@@ -15,6 +15,8 @@ type PersonalBucketRepo interface {
 	// [COMMENT]: Tìm kiếm thông tin chi tiết của một Bucket theo ID kèm theo userID để validate.
 	GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error)
 
+	GetDeleteTarget(ctx context.Context, id uuid.UUID, userID uuid.UUID, workspaceID uuid.UUID, zoneID uuid.UUID) (*storageEntity.DeletePersonalBucketTarget, error)
+
 	// [COMMENT]: Tìm kiếm thông tin chi tiết của một Bucket theo tên vật lý.
 	GetByName(ctx context.Context, name string) (*storageEntity.PersonalBucket, error)
 
@@ -34,5 +36,5 @@ type PersonalBucketRepo interface {
 	UpdateLifecycle(ctx context.Context, id uuid.UUID, userID uuid.UUID, rules []storageEntity.BucketLifecycleRule, outbox *storageEntity.StorageOutboxRecord) (*storageEntity.PersonalBucket, error)
 
 	// [COMMENT]: Xóa vĩnh viễn bản ghi Bucket ra khỏi Database có check quyền sở hữu của user và ghi nhận outbox.
-	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error
+	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID, workspaceID uuid.UUID, zoneID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error
 }

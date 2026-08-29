@@ -3,16 +3,6 @@ version: 1
 # Every entry is a workflow-owned canonical source. Service-local and legacy
 # source paths are forbidden.
 contracts:
-  - source: iam/session/v1/session.proto
-    status: canonical
-    owner_workflow: iam.device_runtime_session_revoke
-    god_views:
-      - god_view/iam/user_device_revoke_god_view_workflow.md
-      - god_view/iam/device_session_capacity_eviction_god_view_workflow.md
-    producers: [controlplane, acr]
-    consumers: [acr, controlplane]
-    transports: [shared-redis-stream, grpc]
-
   - source: iam/device_presence/v1/device_presence.proto
     status: canonical
     owner_workflow: iam.device_presence_projection
@@ -114,6 +104,8 @@ contracts:
       - god_view/storage/personal_bucket_create_god_view_workflow.md
       - god_view/storage/personal_bucket_versioning_update_god_view_workflow.md
       - god_view/storage/personal_bucket_lifecycle_update_god_view_workflow.md
+      - god_view/storage/personal_bucket_runtime_read_god_view_workflow.md
+      - god_view/storage/tenant_bucket_runtime_read_god_view_workflow.md
     producers: [controlplane, dataplane]
     consumers: [job-orchestrator, dataplane]
     transports: [postgres-outbox, kafka]
@@ -244,8 +236,8 @@ contracts:
     god_views:
       - god_view/storage/storage_commercial_admission_zone_relay_god_view_workflow.md
     producers: [controlplane]
-    consumers: [zone-control, dataplane]
-    transports: [kafka, zone-kv]
+    consumers: [dataplane]
+    transports: [postgres-outbox, kafka, zone-kv]
   - source: billing/admission/v1/commercial_admission.proto
     status: canonical
     owner_workflow: billing.commercial_admission

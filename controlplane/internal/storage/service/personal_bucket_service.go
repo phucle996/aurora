@@ -54,6 +54,15 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	startedAt := time.Now()
 	result, reason := observability.ResultFailure, observability.ReasonInternal
 	defer func() { s.metrics.ObserveWorkflow(ctx, result, reason, time.Since(startedAt)) }()
+	if len(param.Name) == 0 || len(param.Name) > 51 ||
+		!((param.Name[0] >= 'a' && param.Name[0] <= 'z') || (param.Name[0] >= '0' && param.Name[0] <= '9')) ||
+		!((param.Name[len(param.Name)-1] >= 'a' && param.Name[len(param.Name)-1] <= 'z') || (param.Name[len(param.Name)-1] >= '0' && param.Name[len(param.Name)-1] <= '9')) ||
+		strings.IndexFunc(param.Name, func(value rune) bool {
+			return !(value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '-')
+		}) >= 0 {
+		result, reason = observability.ResultRejected, observability.ReasonInvalidArgument
+		return nil, storageTaxonomy.ErrInvalidBucketName
+	}
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
 	bucketID, err := uuid.NewV7()
 	if err != nil {
@@ -63,7 +72,8 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của WorkspaceID
 	physicalName := fmt.Sprintf("ws-%s-%s", param.WorkspaceID.String()[:8], param.Name)
 
-	// [COMMENT]: Bucket không còn status field — tồn tại trong DB là đủ để xác định là active
+	// Lifecycle is durable: create starts at PROVISIONING and only JO settlement
+	// promotes the bucket to READY after every Zone side effect succeeds.
 	bucket := &storageEntity.PersonalBucket{
 		ID:                   bucketID,
 		Name:                 physicalName,
@@ -138,6 +148,12 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		LegalHoldEnabled:     bucket.LegalHoldEnabled,
 		Tags:                 string(tagsBytes),
 		QuotaBytes:           bucket.CapacityQuotaBytes,
+		BucketId:             bucket.ID[:],
+		OwnerId:              param.UserID[:],
+		OwnerType:            string(storageEntity.StorageOwnerTypePersonal),
+		WorkspaceId:          param.WorkspaceID[:],
+		ZoneId:               param.ZoneID[:],
+		SchemaVersion:        2,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -467,7 +483,7 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 
 	// The bucket name is server-owned durable data, never caller input. It is
 	// resolved under the personal owner fence before it enters the Zone command.
-	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.UserID)
+	bucket, err := s.repo.GetDeleteTarget(ctx, param.BucketID, param.UserID, param.WorkspaceID, param.ZoneID)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound
@@ -490,8 +506,14 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 
 	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync từ durable bucket name
 	syncEvent := &storageproto.BucketDeleteSync{
-		Name:       bucket.Name,
-		AccessKeys: accessKeys,
+		Name:          bucket.Name,
+		AccessKeys:    accessKeys,
+		BucketId:      bucket.ID[:],
+		OwnerId:       param.UserID[:],
+		OwnerType:     string(storageEntity.StorageOwnerTypePersonal),
+		WorkspaceId:   bucket.WorkspaceID[:],
+		ZoneId:        bucket.ZoneID[:],
+		SchemaVersion: 1,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -523,7 +545,7 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 	}
 
 	// [COMMENT]: 4. Thực thi xóa cứng DB và ghi outbox nguyên tử
-	err = s.repo.Delete(ctx, param.BucketID, param.UserID, outbox)
+	err = s.repo.Delete(ctx, param.BucketID, param.UserID, param.WorkspaceID, param.ZoneID, outbox)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			result, reason = observability.ResultRejected, observability.ReasonNotFound

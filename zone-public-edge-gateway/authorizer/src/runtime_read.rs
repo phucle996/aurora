@@ -45,6 +45,7 @@ struct RuntimeReadHeaders {
     pub zone_id: String,
     pub panel_id: String,
     pub component_id: Option<String>,
+    pub resource_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +80,8 @@ struct RuntimeResourceHead {
     module: String,
     resource_type: String,
     resource_id: String,
+    #[serde(default)]
+    resource_name: Option<String>,
     version: u64,
     tombstoned: bool,
     owner_id: String,
@@ -168,6 +171,9 @@ impl RuntimeReadAuthorizer {
             if let Some(component_id) = runtime.component_id {
                 headers.push(("x-aurora-component-id", component_id));
             }
+            if let Some(resource_name) = runtime.resource_name {
+                headers.push(("x-aurora-resource-name", resource_name));
+            }
             for (key, value) in headers {
                 ok.headers.push(HeaderValueOption {
                     header: Some(HeaderValue {
@@ -222,6 +228,24 @@ impl RuntimeReadAuthorizer {
         {
             return Err(RuntimeReadError::Denied("RUNTIME_RESOURCE_SCOPE_DENIED"));
         }
+        let resource_name = if assertion.module == "storage" && assertion.resource_type == "bucket"
+        {
+            let name = head
+                .resource_name
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.len() <= 63
+                        && ((assertion.owner_type == "PERSONAL" && name.starts_with("ws-"))
+                            || (assertion.owner_type == "TENANT" && name.starts_with("tn-")))
+                        && name.bytes().all(|byte| {
+                            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                        })
+                })
+                .ok_or(RuntimeReadError::Denied("RUNTIME_RESOURCE_NAME_INVALID"))?;
+            Some(name)
+        } else {
+            None
+        };
         let replay = tokio::time::timeout(
             self.timeout,
             self.replay_store
@@ -247,6 +271,7 @@ impl RuntimeReadAuthorizer {
             zone_id: assertion.zone_id,
             panel_id: assertion.panel_id,
             component_id: assertion.component_id,
+            resource_name,
         })
     }
 }

@@ -18,6 +18,18 @@ message BucketCreateSync {
   bool legal_hold_enabled = 10;
   string tags = 11;
   int64 quota_bytes = 12;
+  bytes bucket_id = 13;
+  bytes owner_id = 14;
+  string owner_type = 15;
+  bytes workspace_id = 16;
+  bytes zone_id = 17;
+  uint32 schema_version = 18;
+  int64 admission_policy_version = 19;
+  string admission_decision = 20;
+  string admission_effective_at = 21;
+  string admission_valid_until = 22;
+  string admission_source_event_id = 23;
+  string admission_restriction_reason = 24;
 }
 
 message BucketResizeSync {
@@ -30,6 +42,12 @@ message BucketResizeSync {
 message BucketDeleteSync {
   string name = 1;
   repeated string access_keys = 2;
+  bytes bucket_id = 3;
+  bytes owner_id = 4;
+  string owner_type = 5;
+  bytes workspace_id = 6;
+  bytes zone_id = 7;
+  uint32 schema_version = 8;
 }
 
 message BucketVersioningSync {

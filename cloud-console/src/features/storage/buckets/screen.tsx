@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { HardDrive, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -8,43 +8,17 @@ import { listBuckets, type BucketItem } from "@/features/storage/api";
 import { useUserSession } from "@/session/use-session";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { Button } from "@/components/ui/button";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useConsoleQueryScope } from "@/shared/query/scope";
 
 import { BucketFilters } from "./BucketFilters";
 import { BucketTable } from "./BucketTable";
-import { useBucketSizesSync } from "@/features/storage/realtime";
 
 export function StorageDirectoryScreen() {
   const router = useRouter();
   const { checkPermission } = useUserSession();
   const { activeWorkspaceID, loading: wsLoading } = useWorkspace();
   const scope = useConsoleQueryScope();
-
-  const queryClient = useQueryClient();
-  // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket.
-  // Cập nhật trực tiếp dữ liệu vào cache của React Query để tránh flicker UI và tối ưu tải mạng.
-  useBucketSizesSync(
-    useCallback((updatedSizes: Record<string, string>) => {
-      queryClient.setQueryData<BucketItem[]>(
-        [...scope, "storage", "buckets"],
-        (prevBuckets) => {
-          if (!prevBuckets) return [];
-          return prevBuckets.map((bucket) => {
-            // [COMMENT]: Đồng bộ dung lượng thực tế theo key 'name' (lowercase) của backend
-            if (updatedSizes[bucket.name] !== undefined) {
-              return {
-                ...bucket,
-                used_mb: updatedSizes[bucket.name],
-              };
-            }
-            return bucket;
-          });
-        }
-      );
-    }, [queryClient, scope])
-  );
-
 
   // Filter states
   const [searchTerm, setSearchTerm] = useState("");

@@ -67,6 +67,7 @@ Trinity tenant membership, resolves workspace and zone context, rewrites the pat
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:write` permission grant or inactive tenant membership. |
 | `404` | `{"status": "error", "code": "NOT_FOUND", "message": "bucket not found"}` | Bucket does not exist or is not owned by the tenant workspace. |
+| `503` | `{"error": "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE", "message": "Service Unavailable"}` | Commercial admission is absent, expired or suspended. |
 | `500` | `{"status": "error", "code": "INTERNAL_ERROR", "message": "internal_error"}` | Database error, payload sealing failure, or outbox insert error. |
 
 ---
@@ -213,6 +214,13 @@ sequenceDiagram
     end
     MinIO-->>DP: Configuration applied
 ```
+
+Before result publication, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1` with `schema_version=2`, `command_sha256`, `attempt`,
+`message`, `result_payload`, `result_payload_schema_version`, `result_status`
+and optional `error_code`. It is replay evidence only and contains no Tenant or
+lifecycle authority.
 
 ---
 

@@ -55,7 +55,8 @@ Pending wallet top-up -> Storage pending-activation reconciliation
 
 Wallet transition + admission outbox -> Cost target fan-out
   -> Shared Redis durable stream -> Controlplane owner/resource projection
-  -> per-Zone Kafka topic -> Zone Control admission KV
+  -> Storage PostgreSQL outbox -> Job Orchestrator Zone command
+  -> Dataplane admission executor -> Zone admission KV
   -> Control/Public authorizers fail-closed before billable transfer
 
 Pricing Schedule version transaction + pricing outbox -> relay -> Redis PubSub

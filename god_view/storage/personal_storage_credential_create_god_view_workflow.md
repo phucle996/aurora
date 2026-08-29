@@ -53,6 +53,7 @@ permission authority, but policy validation has limitations below.
 | `400` | Invalid body or policy violates bucket boundary |
 | `403` | ACR, context or `storage:credential:write` denial |
 | `404` | No bucket with path name in selected owned workspace |
+| `503` | `STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE`; owner admission is absent, expired or suspended |
 | `500` | Key generation, payload protection or persistence error |
 
 ## Key and transport contract
@@ -170,6 +171,14 @@ sequenceDiagram
     end
 ```
 
+Before publishing either terminal result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. Its exact fields are `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+It is replay evidence only and contains no credential secret or MinIO policy
+authority.
+
 ## Security and failure rules
 
 | Condition | Actual behavior |
@@ -190,12 +199,12 @@ sequenceDiagram
 - `dataplane/src/executor/storage/credential.rs`
 - `job-orchestrator/src/results/storage/credential.rs`
 
-## Wallet admission gate
+## Commercial admission gate
 
 Creating a credential adds a billable access path. The personal owner projection
 must be effective and `ALLOW` before the repository locks the owned bucket and
 writes the credential/protected-outbox transaction. Missing, stale or suspended
-admission returns `503 STORAGE_WALLET_ADMISSION_UNAVAILABLE`; revoke remains
+admission returns `503 STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE`; revoke remains
 available for cleanup.
 
 ```mermaid

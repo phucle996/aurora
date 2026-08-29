@@ -129,6 +129,14 @@ rechecks record integrity, expiry, action, bucket and prefix. It then requires
 current resource admission. MinIO is called only on success. Metadata headers flow back
 through both Envoys; cookies and client authorization never reach MinIO.
 
+Phase 3 reads `AURORA_ZONE_ACCESS/{access_session_id}` JSON fields
+`access_session_id`, `binding_hash`, `actor_id`, `resource_id`, `bucket_name`,
+`workspace_id`, `zone_id`, `actions`, `key_prefix`,
+`expires_at_unix_seconds` and `policy_revision`; `GetObject` and the path are
+checked against that record. The admission lookup by `resource_id` consumes
+only `policy_version`, `decision`, `effective_at_unix_seconds` and
+`valid_until_unix_seconds`.
+
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Authorizer

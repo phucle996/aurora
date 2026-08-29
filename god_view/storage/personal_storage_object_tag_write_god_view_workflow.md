@@ -128,6 +128,14 @@ assertion size, method/path/body hashes, timestamp and jti. It then reads KV,
 binds assertion identity, checks record integrity, `PutObjectTagging`, bucket,
 prefix and expiry, and requires current resource admission. Only then is the body delivered to MinIO.
 
+Phase 3 reads `AURORA_ZONE_ACCESS/{access_session_id}` JSON fields
+`access_session_id`, `binding_hash`, `actor_id`, `resource_id`, `bucket_name`,
+`workspace_id`, `zone_id`, `actions`, `key_prefix`,
+`expires_at_unix_seconds` and `policy_revision`; the action must contain
+`PutObjectTagging`. `AURORA_ZONE_ADMISSION/{resource_id}` contributes only
+`policy_version`, `decision`, `effective_at_unix_seconds` and
+`valid_until_unix_seconds`.
+
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Authorizer
@@ -160,7 +168,7 @@ sequenceDiagram
 | Condition | Behavior |
 |---|---|
 | Browser omits CSRF signal | ACR denies before Vault signing or Zone call. |
-| Wallet admission missing or suspended | Zone denies before MinIO. |
+| Commercial admission missing or suspended | Zone denies before MinIO. |
 | XML changes in transit | Zone body hash no longer matches assertion and denies. |
 | Client exceeds UI tag limits | Gateway may still forward valid UTF-8; MinIO decides semantic validity. UI limits are not a server authorization contract. |
 | Same assertion resent | Zone local replay cache rejects; a fresh request gets a fresh assertion. |

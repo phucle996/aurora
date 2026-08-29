@@ -87,7 +87,7 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		} else if errors.Is(err, storageTaxonomy.ErrInvalidPolicy) {
 			apires.RespondBadRequest(c, err.Error())
 		} else if errors.Is(err, storageTaxonomy.ErrCommercialAdmissionDenied) {
-			apires.RespondServiceUnavailable(c, "STORAGE_WALLET_ADMISSION_UNAVAILABLE")
+			apires.RespondServiceUnavailable(c, "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE")
 		} else {
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")

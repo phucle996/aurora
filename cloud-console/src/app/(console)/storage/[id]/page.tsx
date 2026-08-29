@@ -20,7 +20,7 @@ import RouteGuard from "@/components/route-guard";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useBucketSizesSync } from "@/features/storage/realtime";
+import { useBucketRuntimeUsage } from "@/features/storage/realtime";
 import { useConsoleQueryScope } from "@/shared/query/scope";
 
 import { OverviewTab } from "./components/OverviewTab";
@@ -35,26 +35,6 @@ function ViewBucketContent() {
   const scope = useConsoleQueryScope();
 
   const [activeTab, setActiveTab] = useState("Overview");
-
-  const queryClient = useQueryClient();
-  // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket cho chi tiết bucket
-  useBucketSizesSync(
-    useCallback((updatedSizes: Record<string, string>) => {
-      queryClient.setQueryData<BucketItem | null>(
-        [...scope, "storage", "bucket", id],
-        (prevBucket) => {
-          if (!prevBucket) return null;
-          if (updatedSizes[prevBucket.name] !== undefined) {
-            return {
-              ...prevBucket,
-              used_mb: updatedSizes[prevBucket.name],
-            };
-          }
-          return prevBucket;
-        }
-      );
-    }, [queryClient, id, scope])
-  );
 
   // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý chi tiết bucket.
   // Tự động retry và cache dữ liệu, giảm thiểu gọi API dư thừa.
@@ -77,6 +57,23 @@ function ViewBucketContent() {
     },
     enabled: !!id,
   });
+
+  const queryClient = useQueryClient();
+  // Runtime telemetry starts only after the durable lifecycle reaches READY.
+  // PostgreSQL remains the visible fallback during provisioning or failures.
+  useBucketRuntimeUsage(
+    id,
+    useCallback((usedMegabytes: string) => {
+      queryClient.setQueryData<BucketItem | null>(
+        [...scope, "storage", "bucket", id],
+        (prevBucket) => {
+          if (!prevBucket) return null;
+          return { ...prevBucket, used_mb: usedMegabytes };
+        }
+      );
+    }, [queryClient, id, scope]),
+    bucket?.status === "READY",
+  );
 
   const tabs = useMemo(() => {
     const list = ["Overview", "Objects", "Lifecycle"];

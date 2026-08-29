@@ -58,8 +58,8 @@ func (r *StorageCommercialAdmissionProjectionRepo) Apply(
 	}
 
 	var currentOwner struct {
-		walletVersion int64
-		admissionMode string
+		policyVersion int64
+		decision      string
 		restriction   *string
 		effectiveAt   time.Time
 		validUntil    *time.Time
@@ -70,23 +70,31 @@ func (r *StorageCommercialAdmissionProjectionRepo) Apply(
 		       valid_until, source_event_id
 		FROM %s
 		WHERE owner_id=$1 AND owner_type=$2`, ownerTable), projection.OwnerID, projection.OwnerType).Scan(
-		&currentOwner.walletVersion, &currentOwner.admissionMode, &currentOwner.restriction,
+		&currentOwner.policyVersion, &currentOwner.decision, &currentOwner.restriction,
 		&currentOwner.effectiveAt, &currentOwner.validUntil, &currentOwner.sourceEventID,
 	); err != nil {
 		return fmt.Errorf("read fenced commercial admission owner projection: %w", err)
 	}
 
 	targetRows, err := tx.Query(ctx, fmt.Sprintf(`
-		WITH owned_resources AS (
+		WITH personal_owned AS MATERIALIZED (
 			SELECT bucket.id AS resource_id, bucket.name AS resource_name, bucket.zone_id
 			FROM %s.personal_buckets bucket
 			JOIN hierarchy.personal_workspaces workspace ON workspace.id=bucket.workspace_id
 			WHERE $2='PERSONAL' AND workspace.owner_id=$1
-			UNION ALL
+			  AND bucket.status IN ('PROVISIONING', 'READY', 'UPDATING')
+			FOR KEY SHARE OF bucket
+		), tenant_owned AS MATERIALIZED (
 			SELECT bucket.id AS resource_id, bucket.name AS resource_name, bucket.zone_id
 			FROM %s.tenant_buckets bucket
 			JOIN hierarchy.tenant_workspaces workspace ON workspace.id=bucket.workspace_id
 			WHERE $2='TENANT' AND workspace.tenant_id=$1
+			  AND bucket.status IN ('PROVISIONING', 'READY', 'UPDATING')
+			FOR KEY SHARE OF bucket
+		), owned_resources AS (
+			SELECT resource_id, resource_name, zone_id FROM personal_owned
+			UNION ALL
+			SELECT resource_id, resource_name, zone_id FROM tenant_owned
 		)
 		SELECT resource_id, resource_name, zone_id
 		FROM owned_resources
@@ -127,7 +135,7 @@ func (r *StorageCommercialAdmissionProjectionRepo) Apply(
 				   OR current.owner_id IS DISTINCT FROM EXCLUDED.owner_id
 				   OR current.owner_type IS DISTINCT FROM EXCLUDED.owner_type`, resourceTable),
 			target.resourceID, target.resourceName, target.zoneID, projection.OwnerID,
-			projection.OwnerType, currentOwner.walletVersion, currentOwner.admissionMode,
+			projection.OwnerType, currentOwner.policyVersion, currentOwner.decision,
 			currentOwner.restriction, currentOwner.effectiveAt, currentOwner.validUntil,
 			currentOwner.sourceEventID)
 		if err != nil {
@@ -139,7 +147,7 @@ func (r *StorageCommercialAdmissionProjectionRepo) Apply(
 		payload, marshalErr := r.zonePayloadEncoder.Encode(&storageEntity.CommercialAdmissionZoneProjection{
 			EventID: currentOwner.sourceEventID,
 			OwnerID: projection.OwnerID, OwnerType: projection.OwnerType,
-			PolicyVersion: currentOwner.walletVersion, Decision: currentOwner.admissionMode,
+			PolicyVersion: currentOwner.policyVersion, Decision: currentOwner.decision,
 			RestrictionReason: currentOwner.restriction, EffectiveAt: currentOwner.effectiveAt,
 			ValidUntil: currentOwner.validUntil,
 			ResourceID: target.resourceID, ResourceName: target.resourceName, ZoneID: target.zoneID,

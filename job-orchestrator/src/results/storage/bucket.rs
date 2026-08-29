@@ -805,6 +805,14 @@ pub async fn resolve_bucket_deletion(
                              WHERE bucket.id = locked.resource_id AND bucket.status = 'DELETING' \
                              RETURNING bucket.id \
                          ), \
+                         deleted_admission AS ( \
+                             DELETE FROM storage.resource_admission_projection admission \
+                             USING locked_outbox locked \
+                             WHERE admission.resource_id = locked.resource_id \
+                               AND admission.zone_id = locked.zone_id \
+                               AND EXISTS (SELECT 1 FROM deleted_personal) \
+                             RETURNING admission.resource_id \
+                         ), \
                          settled_outbox AS ( \
                              UPDATE storage.storage_outbox_records outbox \
                              SET status = 'SUCCEEDED', \
@@ -839,6 +847,14 @@ pub async fn resolve_bucket_deletion(
                              USING locked_outbox locked \
                              WHERE bucket.id = locked.resource_id AND bucket.status = 'DELETING' \
                              RETURNING bucket.id \
+                         ), \
+                         deleted_admission AS ( \
+                             DELETE FROM storage.resource_admission_projection admission \
+                             USING locked_outbox locked \
+                             WHERE admission.resource_id = locked.resource_id \
+                               AND admission.zone_id = locked.zone_id \
+                               AND EXISTS (SELECT 1 FROM deleted_tenant) \
+                             RETURNING admission.resource_id \
                          ), \
                          settled_outbox AS ( \
                              UPDATE storage.storage_outbox_records outbox \

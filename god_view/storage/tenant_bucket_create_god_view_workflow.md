@@ -1,7 +1,5 @@
 # Tenant Bucket Create — God View
 
-> **Critical-route revision (2026-08-26):** the public request is `POST /api/v1/critical/storage/buckets`; ACR consumes the session proof bound to its exact method, path and body, then rewrites only to `/api/v1/tenant/critical/storage/buckets`. Controlplane runs `RequireSessionProof` before `Authorize`. Older non-critical route text below is superseded.
-
 Tenant Bucket creation is an asynchronous provisioning mutation for enterprise workspaces.
 Controlplane executes commercial admission verification for the tenant, generates physical
 bucket identifiers, initial bootstrap credentials, and writes a sealed Zone outbox command
@@ -13,10 +11,11 @@ via Dataplane at the edge zone.
 
 ## API-scope contract
 
-Browser calls neutral `POST /api/v1/storage/buckets`. ACR validates the Trinity tenant membership,
-resolves workspace and zone context, rewrites the path to `/api/v1/tenant/storage/buckets`,
+Browser calls neutral `POST /api/v1/critical/storage/buckets` with a session proof
+bound to the exact method, public path and body. ACR validates the proof and Trinity tenant membership,
+resolves workspace and zone context, rewrites the path to `/api/v1/tenant/critical/storage/buckets`,
 and injects trusted identity headers (`x-user-id`, `x-workspace-id`, `x-zone-id`, `x-tenant-id`).
-Controlplane requires `storage:bucket:write` permission. Repository enforces 3-table join
+Controlplane runs `RequireSessionProof` before requiring `storage:bucket:write`. Repository enforces 3-table join
 verification (`tenant_workspaces`, `tenant_memberships`, `tenant_buckets`) before committing.
 
 ---
@@ -30,6 +29,7 @@ verification (`tenant_workspaces`, `tenant_memberships`, `tenant_buckets`) befor
 | `Cookie` | ACR derives Trinity session, tenant membership, Zone, and workspace context. |
 | `Origin` | CORS enforcement at Envoy / ACR. |
 | `X-Requested-With` or `Sec-Fetch-Site` | Required by ACR CSRF check for `POST`. |
+| `x-session-proof-challenge-id`, `x-session-proof-timestamp`, `x-session-proof-signature` | Exact-method/path/body proof. ACR consumes/removes cryptographic fields and overwrites upstream with verified marker/challenge only. |
 | `traceparent` | Injected into outbox record for distributed OpenTelemetry tracing. |
 
 ### JSON payload
@@ -37,25 +37,25 @@ verification (`tenant_workspaces`, `tenant_memberships`, `tenant_buckets`) befor
 ```json
 {
   "name": "company-assets",
-  "capacity_quota_bytes": 107374182400
+  "quota_bytes": 107374182400
 }
 ```
 
 | Field | Type | Contract |
 |---|---|---|
-| `name` | `string` | **Required**. 3-63 characters, lowercase alphanumeric and hyphens. Converted to physical name `tn-{tenant_id[:8]}-{name}`. |
-| `capacity_quota_bytes` | `integer` | **Required**. Initial hard storage quota boundary (`>= 1073741824` = 1 GiB). |
+| `name` | `string` | Required, trimmed, 1–51 byte, lowercase ASCII/digit/hyphen, with lowercase ASCII or digit at both ends. Converted to physical name `tn-{tenant_id[:8]}-{name}` so the physical name remains at most 63 bytes. |
+| `quota_bytes` | `integer` | Accepted as `int64`; Dataplane applies a hard quota only when positive. |
 
 ### Response payload
 
 | Status | Payload | Reason |
 |---|---|---|
-| `201` | `{"status": "success", "data": { "bucket": { "id": "...", "name": "tn-...", "workspace_id": "...", "zone_id": "...", "tenant_id": "...", "capacity_quota_bytes": 107374182400, "used_bytes": 0, "versioning_enabled": false, "lifecycle_rules": [] }, "credential": { "id": "...", "access_key": "...", "secret_key": "...", "policy": "..." } }, "message": "tenant bucket created successfully"}` | Tenant bucket and bootstrap credential committed to PostgreSQL. |
-| `400` | `{"status": "error", "code": "BAD_REQUEST", "message": "invalid bucket name or quota"}` | Validation failure on name or quota format. |
+| `201` | `data` contains flat `bucket_id`, `bucket_name`, `credential_id`, `access_key`, one-time `secret_key` and `policy` | Tenant bucket, bootstrap credential, resource admission and protected command committed. The neutral Console contract is identical to Personal create. |
+| `400` | Error envelope | Invalid JSON or logical bucket-name contract. |
 | `401` | `{"status": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}` | Missing or invalid Trinity session cookie. |
 | `403` | `{"status": "error", "code": "FORBIDDEN", "message": "permission denied"}` | Missing `storage:bucket:write` permission grant or inactive tenant membership. |
 | `409` | `{"status": "error", "code": "CONFLICT", "message": "bucket name already exists"}` | Physical bucket name collision. |
-| `503` | `{"status": "error", "code": "STORAGE_WALLET_ADMISSION_UNAVAILABLE", "message": "storage billing admission is not currently available"}` | Tenant billing / admission gate check denied. |
+| `503` | `{"error": "STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE", "message": "Service Unavailable"}` | Tenant commercial admission gate denied. |
 | `500` | `{"status": "error", "code": "INTERNAL_ERROR", "message": "internal_error"}` | Database error, payload sealing failure, or outbox insert error. |
 
 ---
@@ -70,7 +70,11 @@ verification (`tenant_workspaces`, `tenant_memberships`, `tenant_buckets`) befor
 | `storage.tenant_buckets` | PostgreSQL | Insert | Physical bucket record owned by the workspace. |
 | `storage.tenant_credentials` | PostgreSQL | Insert `state=CREATING` | One-time bootstrap credential promise; secret remains response/payload-only. |
 | `storage.storage_outbox_records` | PostgreSQL | Insert | Topic `storage.bucket.create`, payload `BucketCreateSync`. |
-| `storage.bucket.create` | Kafka (Zone Command) | At-least-once publish | Sealed binary payload dispatched to the workspace's target Zone. |
+| `storage.resource_admission_projection` | PostgreSQL | Insert in the same create transaction | Exact bucket receives the locked current Tenant `ALLOW` snapshot. |
+| `storage.bucket.create` | Kafka (Zone Command) | At-least-once publish | Sealed payload carries bucket, Tenant owner, workspace and Zone registration fields. |
+| `storage.bucket.head.{bucket_id}` | Zone config KV | CAS after MinIO success | Runtime head contains exact Tenant/workspace/Zone and trusted physical name. |
+| `AURORA_ZONE_ADMISSION/{bucket_id}` | Zone admission KV | CAS from create snapshot | Bucket-ID commercial lookup. |
+| `AURORA_ZONE_ADMISSION/name/{physical_name}` | Zone admission KV | CAS the same value | SDK physical-name commercial lookup. |
 
 ---
 
@@ -85,7 +89,7 @@ sequenceDiagram
     participant Redis as Auth-State Redis
     participant CP as Controlplane
 
-    Browser->>Envoy: POST /api/v1/storage/buckets { name, capacity_quota_bytes }
+    Browser->>Envoy: POST /api/v1/critical/storage/buckets with JSON and proof
     Envoy->>ACR: CheckRequest (headers, cookie, path, body)
     ACR->>Redis: Validate Trinity tenant session & resolve workspace/zone
     ACR->>ACR: Check CSRF & enforce rate limits
@@ -94,9 +98,9 @@ sequenceDiagram
         Envoy-->>Browser: HTTP Error
     else Verified Tenant Session
         ACR->>ACR: Strip untrusted headers & inject x-user-id, x-tenant-id, x-workspace-id, x-zone-id
-        ACR->>ACR: Rewrite path to /api/v1/tenant/storage/buckets
+        ACR->>ACR: Rewrite path to /api/v1/tenant/critical/storage/buckets
         ACR-->>Envoy: Ok (with mutation headers & rewritten path)
-        Envoy->>CP: Forward POST /api/v1/tenant/storage/buckets
+        Envoy->>CP: Forward POST /api/v1/tenant/critical/storage/buckets
     end
 ```
 
@@ -105,9 +109,9 @@ sequenceDiagram
 #### Hop 1.1: Browser → Central Envoy Gateway
 - **Input**:
   - Method: `POST`
-  - URL: `/api/v1/storage/buckets`
+  - URL: `/api/v1/critical/storage/buckets`
   - Headers: `Cookie: trinity_session=...; workspace_id=...`, `Origin: https://console.aurora.local`, `Content-Type: application/json`, `X-Requested-With: XMLHttpRequest`
-  - Body: `{"name": "company-assets", "capacity_quota_bytes": 107374182400}`
+  - Body: `{"name": "company-assets", "quota_bytes": 107374182400, "...": "advanced options"}` plus session-proof headers minted for the exact request.
 - **Output**: Forwarded verbatim as gRPC `CheckRequest` to ACR ExtAuthz filter.
 
 #### Hop 1.2: Envoy → ACR (ExtAuthz gRPC CheckRequest)
@@ -119,13 +123,13 @@ sequenceDiagram
   3. Verifies workspace cookie corresponds to an authorized workspace within the tenant.
 - **Output**:
   - On success: `OkHttpResponse` containing:
-    - `headers_to_remove`: `["cookie", "authorization", "x-user-id", "x-workspace-id", "x-zone-id", "x-tenant-id"]`
-    - `headers_to_add`: `x-user-id: {uuid}`, `x-tenant-id: {uuid}`, `x-workspace-id: {uuid}`, `x-zone-id: {uuid}`, `x-actor-type: tenant`
-    - `path_mutation`: rewrite `:path` to `/api/v1/tenant/storage/buckets`.
+    - `headers_to_remove`: cookie/authorization, caller identity/context and raw session-proof signature/timestamp/challenge copies.
+    - `headers_to_add` with overwrite semantics: verified `x-user-id`, `x-user-name`, `x-user-level`, `x-tenant-id`, `x-workspace-id`, `x-zone-id`, `x-client-device-id`, `x-session-proof-verified=true`, verified challenge id and `x-original-path`.
+    - `path_mutation`: rewrite `:path` to `/api/v1/tenant/critical/storage/buckets`.
 
 #### Hop 1.3: Envoy → Controlplane Upstream
 - **Input**:
-  - `POST /api/v1/tenant/storage/buckets` with trusted headers and request body.
+  - `POST /api/v1/tenant/critical/storage/buckets` with trusted headers and request body.
 - **Output**: HTTP stream to Controlplane Go HTTP router.
 
 ---
@@ -147,13 +151,14 @@ sequenceDiagram
     AuthMW->>AuthMW: Verify tenant:storage:bucket:write grant
     AuthMW->>Handler: Dispatch Create(c)
     Handler->>Service: CreateBucketForTenant(param)
-    Service->>Service: RequireOwnerAdmission(tenantID, TENANT)
     Service->>Service: Generate UUIDv7 IDs, Access/Secret Keys, Policy
-    Service->>Service: Build BucketCreateSync protobuf
-    Service->>Protector: Seal payload bytes
+    Service->>Service: Build BucketCreateSync schema 2 skeleton
     Service->>Repo: Create(bucket, credential, outboxRecord)
-    Repo->>PG: Execute atomic 3-table verification CTE
-    PG-->>Repo: Commit successful (1 bucket, 1 credential, 1 outbox inserted)
+    Repo->>PG: Lock current Tenant ALLOW admission FOR KEY SHARE
+    Repo->>Repo: Copy locked snapshot into BucketCreateSync
+    Repo->>Protector: Seal payload bytes inside transaction
+    Repo->>PG: Execute ownership/admission CTE and four inserts
+    PG-->>Repo: Commit bucket, credential, outbox and resource admission
     Repo-->>Service: Success
     Service-->>Handler: CreatedBucketResult (Bucket + Plaintext Secret)
     Handler-->>Envoy: 201 Created JSON
@@ -170,60 +175,27 @@ sequenceDiagram
 #### Hop 2.2: TenantBucketHandler → TenantBucketService
 - **Input**: `CreateTenantBucketRequest` DTO containing `name` and `capacity_quota_bytes`.
 - **Processing**:
-  1. Validates input schema (alphanumeric name, minimum 1 GiB quota).
-  2. Verifies commercial admission gate for `StorageOwnerTypeTenant`.
+  1. Validates the 1–51 byte logical bucket-name contract.
+  2. Copies only ACR-verified Tenant/workspace/Zone/user scope into the command.
   3. Formats physical bucket name: `tn-{tenant_id[:8]}-{name}`.
   4. Generates cryptographically secure access key and secret key.
   5. Builds standard AWS S3 policy scoped to `arn:aws:s3:::{physicalName}/*`.
-  6. Constructs Protobuf `BucketCreateSync`.
-  7. Seals payload bytes via Protector with topic `storage.bucket.create`.
+  6. Constructs the schema-2 `BucketCreateSync` skeleton; the repository supplies its locked admission snapshot.
 - **Output**: Call to `repo.Create(ctx, bucket, credential, outboxRecord)`.
 
-#### Hop 2.3: TenantBucketRepository → PostgreSQL Atomic CTE
-- **Input SQL Query**:
-  ```sql
-  WITH authorized_workspace AS (
-      SELECT w.id, w.tenant_id, w.zone_id
-      FROM hierarchy.tenant_workspaces w
-      JOIN hierarchy.tenant_memberships m 
-        ON m.tenant_id = w.tenant_id 
-       AND m.user_id = $actor_user_id 
-       AND m.status = 'active'
-      WHERE w.id = $workspace_id 
-        AND w.tenant_id = $tenant_id 
-        AND w.zone_id = $context_zone_id
-      FOR KEY SHARE OF w
-  ),
-  ins_bucket AS (
-      INSERT INTO storage.tenant_buckets (
-          id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
-      )
-      SELECT $bucket_id, $bucket_name, aw.id, aw.zone_id, aw.tenant_id, 'PROVISIONING', $quota_bytes, NOW(), NOW()
-      FROM authorized_workspace aw
-      RETURNING id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
-  ),
-  ins_credential AS (
-      INSERT INTO storage.tenant_credentials (
-          id, bucket_id, access_key, policy, state, created_at, updated_at
-      )
-      SELECT $cred_id, ib.id, $access_key, $policy, 'CREATING', NOW(), NOW()
-      FROM ins_bucket ib
-  ),
-  inserted_outbox AS (
-      INSERT INTO storage.storage_outbox_records (
-          event_id, zone_id, job_topic, payload, owner_id, owner_type, status,
-          job_version, resource_id, resource_name, payload_schema_version, trace_id, idle,
-          actor_user_id, payload_key_id
-      )
-      SELECT $event_id, ib.zone_id, 'storage.bucket.create', $sealed_payload, ib.tenant_id, 'TENANT', 'PENDING',
-             1, ib.id::text, ib.name, 1, $trace_id, 30,
-             $actor_user_id, $payload_key_id
-      FROM ins_bucket ib
-  )
-  SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
-  FROM ins_bucket;
-  ```
-- **Output**: Atomic commit of one `PROVISIONING` bucket, one `CREATING` credential, and one pending outbox row.
+#### Hop 2.3: TenantBucketRepository → PostgreSQL Atomic Transaction
+
+Repository first locks the current non-expired Tenant `ALLOW` owner row with
+`FOR KEY SHARE`. It injects exactly that version, validity and source event into
+the schema-2 create protobuf and seals the payload while the lock is held.
+This serializes create against the projection consumer's owner-row update.
+
+Its CTE then rechecks the same admission and the four-dimensional durable scope
+`(workspace_id, tenant_id, actor_user_id active membership, zone_id)`. From the
+authorized row it inserts one `PROVISIONING` bucket, one bootstrap credential,
+one pending protected outbox command and one
+`storage.resource_admission_projection` row. Any missing scope, admission
+change, seal error, SQL error or conflict rolls the complete transaction back.
 
 #### Hop 2.4: Controlplane → Browser
 - **Input**: `CreatedBucketResult` entity.
@@ -232,24 +204,12 @@ sequenceDiagram
   {
     "status": "success",
     "data": {
-      "bucket": {
-        "id": "01916fe8-444a-714d-91b5-555e5fbdd98b",
-        "name": "tn-b78f9a2c-company-assets",
-        "workspace_id": "01916fe8-444a-714d-91b5-555e5fbdd98a",
-        "zone_id": "01916fe8-444a-714d-91b5-555e5fbdd980",
-        "tenant_id": "b78f9a2c-0000-0000-0000-000000000000",
-        "status": "PROVISIONING",
-        "capacity_quota_bytes": 107374182400,
-        "used_bytes": 0,
-        "versioning_enabled": false,
-        "lifecycle_rules": []
-      },
-      "credential": {
-        "id": "01916fe8-444a-714d-91b5-555e5fbdd98c",
-        "access_key": "AKIA...",
-        "secret_key": "wJalrXUtnFEMI...",
-        "policy": "..."
-      }
+      "bucket_id": "01916fe8-444a-714d-91b5-555e5fbdd98b",
+      "bucket_name": "tn-b78f9a2c-company-assets",
+      "credential_id": "01916fe8-444a-714d-91b5-555e5fbdd98c",
+      "access_key": "AKIA...",
+      "secret_key": "wJalrXUtnFEMI...",
+      "policy": "..."
     },
     "message": "tenant bucket created successfully"
   }
@@ -267,6 +227,7 @@ sequenceDiagram
     participant KafkaCmd as Zone Command Kafka
     participant DP as Zone Dataplane (BucketCreateExecutor)
     participant MinIO as MinIO Cluster
+    participant KV as Zone config KV
 
     PG-->>JO: Read committed outbox record (topic: storage.bucket.create)
     JO->>KafkaCmd: Publish JobCommandV1 (sealed BucketCreateSync, target zone)
@@ -276,7 +237,36 @@ sequenceDiagram
     DP->>MinIO: MinIO Admin SetBucketQuota (Hard Quota)
     DP->>MinIO: MinIO Admin CreateServiceAccount (Access Key, Secret Key, Policy)
     MinIO-->>DP: Provisioning succeeded
+    DP->>KV: CAS storage.bucket.head.bucket_id with Tenant scope and physical name
+    DP->>KV: CAS admission bucket_id and name/physical_name
 ```
+
+`BucketCreateSync` schema 2 carries the locked Central `ALLOW` snapshot in
+addition to exact bucket/Tenant/workspace/Zone registration. The runtime key is
+`AURORA_ZONE_CONFIG/storage.bucket.head.{bucket_id}`; its JSON schema is
+`schema_version=1`, `runtime_read_enabled=true`, `module="storage"`,
+`resource_type="bucket"`, exact `resource_id`, server-owned `resource_name`,
+`version=1`, create `event_id`, `tombstoned=false`, Tenant `owner_id`,
+`owner_type="TENANT"`, `workspace_id` and `zone_id`.
+
+Dataplane writes the same admission JSON to
+`AURORA_ZONE_ADMISSION/{bucket_id}` and
+`AURORA_ZONE_ADMISSION/name/{physical_name}` with `resource_id`,
+`resource_name`, `policy_version`, `decision='ALLOW'`, null reason,
+effective/optional expiry Unix seconds and `source_event_id`. Equal-version
+replay succeeds only for exact record and resource identity equality. A runtime
+or admission KV failure is retryable, and JO does not mark the bucket `READY`
+until every required Zone projection succeeds.
+
+After the executor returns a terminal result and before publishing that result,
+Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. Its phase-local schema is `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+It is execution replay evidence only, never Tenant or bucket authority: a
+matching command hash reuses the terminal result; conflict or corruption fails
+closed.
 
 ### Hop-by-Hop Contract — Phase 3
 
@@ -291,11 +281,12 @@ sequenceDiagram
 #### Hop 3.3: Kafka → Zone Dataplane (`BucketCreateExecutor`)
 - **Input**: Consumed Kafka record delivered to Dataplane runtime.
 - **Processing**:
-  1. Decrypts payload and decodes `storage_proto::BucketCreateSync`.
+  1. Decrypts payload and validates the schema-2 registration plus locked `ALLOW` admission snapshot.
   2. Calls S3 `CreateBucket` with physical bucket name.
   3. Calls MinIO Admin API to apply hard storage quota.
   4. Calls MinIO Admin API to create user / service account and attach scoped policy.
-- **Output**: MinIO S3 cluster fully provisioned.
+  5. CAS-creates the runtime head and both admission indexes.
+- **Output**: MinIO and all required Zone projections are provisioned.
 
 ---
 
@@ -559,12 +550,3 @@ sequenceDiagram
 - **Cost Engine Settlement Worker**: `cost-manager/engine/src/service/storage/usage_report_settlement.rs`
 - **Cost Engine Pricing Runtime & Lease**: `cost-manager/engine/src/engine/` (`pricing_runtime.rs`, `settlement.rs`, `lease.rs`)
 - **Billing PostgreSQL Tables**: `billing.resource_ownership_projection`, `billing.usage_charges`, `billing.usage_charge_lines`, `billing.wallets`
-
-## Completion replay revision — 2026-08-27
-
-Partial bucket provisioning retries forward and never runs compensating deletes.
-Completed jobs persist a protobuf success receipt in Zone config KV, bound to
-the exact authenticated command hash and operation epoch, before result publication.
-A matching replay republishes that result; a conflicting or unreadable receipt
-fails closed. Receipt retention/garbage collection still needs an explicit safe
-replay-horizon contract before high-volume production use.

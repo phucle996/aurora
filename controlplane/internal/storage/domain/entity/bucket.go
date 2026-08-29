@@ -18,6 +18,7 @@ const (
 type PersonalBucket struct {
 	ID                   uuid.UUID // ID định danh duy nhất của bucket
 	Name                 string    // Tên bucket vật lý (phải unique toàn hệ thống)
+	WorkspaceID          uuid.UUID // Durable workspace authority for Zone projections
 	ZoneID               uuid.UUID // ID of Infrastructure Zone chứa bucket này
 	Status               string    // PROVISIONING | READY | UPDATING | DELETING | FAILED
 	CapacityQuotaBytes   int64     // Hạn mức dung lượng lưu trữ tối đa (Bytes)
@@ -107,6 +108,13 @@ type DeletePersonalBucket struct {
 	WorkspaceID uuid.UUID
 	ZoneID      uuid.UUID
 	UserID      uuid.UUID
+}
+
+type DeletePersonalBucketTarget struct {
+	ID          uuid.UUID
+	Name        string
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
 }
 
 // [COMMENT]: DeleteTenantBucket chứa thông tin tham số để thực hiện xóa bucket doanh nghiệp và credentials liên quan.

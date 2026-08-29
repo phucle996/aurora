@@ -1,6 +1,5 @@
 use std::error::Error;
 
-mod admission;
 mod metering;
 mod orchestrator;
 mod storage_report_relay;
@@ -22,10 +21,6 @@ pub mod transport_proto {
 
 pub mod zone_report_proto {
     include!(concat!(env!("OUT_DIR"), "/zone.rs"));
-}
-
-pub mod storage_admission_proto {
-    include!(concat!(env!("OUT_DIR"), "/controlplane.storage.v1.rs"));
 }
 
 #[tokio::main]

@@ -1,8 +1,11 @@
 use async_trait::async_trait;
 use prost::Message;
 
+use crate::executor::storage::commercial_admission::{apply_admission_to_kv, AdmissionRecord};
 use crate::executor::storage::core::{MinioAdminClient, MinioClient};
+use crate::executor::storage::runtime_registration::StorageBucketRegistration;
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
 use std::sync::Arc;
@@ -17,7 +20,15 @@ use super::storage_proto;
 ///   3. Gán bucket policy cho user đó (S3 SDK put_bucket_policy)
 ///
 /// Mỗi bước đều idempotent → toàn bộ job an toàn khi retry.
-pub struct BucketCreateExecutor;
+pub struct BucketCreateExecutor {
+    zone_kv: Arc<ZoneKvStore>,
+}
+
+impl BucketCreateExecutor {
+    pub fn new(zone_kv: Arc<ZoneKvStore>) -> Self {
+        Self { zone_kv }
+    }
+}
 
 #[async_trait]
 impl Executor for BucketCreateExecutor {
@@ -33,6 +44,90 @@ impl Executor for BucketCreateExecutor {
                     e
                 )));
             }
+        };
+
+        if payload.payload_schema_version != 1 || sync_data.schema_version > 2 {
+            return Err(ExecutorError::ExecutionFailed(
+                "STORAGE_BUCKET_CREATE_SCHEMA_INVALID".into(),
+            ));
+        }
+        // Schema 0 is the rolling-upgrade shape emitted before runtime
+        // registration existed. It may finish provisioning, but missing
+        // owner/workspace facts can never be inferred into an authority head.
+        let registration = if sync_data.schema_version >= 1 {
+            let registration = StorageBucketRegistration {
+                bucket_id: uuid::Uuid::from_slice(&sync_data.bucket_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_BUCKET_ID_INVALID".into())
+                })?,
+                bucket_name: sync_data.name.clone(),
+                owner_id: uuid::Uuid::from_slice(&sync_data.owner_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_OWNER_ID_INVALID".into())
+                })?,
+                owner_type: sync_data.owner_type.clone(),
+                workspace_id: uuid::Uuid::from_slice(&sync_data.workspace_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_WORKSPACE_ID_INVALID".into())
+                })?,
+                zone_id: uuid::Uuid::from_slice(&sync_data.zone_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_ZONE_ID_INVALID".into())
+                })?,
+                event_id: payload.job_id.clone(),
+            };
+            registration.validate(&payload)?;
+            Some(registration)
+        } else {
+            None
+        };
+        let admission = if sync_data.schema_version == 2 {
+            let effective_at =
+                chrono::DateTime::parse_from_rfc3339(&sync_data.admission_effective_at)
+                    .map(|value| value.timestamp())
+                    .map_err(|_| {
+                        ExecutorError::ExecutionFailed(
+                            "STORAGE_CREATE_ADMISSION_EFFECTIVE_AT_INVALID".into(),
+                        )
+                    })?;
+            let valid_until = if sync_data.admission_valid_until.is_empty() {
+                None
+            } else {
+                let value = chrono::DateTime::parse_from_rfc3339(&sync_data.admission_valid_until)
+                    .map(|value| value.timestamp())
+                    .map_err(|_| {
+                        ExecutorError::ExecutionFailed(
+                            "STORAGE_CREATE_ADMISSION_VALID_UNTIL_INVALID".into(),
+                        )
+                    })?;
+                if value <= effective_at {
+                    return Err(ExecutorError::ExecutionFailed(
+                        "STORAGE_CREATE_ADMISSION_WINDOW_INVALID".into(),
+                    ));
+                }
+                Some(value)
+            };
+            if sync_data.admission_policy_version <= 0
+                || sync_data.admission_decision != "ALLOW"
+                || !sync_data.admission_restriction_reason.is_empty()
+                || uuid::Uuid::parse_str(&sync_data.admission_source_event_id).is_err()
+            {
+                return Err(ExecutorError::ExecutionFailed(
+                    "STORAGE_CREATE_ADMISSION_INVALID".into(),
+                ));
+            }
+            Some(AdmissionRecord {
+                resource_id: uuid::Uuid::from_slice(&sync_data.bucket_id)
+                    .map_err(|_| {
+                        ExecutorError::ExecutionFailed("STORAGE_BUCKET_ID_INVALID".into())
+                    })?
+                    .to_string(),
+                resource_name: sync_data.name.clone(),
+                policy_version: sync_data.admission_policy_version,
+                decision: sync_data.admission_decision.clone(),
+                restriction_reason: None,
+                effective_at_unix_seconds: effective_at,
+                valid_until_unix_seconds: valid_until,
+                source_event_id: sync_data.admission_source_event_id.clone(),
+            })
+        } else {
+            None
         };
 
         // [COMMENT]: Validate credential fields — bắt buộc phải có đủ thông tin credential
@@ -213,6 +308,16 @@ impl Executor for BucketCreateExecutor {
                 sync_data.access_key
             ),
         );
+
+        // Runtime registration and commercial admission are both required Zone
+        // projections. A failure returns retryable after MinIO provisioning,
+        // whose preceding operations are idempotent.
+        if let Some(registration) = registration {
+            registration.activate(self.zone_kv.clone()).await?;
+        }
+        if let Some(admission) = admission {
+            apply_admission_to_kv(self.zone_kv.admission(), &admission).await?;
+        }
 
         Ok(ExecutionResult {
             message: format!(

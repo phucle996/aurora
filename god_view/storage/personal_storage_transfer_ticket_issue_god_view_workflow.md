@@ -43,6 +43,13 @@ Issue returns JSON with `method`, `url`, `transfer_ticket` and
 `expires_at_unix_seconds`. Revoke returns `204` or `404`. Every issuer
 response has `Cache-Control: no-store`.
 
+The returned `transfer_ticket` is specifically a Console/browser capability
+and its later presence in `X-Aurora-Transfer-Ticket` selects the Public Edge
+ticket branch. Direct SDK clients do not call this workflow and must omit that
+header; they retain their own MinIO SigV4 credential and enter the separate SDK
+workflow. Public Edge never uses `Origin`, User-Agent or SigV4 syntax to choose
+between these branches.
+
 ### Trusted ACR response headers
 
 ACR returns only an Envoy mutation, never a ticket:
@@ -112,7 +119,7 @@ session marker. The Rust authorizer verifies signature, issuer, audience, Zone,
 method/path/body hashes, time window and replay `jti`. It then reads the Zone
 access record, binds actor/workspace/Zone/session, checks record integrity,
 expiry, actions, bucket, prefix and policy revision, and uses that record's
-resource id for wallet admission.
+resource id for commercial admission.
 
 ```mermaid
 sequenceDiagram
@@ -166,6 +173,24 @@ Storage-specific invariants are enforced here:
 - Revoke requires the same actor, Zone and access-session identity and a UUID
   ticket path.
 
+The KV schemas used only in this phase are:
+
+- `AURORA_ZONE_ACCESS/{access_session_id}` JSON: `access_session_id`,
+  `binding_hash`, `actor_id`, `resource_id`, `bucket_name`, `workspace_id`,
+  `zone_id`, `actions`, `key_prefix`, `expires_at_unix_seconds`,
+  `policy_revision`. Issue consumes these fields to derive the grant; revoke
+  uses the signed ticket/actor binding and does not widen this capability.
+- `AURORA_ZONE_ADMISSION/{resource_id}` JSON: `policy_version`, `decision`,
+  `effective_at_unix_seconds`, `valid_until_unix_seconds`. Issue requires a
+  positive version and a currently effective `ALLOW`; revoke skips admission.
+- `AURORA_ZONE_TRANSFER/{ticket_id}` protobuf `TransferTicketV1`:
+  `schema_version`, `ticket_id`, `secret_sha256`, `capability`, `actor_id`,
+  `zone_id`, `resource_id`, `workspace_id`, `operation_id`, `method`,
+  `public_path`, optional `content_length`, optional `content_type`,
+  `issued_at_unix_seconds`, `expires_at_unix_seconds`, `one_time`, `state`.
+  Issue CAS-creates `Issued`; revoke preserves all bindings and CASes only
+  `state` to `Revoked`.
+
 ## Phase 3 — ticket settlement and recovery
 
 The browser keeps the plaintext ticket only in memory. A failed KV create,
@@ -203,33 +228,3 @@ assertion.
 - `zone-control/src/transfer_ticket/store.rs`
 - `proto/zone/transfer/v1/transfer_ticket.proto`
 - `zone-public-edge-gateway/authorizer/src/main.rs`
-
-## Wallet admission rule
-
-Ticket issue is a billable transfer capability and is denied by Zone Control
-when `AURORA_ZONE_ADMISSION/{resource_id}` is missing, expired or not `ALLOW`.
-The version fence prevents an older `ALLOW` from resurrecting after a newer
-`SUSPEND_BILLABLE`. Revoke skips this gate so cleanup remains possible while a
-wallet is restricted; Zone Control never queries Billing synchronously.
-
-```mermaid
-sequenceDiagram
-    participant E as Zone Control Envoy
-    participant A as Zone Control Authorizer
-    participant KV as AURORA_ZONE_ADMISSION
-    participant T as AURORA_ZONE_TRANSFER
-
-    E->>A: Forward issue or revoke assertion
-    alt issue
-        A->>KV: Read resource admission
-        alt missing/expired/suspended
-            A-->>E: 403 before ticket write
-        else ALLOW
-            A->>T: CAS create one-time ticket
-            A-->>E: ticket response
-        end
-    else revoke
-        A->>T: CAS revoke ticket
-        A-->>E: 204 or 404
-    end
-```

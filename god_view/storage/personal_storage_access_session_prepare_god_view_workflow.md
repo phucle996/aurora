@@ -41,7 +41,7 @@ capability actions on this Controlplane route.
 | `202` | Returns `access_session_id`, `bucket_id`, `zone_id`, UTC `expires_at` and `gateway_path`; status is still pending. |
 | `400` | UUID, duration, action or prefix is invalid. |
 | `404` | Durable personal bucket/workspace/Zone ownership facts do not match. |
-| `503 STORAGE_WALLET_ADMISSION_UNAVAILABLE` | Central owner admission is absent, stale or suspended. |
+| `503 STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE` | Central owner admission is absent, stale or suspended. |
 | `500` | Payload protection or PostgreSQL command insertion failed. |
 
 ## Key and state contract
@@ -89,7 +89,7 @@ sequenceDiagram
     participant H as Personal Storage handler
     participant M as permission middleware
     participant S as Access-session service
-    participant AD as Wallet admission repository
+    participant AD as Commercial admission repository
     participant R as Access-session repository
     participant DB as PostgreSQL
 
@@ -134,6 +134,31 @@ sequenceDiagram
 Dataplane is the only writer of the Zone capability record. The record binds
 session, actor, resource, bucket, workspace, Zone, actions, prefix, expiry and
 policy revision.
+
+The Phase 3 write schema is exactly one JSON value at
+`AURORA_ZONE_ACCESS/{access_session_id}`:
+
+| Field | Meaning in this phase |
+|---|---|
+| `access_session_id` | UUID and KV key equality fence |
+| `binding_hash` | 64-character SHA-256 binding fence |
+| `actor_id`, `workspace_id`, `zone_id` | Verified Personal scope |
+| `resource_id`, `bucket_name` | Immutable bucket UUID and durable physical name |
+| `actions` | Non-empty subset of the six reviewed Storage actions |
+| `key_prefix` | Object-key scope, at most 256 bytes |
+| `expires_at_unix_seconds` | Future expiry, no more than 3660 seconds from Dataplane validation time |
+| `policy_revision` | Positive capability revision |
+
+This record contains no wallet decision, transfer-ticket secret or runtime
+metric selector; those belong to different KV workflows.
+
+Before emitting the terminal Kafka result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. The only fields are `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+It proves execution replay only and contains no access capability authority;
+same-command replay reuses it, while conflict or corruption fails closed.
 
 ## Phase 4 — Result settlement and realtime hint
 

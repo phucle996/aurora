@@ -7,7 +7,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../proto/zone/metadata/v1/zone_metadata.proto");
     println!("cargo:rerun-if-changed=../proto/storage/usage_projection/v1/bucket_sizes.proto");
     println!("cargo:rerun-if-changed=../proto/zone/report/v1/zone_report.proto");
-    println!("cargo:rerun-if-changed=../proto/storage/commercial_admission/v1/zone_projection.proto");
     prost_build::compile_protos(
         &[
             "../proto/zone/transfer/v1/transfer_ticket.proto",
@@ -18,7 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "../proto/zone/metadata/v1/zone_metadata.proto",
             "../proto/storage/usage_projection/v1/bucket_sizes.proto",
             "../proto/zone/report/v1/zone_report.proto",
-            "../proto/storage/commercial_admission/v1/zone_projection.proto",
         ],
         &["../proto"],
     )?;

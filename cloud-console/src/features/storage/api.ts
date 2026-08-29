@@ -23,7 +23,7 @@ export type BucketItem = {
   id: string;
   name: string;
   workspace_id: string;
-  // [COMMENT]: status đã bị bỏ — bucket tồn tại trong DB là đủ để xác định active
+  status: "PROVISIONING" | "READY" | "UPDATING" | "DELETING" | "FAILED";
   capacity_quota_bytes: number;
   used_mb?: string; // Dung lượng thực tế cho UI, fixed-point decimal MB
   versioning_enabled?: boolean;
@@ -31,6 +31,35 @@ export type BucketItem = {
   created_at: string;
   updated_at: string;
 };
+
+export type StorageRuntimeReadTicket = {
+  assertion: string;
+  signature: string;
+  key_id: string;
+  zone_id: string;
+  zone_code: string;
+  method: "GET";
+  path: string;
+  expires_at: string;
+};
+
+export async function mintStorageBucketRuntimeRead(
+  bucketId: string,
+  fromSeconds: number,
+  signal?: AbortSignal,
+): Promise<StorageRuntimeReadTicket> {
+  return fetchJSON<StorageRuntimeReadTicket>("/api/v1/runtime/assertions", {
+    method: "POST",
+    body: {
+      resource_type: "storage_bucket",
+      resource_id: bucketId,
+      panel: "metrics",
+      from_seconds: fromSeconds,
+    },
+    signal,
+    cache: "no-store",
+  });
+}
 
 // [COMMENT]: CreatedBucketResult chứa thông tin bucket và credential thô vừa được khởi tạo.
 // ⚠ Lưu ý: Sử dụng DTO ở backend nên các key dùng snake_case chữ thường.

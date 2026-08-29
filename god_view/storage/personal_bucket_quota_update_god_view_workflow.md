@@ -159,6 +159,14 @@ sequenceDiagram
     end
 ```
 
+Before publishing either terminal result, Dataplane CAS-creates
+`AURORA_ZONE_JOB_COMPLETION/job.completion.{job_id}.{delivery_epoch}` as protobuf
+`JobCompletionReceiptV1`. Its exact fields are `schema_version=2`,
+`command_sha256`, `attempt`, `message`, `result_payload`,
+`result_payload_schema_version`, `result_status` and optional `error_code`.
+This KV is replay evidence only; quota authority remains in MinIO and the
+settled PostgreSQL projection.
+
 ## Failure semantics
 
 | Condition | Behavior |
@@ -179,12 +187,12 @@ sequenceDiagram
 - `dataplane/src/executor/storage/resize.rs`
 - `job-orchestrator/src/results/storage/bucket.rs`
 
-## Wallet admission gate
+## Commercial admission gate
 
 Quota increase is a billable expansion and requires the local personal owner
 projection to be current `ALLOW`. The service checks this before the repository
 locks `used_bytes`; missing, expired or suspended admission maps to `503
-STORAGE_WALLET_ADMISSION_UNAVAILABLE`. Quota decrease remains a cleanup and
+STORAGE_COMMERCIAL_ADMISSION_UNAVAILABLE`. Quota decrease remains a cleanup and
 footprint-reduction action and does not use this gate.
 
 ```mermaid

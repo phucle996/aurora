@@ -134,6 +134,13 @@ then requires current resource admission. MinIO then processes
 individual delete elements. The gateway forwards result XML but current browser
 client does not inspect whether MinIO reported individual failures.
 
+Phase 3 reads `AURORA_ZONE_ACCESS/{access_session_id}` JSON fields
+`access_session_id`, `binding_hash`, `actor_id`, `resource_id`, `bucket_name`,
+`workspace_id`, `zone_id`, `actions`, `key_prefix`,
+`expires_at_unix_seconds` and `policy_revision`. The subsequent
+`AURORA_ZONE_ADMISSION/{resource_id}` read uses only `policy_version`,
+`decision`, `effective_at_unix_seconds` and `valid_until_unix_seconds`.
+
 ```mermaid
 sequenceDiagram
     participant ZA as Zone Authorizer
@@ -171,7 +178,7 @@ sequenceDiagram
 | Per-object MinIO error in `200` XML | UI currently reports success because it does not parse XML error entries. This is a product correctness gap. |
 | Retry after lost response | New request gets new assertion. Multi-delete is generally idempotent for missing keys but response semantics are MinIO-owned. |
 | Static Central Zone route mismatch | Wrong Zone denies assertion rather than permitting cross-zone delete. |
-| Wallet admission missing or suspended | Zone denies before MinIO. |
+| Commercial admission missing or suspended | Zone denies before MinIO. |
 
 ## Code map
 

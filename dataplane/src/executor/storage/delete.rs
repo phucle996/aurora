@@ -1,5 +1,8 @@
+use crate::executor::storage::commercial_admission::remove_admission_from_kv;
 use crate::executor::storage::core::{MinioAdminClient, MinioClient};
+use crate::executor::storage::runtime_registration::StorageBucketRegistration;
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::job_runtime::model::ValidatedJob;
 use crate::observability::logger::Logger;
 use async_trait::async_trait;
@@ -9,7 +12,15 @@ use std::sync::Arc;
 use super::storage_proto;
 
 /// [COMMENT]: Executor chịu trách nhiệm xóa sạch Bucket vật lý cùng các Credentials liên kết trên MinIO.
-pub struct BucketDeleteExecutor;
+pub struct BucketDeleteExecutor {
+    zone_kv: Arc<ZoneKvStore>,
+}
+
+impl BucketDeleteExecutor {
+    pub fn new(zone_kv: Arc<ZoneKvStore>) -> Self {
+        Self { zone_kv }
+    }
+}
 
 #[async_trait]
 impl Executor for BucketDeleteExecutor {
@@ -32,6 +43,35 @@ impl Executor for BucketDeleteExecutor {
                 "BucketDeleteSync payload missing required bucket name".to_string(),
             ));
         }
+
+        if payload.payload_schema_version != 1 || sync_data.schema_version > 1 {
+            return Err(ExecutorError::ExecutionFailed(
+                "STORAGE_BUCKET_DELETE_SCHEMA_INVALID".into(),
+            ));
+        }
+        let registration = if sync_data.schema_version == 1 {
+            let registration = StorageBucketRegistration {
+                bucket_id: uuid::Uuid::from_slice(&sync_data.bucket_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_BUCKET_ID_INVALID".into())
+                })?,
+                bucket_name: sync_data.name.clone(),
+                owner_id: uuid::Uuid::from_slice(&sync_data.owner_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_OWNER_ID_INVALID".into())
+                })?,
+                owner_type: sync_data.owner_type.clone(),
+                workspace_id: uuid::Uuid::from_slice(&sync_data.workspace_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_WORKSPACE_ID_INVALID".into())
+                })?,
+                zone_id: uuid::Uuid::from_slice(&sync_data.zone_id).map_err(|_| {
+                    ExecutorError::ExecutionFailed("STORAGE_ZONE_ID_INVALID".into())
+                })?,
+                event_id: payload.job_id.clone(),
+            };
+            registration.validate(&payload)?;
+            Some(registration)
+        } else {
+            None
+        };
 
         Logger::sys_info(
             op,
@@ -86,6 +126,19 @@ impl Executor for BucketDeleteExecutor {
                 sync_data.name
             ),
         );
+
+        // The tombstone is part of physical deletion settlement. If Zone KV
+        // is unavailable, retrying is safe because MinIO NoSuchBucket is
+        // treated as an idempotent delete result.
+        if let Some(registration) = registration {
+            registration.tombstone(self.zone_kv.clone()).await?;
+            remove_admission_from_kv(
+                self.zone_kv.admission(),
+                &registration.bucket_id.to_string(),
+                &registration.bucket_name,
+            )
+            .await?;
+        }
 
         Ok(ExecutionResult {
             message: format!(

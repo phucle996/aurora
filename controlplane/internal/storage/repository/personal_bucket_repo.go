@@ -1,6 +1,7 @@
 package storageRepoImpl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,10 +15,12 @@ import (
 	storageModel "controlplane/internal/storage/model"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 
+	storageproto "controlplane/internal/storage/transport/proto"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: PersonalBucketRepoImpl hiện thực interface PersonalBucketRepo kết nối với PostgreSQL.
@@ -43,6 +46,61 @@ func NewPersonalBucketRepo(
 }
 
 func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.PersonalBucket, workspaceID uuid.UUID, zoneID uuid.UUID, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage repo: begin personal bucket create: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	admission := storageEntity.CommercialAdmissionProjection{
+		OwnerID:   outbox.OwnerID,
+		OwnerType: string(storageEntity.StorageOwnerTypePersonal),
+	}
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`
+		SELECT policy_version, decision, restriction_reason, effective_at,
+		       valid_until, source_event_id
+		FROM %s.commercial_admission_projection
+		WHERE owner_id=$1 AND owner_type='PERSONAL'
+		  AND decision='ALLOW'
+		  AND effective_at <= NOW()
+		  AND (valid_until IS NULL OR valid_until > NOW())
+		FOR KEY SHARE`, r.storage), outbox.OwnerID).Scan(
+		&admission.PolicyVersion, &admission.Decision, &admission.RestrictionReason,
+		&admission.EffectiveAt, &admission.ValidUntil, &admission.EventID,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return storageTaxonomy.ErrCommercialAdmissionDenied
+		}
+		return fmt.Errorf("storage repo: lock personal create admission: %w", err)
+	}
+
+	var syncEvent storageproto.BucketCreateSync
+	if err := proto.Unmarshal(outbox.Payload, &syncEvent); err != nil {
+		return fmt.Errorf("storage repo: decode personal bucket create payload: %w", err)
+	}
+	if syncEvent.SchemaVersion != 2 || syncEvent.Name != bucket.Name ||
+		!bytes.Equal(syncEvent.BucketId, bucket.ID[:]) ||
+		!bytes.Equal(syncEvent.OwnerId, outbox.OwnerID[:]) ||
+		syncEvent.OwnerType != string(storageEntity.StorageOwnerTypePersonal) ||
+		!bytes.Equal(syncEvent.WorkspaceId, workspaceID[:]) ||
+		!bytes.Equal(syncEvent.ZoneId, zoneID[:]) {
+		return errors.New("storage repo: personal bucket create payload scope mismatch")
+	}
+	syncEvent.AdmissionPolicyVersion = admission.PolicyVersion
+	syncEvent.AdmissionDecision = admission.Decision
+	syncEvent.AdmissionEffectiveAt = admission.EffectiveAt.UTC().Format(time.RFC3339Nano)
+	syncEvent.AdmissionSourceEventId = admission.EventID.String()
+	if admission.ValidUntil != nil {
+		syncEvent.AdmissionValidUntil = admission.ValidUntil.UTC().Format(time.RFC3339Nano)
+	}
+	if admission.RestrictionReason != nil {
+		syncEvent.AdmissionRestrictionReason = *admission.RestrictionReason
+	}
+	outbox.Payload, err = proto.Marshal(&syncEvent)
+	if err != nil {
+		return fmt.Errorf("storage repo: encode personal bucket create payload: %w", err)
+	}
+
 	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
 	if err != nil {
 		return err
@@ -91,15 +149,24 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 			)
 			SELECT $13, $14, $15, $16, $17, $34, $18, $19, $20, $21, $22, $23, $24, $25, $26, $35, $36, $37, $38
 			FROM ins_bucket
+		),
+		ins_resource_admission AS (
+			INSERT INTO %s.resource_admission_projection (
+				resource_id, resource_name, zone_id, owner_id, owner_type,
+				policy_version, decision, restriction_reason, effective_at,
+				valid_until, source_event_id, updated_at
+			)
+			SELECT $1, $2, $4, $17, 'PERSONAL', $39, $40, $41, $42, $43, $44, NOW()
+			FROM ins_bucket
 		)
 		SELECT
 			(SELECT ok FROM admitted) AS admitted,
 			(SELECT id FROM ins_bucket) AS created_id;
-	`, r.storage, r.hierarchy, r.storage, r.storage, r.storage)
+	`, r.storage, r.hierarchy, r.storage, r.storage, r.storage, r.storage)
 
 	var admitted bool
 	var createdID *uuid.UUID
-	err = r.db.QueryRow(ctx, query,
+	err = tx.QueryRow(ctx, query,
 		// [COMMENT]: $1-$7 — personal_buckets fields
 		bucket.ID,
 		bucket.Name,
@@ -147,6 +214,12 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		mo.PayloadKeyID,
 		mo.ResourceName,
 		mo.RollbackQuotaBytes,
+		admission.PolicyVersion,
+		admission.Decision,
+		admission.RestrictionReason,
+		admission.EffectiveAt,
+		admission.ValidUntil,
+		admission.EventID,
 	).Scan(&admitted, &createdID)
 
 	if err != nil {
@@ -162,6 +235,9 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 	if createdID == nil {
 		return storageTaxonomy.ErrNotFound
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage repo: commit personal bucket create: %w", err)
+	}
 
 	bucket.Status = storageEntity.BucketStatusProvisioning
 	return nil
@@ -169,7 +245,7 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 
 func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT b.id, b.name, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.versioning_enabled, b.lifecycle_rules, b.created_at, b.updated_at
+		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.versioning_enabled, b.lifecycle_rules, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
@@ -181,6 +257,7 @@ func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, user
 	err := r.db.QueryRow(ctx, query, id, userID).Scan(
 		&b.ID,
 		&b.Name,
+		&b.WorkspaceID,
 		&b.ZoneID,
 		&b.Status,
 		&b.CapacityQuotaBytes,
@@ -205,6 +282,26 @@ func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, user
 	}
 
 	return &b, nil
+}
+
+func (r *PersonalBucketRepoImpl) GetDeleteTarget(ctx context.Context, id uuid.UUID, userID uuid.UUID, workspaceID uuid.UUID, zoneID uuid.UUID) (*storageEntity.DeletePersonalBucketTarget, error) {
+	query := fmt.Sprintf(`
+		SELECT b.id, b.name, b.workspace_id, b.zone_id
+		FROM %s.personal_buckets b
+		JOIN %s.personal_workspaces w ON w.id = b.workspace_id
+		WHERE b.id=$1 AND w.owner_id=$2 AND b.workspace_id=$3
+		  AND b.zone_id=$4 AND w.zone_id=$4
+	`, r.storage, r.hierarchy)
+	target := &storageEntity.DeletePersonalBucketTarget{}
+	if err := r.db.QueryRow(ctx, query, id, userID, workspaceID, zoneID).Scan(
+		&target.ID, &target.Name, &target.WorkspaceID, &target.ZoneID,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, storageTaxonomy.ErrNotFound
+		}
+		return nil, fmt.Errorf("storage repo: get personal delete target: %w", err)
+	}
+	return target, nil
 }
 
 func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*storageEntity.PersonalBucket, error) {
@@ -248,7 +345,7 @@ func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*s
 
 func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT b.id, b.name, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.versioning_enabled, b.lifecycle_rules, b.created_at, b.updated_at
+		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.versioning_enabled, b.lifecycle_rules, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.workspace_id = $1 AND b.zone_id = $2 AND w.owner_id = $3 AND w.zone_id = $2
@@ -269,6 +366,7 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 		err := rows.Scan(
 			&b.ID,
 			&b.Name,
+			&b.WorkspaceID,
 			&b.ZoneID,
 			&b.Status,
 			&b.CapacityQuotaBytes,
@@ -655,7 +753,7 @@ func (r *PersonalBucketRepoImpl) UpdateLifecycle(ctx context.Context, id uuid.UU
 	return &b, nil
 }
 
-func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
+func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID, workspaceID uuid.UUID, zoneID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
 	protected, err := r.protector.Seal(ctx, jobpayload.Metadata{ZoneID: outbox.ZoneID, SourceDomain: "STORAGE", JobTopic: outbox.JobTopic, ResourceID: outbox.ResourceID, JobVersion: outbox.JobVersion, PayloadSchemaVersion: outbox.PayloadSchemaVersion}, outbox.Payload)
 	if err != nil {
 		return err
@@ -670,6 +768,7 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			FROM %s.personal_buckets b
 			JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 			WHERE b.id = $1 AND w.owner_id = $2
+			  AND b.workspace_id = $3 AND b.zone_id = $4 AND w.zone_id = $4
 			  AND b.status = 'READY'
 			  AND NOT EXISTS (
 				SELECT 1 FROM %s.personal_credentials credential
@@ -696,7 +795,7 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			error_code, error_message, actor_user_id, payload_key_id,
 			resource_name, rollback_quota_bytes
 		)
-		SELECT $3, $4, $5, $6, $7, $17, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, updated_bucket.name, NULL
+		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20, $21, updated_bucket.name, NULL
 		FROM updated_bucket
 		CROSS JOIN (SELECT count(*) FROM updated_credentials) transitioned_credentials;
 	`, r.storage, r.hierarchy, r.storage, r.storage, r.storage, r.storage)
@@ -704,6 +803,8 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 	res, err := r.db.Exec(ctx, query,
 		id,
 		userID,
+		workspaceID,
+		zoneID,
 		mo.EventID,
 		mo.ZoneID,
 		mo.JobTopic,
