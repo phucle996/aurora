@@ -123,10 +123,10 @@ async fn ensure_next_windows(pg_pool: &PgPool) -> Result<(), String> {
              GROUP BY zone_id, mod((hashtextextended(resource_id::text,0) & 9223372036854775807), $1::bigint)::int
          ), candidates AS (
              SELECT source.zone_id,source.shard_id,
-                    COALESCE(MAX(window.window_end),source.first_start) AS window_start
+                    COALESCE(MAX(allocation_window.window_end),source.first_start) AS window_start
              FROM interval_sources source
-             LEFT JOIN billing.hypervisor_allocation_windows window
-               ON window.zone_id=source.zone_id AND window.shard_id=source.shard_id
+             LEFT JOIN billing.hypervisor_allocation_windows allocation_window
+               ON allocation_window.zone_id=source.zone_id AND allocation_window.shard_id=source.shard_id
              GROUP BY source.zone_id,source.shard_id,source.first_start
          )
          INSERT INTO billing.hypervisor_allocation_windows
@@ -155,10 +155,10 @@ async fn claim_window(pg_pool: &PgPool) -> Result<Option<WindowClaim>, String> {
              ORDER BY window_start,zone_id,shard_id
              FOR UPDATE SKIP LOCKED LIMIT 1
          )
-         UPDATE billing.hypervisor_allocation_windows window
+         UPDATE billing.hypervisor_allocation_windows allocation_window
          SET status='PROCESSING',retry_count=retry_count+1,last_error=NULL,updated_at=NOW()
-         FROM candidate WHERE window.id=candidate.id
-         RETURNING window.id,window.zone_id,window.shard_id,window.window_start,window.window_end,window.retry_count",
+         FROM candidate WHERE allocation_window.id=candidate.id
+         RETURNING allocation_window.id,allocation_window.zone_id,allocation_window.shard_id,allocation_window.window_start,allocation_window.window_end,allocation_window.retry_count",
     )
     .fetch_optional(pg_pool)
     .await
