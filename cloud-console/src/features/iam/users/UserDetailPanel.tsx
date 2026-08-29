@@ -62,6 +62,22 @@ export function UserDetailPanel({
   const [showConfirm, setShowConfirm] = useState<"enable" | "disable" | null>(null); // [COMMENT]: Confirm inline status update state
   const [showResetForm, setShowResetForm] = useState(false); // [COMMENT]: Show inline reset password form state
   const [newPassword, setNewPassword] = useState(""); // [COMMENT]: Input text for new password
+  const canManageUsers = checkPermission("iam:users", "manage");
+  // Keep the reset form aligned with the authoritative registration policy.
+  // The server validates the same rules again before it hashes the password.
+  const hasMinLength = newPassword.length >= 8;
+  const hasLowercase = /[a-z]/.test(newPassword);
+  const hasUppercase = /[A-Z]/.test(newPassword);
+  const hasNumber = /[0-9]/.test(newPassword);
+  const hasSpecial = /[^A-Za-z0-9]/.test(newPassword);
+  const isPasswordValid = hasMinLength && hasLowercase && hasUppercase && hasNumber && hasSpecial;
+  const passwordRequirements: Array<[boolean, string]> = [
+    [hasMinLength, "At least 8 characters"],
+    [hasLowercase, "One lowercase letter"],
+    [hasUppercase, "One uppercase letter"],
+    [hasNumber, "One number"],
+    [hasSpecial, "One special character"],
+  ];
 
   // [COMMENT]: Reset tab và dữ liệu khi đổi user mục tiêu
   useEffect(() => {
@@ -107,7 +123,7 @@ export function UserDetailPanel({
   });
 
   const handleResetPassword = () => {
-    if (!newPassword) return;
+    if (!isPasswordValid) return;
     resetPasswordMutation.mutate(newPassword);
   };
 
@@ -171,16 +187,18 @@ export function UserDetailPanel({
 
       {/* Active Action Buttons */}
       <div className="flex flex-wrap items-center gap-2 select-none">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => { setShowResetForm(true); setShowConfirm(null); }}
-          className="text-foreground font-bold hover:border-border transition-colors cursor-pointer flex items-center gap-1.5"
-        >
-          <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-          <span>Reset Password</span>
-        </Button>
-        {checkPermission("iam:users", "manage") && (
+        {canManageUsers && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { setShowResetForm(true); setShowConfirm(null); }}
+            className="text-foreground font-bold hover:border-border transition-colors cursor-pointer flex items-center gap-1.5"
+          >
+            <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+            <span>Reset Password</span>
+          </Button>
+        )}
+        {canManageUsers && (
           selectedUser.status === "disabled" || selectedUser.status === "suspended" ? (
             <Button
               variant="outline"
@@ -260,14 +278,34 @@ export function UserDetailPanel({
               placeholder="Enter new password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
+              aria-describedby="reset-password-requirements"
               className="bg-background text-foreground border border-border rounded px-2.5 py-1 text-xs flex-1 outline-none focus:border-blue-500 min-w-0"
             />
           </div>
+          {newPassword.length > 0 && (
+            <div id="reset-password-requirements" className="space-y-1.5 pt-1 text-xs select-none" aria-live="polite">
+              {passwordRequirements.map(([active, label]) => (
+                <div key={label} className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "inline-block h-2 w-2 rounded-full border-2 transition-all duration-300",
+                      active
+                        ? "border-emerald-600 bg-emerald-600 dark:border-emerald-400 dark:bg-emerald-400"
+                        : "border-slate-300 dark:border-slate-700",
+                    )}
+                  />
+                  <span className={active ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
+                    {label}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-2 mt-1">
             <Button
               size="xs"
               variant="default"
-              disabled={updatingId !== null || resetPasswordMutation.isPending || !newPassword.trim()}
+              disabled={updatingId !== null || resetPasswordMutation.isPending || !isPasswordValid}
               onClick={handleResetPassword}
               className="!bg-blue-600 hover:!bg-blue-700 !text-white font-bold cursor-pointer h-7 px-2.5 flex items-center gap-1"
             >

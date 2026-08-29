@@ -88,6 +88,7 @@ type RecoverUserSessionResponse struct {
 	RoleLevel                  int32                  `protobuf:"varint,7,opt,name=role_level,json=roleLevel,proto3" json:"role_level,omitempty"`
 	ClientDeviceId             string                 `protobuf:"bytes,8,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`
 	PersonalFallbackAuthorized bool                   `protobuf:"varint,9,opt,name=personal_fallback_authorized,json=personalFallbackAuthorized,proto3" json:"personal_fallback_authorized,omitempty"`
+	ClientProofPublicKey       string                 `protobuf:"bytes,10,opt,name=client_proof_public_key,json=clientProofPublicKey,proto3" json:"client_proof_public_key,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }
@@ -176,6 +177,13 @@ func (x *RecoverUserSessionResponse) GetPersonalFallbackAuthorized() bool {
 		return x.PersonalFallbackAuthorized
 	}
 	return false
+}
+
+func (x *RecoverUserSessionResponse) GetClientProofPublicKey() string {
+	if x != nil {
+		return x.ClientProofPublicKey
+	}
+	return ""
 }
 
 // [COMMENT]: Request chứa raw refresh token từ client cookie để CP hash & revoke
@@ -1523,7 +1531,7 @@ const file_proto_iam_auth_proto_rawDesc = "" +
 	"\x19RecoverUserSessionRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x123\n" +
 	"\x13requested_tenant_id\x18\x02 \x01(\tH\x00R\x11requestedTenantId\x88\x01\x01B\x16\n" +
-	"\x14_requested_tenant_id\"\xf3\x02\n" +
+	"\x14_requested_tenant_id\"\xaa\x03\n" +
 	"\x1aRecoverUserSessionResponse\x12)\n" +
 	"\x10credential_valid\x18\x01 \x01(\bR\x0fcredentialValid\x12-\n" +
 	"\x12context_authorized\x18\x02 \x01(\bR\x11contextAuthorized\x12\x17\n" +
@@ -1533,7 +1541,9 @@ const file_proto_iam_auth_proto_rawDesc = "" +
 	"\n" +
 	"role_level\x18\a \x01(\x05R\troleLevel\x12(\n" +
 	"\x10client_device_id\x18\b \x01(\tR\x0eclientDeviceId\x12@\n" +
-	"\x1cpersonal_fallback_authorized\x18\t \x01(\bR\x1apersonalFallbackAuthorizedJ\x04\b\x06\x10\aR\arole_id\"F\n" +
+	"\x1cpersonal_fallback_authorized\x18\t \x01(\bR\x1apersonalFallbackAuthorized\x125\n" +
+	"\x17client_proof_public_key\x18\n" +
+	" \x01(\tR\x14clientProofPublicKeyJ\x04\b\x06\x10\aR\arole_id\"F\n" +
 	"\x1fRevokeOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\"\n" +
 	" RevokeOpaqueRefreshTokenResponse\"\x83\x03\n" +

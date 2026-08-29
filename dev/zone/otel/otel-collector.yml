@@ -120,6 +120,9 @@ processors:
           # The collector owns the Zone identity for every metering event. The
           # producer cannot make a cross-Zone event by choosing this field.
           - set(log.attributes["zone_id"], "${env:ZONE_ID}") where log.attributes["log_type"] == "metering"
+          - set(log.attributes["zone_id"], "${env:ZONE_ID}") where IsMatch(log.attributes["target"], "^zone_control::")
+          - set(log.attributes["service_name"], "aurora-zone-control") where IsMatch(log.attributes["target"], "^zone_control::")
+          - set(log.attributes["log_type"], "zone-control") where IsMatch(log.attributes["target"], "^zone_control::")
           - set(log.attributes["aurora_zone_id"], "${env:ZONE_ID}") where log.attributes["aurora_module"] != nil
           - set(resource.attributes["aurora.component.scope"], "zone") where log.attributes["zone_id"] != nil
           - set(resource.attributes["aurora.zone.id"], log.attributes["zone_id"]) where log.attributes["zone_id"] != nil

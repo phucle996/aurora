@@ -162,22 +162,32 @@ pub(crate) async fn run_repair_publisher(
     let zone_id = Uuid::parse_str(&config.zone_id)
         .map_err(|_| "ZONE_ID is invalid for metadata repair".to_string())?;
     loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return Ok(()),
-            _ = tokio::time::sleep(Duration::from_secs(60 * 60 + rand::random::<u64>() % 30)) => {
-                if !state.assignment_is_current(ASSIGNMENT_KEY, assignment_epoch).await? {
-                    continue;
-                }
-                let query = ZoneMetadataQueryV1 {
-                    request_id: Uuid::new_v4().as_bytes().to_vec(),
-                    zone_id: zone_id.as_bytes().to_vec(),
-                    requested_at_unix_ms: chrono::Utc::now().timestamp_millis(),
-                    schema_version: 1,
-                };
-                kafka
-                    .publish_proto(&kafka.metadata_query_topic(), config.zone_id.as_bytes(), &query)
-                    .await?;
-            }
+        if !state
+            .assignment_is_current(ASSIGNMENT_KEY, assignment_epoch)
+            .await?
+        {
+            return Ok(());
+        }
+        let query = ZoneMetadataQueryV1 {
+            request_id: Uuid::new_v4().as_bytes().to_vec(),
+            zone_id: zone_id.as_bytes().to_vec(),
+            requested_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+            schema_version: 1,
+        };
+        kafka
+            .publish_proto(
+                &kafka.metadata_query_topic(),
+                config.zone_id.as_bytes(),
+                &query,
+            )
+            .await?;
+        if !wait_or_cancel(
+            &shutdown,
+            Duration::from_secs(60 * 60 + rand::random::<u64>() % 30),
+        )
+        .await
+        {
+            return Ok(());
         }
     }
 }

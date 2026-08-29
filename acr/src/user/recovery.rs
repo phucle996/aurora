@@ -451,6 +451,25 @@ pub async fn try_handle_recovery_session(
     } else {
         String::new()
     };
+    let client_proof_public_key = match crate::user::session_proof::canonicalize_public_key(
+        &response.client_proof_public_key,
+    ) {
+        Ok(public_key) => public_key,
+        Err(error) => {
+            Logger::sys_error(
+                "user.recovery",
+                "Controlplane recovery returned an invalid device proof key",
+                &error,
+            );
+            release_recovery_lock(session_mgr, &recovery_key, &lock_owner).await;
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::ServiceUnavailable,
+                "Session recovery unavailable",
+                cookie_header,
+                false,
+            ))));
+        }
+    };
     if !user_id_valid
         || !client_device_id_valid
         || !context_binding_valid
@@ -487,7 +506,7 @@ pub async fn try_handle_recovery_session(
             zone_id: &resolved_zone_id,
             device_id: &response.client_device_id,
             client_device_id: &response.client_device_id,
-            client_proof_public_key: "",
+            client_proof_public_key: &client_proof_public_key,
         },
     )
     .await

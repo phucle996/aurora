@@ -8,6 +8,7 @@ const consumersTab = new URL(
 );
 const runtimeEntrypoint = new URL("../runtime-entrypoint.mjs", import.meta.url);
 const proxy = new URL("../src/proxy.ts", import.meta.url);
+const publicEnvExample = new URL("../.env.example", import.meta.url);
 
 test("consumer drain is explicit and delete requires confirmed drained state", async () => {
   const source = await readFile(consumersTab, "utf8");
@@ -52,6 +53,12 @@ test("Zone domain and CSP suffix are runtime-injected", async () => {
   assert.match(proxySource, /https:\/\/\*\.\$\{zonePublicBaseDomain\}/);
   assert.match(proxySource, /\$\{centrifugoWsOrigin\}/);
   assert.doesNotMatch(proxySource, /connect-src 'self' https: wss:/);
+});
+
+test("Cloud realtime uses the Cloud origin, never the localhost fallback vhost", async () => {
+  const source = await readFile(publicEnvExample, "utf8");
+  assert.match(source, /^NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss:\/\/cloud\.aurora\.local\/connection\/websocket$/m);
+  assert.doesNotMatch(source, /^NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss:\/\/localhost\//m);
 });
 
 test("stopped mail slots are not counted as active", async () => {

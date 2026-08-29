@@ -84,7 +84,7 @@ func (r *SelfDeviceRepository) UpsertLoginDevice(ctx context.Context, device iam
 				$4,
 				$8,
 				$2,
-				COALESCE($9, $7),
+				COALESCE($9::uuid, $7::uuid),
 				$5,
 				$6,
 				NOW(),

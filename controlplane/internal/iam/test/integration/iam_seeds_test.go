@@ -70,8 +70,8 @@ func TestIAMSeedRollbackCoversPermissionCatalog(t *testing.T) {
 	}
 
 	// [COMMENT]: Rollback phải theo đúng triple identity; permission table không có cột code dạng legacy.
-	upPattern := regexp.MustCompile(`\(gen_random_uuid\(\), '([a-z]+)', '([a-z]+)', '([a-z]+)',`)
-	downPattern := regexp.MustCompile(`\('([a-z]+)', '([a-z]+)', '([a-z]+)'\)`)
+	upPattern := regexp.MustCompile(`\(gen_random_uuid\(\), '([a-z][a-z0-9_-]*)', '([a-z][a-z0-9_-]*)', '([a-z][a-z0-9_-]*)',`)
+	downPattern := regexp.MustCompile(`\('([a-z][a-z0-9_-]*)', '([a-z][a-z0-9_-]*)', '([a-z][a-z0-9_-]*)'\)`)
 	upMatches := upPattern.FindAllStringSubmatch(upPermissionSQL, -1)
 	downMatches := downPattern.FindAllStringSubmatch(downPermissionSQL, -1)
 	if len(upMatches) == 0 || len(upMatches) != len(downMatches) {
@@ -105,6 +105,34 @@ func TestTenantWalletTopUpIsNotAPlatformPermission(t *testing.T) {
 	}
 }
 
+func TestBillingPermissionCatalogUsesPricingScheduleContract(t *testing.T) {
+	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM bootstrap seed: %v", err)
+	}
+
+	source := string(sql)
+	for _, required := range []string{
+		"(gen_random_uuid(), 'billing', 'pricing_schedule', 'read'",
+		"(gen_random_uuid(), 'billing', 'pricing_schedule', 'publish'",
+		"(gen_random_uuid(), 'billing', 'wallet', 'read'",
+		"(gen_random_uuid(), 'billing', 'wallet', 'top_up'",
+		"(gen_random_uuid(), 'billing', 'credit', 'adjust'",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("billing permission catalog is missing %q", required)
+		}
+	}
+	for _, legacy := range []string{
+		"(gen_random_uuid(), 'billing', 'plan'",
+		"(gen_random_uuid(), 'billing', 'tier'",
+	} {
+		if strings.Contains(source, legacy) {
+			t.Fatalf("billing permission catalog retains legacy vocabulary %q", legacy)
+		}
+	}
+}
+
 func TestPlatformUserCanManagePersonalWorkspaces(t *testing.T) {
 	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
 	if err != nil {
@@ -120,6 +148,21 @@ func TestPlatformUserCanManagePersonalWorkspaces(t *testing.T) {
 		if !strings.Contains(source, required) {
 			t.Fatalf("platform_user baseline must include %q", required)
 		}
+	}
+}
+
+func TestPlatformUserCanDeletePersonalVirtualMachines(t *testing.T) {
+	sql, err := migrations.Files.ReadFile("000006_iam_seeds.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM bootstrap seed: %v", err)
+	}
+
+	source := string(sql)
+	if !strings.Contains(source, "(gen_random_uuid(), 'hypervisor', 'vm', 'delete'") {
+		t.Fatal("permission catalog must include hypervisor:vm:delete")
+	}
+	if !strings.Contains(source, "permission.behavior IN ('read', 'create', 'delete')") {
+		t.Fatal("platform_user must receive the personal VM delete permission")
 	}
 }
 

@@ -14,6 +14,86 @@ fn member(id: &str, weight: u32) -> MemberRecord {
 }
 
 #[test]
+fn only_storage_scan_work_is_sharded() {
+    let units = work_units(16);
+    assert_eq!(units.len(), 24);
+    for class in WorkClass::ALL {
+        let class_units = units
+            .iter()
+            .filter(|unit| unit.class == class)
+            .collect::<Vec<_>>();
+        if class == WorkClass::StorageScan {
+            assert_eq!(class_units.len(), 16);
+            assert_eq!(class_units.first().unwrap().shard, 0);
+            assert_eq!(class_units.last().unwrap().shard, 15);
+        } else {
+            assert_eq!(class_units.len(), 1);
+            assert_eq!(class_units[0].shard, 0);
+        }
+    }
+}
+
+#[test]
+fn same_owner_renewal_preserves_fencing_epoch_and_assignment_time() {
+    let assignment = AssignmentRecord {
+        unit_key: "assignment.storage_report.0".to_string(),
+        member_id: "member-a".to_string(),
+        assignment_epoch: 7,
+        assigned_at_unix_ms: 10,
+        expires_at_unix_ms: 20,
+    };
+
+    let renewed = assignment.renew(18);
+
+    assert_eq!(renewed.member_id, assignment.member_id);
+    assert_eq!(renewed.assignment_epoch, assignment.assignment_epoch);
+    assert_eq!(renewed.assigned_at_unix_ms, assignment.assigned_at_unix_ms);
+    assert_eq!(
+        renewed.expires_at_unix_ms,
+        18 + ASSIGNMENT_TTL.as_millis() as i64
+    );
+}
+
+#[test]
+fn assignment_renews_before_a_single_reconcile_tick_can_miss_expiry() {
+    let assignment = AssignmentRecord {
+        unit_key: "assignment.zone_report.0".to_string(),
+        member_id: "member-a".to_string(),
+        assignment_epoch: 7,
+        assigned_at_unix_ms: 10,
+        expires_at_unix_ms: 20_000,
+    };
+
+    assert!(!assignment.needs_renewal(9_999));
+    assert!(assignment.needs_renewal(10_000));
+    assert!(ASSIGNMENT_RENEWAL_MARGIN >= RECONCILE_INTERVAL.saturating_add(RECONCILE_INTERVAL));
+}
+
+#[tokio::test]
+async fn workflow_restarts_when_fencing_epoch_changes() {
+    let mut task = None;
+    sync_workflow(&mut task, true, "test", 7, |shutdown, _| {
+        tokio::spawn(async move {
+            shutdown.cancelled().await;
+            Ok(())
+        })
+    })
+    .await;
+    assert_eq!(task.as_ref().unwrap().assignment_epoch, 7);
+
+    sync_workflow(&mut task, true, "test", 8, |shutdown, _| {
+        tokio::spawn(async move {
+            shutdown.cancelled().await;
+            Ok(())
+        })
+    })
+    .await;
+    assert_eq!(task.as_ref().unwrap().assignment_epoch, 8);
+
+    stop_workflow(&mut task).await;
+}
+
+#[test]
 fn rendezvous_assignment_is_deterministic() {
     let members = vec![member("a", 1), member("b", 2), member("c", 1)];
     let first = (0..256)

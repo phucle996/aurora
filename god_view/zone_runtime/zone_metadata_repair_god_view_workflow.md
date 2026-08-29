@@ -55,6 +55,12 @@ Every Zone Control replica advertises membership. Weighted rendezvous chooses
 one owner for `assignment.metadata_repair.0`; the assignment epoch fences a
 reassignment and the worker is cancelled before a new owner starts.
 
+Renewing the unexpired lease for that same owner extends only its expiry. It
+does not increment the assignment epoch or restart the publisher. An epoch
+change is reserved for initial assignment, expired authority or an actual
+owner change, and the scheduler immediately replaces a local task when such a
+transition occurs.
+
 | Check | Result |
 | --- | --- |
 | Assignment is current | Start the repair publisher for the assigned epoch. |

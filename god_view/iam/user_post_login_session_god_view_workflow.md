@@ -16,7 +16,7 @@ role hoặc Zone authority.
 | Capability | Source of truth | Scope |
 |---|---|---|
 | `access_token` | Vault-signed JWT, validated by ACR | Short-lived identity, level, active tenant and concrete Zone |
-| `access_key` + `access_secret` | Auth-State Redis `UserAccessSession` | Runtime replay/revocation boundary |
+| `access_key` + `access_secret` | Auth-State Redis `UserAccessSession` | Runtime replay/revocation boundary; the session also carries the durable device's canonical proof public key |
 | `refresh_token` | PostgreSQL `iam.refresh_tokens` stores only SHA-256 hash | Long-lived user/device recovery credential, only when `trust_device=true` |
 | Current tenant authorization | PostgreSQL role/membership snapshot | Evaluated during recovery; not embedded in refresh credential |
 | Zone | Trusted `zone_code` cookie → catalog resolution | Concrete active/draining Zone, never `global` |
@@ -162,11 +162,16 @@ the original request is never forwarded under a newly recovered owner context.
    CP replicas contend on request-ID fence then execute one read-only PostgreSQL
    credential and authority snapshot.
 4. CP matches SHA-256 token hash, active user and active non-revoked device. It
-   resolves current root platform role or tenant membership role in the same
-   snapshot; no `role_id` crosses this transport.
-5. ACR signs fresh JWT, registers fresh runtime session from CP's canonical
-   `client_device_id`, publishes brief recovery cache and returns local `200`
-   with cookies. Browser retries the original request.
+   projects the canonical UUID `client_device_id` and Ed25519 `public_key` from that
+   refresh-token-bound device, then resolves current root platform role or tenant
+   membership role in the same snapshot; no `role_id` crosses this transport.
+5. ACR validates the CP-projected key as a canonical 32-byte Ed25519 public key,
+   signs a fresh JWT and registers the fresh runtime session with that exact key.
+   A malformed or missing durable key fails closed with `503`; recovery never
+   accepts a replacement public key from the browser. ACR then publishes the
+   brief recovery cache and returns local `200` with cookies. Browser retries
+   the original request and can prove critical mutations with its existing
+   IndexedDB private key.
 
 ### Controlplane processing
 
@@ -192,14 +197,14 @@ repository before the handler publishes one correlated response.
 | Request channel | `iam.auth.recover_user_session` |
 | Reply channel | `iam.auth.recover_user_session.reply.{request_id}` |
 | Request fields | `refresh_token`, optional `requested_tenant_id` |
-| Success fields used | `credential_valid`, `context_authorized`, `user_id`, `username`, `client_device_id`, `resolved_tenant_id`, `role_level`, `personal_fallback_authorized` |
+| Success fields used | `credential_valid`, `context_authorized`, `user_id`, `username`, `client_device_id`, `client_proof_public_key`, `resolved_tenant_id`, `role_level`, `personal_fallback_authorized` |
 | Timeout | ACR request/reply timeout `800ms`; CP infrastructure error sends no success-like reply |
 
 #### Response headers and payload
 
 | Result | Headers / body |
 |---|---|
-| Recovery success | `200`, XSSI JSON `{"status":"ok"}`, replacement Trinity cookies, `tenant_id`, `zone_code`, canonical `client_device_id` |
+| Recovery success | `200`, XSSI JSON `{"status":"ok"}`, replacement Trinity cookies, `tenant_id`, `zone_code`, canonical `client_device_id`; recovered Auth-State session retains the durable device proof key |
 | Tenant authority stale, personal fallback valid | Same success cookies for personal context; `x-aurora-context-reset: personal`; clear `tenant_domain` and `workspace_id`; original request remains intercepted |
 | Invalid/expired credential | `401`; clear auth/context cookies but retain device identifier |
 | Malformed requested tenant or Zone unavailable | `400/403`; retain refresh credential, no session |
@@ -240,20 +245,22 @@ sequenceDiagram
     H->>H: Bound decode and validate request
     H->>S: RecoverUserSession token and requested tenant
     S->>Repo: Read credential and authority snapshot
-    Repo->>DB: Query durable user device role facts
+    Repo->>DB: Query durable user, device proof key and role facts
     alt requested tenant no longer authorized but personal valid
         S-->>H: personal fallback authorization
         H->>SR: Publish correlated response
         SR-->>A: Fallback response
         A->>V: Sign personal JWT
-        A->>AR: Register session and cache then release owner lock
+        A->>A: Validate durable Ed25519 device key
+        A->>AR: Register proof-bound session and cache then release owner lock
         A-->>E: 200 + personal cookies + context-reset
     else authorized context
         S-->>H: Authorized user device and context
         H->>SR: Publish correlated response
         SR-->>A: Correlated response
         A->>V: Sign context JWT
-        A->>AR: Register session and cache then release owner lock
+        A->>A: Validate durable Ed25519 device key
+        A->>AR: Register proof-bound session and cache then release owner lock
         A-->>E: 200 + replacement cookies
     end
     E-->>B: Intercepted recovery response then browser retries
@@ -334,6 +341,10 @@ sequenceDiagram
   or authorization authority. Redis/CP/Vault failures fail closed.
 - Raw refresh token, token hash, access secret and recovery cache payload are not
   logged, traced or exposed to JavaScript.
+- Recovery never accepts a browser-selected proof key. A stolen refresh cookie
+  can recover only a session bound to the already-persisted device public key,
+  so critical authorization still requires possession of that device's private
+  key.
 - Device revoke deletes durable refresh credentials by device relationship and
   separately emits runtime-session revoke; it follows the same durable-before-
   runtime ordering as logout.

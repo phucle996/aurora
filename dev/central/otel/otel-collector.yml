@@ -143,7 +143,9 @@ processors:
     logs:
       log_record:
         - attributes["zone_id"] != nil
+        - attributes["fields.zone_id"] != nil
         - attributes["service_name"] == "aurora-dataplane"
+        - IsMatch(attributes["target"], "^zone_control::")
         - IsMatch(attributes["log_type"], "^zone-")
         - attributes["log_type"] == "metering"
 

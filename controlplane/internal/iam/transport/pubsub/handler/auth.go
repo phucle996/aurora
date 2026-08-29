@@ -30,20 +30,20 @@ import (
 // [COMMENT]: Danh sách các kênh Redis PubSub và tiền tố kênh phản hồi phục vụ cho các luồng xác thực IAM
 const (
 	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng xác thực Username/Password
-	verifyCredentialsChannel          = "iam.auth.verify_credentials"
-	verifyCredentialsReplyPrefix      = "iam.auth.verify_credentials.reply."
+	verifyCredentialsChannel     = "iam.auth.verify_credentials"
+	verifyCredentialsReplyPrefix = "iam.auth.verify_credentials.reply."
 
 	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng xác thực danh tính mạng xã hội (Google, GitHub)
 	verifyExternalIdentityChannel     = "iam.auth.verify_external_identity"
 	verifyExternalIdentityReplyPrefix = "iam.auth.verify_external_identity.reply."
 
 	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng liên kết tài khoản bên thứ 3 vào user hiện tại
-	linkExternalIdentityChannel       = "iam.auth.link_external_identity"
-	linkExternalIdentityReplyPrefix   = "iam.auth.link_external_identity.reply."
+	linkExternalIdentityChannel     = "iam.auth.link_external_identity"
+	linkExternalIdentityReplyPrefix = "iam.auth.link_external_identity.reply."
 
 	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng xác thực thử thách MFA (TOTP / recovery code)
-	verifyMfaChallengeChannel         = "iam.auth.verify_mfa_challenge"
-	verifyMfaChallengeReplyPrefix     = "iam.auth.verify_mfa_challenge.reply."
+	verifyMfaChallengeChannel     = "iam.auth.verify_mfa_challenge"
+	verifyMfaChallengeReplyPrefix = "iam.auth.verify_mfa_challenge.reply."
 
 	// [COMMENT]: Kênh tiếp nhận và tiền tố phản hồi cho luồng phục hồi session từ opaque refresh token
 	recoverUserSessionChannel     = "iam.auth.recover_user_session"
@@ -934,7 +934,8 @@ func (h *AuthRedisHandler) handleRecoverUserSession(payload []byte) {
 	// [COMMENT]: Gán thông tin danh tính người dùng nếu credential hợp lệ
 	if recovered.CredentialValid {
 		response.UserId = recovered.UserID.String()
-		response.ClientDeviceId = recovered.ClientDeviceID
+		response.ClientDeviceId = recovered.ClientDeviceID.String()
+		response.ClientProofPublicKey = recovered.ClientProofPublicKey
 		response.Username = recovered.Username
 	}
 	// [COMMENT]: Gán quyền Role Level và Tenant ID đã giải quyết nếu context hoặc personal fallback được cấp quyền

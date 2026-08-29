@@ -98,6 +98,12 @@ writes its service snapshot with its assignment epoch. The report worker checks
 its epoch before Kafka publication; reassignment cancels the old task and the
 new owner resumes from the latest KV values.
 
+The coordinator renews an unexpired lease for the same member without changing
+its assignment epoch, so normal 20-second lease maintenance does not fence or
+restart probes and reports. Initial assignment, expired authority and a real
+member change allocate the next epoch; a local task holding the previous epoch
+is cancelled immediately.
+
 ### Aggregation input and output
 
 | Part | Contract |

@@ -222,6 +222,44 @@ fn apply_workspace_header_boundary(
     }
 }
 
+// The proof headers are client-controlled on ingress. Envoy applies headers to
+// set before headers to remove, so a verified marker must not appear in both
+// collections or the downstream middleware receives no proof at all.
+fn apply_session_proof_header_boundary(
+    ok: &mut envoy_types::pb::envoy::service::auth::v3::OkHttpResponse,
+    challenge_id: Option<&str>,
+) {
+    ok.headers_to_remove.extend([
+        "x-session-proof-signature".to_string(),
+        "x-session-proof-timestamp".to_string(),
+    ]);
+
+    let Some(challenge_id) = challenge_id.filter(|value| !value.is_empty()) else {
+        ok.headers_to_remove.extend([
+            "x-session-proof-challenge-id".to_string(),
+            "x-session-proof-verified".to_string(),
+        ]);
+        return;
+    };
+
+    for (key, value) in [
+        ("x-session-proof-verified", "true"),
+        ("x-session-proof-challenge-id", challenge_id),
+    ] {
+        ok.headers.push(
+            envoy_types::pb::envoy::config::core::v3::HeaderValueOption {
+                header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                }),
+                append_action: envoy_types::pb::envoy::config::core::v3::header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                    as i32,
+                ..Default::default()
+            },
+        );
+    }
+}
+
 pub fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1436,10 +1474,6 @@ impl Authorization for ExtAuthzService {
                     "x-admin-timestamp".to_string(),
                     "x-admin-nonce".to_string(),
                     "x-admin-stepup-code".to_string(),
-                    "x-session-proof-signature".to_string(),
-                    "x-session-proof-timestamp".to_string(),
-                    "x-session-proof-challenge-id".to_string(),
-                    "x-session-proof-verified".to_string(),
                     "x-aurora-runtime-assertion".to_string(),
                     "x-aurora-runtime-signature".to_string(),
                     "x-aurora-runtime-key-id".to_string(),
@@ -1466,32 +1500,7 @@ impl Authorization for ExtAuthzService {
                     }
                 }
 
-                // [COMMENT]: Luôn overwrite marker để client không thể tự giả mạo header đã được ACR xác minh.
-                let proof_header = HeaderValueOption {
-                    header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                        key: "x-session-proof-verified".to_string(),
-                        value: if session_proof_challenge_id.is_some() {
-                            "true".to_string()
-                        } else {
-                            "false".to_string()
-                        },
-                    }),
-                    append_action: 2,
-                    ..Default::default()
-                };
-                ok.headers.push(proof_header);
-
-                if let Some(ref challenge_id) = session_proof_challenge_id {
-                    let challenge_header = HeaderValueOption {
-                        header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
-                            key: "x-session-proof-challenge-id".to_string(),
-                            value: challenge_id.clone(),
-                        }),
-                        append_action: 2,
-                        ..Default::default()
-                    };
-                    ok.headers.push(challenge_header);
-                }
+                apply_session_proof_header_boundary(ok, session_proof_challenge_id.as_deref());
 
                 if is_billing {
                     if let Some(alias) = billing_alias {

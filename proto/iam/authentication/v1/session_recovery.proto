@@ -18,6 +18,10 @@ message RecoverUserSessionResponse {
   int32 role_level = 7;
   string client_device_id = 8;
   bool personal_fallback_authorized = 9;
+  // Canonical Ed25519 key persisted on the refresh-token-bound device.
+  // ACR binds this exact key to the recovered runtime session; the browser
+  // cannot nominate or replace it during recovery.
+  string client_proof_public_key = 10;
 }
 
 message RevokeOpaqueRefreshTokenRequest {

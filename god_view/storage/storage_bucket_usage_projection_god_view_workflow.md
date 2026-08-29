@@ -50,6 +50,11 @@ Assignment epoch checks happen before each batch and before every side effect.
 A non-empty shard emits a UI fragment; an empty shard emits no UI fragment but
 still records its capacity completion marker for billing.
 
+Only storage scanning is sharded. Every other Zone Control class owns exactly
+its singleton `.0` assignment. A same-owner lease renewal preserves the
+assignment epoch and does not restart the hourly scanner; initial assignment,
+expiry or an owner change allocates a new epoch and replaces the fenced task.
+
 The KV reads in this phase have two separate schemas:
 
 - `AURORA_ZONE_CONFIG/zone.metadata` JSON: `status`, `services` map and

@@ -21,8 +21,8 @@ const MEMBERS_BUCKET: &str = "AURORA_ZONE_CONTROL_MEMBERS";
 const ASSIGNMENTS_BUCKET: &str = "AURORA_ZONE_CONTROL_ASSIGNMENTS";
 const MEMBERSHIP_TTL: Duration = Duration::from_secs(15);
 const ASSIGNMENT_TTL: Duration = Duration::from_secs(20);
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+const ASSIGNMENT_RENEWAL_MARGIN: Duration = Duration::from_secs(10);
 
 /// A control workflow is scheduled by work unit, not by a process-wide leader.
 /// A unit may remain ordered when its state transition cannot be parallelized;
@@ -81,10 +81,16 @@ impl WorkUnit {
 }
 
 fn work_units(shards: u16) -> Vec<WorkUnit> {
-    WorkClass::ALL
+    let mut units = WorkClass::ALL
         .into_iter()
-        .flat_map(|class| (0..shards).map(move |shard| WorkUnit { class, shard }))
-        .collect()
+        .filter(|class| *class != WorkClass::StorageScan)
+        .map(|class| WorkUnit { class, shard: 0 })
+        .collect::<Vec<_>>();
+    units.extend((0..shards).map(|shard| WorkUnit {
+        class: WorkClass::StorageScan,
+        shard,
+    }));
+    units
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -118,6 +124,21 @@ struct AssignmentRecord {
 impl AssignmentRecord {
     fn is_current_for(&self, member_id: &str, now_ms: i64) -> bool {
         self.member_id == member_id && self.expires_at_unix_ms > now_ms
+    }
+
+    fn renew(&self, now_ms: i64) -> Self {
+        Self {
+            unit_key: self.unit_key.clone(),
+            member_id: self.member_id.clone(),
+            assignment_epoch: self.assignment_epoch,
+            assigned_at_unix_ms: self.assigned_at_unix_ms,
+            expires_at_unix_ms: now_ms.saturating_add(ASSIGNMENT_TTL.as_millis() as i64),
+        }
+    }
+
+    fn needs_renewal(&self, now_ms: i64) -> bool {
+        self.expires_at_unix_ms
+            <= now_ms.saturating_add(ASSIGNMENT_RENEWAL_MARGIN.as_millis() as i64)
     }
 }
 
@@ -264,27 +285,33 @@ impl WorkAssignmentCoordinator {
         let current_record = current
             .as_ref()
             .and_then(|entry| serde_json::from_slice::<AssignmentRecord>(&entry.value).ok());
-        if let Some(record) = current_record.as_ref() {
-            if record.is_current_for(&winner.member_id, now_ms)
-                && record.expires_at_unix_ms
-                    > now_ms.saturating_add(HEARTBEAT_INTERVAL.as_millis() as i64)
-            {
-                return Ok(false);
-            }
-        }
-        let next_epoch = current_record
+        let current_owner_is_renewing = current_record
             .as_ref()
-            .map_or(1, |record| record.assignment_epoch.saturating_add(1));
-        let value = Bytes::from(
-            serde_json::to_vec(&AssignmentRecord {
+            .is_some_and(|record| record.is_current_for(&winner.member_id, now_ms));
+        if current_owner_is_renewing
+            && current_record
+                .as_ref()
+                .is_some_and(|record| !record.needs_renewal(now_ms))
+        {
+            return Ok(false);
+        }
+        let next_record = match current_record.as_ref() {
+            Some(record) if current_owner_is_renewing => record.renew(now_ms),
+            _ => AssignmentRecord {
                 unit_key: unit_key.to_string(),
                 member_id: winner.member_id.clone(),
-                assignment_epoch: next_epoch,
+                assignment_epoch: current_record
+                    .as_ref()
+                    .map_or(1, |record| record.assignment_epoch.saturating_add(1)),
                 assigned_at_unix_ms: now_ms,
                 expires_at_unix_ms: now_ms.saturating_add(ASSIGNMENT_TTL.as_millis() as i64),
-            })
-            .map_err(|error| format!("encode work-unit assignment {unit_key}: {error}"))?,
+            },
+        };
+        let value = Bytes::from(
+            serde_json::to_vec(&next_record)
+                .map_err(|error| format!("encode work-unit assignment {unit_key}: {error}"))?,
         );
+        let current_entry_exists = current.is_some();
         let result = match current {
             Some(entry) => self
                 .assignments
@@ -298,14 +325,21 @@ impl WorkAssignmentCoordinator {
                 .map_err(|error| error.to_string()),
         };
         match result {
+            Ok(_) if current_owner_is_renewing => Ok(false),
             Ok(_) => {
+                let reason = match current_record.as_ref() {
+                    None if current_entry_exists => "invalid_record",
+                    None => "initial",
+                    Some(record) if record.expires_at_unix_ms <= now_ms => "expired",
+                    Some(_) => "rebalance",
+                };
                 tracing::info!(
                     event_code = "ZONE_CONTROL_WORK_UNIT_ASSIGNED",
                     zone_id = %self.zone_id,
                     unit_key,
                     member_id = %winner.member_id,
-                    assignment_epoch = next_epoch,
-                    reason = if current_record.is_some() { "rebalance_or_expiry" } else { "initial" }
+                    assignment_epoch = next_record.assignment_epoch,
+                    reason
                 );
                 Ok(true)
             }
@@ -390,6 +424,7 @@ fn is_cas_conflict(error: &impl std::fmt::Display) -> bool {
 
 struct WorkflowTask {
     name: &'static str,
+    assignment_epoch: u64,
     shutdown: CancellationToken,
     handle: JoinHandle<Result<(), String>>,
 }
@@ -693,10 +728,18 @@ async fn sync_workflow<F>(
             }
         }
     }
+    if should_run
+        && task
+            .as_ref()
+            .is_some_and(|value| value.assignment_epoch != assignment_epoch)
+    {
+        stop_workflow(task).await;
+    }
     if should_run && task.is_none() {
         let workflow_shutdown = CancellationToken::new();
         *task = Some(WorkflowTask {
             name,
+            assignment_epoch,
             handle: start(workflow_shutdown.clone(), assignment_epoch),
             shutdown: workflow_shutdown,
         });

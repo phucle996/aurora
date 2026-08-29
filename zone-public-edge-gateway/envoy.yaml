@@ -1,3 +1,9 @@
+layered_runtime:
+  layers:
+    - name: local_dev
+      static_layer:
+        re2.max_program_size.error_level: 2000
+
 static_resources:
   listeners:
     - name: zone_public_edge_gateway

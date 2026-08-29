@@ -110,7 +110,8 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			SELECT 
 				token.user_id, 
 				token.device_id,
-				COALESCE(device.client_device_id, device.id)::text AS client_device_id,
+				COALESCE(device.client_device_id, device.id) AS client_device_id,
+				device.public_key AS client_proof_public_key,
 				account.username
 			FROM %s.refresh_tokens token
 			JOIN %s.users account   ON account.id = token.user_id 
@@ -122,7 +123,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			  AND token.expires_at > $3
 		),
 		platform_authority AS MATERIALIZED (
-			SELECT revision.role_level
+			SELECT assignment.role_level
 			FROM credential
 			JOIN %s.user_role assignment ON assignment.user_id = credential.user_id 
 			                            AND assignment.workspace_id = '00000000-0000-0000-0000-000000000000'
@@ -160,7 +161,11 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 			  AND EXISTS (SELECT 1 FROM platform_authority),
 			COALESCE((SELECT user_id FROM credential), '00000000-0000-0000-0000-000000000000'::uuid),
 			COALESCE((SELECT device_id FROM credential), '00000000-0000-0000-0000-000000000000'::uuid),
-			COALESCE((SELECT client_device_id FROM credential), ''),
+			COALESCE(
+				(SELECT client_device_id FROM credential),
+				'00000000-0000-0000-0000-000000000000'::uuid
+			),
+			COALESCE((SELECT client_proof_public_key FROM credential), ''),
 			COALESCE((SELECT username FROM credential), ''),
 			CASE 
 				WHEN EXISTS (SELECT 1 FROM tenant_authority) THEN $2::uuid 
@@ -186,6 +191,7 @@ func (r *RefreshTokenRepository) RecoverUserSession(ctx context.Context, in *iam
 		&out.UserID,
 		&out.DeviceID,
 		&out.ClientDeviceID,
+		&out.ClientProofPublicKey,
 		&out.Username,
 		&out.ResolvedTenantID,
 		&out.RoleLevel,

@@ -160,6 +160,14 @@ between batches, and checks its assignment epoch before the next batch and
 before publishing. A lost assignment cancels the scan without publishing a
 partial completion.
 
+Normal renewal by the same live owner extends the assignment expiry while
+preserving its epoch and original assignment time. It therefore cannot reset
+the hourly wait or startup backfill. The epoch advances only for an initial
+assignment, an expired lease or a different rendezvous owner; those transitions
+cancel and replace the old task. Renewal begins with ten seconds left on the
+20-second lease so one delayed five-second reconcile tick cannot cause a false
+expiry.
+
 ```mermaid
 sequenceDiagram
     participant C as Zone Control replica

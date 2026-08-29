@@ -30,7 +30,8 @@ type RecoverUserSession struct {
 	PersonalFallbackAuthorized bool
 	UserID                     uuid.UUID
 	DeviceID                   uuid.UUID
-	ClientDeviceID             string
+	ClientDeviceID             uuid.UUID
+	ClientProofPublicKey       string
 	Username                   string
 	ResolvedTenantID           *uuid.UUID
 	RoleLevel                  int32

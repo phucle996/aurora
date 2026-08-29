@@ -73,6 +73,11 @@ flowchart LR
   client không được chọn `user_id`. Centrifugo connect là workflow khác: handler
   chuyển cookie tới `ConnectAuthorizer`, fail closed khi ACR từ chối, unavailable
   hoặc trả reply sai protocol, và chỉ cấp `notifications:<user_id>`.
+- Cloud Console tại `https://cloud.aurora.local` mở cùng-origin
+  `wss://cloud.aurora.local/connection/websocket`. Envoy upgrade request này trực
+  tiếp tới Centrifugo; Centrifugo mới chuyển cookie sang `ConnectAuthorizer` để
+  xác thực và cấp channel. Console không được dùng `localhost` cho endpoint này:
+  đó là cookie origin khác và Envoy chỉ có fallback vhost phục vụ local-only.
 - Activity metadata bị giới hạn 16 KiB và không được chứa token, secret hoặc
   raw customer payload.
 - Redis consumer ACK chỉ sau Scylla durability; lỗi dependency giữ PEL để retry.

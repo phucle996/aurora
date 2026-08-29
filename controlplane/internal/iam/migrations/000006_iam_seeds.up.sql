@@ -56,9 +56,8 @@ VALUES
     (gen_random_uuid(), 'email', 'template', 'read', 'Read email template'),
     (gen_random_uuid(), 'email', 'template', 'publish', 'Publish email template'),
     (gen_random_uuid(), 'email', 'template', 'delete', 'Delete email template'),
-    (gen_random_uuid(), 'billing', 'plan', 'read', 'Read billing plan'),
-    (gen_random_uuid(), 'billing', 'tier', 'read', 'Read billing tier'),
-    (gen_random_uuid(), 'billing', 'tier', 'publish', 'Publish billing tier'),
+    (gen_random_uuid(), 'billing', 'pricing_schedule', 'read', 'Read pricing schedules'),
+    (gen_random_uuid(), 'billing', 'pricing_schedule', 'publish', 'Publish pricing schedules'),
     (gen_random_uuid(), 'billing', 'wallet', 'read', 'Read wallet'),
     (gen_random_uuid(), 'billing', 'wallet', 'top_up', 'Fund tenant wallet'),
     (gen_random_uuid(), 'billing', 'ledger', 'read', 'Read ledger'),
@@ -66,6 +65,7 @@ VALUES
     (gen_random_uuid(), 'billing', 'credit', 'adjust', 'Adjust wallet credit'),
     (gen_random_uuid(), 'hypervisor', 'vm', 'read', 'Read virtual machine'),
     (gen_random_uuid(), 'hypervisor', 'vm', 'create', 'Create virtual machine'),
+    (gen_random_uuid(), 'hypervisor', 'vm', 'delete', 'Delete virtual machine'),
     (gen_random_uuid(), 'hypervisor', 'image', 'read', 'Read image catalogue'),
     (gen_random_uuid(), 'hypervisor', 'image', 'create', 'Register image'),
     (gen_random_uuid(), 'hypervisor', 'image', 'publish', 'Publish image'),
@@ -106,7 +106,7 @@ WHERE
      OR (permission.module='billing' AND permission.object='subscription' AND permission.behavior='write')
      OR (permission.module='email' AND permission.object IN ('consumer', 'template'))
      OR (permission.module='hypervisor' AND (
-            (permission.object='vm' AND permission.behavior IN ('read', 'create'))
+            (permission.object='vm' AND permission.behavior IN ('read', 'create', 'delete'))
          OR (permission.object='image' AND permission.behavior='read')
         ))
     ));

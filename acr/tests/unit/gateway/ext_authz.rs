@@ -1,9 +1,62 @@
 use super::{
-    apply_workspace_header_boundary, authority_matches_origin, is_acr_local_owner_control_path,
-    is_billing_alias_path, is_internal_owner_billing_path, is_internal_owner_path,
-    is_internal_render_context_path, is_personal_only_neutral_path, rewrite_neutral_owner_path,
-    rewrite_owner_billing_path, rewrite_render_context_path,
+    apply_session_proof_header_boundary, apply_workspace_header_boundary, authority_matches_origin,
+    is_acr_local_owner_control_path, is_billing_alias_path, is_internal_owner_billing_path,
+    is_internal_owner_path, is_internal_render_context_path, is_personal_only_neutral_path,
+    rewrite_neutral_owner_path, rewrite_owner_billing_path, rewrite_render_context_path,
 };
+
+#[test]
+fn verified_session_proof_reaches_the_upstream_without_a_later_removal() {
+    let mut ok = envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default();
+
+    apply_session_proof_header_boundary(&mut ok, Some("03d01948-d58c-467e-968b-9e052217967d"));
+
+    for (key, value) in [
+        ("x-session-proof-verified", "true"),
+        (
+            "x-session-proof-challenge-id",
+            "03d01948-d58c-467e-968b-9e052217967d",
+        ),
+    ] {
+        assert!(ok.headers.iter().any(|option| {
+            option
+                .header
+                .as_ref()
+                .is_some_and(|header| header.key == key && header.value == value)
+        }));
+        assert!(!ok.headers_to_remove.iter().any(|header| header == key));
+    }
+    assert!(ok
+        .headers_to_remove
+        .iter()
+        .any(|header| header == "x-session-proof-signature"));
+    assert!(ok
+        .headers_to_remove
+        .iter()
+        .any(|header| header == "x-session-proof-timestamp"));
+}
+
+#[test]
+fn unverified_session_proof_headers_are_removed() {
+    let mut ok = envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default();
+
+    apply_session_proof_header_boundary(&mut ok, None);
+
+    for key in [
+        "x-session-proof-signature",
+        "x-session-proof-timestamp",
+        "x-session-proof-challenge-id",
+        "x-session-proof-verified",
+    ] {
+        assert!(ok.headers_to_remove.iter().any(|header| header == key));
+        assert!(ok.headers.iter().all(|option| {
+            option
+                .header
+                .as_ref()
+                .is_none_or(|header| header.key != key)
+        }));
+    }
+}
 
 #[test]
 fn workspace_cookie_is_forwarded_without_a_later_envoy_removal() {

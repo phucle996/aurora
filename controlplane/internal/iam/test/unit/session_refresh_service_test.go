@@ -11,10 +11,12 @@ import (
 	iamServiceContract "controlplane/internal/iam/domain/service"
 	iamService "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/proto"
 	"controlplane/internal/observability"
 	"controlplane/internal/security"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 )
 
 type refreshTokenRepositoryStub struct {
@@ -92,7 +94,8 @@ func TestSessionRefreshIssueRejectsInactiveDevice(t *testing.T) {
 }
 
 func TestSessionRecoveryMapsCredentialAndContextOutcomes(t *testing.T) {
-	userID, deviceID, tenantID := uuid.New(), uuid.New(), uuid.New()
+	userID, deviceID, clientDeviceID, tenantID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	const durableProofKey = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
 	tests := []struct {
 		name         string
 		stub         *refreshTokenRepositoryStub
@@ -106,7 +109,9 @@ func TestSessionRecoveryMapsCredentialAndContextOutcomes(t *testing.T) {
 			name: "tenant authorized",
 			stub: &refreshTokenRepositoryStub{recovered: &iamEntity.RecoverUserSession{
 				CredentialValid: true, ContextAuthorized: true, UserID: userID,
-				DeviceID: deviceID, RoleLevel: 8, ResolvedTenantID: &tenantID,
+				DeviceID: deviceID, ClientDeviceID: clientDeviceID,
+				RoleLevel: 8, ResolvedTenantID: &tenantID,
+				ClientProofPublicKey: durableProofKey,
 			}},
 			requested: &tenantID, wantValid: true, wantAccess: true,
 		},
@@ -153,7 +158,37 @@ func TestSessionRecoveryMapsCredentialAndContextOutcomes(t *testing.T) {
 			if test.stub.recovered != nil && result.TokenHash != security.HashTokenSHA256("opaque-refresh-token") {
 				t.Fatal("service did not hash the raw credential before repository lookup")
 			}
+			if test.name == "tenant authorized" && result.ClientProofPublicKey != durableProofKey {
+				t.Fatal("service dropped the durable device proof key")
+			}
+			if test.name == "tenant authorized" && result.ClientDeviceID != clientDeviceID {
+				t.Fatal("service dropped the durable client device UUID")
+			}
 		})
+	}
+}
+
+func TestSessionRecoveryProtoPinsAndRoundTripsDeviceProofKey(t *testing.T) {
+	descriptor := (&iamproto.RecoverUserSessionResponse{}).ProtoReflect().Descriptor()
+	field := descriptor.Fields().ByName("client_proof_public_key")
+	if field == nil || field.Number() != 10 {
+		t.Fatalf("client_proof_public_key field contract = %v, want field 10", field)
+	}
+
+	input := &iamproto.RecoverUserSessionResponse{
+		CredentialValid:      true,
+		ClientProofPublicKey: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+	}
+	wire, err := proto.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal recovery response: %v", err)
+	}
+	var output iamproto.RecoverUserSessionResponse
+	if err := proto.Unmarshal(wire, &output); err != nil {
+		t.Fatalf("unmarshal recovery response: %v", err)
+	}
+	if output.ClientProofPublicKey != input.ClientProofPublicKey {
+		t.Fatal("recovery response dropped client_proof_public_key")
 	}
 }
 

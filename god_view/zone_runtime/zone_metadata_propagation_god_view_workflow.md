@@ -157,6 +157,15 @@ one ordered shard. Its assignment record has a 20-second expiry and a
 monotonic `assignment_epoch`; losing the unit cancels the consumer before a new
 owner resumes the Kafka group.
 
+A five-second coordinator tick may extend `expires_at_unix_ms` for the same
+live owner, but that renewal preserves `assignment_epoch` and
+`assigned_at_unix_ms` and does not restart the projection. The epoch advances
+only when the record is first created, the previous authority has expired, or
+weighted rendezvous selects a different member. This distinction keeps lease
+liveness separate from the fencing transition consumed by the worker. Renewal
+starts with ten seconds remaining, leaving two reconcile intervals of margin
+before the 20-second lease expires.
+
 | Input | Requirement |
 | --- | --- |
 | Kafka consumer | Group `aurora-zone-metadata-<zone_uuid>-v1`, auto commit disabled, at most eight records per poll. |
